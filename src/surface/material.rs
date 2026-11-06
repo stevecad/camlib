@@ -30,6 +30,31 @@ fn edge_meets_box(a: Vec3, b: Vec3, r: [f64; 4]) -> bool {
     let signs = corners.map(|p| orientation(a, b, p, 2));
     !(signs.iter().all(|s| *s > 0.) || signs.iter().all(|s| *s < 0.))
 }
+/// Whether the XY projection of facet `p` (exact orientation `area` of its
+/// projection) meets the closed box `r`, given that their bounding boxes
+/// overlap. Exact predicates: false only when one of the facet's edge lines
+/// strictly separates the box (with the box axes, the complete separating-axis
+/// test for two convex polygons). A degenerate (vertical) facet projects to
+/// the segments of its edges.
+fn projection_meets_box(p: [Vec3; 3], area: f64, r: [f64; 4]) -> bool {
+    if area == 0. {
+        return (0..3).any(|j| edge_meets_box(p[j], p[(j + 1) % 3], r));
+    }
+    let corners = [
+        [r[0], r[1], 0.],
+        [r[2], r[1], 0.],
+        [r[2], r[3], 0.],
+        [r[0], r[3], 0.],
+    ];
+    (0..3).all(|j| {
+        let (a, b) = (p[j], p[(j + 1) % 3]);
+        // The facet lies on the `area` side of each of its edge lines.
+        !corners.iter().all(|&c| {
+            let side = orientation(a, b, c, 2);
+            side != 0. && (side > 0.) != (area > 0.)
+        })
+    })
+}
 fn charge(work: &mut u64, limit: u64, amount: u64) -> bool {
     if amount > limit.saturating_sub(*work) {
         return false;
@@ -105,7 +130,13 @@ impl PreparedSurface {
                 if lo > hi {
                     continue;
                 } // affine plane excludes this AABB candidate
-                upper = upper.max(hi);
+                // Only a facet whose projection meets the box bounds the
+                // surface over it. A facet beside the box whose bounding box
+                // overlaps it (a top face around a through hole) does not:
+                // counting it raised the bound over the hole to the top face.
+                if projection_meets_box(t.p, area, r) {
+                    upper = upper.max(hi);
+                }
                 if area != 0. {
                     candidates.push((lo, i));
                 }
@@ -153,5 +184,96 @@ impl PreparedSurface {
             }
         }
         Ok(Some([self.floor, upper]))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    /// A 20 x 20 plate, top Z10, base Z0, with a diamond hole around (10, 10)
+    /// (corners 4 mm from its centre) whose floor is `hole_floor` (0: through).
+    /// The bounding box of the top facet (0,0)-(20,0)-(14,10) overlaps the
+    /// hole, while the facet itself ends at the hole's edge.
+    fn plate(hole_floor: f64) -> PreparedSurface {
+        let o = [[0., 0.], [20., 0.], [20., 20.], [0., 20.]];
+        let i = [[10., 6.], [14., 10.], [10., 14.], [6., 10.]];
+        let at = |p: [f64; 2], z: f64| [p[0], p[1], z];
+        let mut triangles = vec![];
+        for k in 0..4 {
+            let n = (k + 1) % 4;
+            triangles.push([at(o[k], 10.), at(o[n], 10.), at(i[n], 10.)]);
+            triangles.push([at(o[k], 10.), at(i[n], 10.), at(i[k], 10.)]);
+            // Hole walls (vertical), down to the hole floor.
+            triangles.push([at(i[k], 10.), at(i[n], 10.), at(i[n], hole_floor)]);
+            triangles.push([at(i[k], 10.), at(i[n], hole_floor), at(i[k], hole_floor)]);
+        }
+        if hole_floor > 0. {
+            triangles.push([
+                at(i[0], hole_floor),
+                at(i[1], hole_floor),
+                at(i[2], hole_floor),
+            ]);
+            triangles.push([
+                at(i[0], hole_floor),
+                at(i[2], hole_floor),
+                at(i[3], hole_floor),
+            ]);
+        }
+        SurfaceMesh {
+            version: 1,
+            units: "mm".into(),
+            triangles: triangles.into(),
+            surface_error_mm: 0.,
+            source: serde_json::Value::Null,
+        }
+        .prepare(0., 1e-5, &AtomicBool::new(false))
+        .unwrap()
+    }
+    fn bounds(surface: &PreparedSurface, xy: [f64; 4]) -> [f64; 2] {
+        surface
+            .material_bounds(xy, 1e-5, &mut 0, u64::MAX, &AtomicBool::new(false))
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_cell_inside_a_through_hole_is_bounded_by_the_base_not_the_top_face() {
+        let through = plate(0.);
+        // Wholly inside the hole: no facet of the part above it.
+        assert_eq!(bounds(&through, [10.5, 9., 11.5, 9.8]), [0., 0.]);
+        assert_eq!(bounds(&through, [9., 9., 11., 11.]), [0., 0.]);
+        // Touching or straddling a hole wall: the wall and top face count.
+        assert_eq!(bounds(&through, [12., 9., 13., 10.])[1], 10.);
+        assert_eq!(bounds(&through, [12.5, 8., 13.5, 9.])[1], 10.);
+        // On the plate: the top face.
+        assert_eq!(bounds(&through, [1., 1., 2., 2.])[1], 10.);
+    }
+
+    #[test]
+    fn a_blind_hole_keeps_its_floor_as_the_bound() {
+        let blind = plate(5.);
+        let inside = bounds(&blind, [10.5, 9., 11.5, 9.8]);
+        assert!(inside[1] >= 5., "{inside:?}");
+        assert!(inside[1] < 10., "{inside:?}");
+    }
+
+    #[test]
+    fn the_projection_test_never_separates_a_touching_facet() {
+        let t = [[0., 0., 1.], [4., 0., 1.], [0., 4., 1.]];
+        let area = orientation(t[0], t[1], t[2], 2);
+        // Box touching the hypotenuse at one point, beyond it, and across.
+        assert!(projection_meets_box(t, area, [2., 2., 3., 3.]));
+        assert!(!projection_meets_box(t, area, [2.0001, 2.0001, 3., 3.]));
+        assert!(projection_meets_box(t, area, [1., 1., 3., 3.]));
+        // Either winding.
+        let r = [t[0], t[2], t[1]];
+        assert!(projection_meets_box(r, -area, [2., 2., 3., 3.]));
+        assert!(!projection_meets_box(r, -area, [2.0001, 2.0001, 3., 3.]));
+        // A vertical facet projects to a segment.
+        let wall = [[0., 0., 0.], [4., 4., 0.], [4., 4., 5.]];
+        assert!(projection_meets_box(wall, 0., [1.5, 1.5, 2.5, 2.5]));
+        assert!(!projection_meets_box(wall, 0., [2.5, 0., 3.5, 1.]));
     }
 }

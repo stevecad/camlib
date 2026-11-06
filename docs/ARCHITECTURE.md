@@ -101,7 +101,12 @@ whose old value doesn't match its own stock.
 - **Material** (`src/material.rs`, `camlib.material.Verifier`): stock against a
   target (`Target`: planar region and floor; `SurfaceTarget`: mesh). It reports
   leftover material (residual) and over-cut (gouge) as certain and possible
-  volumes with per-cell findings. Lathe runs report
+  volumes with per-cell findings. A `SurfaceTarget`'s upper bound over a
+  cell takes only facets whose XY projection meets the cell (exact test), so
+  a cell inside a through hole is bounded by the target's base. A cell that
+  straddles a vertical wall stays `possible`: its whole-cell stock bounds
+  hold both the wall and the cut-away side, and cannot tell a cut tangent to
+  the wall from one into it (issue #72). Lathe runs report
   `turning::ops::material_report` after every operation; there, gouges are
   excluded per move by the planner's exact checks.
 - **Export gate** (`camlib/export.py`): a program with unaccepted `violation`
@@ -155,7 +160,12 @@ whose old value doesn't match its own stock.
 - Some arcs cannot be written with equal start and end radii at 3 decimals; see
   `docs/posts.md` and issue #58.
 - Coarse stock cells inflate "possible" bounds. Compare certain values, or use a
-  finer `cell_size_mm`.
+  finer `cell_size_mm`. A finer grid does not decide cells along vertical walls
+  cut by the side of a cutter: those need sub-cell stock (the 3D stock, #1).
+  Stock and target approximations also add up: the stock sweep's
+  `SweepOptions.chord_error_mm` (0.002 mm by default) and the target's
+  `surface_error_mm` both widen "possible" bounds against the 0.001 mm
+  comparison tolerance.
 - Different CadQuery/OCP versions tessellate the same solid differently. That
   is why the benchmark freezes its geometry (`bench/fixtures/`).
 - The Python extension targets CPython 3.12+ (abi3); the Rust MSRV is 1.88.
