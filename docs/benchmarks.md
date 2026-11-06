@@ -6,8 +6,12 @@ optimization issue links here.
 
 ## How these numbers are made
 
-- **Workloads** are the regression suite's synthetic parts (`bench/workloads.py`),
-  so every number describes a toolpath whose correctness is tested. Each maps
+- **Workloads** are the regression suite's synthetic parts (`bench/workloads.py`).
+  Their CAD-derived meshes and regions are frozen in `bench/fixtures/`, so every
+  machine plans from identical geometry and the toolpath data is reproducible
+  exactly. `python bench/compare.py BASELINE.json NEW.json` lists every toolpath
+  change and, on the same machine, engine-time ratios.
+  Every number describes a toolpath whose correctness is tested. Each maps
   its operations to toolpaths and issues. `dense` workloads use the same parts
   at production density (finer stepover or stepdown, or a large stock) to make
   planning time meaningful.

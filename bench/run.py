@@ -283,7 +283,15 @@ def _environment():
                 break
     except OSError:
         pass
+    try:
+        import cadquery
+        import OCP
+
+        cad = f"CadQuery {cadquery.__version__}, OCP {getattr(OCP, '__version__', '?')} (geometry from fixtures)"
+    except ImportError:
+        cad = None
     return dict(
+        cad=cad,
         commit=run("git", "rev-parse", "HEAD"),
         # Uncommitted changes to the engine itself (docs and benchmark files do
         # not change what is measured).

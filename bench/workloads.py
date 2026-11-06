@@ -18,6 +18,12 @@ for path in (ROOT / "python", ROOT / "python" / "tests"):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
+# CAD-derived meshes and regions come from committed fixtures (identical
+# inputs on every machine, whatever CadQuery/OCP version is installed).
+from geometry import install as _freeze_geometry  # noqa: E402
+
+_freeze_geometry()
+
 
 @dataclass(frozen=True)
 class Workload:
