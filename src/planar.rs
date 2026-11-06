@@ -346,8 +346,15 @@ impl PlanarRegion {
                 if !intersects.overlapping_intersects.is_empty()
                     || !intersects.basic_intersects.is_empty() && !vertex_contact
                 {
+                    let at = intersects
+                        .basic_intersects
+                        .first()
+                        .map(|hit| hit.point)
+                        .or_else(|| intersects.overlapping_intersects.first().map(|o| o.point1))
+                        .map(|p| format!(" near ({}, {})", p.x + origin[0], p.y + origin[1]))
+                        .unwrap_or_default();
                     return Err(format!(
-                        "boundaries {i} and {j} intersect or touch; topology ambiguous at requested tolerance"
+                        "boundaries {i} and {j} intersect or touch{at}; topology ambiguous at requested tolerance"
                     ));
                 }
             }
@@ -995,6 +1002,23 @@ impl PreparedRegion {
     /// pairwise union even when their complete union has unambiguous topology.
     /// Execute that complete union before the existing final topology checks.
     pub(crate) fn union_linear(regions: &[Self]) -> Result<Construction, String> {
+        Self::union_linear_filling(regions, 0.).map(|(construction, _)| construction)
+    }
+    /// The complete linear union with every hole smaller than
+    /// `fill_holes_below_mm2` filled (left out of the result), so the result
+    /// covers more than the exact union, never less. Only for callers whose
+    /// region is protection (the union may grow, never shrink): it settles
+    /// slivers of uncovered area that the integer backend returns touching
+    /// another boundary within the construction tolerance (for example
+    /// between facets of a mesh whose faces were tessellated separately).
+    /// Returns the construction and the filled holes (count and area).
+    pub(crate) fn union_linear_filling(
+        regions: &[Self],
+        fill_holes_below_mm2: f64,
+    ) -> Result<(Construction, FilledHoles), String> {
+        if !fill_holes_below_mm2.is_finite() || fill_holes_below_mm2 < 0. {
+            return Err("hole fill area must be finite and nonnegative".into());
+        }
         let first = regions.first().ok_or("linear union needs an operand")?;
         let options = first.options;
         if regions.iter().any(|r| {
@@ -1011,6 +1035,27 @@ impl PreparedRegion {
         if !clipper.execute(ClipType::Union, FillRule::NonZero, &mut closed, None) {
             return Err("integer batch union backend failed".into());
         }
+        let mut filled = FilledHoles::default();
+        if fill_holes_below_mm2 > 0. {
+            // Exact integer shoelace sum (twice the signed area in grid
+            // units); a filled hole only adds area to the union.
+            closed.retain(|path| {
+                let twice: i128 = (0..path.len())
+                    .map(|i| {
+                        let (a, b) = (path[i], path[(i + 1) % path.len()]);
+                        a.x as i128 * b.y as i128 - b.x as i128 * a.y as i128
+                    })
+                    .sum();
+                let area = twice as f64 * 0.5 * grid * grid;
+                if area < 0. && -area < fill_holes_below_mm2 {
+                    filled.holes += 1;
+                    filled.area_mm2 += -area;
+                    false
+                } else {
+                    true
+                }
+            });
+        }
         let error = regions
             .iter()
             .map(|r| r.definition.boundary_error_mm)
@@ -1018,8 +1063,15 @@ impl PreparedRegion {
             + options.tolerance_mm;
         first
             .integer_result(closed, "clipper2_rust_1.2.0_linear_batch", error, 0., grid)
-            .map(|r| r.report)
+            .map(|r| (r.report, filled))
     }
+}
+
+/// Holes a protective union filled (`PreparedRegion::union_linear_filling`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+pub struct FilledHoles {
+    pub holes: usize,
+    pub area_mm2: f64,
 }
 
 /// Diagnostic/boolean conversion only; analytical arcs remain in native regions.
