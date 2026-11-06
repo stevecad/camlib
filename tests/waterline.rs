@@ -439,10 +439,16 @@ fn waterline_cancel_generation_and_invalid_work_inputs_do_not_advance_cursor() {
     .unwrap();
     let mut stock = Stock::new(m.stock.height().unwrap().clone()).unwrap();
     let tool = m.tools[0].prepare().unwrap();
+    // Allow entry, then cancel during contour preparation. Forty coordinator
+    // polls can outlast the whole parallel batch on a fast/many-core host, so
+    // that counter never requested cancellation before the first motion.
+    let interrupted = CancelAfter(std::cell::Cell::new(1));
     assert!(
-        p.next_motion_with_stock(&stock, &CancelAfter(std::cell::Cell::new(40)))
-            .is_err()
+        p.next_motion_with_stock(&stock, &interrupted)
+            .unwrap_err()
+            .contains("cancelled")
     );
+    assert_eq!(interrupted.0.get(), 0);
     assert_eq!(p.report().level_reports.len(), 0);
     assert_eq!(stock.generation(), 0);
     for _ in 0..3 {

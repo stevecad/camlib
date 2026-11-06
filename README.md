@@ -70,6 +70,9 @@ python -m pip install .
 python examples/standalone_job.py out      # writes out/pocket.nc
 ```
 
+For native Windows x64 installation, build tools and PowerShell commands, see
+[Windows setup](docs/windows.md).
+
 The CadQuery example (`examples/cadquery_job.py`) also needs CadQuery/OCP
 installed in the same Python environment.
 

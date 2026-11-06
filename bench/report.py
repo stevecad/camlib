@@ -113,11 +113,13 @@ def render(data):
         m = t["material"] or {}
         blocks = t["posted_blocks"] if t["posted_blocks"] is not None else "refused ¹"
         post = f"{e['post_seconds']:.3f}" if e["post_seconds"] is not None else "–"
+        native_rss = e['peak_rss_kib']['native']
+        memory = f"{native_rss / 1024:.0f}" if native_rss is not None else "unavailable"
         lines.append(
             f"| `{w['name']}` | {w['description']} | {t['moves']} | {t['cycle_seconds_exact_stop']:.1f} /"
             f" {t['cycle_seconds_tangent']:.1f} | {blocks} | {_bounds(m.get('leftover_mm3'))} |"
             f" {_bounds(m.get('overcut_mm3'))} | {e['run_seconds']:.3f} | {e['first_move_seconds']:.3f} | {post} |"
-            f" {e['peak_rss_kib']['native'] / 1024:.0f} |"
+            f" {memory} |"
         )
     refused = [w for w in data["workloads"] if w["toolpath"]["post_error"]]
     if refused:

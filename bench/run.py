@@ -24,12 +24,14 @@ from collections import defaultdict
 import json
 import os
 import platform
-import resource
 import statistics
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+if sys.platform != "win32":
+    import resource
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -265,8 +267,12 @@ def measure(name, repeat):
 def _child(name, repeat):
     result = measure(name, repeat)
     # Peak memory of this process and the native engine processes it ran.
-    own = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    engines = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+    # Windows has no getrusage; report unavailable measurements explicitly.
+    own = engines = None
+    if sys.platform != "win32":
+        scale = 1024 if sys.platform == "darwin" else 1
+        own = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / scale
+        engines = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / scale
     result["engine"]["peak_rss_kib"] = dict(python=own, native=engines)
     print(json.dumps(result))
 

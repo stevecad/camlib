@@ -187,7 +187,13 @@ with RecordedRun.open(sys.argv[1]) as run:
                         meta.write_text(json.dumps(data))
                     elif change == 'symlink':
                         (copy / 'motions.bin').unlink()
-                        (copy / 'motions.bin').symlink_to(saved / 'motions.bin')
+                        try:
+                            (copy / 'motions.bin').symlink_to(saved / 'motions.bin')
+                        except OSError as error:
+                            if getattr(error, 'winerror', None) != 1314:
+                                raise
+                            shutil.rmtree(copy)
+                            self.skipTest('Windows symlink test requires Developer Mode or symlink privilege')
                     else:
                         (copy / 'extra').write_text('unexpected')
                     with self.assertRaises(ProtocolError):

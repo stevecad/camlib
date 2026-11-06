@@ -322,8 +322,13 @@ class MotionPolicyTest(unittest.TestCase):
         ) as sim:
             scheduled = machine.schedule_events(header, OperationEvents(sim, reuse_active_tool=True))
             saved = sim.state.heights.tobytes()
+            source_motion_count = sim.state.completed
             self.assertTrue(sim.state.finished)
-        self.assertEqual(len(scheduled.report['segments']), 3205)
+        # Check preservation against the independently consumed stock stream.
+        # A fixed planner count (3205 on Linux, 3195 on Windows) tests the host's
+        # adaptive subdivision, not whether scheduling preserves every motion.
+        self.assertGreater(source_motion_count, 3000)
+        self.assertEqual(len(scheduled.report['segments']), source_motion_count)
         self.assertGreater(scheduled.report['feed_limited_motions'], 0)
         with Simulation(
             manifest['stock'],
