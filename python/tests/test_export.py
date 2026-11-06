@@ -10,9 +10,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from camlib.export import ExportRefused
+from camlib.export import ExportRefused, describe
+from camlib.material import Target
 from camlib.planar import Boundary, Component, PlanarRegion
-from camlib.verification import Prism, Scene, StockContactOptions, StreamChecks
+from camlib.verification import MaterialCheck, Prism, Scene, StockContactOptions, StreamChecks
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -121,6 +122,87 @@ class ExportTest(unittest.TestCase):
                 released = run.export(target, accept={"violation"})
                 self.assertEqual(released["accepted"], ("violation",))
                 self.assertTrue(target.is_file())
+
+    def test_refused_material_result_names_its_target_and_assessment(self):
+        # The target claims material 1 mm above the pocket floor the job cuts
+        # (Z 3): the final stock is a definite gouge, refused at export.
+        job = self.module.build_job()
+        setup = job.setups[0]
+        pocket = getattr(setup.operations[-1], "operation", setup.operations[-1])
+        checks = StreamChecks(material=(MaterialCheck(Target("pocket-target", "1", pocket.region, 4)),))
+        job = replace(job, setups=(replace(setup, verification=checks),))
+        with TemporaryDirectory() as directory:
+            target = Path(directory) / "gouged.nc"
+            with job.post("top", machine=self.module.machine_for(job)) as run:
+                with self.assertRaises(ExportRefused) as refused:
+                    run.export(target)
+                self.assertFalse(target.exists())
+        message = str(refused.exception)
+        self.assertEqual(refused.exception.statuses, ("violation",))
+        report = refused.exception.findings[0]["findings"][0]
+        self.assertEqual(report["target_id"], "pocket-target")
+        self.assertIn("material gouge definite_excess on target pocket-target", message)
+        self.assertNotIn("None", message)
+
+
+class DescribeTest(unittest.TestCase):
+    """Every shape a gated result's findings take prints meaningfully."""
+
+    @staticmethod
+    def summary(assessment, definite=0, possible=0):
+        return dict(assessment=assessment, definite_cells=definite, possible_only_cells=possible, volume_mm3=[0, 1])
+
+    def test_milling_material_report_names_target_gouge_and_residual(self):
+        report = dict(
+            target_id="plate",
+            complete=True,
+            gouge=self.summary("possible_excess", possible=12),
+            residual=self.summary("definite_excess", definite=3),
+            findings=[],
+        )
+        text = describe(dict(completed=352, status="uncertain", findings=[report]))
+        self.assertEqual(
+            text,
+            "material gouge possible_excess on target plate (definite 0 cells, possible-only 12 cells), "
+            "residual definite_excess (definite 3 cells, possible-only 0 cells)",
+        )
+
+    def test_material_residual_within_tolerance_and_incomplete_analysis(self):
+        report = dict(
+            target_id="plate",
+            complete=False,
+            gouge=self.summary("incomplete", possible=4),
+            residual=self.summary("within_tolerance"),
+        )
+        text = describe(dict(completed=1, status="uncertain", findings=[report]))
+        self.assertEqual(
+            text,
+            "material gouge incomplete on target plate (definite 0 cells, possible-only 4 cells), analysis incomplete",
+        )
+
+    def test_lathe_material_report_names_the_turned_part(self):
+        report = dict(
+            algorithm="turn-radius-bounds-v1",
+            complete=True,
+            gouge=self.summary("within_tolerance"),
+            residual=self.summary("possible_excess", possible=2),
+            findings=[],
+        )
+        text = describe(dict(completed=9, status="uncertain", findings=[report]))
+        self.assertIn("material gouge within_tolerance on the turned part", text)
+        self.assertIn("residual possible_excess", text)
+
+    def test_contact_findings_print_kind_and_object_as_before(self):
+        scene = dict(kind="fixture_contact", object_id="vise", source="scene")
+        stock = dict(finding=dict(kind="stock_contact", object_id="stock"), cell_range=[0, 1, 0, 1])
+        self.assertEqual(describe(dict(status="violation", findings=[scene])), "fixture_contact vise")
+        self.assertEqual(describe(dict(status="uncertain", findings=[stock])), "stock_contact stock")
+
+    def test_result_without_findings_never_prints_none(self):
+        text = describe(dict(completed=4, status="uncertain", findings=[]))
+        self.assertEqual(text, "uncertain result without a localized finding")
+        refused = ExportRefused([dict(completed=4, status="uncertain", findings=[])], {"uncertain"})
+        self.assertNotIn("None", str(refused))
 
 
 if __name__ == "__main__":

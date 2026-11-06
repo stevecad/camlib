@@ -107,7 +107,10 @@ whose old value doesn't match its own stock.
 - **Export gate** (`camlib/export.py`): a program with unaccepted `violation`
   or `uncertain` results is refused (`ExportRefused`), and nothing is written.
   Callers accept a kind explicitly (`accept={"uncertain"}`). Exports also list
-  the checks that were not configured.
+  the checks that were not configured. The refusal names the first result: a
+  contact's kind and object, or a material result's target with its gouge
+  assessment (and residual, when material is left); its `findings` hold the
+  motion findings or the material report.
 
 ## Posting
 

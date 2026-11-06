@@ -753,10 +753,13 @@ class PostedRun(RecordedRun):
         while page := list(self.verification_records(start, limit=256)):
             for update in page:
                 status = update.status
+                detail = list(update.findings())
                 if update.kind == "material":
+                    # The material report itself is the finding (as for a lathe).
                     status = material_status(update.check["report"])
+                    detail = [update.check["report"]]
                 if status not in (None, "clear"):
-                    findings.append(dict(completed=update.completed, status=status, findings=list(update.findings())))
+                    findings.append(dict(completed=update.completed, status=status, findings=detail))
             start += len(page)
         material = None
         if self._config.get("turning") is not None:

@@ -22,14 +22,44 @@ class ExportRefused(ValueError):
         self.findings = tuple(findings)
         self.statuses = tuple(sorted(statuses))
         first = self.findings[0] if self.findings else {}
-        detail = next(iter(first.get("findings") or ()), {})
-        detail = detail.get("finding", detail)
         super().__init__(
             f"export refused: {len(self.findings)} move(s) with unaccepted "
             f"{'/'.join(self.statuses)} verification results (first at move {first.get('completed')}: "
-            f"{detail.get('kind')} {detail.get('object_id')}); fix the job, or pass "
+            f"{describe(first)}); fix the job, or pass "
             f"accept={{{', '.join(repr(s) for s in self.statuses)}}} to release it anyway"
         )
+
+
+def describe(result):
+    """One line naming what a gated result found.
+
+    A gated result's ``findings`` hold either motion findings (a scene or
+    stock contact: its kind and the object it touches) or one material
+    report (the stock compared with the part: its target and the gouge
+    assessment, and the residual one when material is left)."""
+    detail = next(iter(result.get("findings") or ()), None)
+    if detail is None:
+        return f"{result.get('status', 'unclear')} result without a localized finding"
+    if "gouge" in detail and "residual" in detail:
+        return _material(detail)
+    detail = detail.get("finding", detail)
+    return f"{detail.get('kind', 'finding')} {detail.get('object_id', '(no object)')}"
+
+
+def _material(report):
+    # A lathe report has no target identity: its target is the turned part.
+    target = f"target {report['target_id']}" if report.get("target_id") else "the turned part"
+    gouge, residual = report["gouge"], report["residual"]
+    text = f"material gouge {gouge['assessment']} on {target} ({_cells(gouge)})"
+    if residual["assessment"] != "within_tolerance":
+        text += f", residual {residual['assessment']} ({_cells(residual)})"
+    if not report["complete"]:
+        text += ", analysis incomplete"
+    return text
+
+
+def _cells(summary):
+    return f"definite {summary['definite_cells']} cells, possible-only {summary['possible_only_cells']} cells"
 
 
 def accepted(accept):
