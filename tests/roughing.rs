@@ -2860,3 +2860,114 @@ fn roughing_reports_preserve_progress_across_reads_rejections_and_finalization()
         "an earlier owned report must remain unchanged"
     );
 }
+
+/// A chamfered round boss tessellated face by face (issue #70's pattern): the
+/// wall's top ring is rotated against its bottom ring, and the chamfer's
+/// bottom ring follows the wall's bottom ring, so the two faces do not share
+/// vertices along their common edge at Z `wall`.
+fn separately_tessellated_boss(wall: f64) -> Vec<[[f64; 3]; 3]> {
+    let n = 40;
+    let step = TAU / n as f64;
+    let at = |r: f64, angle: f64, z: f64| [r * angle.cos(), r * angle.sin(), z];
+    let mut triangles = vec![];
+    for i in 0..n {
+        let (a, b) = (i as f64 * step, (i + 1) as f64 * step);
+        let twist = 0.1 * step;
+        // Wall: radius 3, Z 0..wall, top ring rotated by `twist`.
+        let (t0, t1) = (at(3., a - twist, wall), at(3., b - twist, wall));
+        let (b0, b1) = (at(3., a, 0.), at(3., b, 0.));
+        triangles.push([t1, t0, b0]);
+        triangles.push([b0, b1, t1]);
+        // Chamfer: radius 3 at Z wall to radius 2 at Z wall + 1.
+        let (c0, c1) = (at(3., a, wall), at(3., b, wall));
+        let (d0, d1) = (at(2., a, wall + 1.), at(2., b, wall + 1.));
+        triangles.push([c0, c1, d0]);
+        triangles.push([c1, d1, d0]);
+        // Top face.
+        triangles.push([[0., 0., wall + 1.], d0, d1]);
+    }
+    triangles
+}
+
+#[test]
+fn separately_tessellated_faces_give_a_shadow_for_the_cutter() {
+    let cancel = AtomicBool::new(false);
+    let target = PreparedRoughingTarget::prepare(
+        mesh(separately_tessellated_boss(11.), 0.01),
+        1e-5,
+        &cancel,
+    )
+    .unwrap();
+    // Without a cutter the exact union keeps slivers between the two faces'
+    // edges; one touches another boundary within the tolerance, and the
+    // refusal says where and why.
+    let refused = target.shadow(11., 0.2, &mut 0, &cancel).err().unwrap();
+    assert!(refused.contains("intersect or touch near ("), "{refused}");
+    assert!(refused.contains("not watertight"), "{refused}");
+    // For a 12 mm cutter the slivers are filled: no cutter disk fits in one.
+    let shadow = target
+        .shadow_for_cutter(11., 0.2, 6., &mut 0, &cancel)
+        .unwrap();
+    assert!(shadow.report.filled_holes > 0);
+    // Lenses between the two faces' chords along the radius 3 circle only.
+    assert!(
+        shadow.report.filled_hole_area_mm2 < 0.5,
+        "{:?}",
+        shadow.report
+    );
+    let region = shadow
+        .region
+        .prepare(ConstructionOptions::default())
+        .unwrap();
+    assert_eq!(
+        (region.summary().components, region.summary().holes),
+        (1, 0)
+    );
+    // Every projected facet point stays protected (filling only adds area).
+    for triangle in separately_tessellated_boss(11.) {
+        for p in triangle {
+            assert!(signed(&region, [p[0], p[1]]) > -1e-4, "{p:?}");
+        }
+    }
+    assert!(signed(&region, [0., 0.]) > 1.);
+    assert!(signed(&region, [3.2, 0.]) < 0.);
+}
+
+#[test]
+fn holes_a_cutter_fits_in_stay_open() {
+    // A square frame around a 10 x 10 opening (100 mm2), a hole of the
+    // shadow. It is filled only below the area of a disk of half the cutter
+    // radius: open for radius 3 (7 mm2) and 10 (78.5 mm2), filled for radius
+    // 12 (113 mm2), where no cutter disk fits in it.
+    let cancel = AtomicBool::new(false);
+    let mut triangles = vec![];
+    for (x0, y0, x1, y1) in [
+        (0., 0., 20., 5.),
+        (0., 15., 20., 20.),
+        (0., 5., 5., 15.),
+        (15., 5., 20., 15.),
+    ] {
+        triangles.extend(rect(x0, y0, x1, y1, 4.));
+    }
+    let target = PreparedRoughingTarget::prepare(mesh(triangles, 0.), 1e-5, &cancel).unwrap();
+    for (radius, holes) in [(0., 1), (3., 1), (10., 1), (12., 0)] {
+        let shadow = target
+            .shadow_for_cutter(2., 0., radius, &mut 0, &cancel)
+            .unwrap();
+        let region = shadow
+            .region
+            .prepare(ConstructionOptions::default())
+            .unwrap();
+        assert_eq!(region.summary().holes, holes, "cutter radius {radius}");
+        assert_eq!(shadow.report.filled_holes, 1 - holes);
+        assert!(signed(&region, [2.5, 10.]) > 0.);
+        if holes == 1 {
+            assert!(signed(&region, [10., 10.]) < -4.);
+        }
+    }
+    assert!(
+        target
+            .shadow_for_cutter(2., 0., f64::NAN, &mut 0, &cancel)
+            .is_err()
+    );
+}

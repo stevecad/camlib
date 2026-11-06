@@ -5,7 +5,10 @@ use crate::{
     adaptive::{AdaptivePathStrategy, AdaptivePlan, AdaptivePocketOperation, CuttingSense},
     adaptive_front::FrontReport,
     motion::{Coolant, Event, Motion, Vec3},
-    planar::{Boolean, Boundary, Component, ConstructionOptions, PlanarRegion, PreparedRegion},
+    planar::{
+        Boolean, Boundary, Component, ConstructionOptions, FilledHoles, PlanarRegion,
+        PreparedRegion,
+    },
     pocket::{
         HelicalEntry, PocketEntry, PocketOperation, PocketPlan, RasterRouting, ResidualStatus,
     },
@@ -30,6 +33,10 @@ pub struct ShadowReport {
     pub projected_triangles: usize,
     pub enclosed_degenerate_projections: usize,
     pub projection_enclosure_mm: f64,
+    /// Holes of the projected union too small to hold the cutter, filled
+    /// (protected): `PreparedRoughingTarget::shadow_for_cutter`.
+    pub filled_holes: usize,
+    pub filled_hole_area_mm2: f64,
     pub input_vertices: usize,
     pub output_vertices: usize,
     pub boolean_operations: usize,
@@ -171,14 +178,35 @@ impl PreparedRoughingTarget {
         work: &mut usize,
         cancel: &impl CancelSignal,
     ) -> Result<RoughingShadow, String> {
+        self.shadow_for_cutter(tip_z_mm, axial_allowance_mm, 0., work, cancel)
+    }
+    /// `shadow`, for a cutter of radius `cutter_radius_mm`: holes of the
+    /// projected union with less area than a disk of half that radius are
+    /// filled (protected too). No cutter disk fits in such a hole, so the
+    /// layer's tool-centre region is the same; filling only adds protection.
+    /// It settles uncovered slivers between facets that the union returns
+    /// touching another boundary within the tolerance (a mesh whose faces
+    /// were tessellated separately leaves them along shared edges), which
+    /// would otherwise make the layer's topology ambiguous.
+    pub fn shadow_for_cutter(
+        &self,
+        tip_z_mm: f64,
+        axial_allowance_mm: f64,
+        cutter_radius_mm: f64,
+        work: &mut usize,
+        cancel: &impl CancelSignal,
+    ) -> Result<RoughingShadow, String> {
         check(cancel)?;
         if !tip_z_mm.is_finite()
             || tip_z_mm.abs() > 1e6
             || !axial_allowance_mm.is_finite()
             || !(0. ..=1e6).contains(&axial_allowance_mm)
+            || !cutter_radius_mm.is_finite()
+            || !(0. ..=1e6).contains(&cutter_radius_mm)
         {
-            return Err("invalid roughing shadow level/axial allowance".into());
+            return Err("invalid roughing shadow level/axial allowance/cutter radius".into());
         }
+        let fill_below_mm2 = std::f64::consts::PI * (cutter_radius_mm / 2.).powi(2);
         let level = tip_z_mm - axial_allowance_mm - self.mesh.surface_error_mm - self.numerical;
         let options = ConstructionOptions {
             tolerance_mm: self.tolerance,
@@ -245,8 +273,21 @@ impl PreparedRoughingTarget {
         }
         check(cancel)?;
         let unions = usize::from(regions.len() > 1);
+        let mut filled = FilledHoles::default();
         let mut region = if regions.len() > 1 {
-            PreparedRegion::union_linear(&regions)?.region
+            let (union, holes) = PreparedRegion::union_linear_filling(&regions, fill_below_mm2)
+                .map_err(|e| {
+                    format!(
+                        "{e}. The target mesh's facets above Z{level} project to boundaries \
+                         that touch within the construction tolerance {} mm. This usually means \
+                         the mesh is not watertight (faces tessellated separately, so neighbouring \
+                         faces do not share their edge vertices): export the target with shared \
+                         edge vertices",
+                        self.tolerance
+                    )
+                })?;
+            filled = holes;
+            union.region
         } else if let Some(p) = regions.pop() {
             p.definition().clone()
         } else {
@@ -269,6 +310,8 @@ impl PreparedRoughingTarget {
             numerical_z_reserve_mm: self.numerical,
             projected_triangles: projected,
             enclosed_degenerate_projections: degenerate,
+            filled_holes: filled.holes,
+            filled_hole_area_mm2: filled.area_mm2,
             projection_enclosure_mm: if degenerate > 0 {
                 32. * self.tolerance * 2f64.sqrt()
             } else {
@@ -889,7 +932,7 @@ impl RoughingPlan {
                 let z = depths[i];
                 let mut work = 0;
                 let shadow = target
-                    .shadow(z, op.bottom_allowance_mm, &mut work, &cancel)
+                    .shadow_for_cutter(z, op.bottom_allowance_mm, r, &mut work, &cancel)
                     .map_err(|e| format!("roughing shadow at Z{z}: {e}"))?;
                 let region = expanded
                     .boolean(&shadow.region.prepare(options)?, Boolean::Difference)?

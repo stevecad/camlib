@@ -144,7 +144,13 @@ Required: `target` (a `SurfaceMesh` of the part, or use
 `stepdown_mm`, `clearance_z_mm`, `clearing`.
 
 Clears stock in Z layers while staying above the part surface plus
-`radial_allowance_mm`/`bottom_allowance_mm`. `clearing` is one of:
+`radial_allowance_mm`/`bottom_allowance_mm`. Each layer protects the part's
+projection above it (its "shadow"); holes in that projection smaller than a
+disk of half the cutter's radius are protected too, since the cutter cannot
+enter them (the layer report's `shadow.filled_holes`). A target mesh whose faces
+were tessellated separately leaves such slivers between neighbouring faces; a
+gap that still makes the layer's topology ambiguous is refused with its
+location. `clearing` is one of:
 
 - `RasterClearing(stepover_mm, routing=None)`: parallel passes;
   `routing="economical"` orders and joins the rows to shorten links,
