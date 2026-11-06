@@ -57,7 +57,9 @@ GRBL 1.1h (with laser mode), Haas NGC, FANUC 0i-MB and FANUC lathes (system A),
 Siemens 808D (native and ISO) and Centroid CNC12 (mill, lathe and plasma),
 LinuxCNC QtPlasmaC and WinCNC (plasma). Not
 supported yet: 4/5-axis, undercuts.
-Details and limits: [capabilities](docs/library-capabilities.md).
+Details and limits: [capabilities](docs/library-capabilities.md). Measured
+toolpath quality and engine performance for every toolpath:
+[benchmarks](docs/benchmarks.md).
 
 ## Install
 
@@ -100,6 +102,10 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 PYO3_PYTHON=$(which python) cargo build --release --workspace --all-features
 PYTHONPATH=python python -m unittest discover -s python/tests -v   # needs CadQuery/OCP
 ```
+
+Toolpath benchmarks (toolpath quality and planning time per toolpath, needs
+CadQuery): `python bench/run.py --label <name>`, then
+`python bench/report.py bench/results/<name>.json`.
 
 Tests use synthetic inputs. The Python suite includes CAD-adapter tests and
 therefore needs CadQuery/OCP. CI (`.github/workflows/ci.yml`) runs all of the

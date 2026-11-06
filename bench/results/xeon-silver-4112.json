@@ -1,0 +1,2554 @@
+{
+ "label": "xeon-silver-4112",
+ "environment": {
+  "commit": "d05c0df8d74d6b766e1460da4c70010005e676f8",
+  "dirty": false,
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "python": "3.12.13",
+  "os": "Linux-6.17.0-35-generic-x86_64-with-glibc2.39",
+  "cpu": "Intel(R) Xeon(R) Silver 4112 CPU @ 2.60GHz",
+  "cpus": 16,
+  "machine": {
+   "accel_mm_s2": 1000.0,
+   "rapid_mm_min": 6000.0
+  }
+ },
+ "workloads": [
+  {
+   "name": "facing",
+   "family": "mill",
+   "description": "Face a 40 x 24 block 2 mm",
+   "operations": {
+    "face": {
+     "toolpath": "Facing",
+     "issue": 24,
+     "moves": 20,
+     "cut_mm": 442.203,
+     "rapid_mm": 30.537,
+     "air_cut_mm": 42.201,
+     "plunges": 2,
+     "retracts": 2,
+     "removed_mm3": 1919.99,
+     "cycle_seconds_exact_stop": 47.132,
+     "cycle_seconds_tangent": 47.132,
+     "engine_seconds": 0.0058
+    }
+   },
+   "toolpath": {
+    "moves": 20,
+    "cycle_seconds_exact_stop": 47.132,
+    "cycle_seconds_tangent": 47.132,
+    "posted_blocks": 43,
+    "post_error": null,
+    "removed_mm3": [
+     1919.99,
+     1920.01
+    ],
+    "material": {
+     "leftover_mm3": [
+      0.0,
+      254.00978663588256
+     ],
+     "overcut_mm3": [
+      0.0,
+      0.009792962185179515
+     ],
+     "leftover_cells": [
+      0,
+      508
+     ],
+     "overcut_cells": [
+      0,
+      0
+     ],
+     "max_residual_height_mm": 8.000010000002273,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.0095,
+    "first_move_seconds": 0.0038,
+    "post_seconds": 0.003,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 394576,
+     "native": 26328
+    }
+   }
+  },
+  {
+   "name": "pocket",
+   "family": "mill",
+   "description": "Pocket around a round island (CAD region)",
+   "operations": {
+    "clear-pocket": {
+     "toolpath": "Pocket",
+     "issue": 25,
+     "moves": 352,
+     "cut_mm": 3412.095,
+     "rapid_mm": 1137.431,
+     "air_cut_mm": 0.0,
+     "plunges": 48,
+     "retracts": 48,
+     "removed_mm3": 8693.749,
+     "cycle_seconds_exact_stop": 508.314,
+     "cycle_seconds_tangent": 508.274,
+     "engine_seconds": 0.0261
+    }
+   },
+   "toolpath": {
+    "moves": 352,
+    "cycle_seconds_exact_stop": 508.314,
+    "cycle_seconds_tangent": 508.274,
+    "posted_blocks": 383,
+    "post_error": null,
+    "removed_mm3": [
+     8693.749,
+     9198.091
+    ],
+    "material": {
+     "leftover_mm3": [
+      3.8399999934493736,
+      541.4508681451769
+     ],
+     "overcut_mm3": [
+      0.0,
+      489.6114984567715
+     ],
+     "leftover_cells": [
+      12,
+      1680
+     ],
+     "overcut_cells": [
+      0,
+      1530
+     ],
+     "max_residual_height_mm": 8.000000000004547,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.0347,
+    "first_move_seconds": 0.0085,
+    "post_seconds": 0.0234,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 36848,
+     "native": 31732
+    }
+   }
+  },
+  {
+   "name": "rest-pocket",
+   "family": "mill",
+   "description": "Face, 4 mm pocket, 2 mm rest pocket",
+   "operations": {
+    "face": {
+     "toolpath": "Facing",
+     "issue": 24,
+     "moves": 18,
+     "cut_mm": 255.803,
+     "rapid_mm": 6.4,
+     "air_cut_mm": 15.8,
+     "plunges": 1,
+     "retracts": 1,
+     "removed_mm3": 383.996,
+     "cycle_seconds_exact_stop": 26.859,
+     "cycle_seconds_tangent": 26.859,
+     "engine_seconds": 0.0008
+    },
+    "pocket": {
+     "toolpath": "Pocket",
+     "issue": 25,
+     "moves": 30,
+     "cut_mm": 99.328,
+     "rapid_mm": 44.26,
+     "air_cut_mm": 7.999,
+     "plunges": 4,
+     "retracts": 4,
+     "removed_mm3": 124.0,
+     "cycle_seconds_exact_stop": 16.66,
+     "cycle_seconds_tangent": 16.66,
+     "engine_seconds": 0.0007
+    },
+    "rest": {
+     "toolpath": "RestPocket",
+     "issue": 25,
+     "moves": 82,
+     "cut_mm": 206.49,
+     "rapid_mm": 36.804,
+     "air_cut_mm": 116.994,
+     "plunges": 4,
+     "retracts": 8,
+     "removed_mm3": 2.0,
+     "cycle_seconds_exact_stop": 26.343,
+     "cycle_seconds_tangent": 26.103,
+     "engine_seconds": 0.0015
+    }
+   },
+   "toolpath": {
+    "moves": 130,
+    "cycle_seconds_exact_stop": 69.862,
+    "cycle_seconds_tangent": 69.622,
+    "posted_blocks": 169,
+    "post_error": null,
+    "removed_mm3": [
+     509.996,
+     576.004
+    ],
+    "material": {
+     "leftover_mm3": [
+      0.0,
+      267.00390935135755
+     ],
+     "overcut_mm3": [
+      0.0,
+      66.00391718596585
+     ],
+     "leftover_cells": [
+      0,
+      300
+     ],
+     "overcut_cells": [
+      0,
+      132
+     ],
+     "max_residual_height_mm": 5.000010000001364,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.0067,
+    "first_move_seconds": 0.0037,
+    "post_seconds": 0.0101,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 397240,
+     "native": 26356
+    }
+   }
+  },
+  {
+   "name": "adaptive-pocket",
+   "family": "mill",
+   "description": "Adaptive clearing of an L pocket",
+   "operations": {
+    "adaptive": {
+     "toolpath": "AdaptivePocket",
+     "issue": 26,
+     "moves": 3752,
+     "cut_mm": 12192.195,
+     "rapid_mm": 18.176,
+     "air_cut_mm": 8712.504,
+     "plunges": 2,
+     "retracts": 2,
+     "removed_mm3": 461.118,
+     "cycle_seconds_exact_stop": 1262.885,
+     "cycle_seconds_tangent": 1225.621,
+     "engine_seconds": 0.0774
+    }
+   },
+   "toolpath": {
+    "moves": 3752,
+    "cycle_seconds_exact_stop": 1262.885,
+    "cycle_seconds_tangent": 1225.621,
+    "posted_blocks": null,
+    "post_error": "lowering cannot preserve declared planar closure at controller precision",
+    "removed_mm3": [
+     461.118,
+     525.123
+    ],
+    "material": {
+     "leftover_mm3": [
+      4.799999517308152,
+      492.8024332736381
+     ],
+     "overcut_mm3": [
+      0.0,
+      49.602673393734854
+     ],
+     "leftover_cells": [
+      15,
+      501
+     ],
+     "overcut_cells": [
+      0,
+      155
+     ],
+     "max_residual_height_mm": 10.000000000001478,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.0815,
+    "first_move_seconds": 0.0041,
+    "post_seconds": null,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 414872,
+     "native": 398924
+    }
+   }
+  },
+  {
+   "name": "roughing-raster",
+   "family": "mill",
+   "description": "3D raster roughing around a frustum",
+   "operations": {
+    "rough": {
+     "toolpath": "Roughing",
+     "issue": 27,
+     "moves": 2169,
+     "cut_mm": 27414.475,
+     "rapid_mm": 614.199,
+     "air_cut_mm": 21291.088,
+     "plunges": 13,
+     "retracts": 24,
+     "removed_mm3": 5765.95,
+     "cycle_seconds_exact_stop": 7932.344,
+     "cycle_seconds_tangent": 7931.579,
+     "engine_seconds": 0.0471
+    }
+   },
+   "toolpath": {
+    "moves": 2169,
+    "cycle_seconds_exact_stop": 7932.344,
+    "cycle_seconds_tangent": 7931.579,
+    "posted_blocks": 2400,
+    "post_error": null,
+    "removed_mm3": [
+     5765.95,
+     6025.159
+    ],
+    "material": {
+     "leftover_mm3": [
+      922.0284144712655,
+      1505.4823377094317
+     ],
+     "overcut_mm3": [
+      0.0,
+      195.45245404064855
+     ],
+     "leftover_cells": [
+      4604,
+      660
+     ],
+     "overcut_cells": [
+      0,
+      516
+     ],
+     "max_residual_height_mm": 2.200650402008413,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.0618,
+    "first_move_seconds": 0.0105,
+    "post_seconds": 0.1904,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 409108,
+     "native": 399636
+    }
+   }
+  },
+  {
+   "name": "roughing-offset",
+   "family": "mill",
+   "description": "3D offset roughing around a frustum",
+   "operations": {
+    "rough": {
+     "toolpath": "Roughing",
+     "issue": 27,
+     "moves": 924,
+     "cut_mm": 10665.255,
+     "rapid_mm": 250.41,
+     "air_cut_mm": 6073.475,
+     "plunges": 5,
+     "retracts": 8,
+     "removed_mm3": 5765.95,
+     "cycle_seconds_exact_stop": 1439.816,
+     "cycle_seconds_tangent": 1436.823,
+     "engine_seconds": 0.0274
+    }
+   },
+   "toolpath": {
+    "moves": 924,
+    "cycle_seconds_exact_stop": 1439.816,
+    "cycle_seconds_tangent": 1436.823,
+    "posted_blocks": 1219,
+    "post_error": null,
+    "removed_mm3": [
+     5765.95,
+     6025.157
+    ],
+    "material": {
+     "leftover_mm3": [
+      922.0305641643923,
+      1505.4823377094317
+     ],
+     "overcut_mm3": [
+      0.0,
+      195.45245404064855
+     ],
+     "leftover_cells": [
+      4604,
+      660
+     ],
+     "overcut_cells": [
+      0,
+      516
+     ],
+     "max_residual_height_mm": 2.200650402008413,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.0453,
+    "first_move_seconds": 0.0153,
+    "post_seconds": 0.2684,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 404124,
+     "native": 398492
+    }
+   }
+  },
+  {
+   "name": "roughing-adaptive",
+   "family": "mill",
+   "description": "3D adaptive roughing around a frustum",
+   "operations": {
+    "rough": {
+     "toolpath": "Roughing",
+     "issue": 27,
+     "moves": 97138,
+     "cut_mm": 164270.346,
+     "rapid_mm": 250.626,
+     "air_cut_mm": 108717.969,
+     "plunges": 8,
+     "retracts": 8,
+     "removed_mm3": 5760.958,
+     "cycle_seconds_exact_stop": 17533.436,
+     "cycle_seconds_tangent": 16572.546,
+     "engine_seconds": 2.1915
+    }
+   },
+   "toolpath": {
+    "moves": 97138,
+    "cycle_seconds_exact_stop": 17533.436,
+    "cycle_seconds_tangent": 16572.546,
+    "posted_blocks": null,
+    "post_error": "lowering cannot preserve declared planar closure at controller precision",
+    "removed_mm3": [
+     5760.958,
+     6020.166
+    ],
+    "material": {
+     "leftover_mm3": [
+      922.0318505643922,
+      1510.4739214525448
+     ],
+     "overcut_mm3": [
+      0.0,
+      190.4621438975355
+     ],
+     "leftover_cells": [
+      4604,
+      660
+     ],
+     "overcut_cells": [
+      0,
+      512
+     ],
+     "max_residual_height_mm": 2.200650402008413,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 2.2373,
+    "first_move_seconds": 0.0158,
+    "post_seconds": null,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 913612,
+     "native": 579052
+    }
+   }
+  },
+  {
+   "name": "contour",
+   "family": "mill",
+   "description": "Outer and inner walls of an annulus",
+   "operations": {
+    "profile": {
+     "toolpath": "Contour",
+     "issue": 28,
+     "moves": 40,
+     "cut_mm": 357.593,
+     "rapid_mm": 148.13,
+     "air_cut_mm": 0.0,
+     "plunges": 8,
+     "retracts": 8,
+     "removed_mm3": 2185.997,
+     "cycle_seconds_exact_stop": 55.776,
+     "cycle_seconds_tangent": 55.696,
+     "engine_seconds": 0.0058
+    }
+   },
+   "toolpath": {
+    "moves": 40,
+    "cycle_seconds_exact_stop": 55.776,
+    "cycle_seconds_tangent": 55.696,
+    "posted_blocks": 79,
+    "post_error": null,
+    "removed_mm3": [
+     2185.997,
+     2636.003
+    ],
+    "material": {
+     "leftover_mm3": [
+      0.0,
+      831.6203967165204
+     ],
+     "overcut_mm3": [
+      0.0,
+      458.2436932009168
+     ],
+     "leftover_cells": [
+      0,
+      1456
+     ],
+     "overcut_cells": [
+      0,
+      916
+     ],
+     "max_residual_height_mm": 10.000000000002274,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.0103,
+    "first_move_seconds": 0.0045,
+    "post_seconds": 0.0103,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 409144,
+     "native": 393444
+    }
+   }
+  },
+  {
+   "name": "holes",
+   "family": "mill",
+   "description": "Pilot drilling then helical bore milling",
+   "operations": {
+    "pilot": {
+     "toolpath": "Drilling",
+     "issue": 29,
+     "moves": 20,
+     "cut_mm": 62.0,
+     "rapid_mm": 35.62,
+     "air_cut_mm": 46.0,
+     "plunges": 6,
+     "retracts": 6,
+     "removed_mm3": 110.953,
+     "cycle_seconds_exact_stop": 11.779,
+     "cycle_seconds_tangent": 11.765,
+     "engine_seconds": 0.0015
+    },
+    "finish-holes": {
+     "toolpath": "Bore",
+     "issue": 30,
+     "moves": 42,
+     "cut_mm": 370.293,
+     "rapid_mm": 36.0,
+     "air_cut_mm": 43.98,
+     "plunges": 2,
+     "retracts": 2,
+     "removed_mm3": 1177.365,
+     "cycle_seconds_exact_stop": 39.176,
+     "cycle_seconds_tangent": 39.176,
+     "engine_seconds": 0.018
+    }
+   },
+   "toolpath": {
+    "moves": 62,
+    "cycle_seconds_exact_stop": 50.955,
+    "cycle_seconds_tangent": 50.941,
+    "posted_blocks": 111,
+    "post_error": null,
+    "removed_mm3": [
+     1288.318,
+     1417.024
+    ],
+    "material": {
+     "leftover_mm3": [
+      0.0,
+      413.1384739371484
+     ],
+     "overcut_mm3": [
+      0.0,
+      143.29138635707332
+     ],
+     "leftover_cells": [
+      0,
+      1156
+     ],
+     "overcut_cells": [
+      0,
+      1366
+     ],
+     "max_residual_height_mm": 10.000000000002274,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.0258,
+    "first_move_seconds": 0.0057,
+    "post_seconds": 0.0118,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 407136,
+     "native": 396748
+    }
+   }
+  },
+  {
+   "name": "reaming",
+   "family": "mill",
+   "description": "Drill then ream two holes",
+   "operations": {
+    "drill": {
+     "toolpath": "Drilling",
+     "issue": 29,
+     "moves": 8,
+     "cut_mm": 44.0,
+     "rapid_mm": 25.314,
+     "air_cut_mm": 23.0,
+     "plunges": 2,
+     "retracts": 2,
+     "removed_mm3": 313.002,
+     "cycle_seconds_exact_stop": 11.285,
+     "cycle_seconds_tangent": 11.285,
+     "engine_seconds": 0.0019
+    },
+    "bore": {
+     "toolpath": "Reaming",
+     "issue": 31,
+     "moves": 8,
+     "cut_mm": 28.0,
+     "rapid_mm": 26.0,
+     "air_cut_mm": 14.0,
+     "plunges": 2,
+     "retracts": 3,
+     "removed_mm3": 18.72,
+     "cycle_seconds_exact_stop": 17.374,
+     "cycle_seconds_tangent": 17.374,
+     "engine_seconds": 0.0014
+    }
+   },
+   "toolpath": {
+    "moves": 16,
+    "cycle_seconds_exact_stop": 28.659,
+    "cycle_seconds_tangent": 28.659,
+    "posted_blocks": 46,
+    "post_error": null,
+    "removed_mm3": [
+     331.722,
+     373.769
+    ],
+    "material": null
+   },
+   "engine": {
+    "run_seconds": 0.0107,
+    "first_move_seconds": 0.0065,
+    "post_seconds": 0.0044,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 31144,
+     "native": 28720
+    }
+   }
+  },
+  {
+   "name": "tapping",
+   "family": "mill",
+   "description": "Drill then rigid-tap two holes",
+   "operations": {
+    "drill": {
+     "toolpath": "Drilling",
+     "issue": 29,
+     "moves": 8,
+     "cut_mm": 44.0,
+     "rapid_mm": 25.314,
+     "air_cut_mm": 23.0,
+     "plunges": 2,
+     "retracts": 2,
+     "removed_mm3": 313.002,
+     "cycle_seconds_exact_stop": 11.285,
+     "cycle_seconds_tangent": 11.285,
+     "engine_seconds": 0.0017
+    },
+    "tap": {
+     "toolpath": "Tapping",
+     "issue": 32,
+     "moves": 10,
+     "cut_mm": 28.0,
+     "rapid_mm": 28.0,
+     "air_cut_mm": 28.0,
+     "plunges": 0,
+     "retracts": 2,
+     "removed_mm3": 0.0,
+     "cycle_seconds_exact_stop": 3.533,
+     "cycle_seconds_tangent": 3.533,
+     "engine_seconds": 0.0007
+    }
+   },
+   "toolpath": {
+    "moves": 18,
+    "cycle_seconds_exact_stop": 14.818,
+    "cycle_seconds_tangent": 14.818,
+    "posted_blocks": 49,
+    "post_error": null,
+    "removed_mm3": [
+     313.002,
+     354.089
+    ],
+    "material": null
+   },
+   "engine": {
+    "run_seconds": 0.0082,
+    "first_move_seconds": 0.0048,
+    "post_seconds": 0.0038,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 30992,
+     "native": 28440
+    }
+   }
+  },
+  {
+   "name": "thread-milling",
+   "family": "mill",
+   "description": "Bore then thread-mill M14 x 1.5",
+   "operations": {
+    "bore": {
+     "toolpath": "Bore",
+     "issue": 30,
+     "moves": 21,
+     "cut_mm": 185.147,
+     "rapid_mm": 15.62,
+     "air_cut_mm": 12.0,
+     "plunges": 1,
+     "retracts": 1,
+     "removed_mm3": 660.479,
+     "cycle_seconds_exact_stop": 19.564,
+     "cycle_seconds_tangent": 19.564,
+     "engine_seconds": 0.0348
+    },
+    "thread": {
+     "toolpath": "ThreadMilling",
+     "issue": 33,
+     "moves": 14,
+     "cut_mm": 140.344,
+     "rapid_mm": 0.0,
+     "air_cut_mm": 97.017,
+     "plunges": 2,
+     "retracts": 2,
+     "removed_mm3": 23.088,
+     "cycle_seconds_exact_stop": 28.139,
+     "cycle_seconds_tangent": 28.119,
+     "engine_seconds": 0.2496
+    }
+   },
+   "toolpath": {
+    "moves": 35,
+    "cycle_seconds_exact_stop": 47.703,
+    "cycle_seconds_tangent": 47.683,
+    "posted_blocks": 85,
+    "post_error": null,
+    "removed_mm3": [
+     683.567,
+     717.77
+    ],
+    "material": null
+   },
+   "engine": {
+    "run_seconds": 0.2955,
+    "first_move_seconds": 0.0089,
+    "post_seconds": 0.0106,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 33224,
+     "native": 30876
+    }
+   }
+  },
+  {
+   "name": "trochoidal-slot",
+   "family": "mill",
+   "description": "Straight trochoidal slot",
+   "operations": {
+    "slot": {
+     "toolpath": "TrochoidalSlot",
+     "issue": 34,
+     "moves": 356,
+     "cut_mm": 1152.664,
+     "rapid_mm": 42.264,
+     "air_cut_mm": 15.476,
+     "plunges": 2,
+     "retracts": 2,
+     "removed_mm3": 268.999,
+     "cycle_seconds_exact_stop": 125.416,
+     "cycle_seconds_tangent": 121.949,
+     "engine_seconds": 0.0076
+    }
+   },
+   "toolpath": {
+    "moves": 356,
+    "cycle_seconds_exact_stop": 125.416,
+    "cycle_seconds_tangent": 121.949,
+    "posted_blocks": 555,
+    "post_error": null,
+    "removed_mm3": [
+     268.999,
+     322.502
+    ],
+    "material": {
+     "leftover_mm3": [
+      0.0,
+      407.81691031058915
+     ],
+     "overcut_mm3": [
+      0.0,
+      53.62037664652479
+     ],
+     "leftover_cells": [
+      0,
+      928
+     ],
+     "overcut_cells": [
+      0,
+      428
+     ],
+     "max_residual_height_mm": 10.000000000002274,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.0123,
+    "first_move_seconds": 0.0037,
+    "post_seconds": 0.0822,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 403800,
+     "native": 26868
+    }
+   }
+  },
+  {
+   "name": "chamfer",
+   "family": "mill",
+   "description": "Chamfer the top edges of an annulus",
+   "operations": {
+    "rough-profile": {
+     "toolpath": "Contour",
+     "issue": 28,
+     "moves": 40,
+     "cut_mm": 357.593,
+     "rapid_mm": 148.13,
+     "air_cut_mm": 0.0,
+     "plunges": 8,
+     "retracts": 8,
+     "removed_mm3": 2236.157,
+     "cycle_seconds_exact_stop": 55.776,
+     "cycle_seconds_tangent": 55.696,
+     "engine_seconds": 0.0091
+    },
+    "top-bevel": {
+     "toolpath": "Chamfer",
+     "issue": 35,
+     "moves": 10,
+     "cut_mm": 82.398,
+     "rapid_mm": 19.27,
+     "air_cut_mm": 0.0,
+     "plunges": 2,
+     "retracts": 2,
+     "removed_mm3": 37.993,
+     "cycle_seconds_exact_stop": 10.934,
+     "cycle_seconds_tangent": 10.914,
+     "engine_seconds": 0.0192
+    }
+   },
+   "toolpath": {
+    "moves": 50,
+    "cycle_seconds_exact_stop": 66.71,
+    "cycle_seconds_tangent": 66.61,
+    "posted_blocks": 101,
+    "post_error": null,
+    "removed_mm3": [
+     2274.151,
+     2623.763
+    ],
+    "material": {
+     "leftover_mm3": [
+      0.0,
+      725.6482610613425
+     ],
+     "overcut_mm3": [
+      0.0,
+      379.1720208720237
+     ],
+     "leftover_cells": [
+      0,
+      40000
+     ],
+     "overcut_cells": [
+      0,
+      9980
+     ],
+     "max_residual_height_mm": 10.000000000002274,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.0346,
+    "first_move_seconds": 0.006,
+    "post_seconds": 0.0125,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 418524,
+     "native": 394368
+    }
+   }
+  },
+  {
+   "name": "trace",
+   "family": "mill",
+   "description": "Engrave a rectangle and a hook",
+   "operations": {
+    "engrave": {
+     "toolpath": "Trace",
+     "issue": 36,
+     "moves": 24,
+     "cut_mm": 107.85,
+     "rapid_mm": 59.745,
+     "air_cut_mm": 0.0,
+     "plunges": 4,
+     "retracts": 4,
+     "removed_mm3": 169.623,
+     "cycle_seconds_exact_stop": 15.517,
+     "cycle_seconds_tangent": 15.517,
+     "engine_seconds": 0.0016
+    }
+   },
+   "toolpath": {
+    "moves": 24,
+    "cycle_seconds_exact_stop": 15.517,
+    "cycle_seconds_tangent": 15.517,
+    "posted_blocks": 49,
+    "post_error": null,
+    "removed_mm3": [
+     169.623,
+     208.627
+    ],
+    "material": null
+   },
+   "engine": {
+    "run_seconds": 0.0069,
+    "first_move_seconds": 0.0044,
+    "post_seconds": 0.004,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 28960,
+     "native": 26528
+    }
+   }
+  },
+  {
+   "name": "vcarve",
+   "family": "mill",
+   "description": "V-carve an L-shaped letter",
+   "operations": {
+    "carve": {
+     "toolpath": "VCarve",
+     "issue": 37,
+     "moves": 1986,
+     "cut_mm": 96.806,
+     "rapid_mm": 17.071,
+     "air_cut_mm": 20.844,
+     "plunges": 1,
+     "retracts": 1,
+     "removed_mm3": 107.0,
+     "cycle_seconds_exact_stop": 28.837,
+     "cycle_seconds_tangent": 20.505,
+     "engine_seconds": 2.4866
+    }
+   },
+   "toolpath": {
+    "moves": 1986,
+    "cycle_seconds_exact_stop": 28.837,
+    "cycle_seconds_tangent": 20.505,
+    "posted_blocks": 2009,
+    "post_error": null,
+    "removed_mm3": [
+     107.0,
+     125.147
+    ],
+    "material": null
+   },
+   "engine": {
+    "run_seconds": 2.5046,
+    "first_move_seconds": 0.0181,
+    "post_seconds": 0.1105,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 41472,
+     "native": 33156
+    }
+   }
+  },
+  {
+   "name": "flat",
+   "family": "mill",
+   "description": "Flat areas of a stepped part",
+   "operations": {
+    "flats": {
+     "toolpath": "Flat",
+     "issue": 38,
+     "moves": 156,
+     "cut_mm": 680.42,
+     "rapid_mm": 458.843,
+     "air_cut_mm": 176.16,
+     "plunges": 39,
+     "retracts": 39,
+     "removed_mm3": 1270.496,
+     "cycle_seconds_exact_stop": 165.218,
+     "cycle_seconds_tangent": 165.218,
+     "engine_seconds": 0.0048
+    }
+   },
+   "toolpath": {
+    "moves": 156,
+    "cycle_seconds_exact_stop": 165.218,
+    "cycle_seconds_tangent": 165.218,
+    "posted_blocks": 179,
+    "post_error": null,
+    "removed_mm3": [
+     1270.496,
+     1305.004
+    ],
+    "material": {
+     "leftover_mm3": [
+      28.499903087998064,
+      175.7539132301229
+     ],
+     "overcut_mm3": [
+      0.0,
+      14.25382027625564
+     ],
+     "leftover_cells": [
+      152,
+      680
+     ],
+     "overcut_cells": [
+      0,
+      76
+     ],
+     "max_residual_height_mm": 4.000010000001364,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.0112,
+    "first_move_seconds": 0.0065,
+    "post_seconds": 0.0098,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 398668,
+     "native": 394640
+    }
+   }
+  },
+  {
+   "name": "rough-parallel",
+   "family": "mill",
+   "description": "Rough then parallel ball finish a roof",
+   "operations": {
+    "rough": {
+     "toolpath": "Roughing",
+     "issue": 27,
+     "moves": 2927,
+     "cut_mm": 37871.592,
+     "rapid_mm": 212.137,
+     "air_cut_mm": 34195.176,
+     "plunges": 12,
+     "retracts": 12,
+     "removed_mm3": 1983.996,
+     "cycle_seconds_exact_stop": 8900.337,
+     "cycle_seconds_tangent": 8898.918,
+     "engine_seconds": 0.0508
+    },
+    "parallel": {
+     "toolpath": "Parallel",
+     "issue": 39,
+     "moves": 3321,
+     "cut_mm": 1805.027,
+     "rapid_mm": 508.205,
+     "air_cut_mm": 625.126,
+     "plunges": 41,
+     "retracts": 41,
+     "removed_mm3": 292.384,
+     "cycle_seconds_exact_stop": 368.389,
+     "cycle_seconds_tangent": 350.549,
+     "engine_seconds": 0.1418
+    }
+   },
+   "toolpath": {
+    "moves": 6248,
+    "cycle_seconds_exact_stop": 9268.726,
+    "cycle_seconds_tangent": 9249.467,
+    "posted_blocks": 6549,
+    "post_error": null,
+    "removed_mm3": [
+     2276.38,
+     2364.063
+    ],
+    "material": {
+     "leftover_mm3": [
+      0.0,
+      146.12602745985214
+     ],
+     "overcut_mm3": [
+      0.0,
+      99.56941843896973
+     ],
+     "leftover_cells": [
+      0,
+      6144
+     ],
+     "overcut_cells": [
+      0,
+      6144
+     ],
+     "max_residual_height_mm": 8.02096470820531,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.2021,
+    "first_move_seconds": 0.01,
+    "post_seconds": 0.4737,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 425996,
+     "native": 406144
+    }
+   }
+  },
+  {
+   "name": "parallel",
+   "family": "mill",
+   "description": "Parallel finishing of a roof",
+   "operations": {
+    "finish-roof": {
+     "toolpath": "Parallel",
+     "issue": 39,
+     "moves": 3321,
+     "cut_mm": 1723.027,
+     "rapid_mm": 427.388,
+     "air_cut_mm": 543.126,
+     "plunges": 41,
+     "retracts": 41,
+     "removed_mm3": 1508.38,
+     "cycle_seconds_exact_stop": 334.784,
+     "cycle_seconds_tangent": 316.944,
+     "engine_seconds": 0.1307
+    }
+   },
+   "toolpath": {
+    "moves": 3321,
+    "cycle_seconds_exact_stop": 334.784,
+    "cycle_seconds_tangent": 316.944,
+    "posted_blocks": 3344,
+    "post_error": null,
+    "removed_mm3": [
+     1508.38,
+     1596.063
+    ],
+    "material": {
+     "leftover_mm3": [
+      0.0,
+      146.12602745985214
+     ],
+     "overcut_mm3": [
+      0.0,
+      99.56941843896973
+     ],
+     "leftover_cells": [
+      0,
+      6144
+     ],
+     "overcut_cells": [
+      0,
+      6144
+     ],
+     "max_residual_height_mm": 8.02096470820531,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.1385,
+    "first_move_seconds": 0.0045,
+    "post_seconds": 0.169,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 412280,
+     "native": 400640
+    }
+   }
+  },
+  {
+   "name": "spiral",
+   "family": "mill",
+   "description": "Spiral finishing of a roof",
+   "operations": {
+    "spiral": {
+     "toolpath": "Spiral",
+     "issue": 40,
+     "moves": 1658,
+     "cut_mm": 1033.36,
+     "rapid_mm": 740.44,
+     "air_cut_mm": 84.52,
+     "plunges": 30,
+     "retracts": 31,
+     "removed_mm3": 1499.18,
+     "cycle_seconds_exact_stop": 214.343,
+     "cycle_seconds_tangent": 214.313,
+     "engine_seconds": 0.1026
+    }
+   },
+   "toolpath": {
+    "moves": 1658,
+    "cycle_seconds_exact_stop": 214.343,
+    "cycle_seconds_tangent": 214.313,
+    "posted_blocks": 1681,
+    "post_error": null,
+    "removed_mm3": [
+     1499.18,
+     1579.438
+    ],
+    "material": {
+     "leftover_mm3": [
+      0.610238220568518,
+      155.32647719359238
+     ],
+     "overcut_mm3": [
+      0.0,
+      83.55401281372765
+     ],
+     "leftover_cells": [
+      141,
+      6003
+     ],
+     "overcut_cells": [
+      0,
+      6002
+     ],
+     "max_residual_height_mm": 8.027319204520772,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.1176,
+    "first_move_seconds": 0.0061,
+    "post_seconds": 0.1107,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 404300,
+     "native": 397132
+    }
+   }
+  },
+  {
+   "name": "radial",
+   "family": "mill",
+   "description": "Radial finishing of a roof",
+   "operations": {
+    "radial": {
+     "toolpath": "Radial",
+     "issue": 41,
+     "moves": 610,
+     "cut_mm": 477.288,
+     "rapid_mm": 214.62,
+     "air_cut_mm": 2.767,
+     "plunges": 24,
+     "retracts": 24,
+     "removed_mm3": 1451.923,
+     "cycle_seconds_exact_stop": 104.738,
+     "cycle_seconds_tangent": 103.958,
+     "engine_seconds": 0.032
+    }
+   },
+   "toolpath": {
+    "moves": 610,
+    "cycle_seconds_exact_stop": 104.738,
+    "cycle_seconds_tangent": 103.958,
+    "posted_blocks": 633,
+    "post_error": null,
+    "removed_mm3": [
+     1451.923,
+     1553.904
+    ],
+    "material": {
+     "leftover_mm3": [
+      9.794133902375846,
+      202.5832604864401
+     ],
+     "overcut_mm3": [
+      0.0,
+      67.20449332144283
+     ],
+     "leftover_cells": [
+      1104,
+      5040
+     ],
+     "overcut_cells": [
+      0,
+      5032
+     ],
+     "max_residual_height_mm": 8.172652494925854,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.0414,
+    "first_move_seconds": 0.0043,
+    "post_seconds": 0.0353,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 400136,
+     "native": 394632
+    }
+   }
+  },
+  {
+   "name": "project",
+   "family": "mill",
+   "description": "Project curves onto a roof",
+   "operations": {
+    "project": {
+     "toolpath": "Project",
+     "issue": 42,
+     "moves": 36,
+     "cut_mm": 58.699,
+     "rapid_mm": 24.051,
+     "air_cut_mm": 0.0,
+     "plunges": 2,
+     "retracts": 2,
+     "removed_mm3": 357.323,
+     "cycle_seconds_exact_stop": 10.416,
+     "cycle_seconds_tangent": 10.376,
+     "engine_seconds": 0.0052
+    }
+   },
+   "toolpath": {
+    "moves": 36,
+    "cycle_seconds_exact_stop": 10.416,
+    "cycle_seconds_tangent": 10.376,
+    "posted_blocks": 59,
+    "post_error": null,
+    "removed_mm3": [
+     357.323,
+     452.082
+    ],
+    "material": {
+     "leftover_mm3": [
+      1052.5912634289195,
+      1297.1827494072315
+     ],
+     "overcut_mm3": [
+      0.0,
+      8.179199494738443
+     ],
+     "leftover_cells": [
+      5081,
+      1063
+     ],
+     "overcut_cells": [
+      0,
+      1054
+     ],
+     "max_residual_height_mm": 10.000000000001364,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.0104,
+    "first_move_seconds": 0.004,
+    "post_seconds": 0.0043,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 397396,
+     "native": 393172
+    }
+   }
+  },
+  {
+   "name": "morph",
+   "family": "mill",
+   "description": "Morph between two edges of a roof",
+   "operations": {
+    "morph": {
+     "toolpath": "Morph",
+     "issue": 43,
+     "moves": 441,
+     "cut_mm": 770.328,
+     "rapid_mm": 201.066,
+     "air_cut_mm": 0.0,
+     "plunges": 25,
+     "retracts": 25,
+     "removed_mm3": 1234.3,
+     "cycle_seconds_exact_stop": 142.819,
+     "cycle_seconds_tangent": 141.159,
+     "engine_seconds": 0.0776
+    }
+   },
+   "toolpath": {
+    "moves": 441,
+    "cycle_seconds_exact_stop": 142.819,
+    "cycle_seconds_tangent": 141.159,
+    "posted_blocks": 464,
+    "post_error": null,
+    "removed_mm3": [
+     1234.3,
+     1355.01
+    ],
+    "material": {
+     "leftover_mm3": [
+      194.1881896733478,
+      420.2063928595292
+     ],
+     "overcut_mm3": [
+      0.0,
+      52.70412488496483
+     ],
+     "leftover_cells": [
+      1962,
+      4182
+     ],
+     "overcut_cells": [
+      0,
+      4178
+     ],
+     "max_residual_height_mm": 10.000000000001364,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.0831,
+    "first_move_seconds": 0.0045,
+    "post_seconds": 0.0254,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 398724,
+     "native": 393988
+    }
+   }
+  },
+  {
+   "name": "scallop",
+   "family": "mill",
+   "description": "Scallop finishing of a roof",
+   "operations": {
+    "scallop": {
+     "toolpath": "Scallop",
+     "issue": 44,
+     "moves": 2704,
+     "cut_mm": 1055.762,
+     "rapid_mm": 450.614,
+     "air_cut_mm": 131.301,
+     "plunges": 34,
+     "retracts": 34,
+     "removed_mm3": 1503.235,
+     "cycle_seconds_exact_stop": 201.34,
+     "cycle_seconds_tangent": 183.784,
+     "engine_seconds": 0.1119
+    }
+   },
+   "toolpath": {
+    "moves": 2704,
+    "cycle_seconds_exact_stop": 201.34,
+    "cycle_seconds_tangent": 183.784,
+    "posted_blocks": 2727,
+    "post_error": null,
+    "removed_mm3": [
+     1503.235,
+     1576.71
+    ],
+    "material": {
+     "leftover_mm3": [
+      0.0,
+      151.2710055589902
+     ],
+     "overcut_mm3": [
+      0.0,
+      80.21591253148561
+     ],
+     "leftover_cells": [
+      0,
+      6144
+     ],
+     "overcut_cells": [
+      0,
+      6144
+     ],
+     "max_residual_height_mm": 8.02357929650456,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.1631,
+    "first_move_seconds": 0.0503,
+    "post_seconds": 0.1511,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 408656,
+     "native": 398544
+    }
+   }
+  },
+  {
+   "name": "pencil",
+   "family": "mill",
+   "description": "Pencil the inside corner of a stepped part",
+   "operations": {
+    "pencil": {
+     "toolpath": "Pencil",
+     "issue": 45,
+     "moves": 47,
+     "cut_mm": 52.65,
+     "rapid_mm": 15.619,
+     "air_cut_mm": 0.0,
+     "plunges": 1,
+     "retracts": 1,
+     "removed_mm3": 561.954,
+     "cycle_seconds_exact_stop": 8.459,
+     "cycle_seconds_tangent": 8.459,
+     "engine_seconds": 0.0049
+    }
+   },
+   "toolpath": {
+    "moves": 47,
+    "cycle_seconds_exact_stop": 8.459,
+    "cycle_seconds_tangent": 8.459,
+    "posted_blocks": 70,
+    "post_error": null,
+    "removed_mm3": [
+     561.954,
+     697.913
+    ],
+    "material": {
+     "leftover_mm3": [
+      648.6901855027572,
+      884.2956353123383
+     ],
+     "overcut_mm3": [
+      0.0,
+      27.353154057304998
+     ],
+     "leftover_cells": [
+      5888,
+      256
+     ],
+     "overcut_cells": [
+      0,
+      256
+     ],
+     "max_residual_height_mm": 8.000000000001364,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.0255,
+    "first_move_seconds": 0.0196,
+    "post_seconds": 0.0066,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 399320,
+     "native": 394968
+    }
+   }
+  },
+  {
+   "name": "waterline",
+   "family": "mill",
+   "description": "Waterline finishing of a tapered island",
+   "operations": {
+    "finish-levels": {
+     "toolpath": "Waterline",
+     "issue": 46,
+     "moves": 112,
+     "cut_mm": 224.365,
+     "rapid_mm": 60.432,
+     "air_cut_mm": 0.0,
+     "plunges": 4,
+     "retracts": 4,
+     "removed_mm3": 1718.736,
+     "cycle_seconds_exact_stop": 32.984,
+     "cycle_seconds_tangent": 32.984,
+     "engine_seconds": 0.1211
+    }
+   },
+   "toolpath": {
+    "moves": 112,
+    "cycle_seconds_exact_stop": 32.984,
+    "cycle_seconds_tangent": 32.984,
+    "posted_blocks": 135,
+    "post_error": null,
+    "removed_mm3": [
+     1718.736,
+     2077.049
+    ],
+    "material": {
+     "leftover_mm3": [
+      367.2606548787247,
+      809.3220375988336
+     ],
+     "overcut_mm3": [
+      0.0,
+      144.38942593729706
+     ],
+     "leftover_cells": [
+      1757,
+      643
+     ],
+     "overcut_cells": [
+      0,
+      612
+     ],
+     "max_residual_height_mm": 10.000000000001364,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.1265,
+    "first_move_seconds": 0.1221,
+    "post_seconds": 0.0077,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 402944,
+     "native": 398592
+    }
+   }
+  },
+  {
+   "name": "steep-and-shallow",
+   "family": "mill",
+   "description": "Steep-and-shallow finishing of a roof",
+   "operations": {
+    "finish-steep": {
+     "toolpath": "Steep-and-shallow",
+     "issue": 47,
+     "moves": 964,
+     "cut_mm": 667.548,
+     "rapid_mm": 1006.283,
+     "air_cut_mm": 21.975,
+     "plunges": 40,
+     "retracts": 40,
+     "removed_mm3": 249.055,
+     "cycle_seconds_exact_stop": 186.177,
+     "cycle_seconds_tangent": 180.807,
+     "engine_seconds": 0.4317
+    },
+    "finish-shallow": {
+     "toolpath": "Steep-and-shallow",
+     "issue": 47,
+     "moves": 780,
+     "cut_mm": 847.455,
+     "rapid_mm": 215.327,
+     "air_cut_mm": 51.882,
+     "plunges": 24,
+     "retracts": 24,
+     "removed_mm3": 1255.632,
+     "cycle_seconds_exact_stop": 156.617,
+     "cycle_seconds_tangent": 152.917,
+     "engine_seconds": 0.0813
+    }
+   },
+   "toolpath": {
+    "moves": 1744,
+    "cycle_seconds_exact_stop": 342.794,
+    "cycle_seconds_tangent": 333.724,
+    "posted_blocks": 1775,
+    "post_error": null,
+    "removed_mm3": [
+     1504.686,
+     1596.834
+    ],
+    "material": {
+     "leftover_mm3": [
+      0.0,
+      149.81969508462973
+     ],
+     "overcut_mm3": [
+      0.0,
+      100.34042392722303
+     ],
+     "leftover_cells": [
+      0,
+      6144
+     ],
+     "overcut_cells": [
+      0,
+      6144
+     ],
+     "max_residual_height_mm": 8.017720444169656,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.5421,
+    "first_move_seconds": 0.4174,
+    "post_seconds": 0.114,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 405676,
+     "native": 397996
+    }
+   }
+  },
+  {
+   "name": "facing-large",
+   "family": "mill",
+   "description": "Face a 300 x 200 block 2 mm (production size)",
+   "operations": {
+    "face": {
+     "toolpath": "Facing",
+     "issue": 24,
+     "moves": 140,
+     "cut_mm": 21474.222,
+     "rapid_mm": 206.537,
+     "air_cut_mm": 394.201,
+     "plunges": 2,
+     "retracts": 2,
+     "removed_mm3": 119999.4,
+     "cycle_seconds_exact_stop": 2153.312,
+     "cycle_seconds_tangent": 2153.312,
+     "engine_seconds": 0.3447
+    }
+   },
+   "toolpath": {
+    "moves": 140,
+    "cycle_seconds_exact_stop": 2153.312,
+    "cycle_seconds_tangent": 2153.312,
+    "posted_blocks": 163,
+    "post_error": null,
+    "removed_mm3": [
+     119999.4,
+     120000.6
+    ],
+    "material": null
+   },
+   "engine": {
+    "run_seconds": 0.3903,
+    "first_move_seconds": 0.0446,
+    "post_seconds": 0.0089,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 85564,
+     "native": 70584
+    }
+   }
+  },
+  {
+   "name": "pocket-dense",
+   "family": "mill",
+   "description": "Pocket around a round island, 0.4 mm stepover, 0.25 mm stepdown",
+   "operations": {
+    "clear-pocket": {
+     "toolpath": "Pocket",
+     "issue": 25,
+     "moves": 9088,
+     "cut_mm": 79835.535,
+     "rapid_mm": 26382.501,
+     "air_cut_mm": 292.0,
+     "plunges": 1216,
+     "retracts": 1216,
+     "removed_mm3": 8693.749,
+     "cycle_seconds_exact_stop": 11873.766,
+     "cycle_seconds_tangent": 11873.446,
+     "engine_seconds": 0.3359
+    }
+   },
+   "toolpath": {
+    "moves": 9088,
+    "cycle_seconds_exact_stop": 11873.766,
+    "cycle_seconds_tangent": 11873.446,
+    "posted_blocks": 9175,
+    "post_error": null,
+    "removed_mm3": [
+     8693.749,
+     9198.091
+    ],
+    "material": {
+     "leftover_mm3": [
+      3.8399999934493736,
+      541.4508681451769
+     ],
+     "overcut_mm3": [
+      0.0,
+      489.6114984567715
+     ],
+     "leftover_cells": [
+      12,
+      1680
+     ],
+     "overcut_cells": [
+      0,
+      1530
+     ],
+     "max_residual_height_mm": 8.000000000004547,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.3451,
+    "first_move_seconds": 0.0096,
+    "post_seconds": 0.5332,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 71468,
+     "native": 45320
+    }
+   }
+  },
+  {
+   "name": "parallel-dense",
+   "family": "mill",
+   "description": "Parallel finishing of a roof, 0.1 mm stepover",
+   "operations": {
+    "finish-roof": {
+     "toolpath": "Parallel",
+     "issue": 39,
+     "moves": 14023,
+     "cut_mm": 8456.616,
+     "rapid_mm": 2004.746,
+     "air_cut_mm": 3169.925,
+     "plunges": 201,
+     "retracts": 201,
+     "removed_mm3": 1510.585,
+     "cycle_seconds_exact_stop": 1617.954,
+     "cycle_seconds_tangent": 1555.854,
+     "engine_seconds": 0.6448
+    }
+   },
+   "toolpath": {
+    "moves": 14023,
+    "cycle_seconds_exact_stop": 1617.954,
+    "cycle_seconds_tangent": 1555.854,
+    "posted_blocks": 14046,
+    "post_error": null,
+    "removed_mm3": [
+     1510.585,
+     1597.49
+    ],
+    "material": {
+     "leftover_mm3": [
+      0.0,
+      143.92104064387615
+     ],
+     "overcut_mm3": [
+      0.0,
+      100.99641369526772
+     ],
+     "leftover_cells": [
+      0,
+      6144
+     ],
+     "overcut_cells": [
+      0,
+      6144
+     ],
+     "max_residual_height_mm": 8.008376403603515,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.6494,
+    "first_move_seconds": 0.0046,
+    "post_seconds": 0.8252,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 467368,
+     "native": 426632
+    }
+   }
+  },
+  {
+   "name": "spiral-dense",
+   "family": "mill",
+   "description": "Spiral finishing of a roof, 0.15 mm stepover",
+   "operations": {
+    "spiral": {
+     "toolpath": "Spiral",
+     "issue": 40,
+     "moves": 8269,
+     "cut_mm": 5158.61,
+     "rapid_mm": 3602.843,
+     "air_cut_mm": 532.092,
+     "plunges": 152,
+     "retracts": 152,
+     "removed_mm3": 1508.643,
+     "cycle_seconds_exact_stop": 1067.811,
+     "cycle_seconds_tangent": 1067.671,
+     "engine_seconds": 0.3811
+    }
+   },
+   "toolpath": {
+    "moves": 8269,
+    "cycle_seconds_exact_stop": 1067.811,
+    "cycle_seconds_tangent": 1067.671,
+    "posted_blocks": 8292,
+    "post_error": null,
+    "removed_mm3": [
+     1508.643,
+     1591.376
+    ],
+    "material": {
+     "leftover_mm3": [
+      0.014939598473828933,
+      145.86326499139727
+     ],
+     "overcut_mm3": [
+      0.0,
+      94.89665303341935
+     ],
+     "leftover_cells": [
+      16,
+      6128
+     ],
+     "overcut_cells": [
+      0,
+      6128
+     ],
+     "max_residual_height_mm": 8.010963168753861,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.3873,
+    "first_move_seconds": 0.0079,
+    "post_seconds": 0.5062,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 438604,
+     "native": 413620
+    }
+   }
+  },
+  {
+   "name": "scallop-dense",
+   "family": "mill",
+   "description": "Scallop finishing of a roof, 0.15 mm stepover",
+   "operations": {
+    "scallop": {
+     "toolpath": "Scallop",
+     "issue": 44,
+     "moves": 17456,
+     "cut_mm": 6780.005,
+     "rapid_mm": 4356.865,
+     "air_cut_mm": 2419.39,
+     "plunges": 589,
+     "retracts": 589,
+     "removed_mm3": 1510.923,
+     "cycle_seconds_exact_stop": 1580.285,
+     "cycle_seconds_tangent": 1471.144,
+     "engine_seconds": 1.7413
+    }
+   },
+   "toolpath": {
+    "moves": 17456,
+    "cycle_seconds_exact_stop": 1580.285,
+    "cycle_seconds_tangent": 1471.144,
+    "posted_blocks": 17479,
+    "post_error": null,
+    "removed_mm3": [
+     1510.923,
+     1577.799
+    ],
+    "material": {
+     "leftover_mm3": [
+      0.0,
+      143.58279386251476
+     ],
+     "overcut_mm3": [
+      0.0,
+      81.30564692568097
+     ],
+     "leftover_cells": [
+      0,
+      6144
+     ],
+     "overcut_cells": [
+      0,
+      6144
+     ],
+     "max_residual_height_mm": 8.006268363961004,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 5.676,
+    "first_move_seconds": 3.9366,
+    "post_seconds": 1.1969,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 475216,
+     "native": 426304
+    }
+   }
+  },
+  {
+   "name": "waterline-dense",
+   "family": "mill",
+   "description": "Waterline finishing of a tapered island, 0.1 mm stepdown",
+   "operations": {
+    "finish-levels": {
+     "toolpath": "Waterline",
+     "issue": 46,
+     "moves": 1847,
+     "cut_mm": 3192.442,
+     "rapid_mm": 413.964,
+     "air_cut_mm": 0.0,
+     "plunges": 56,
+     "retracts": 56,
+     "removed_mm3": 1730.443,
+     "cycle_seconds_exact_stop": 460.233,
+     "cycle_seconds_tangent": 460.223,
+     "engine_seconds": 0.9734
+    }
+   },
+   "toolpath": {
+    "moves": 1847,
+    "cycle_seconds_exact_stop": 460.233,
+    "cycle_seconds_tangent": 460.223,
+    "posted_blocks": 1870,
+    "post_error": null,
+    "removed_mm3": [
+     1730.443,
+     2088.169
+    ],
+    "material": {
+     "leftover_mm3": [
+      367.2498309076278,
+      797.6153253325593
+     ],
+     "overcut_mm3": [
+      0.0,
+      155.49940796546045
+     ],
+     "leftover_cells": [
+      1732,
+      668
+     ],
+     "overcut_cells": [
+      0,
+      668
+     ],
+     "max_residual_height_mm": 10.000000000001364,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.9858,
+    "first_move_seconds": 0.3587,
+    "post_seconds": 0.105,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 409100,
+     "native": 402444
+    }
+   }
+  },
+  {
+   "name": "plasma",
+   "family": "thermal",
+   "description": "Plasma-cut a plate with holes and a nested washer",
+   "operations": {
+    "plasma": {
+     "toolpath": "ThermalCut",
+     "issue": 48,
+     "moves": 66,
+     "cut_mm": 757.079,
+     "rapid_mm": 397.183,
+     "air_cut_mm": 0.0,
+     "plunges": 6,
+     "retracts": 6,
+     "removed_mm3": 4689.375,
+     "cycle_seconds_exact_stop": 26.47,
+     "cycle_seconds_tangent": 25.487,
+     "engine_seconds": 0.0155
+    }
+   },
+   "toolpath": {
+    "moves": 66,
+    "cycle_seconds_exact_stop": 26.47,
+    "cycle_seconds_tangent": 25.487,
+    "posted_blocks": 294,
+    "post_error": null,
+    "removed_mm3": [
+     4689.375,
+     8440.5
+    ],
+    "material": null
+   },
+   "engine": {
+    "run_seconds": 0.084,
+    "first_move_seconds": 0.0686,
+    "post_seconds": 0.0705,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 51148,
+     "native": 45076
+    }
+   }
+  },
+  {
+   "name": "lathe-shaft",
+   "family": "lathe",
+   "description": "Face, rough and finish a stepped shaft",
+   "operations": {
+    "face": {
+     "toolpath": "TurnFace",
+     "issue": 49,
+     "moves": 8,
+     "cut_mm": 49.6,
+     "rapid_mm": 52.8,
+     "air_cut_mm": 4.0,
+     "plunges": 0,
+     "retracts": 2,
+     "removed_mm3": 2513.274,
+     "cycle_seconds_exact_stop": 20.759,
+     "cycle_seconds_tangent": 20.759,
+     "engine_seconds": 0.0027
+    },
+    "rough": {
+     "toolpath": "TurnRough",
+     "issue": 50,
+     "moves": 26,
+     "cut_mm": 228.943,
+     "rapid_mm": 259.9,
+     "air_cut_mm": 4.243,
+     "plunges": 0,
+     "retracts": 13,
+     "removed_mm3": 33227.163,
+     "cycle_seconds_exact_stop": 58.801,
+     "cycle_seconds_tangent": 58.801,
+     "engine_seconds": 0.0035
+    },
+    "finish": {
+     "toolpath": "TurnFinish",
+     "issue": 51,
+     "moves": 76,
+     "cut_mm": 61.114,
+     "rapid_mm": 107.8,
+     "air_cut_mm": 16.653,
+     "plunges": 1,
+     "retracts": 1,
+     "removed_mm3": 1152.382,
+     "cycle_seconds_exact_stop": 32.186,
+     "cycle_seconds_tangent": 32.178,
+     "engine_seconds": 0.0047
+    }
+   },
+   "toolpath": {
+    "moves": 110,
+    "cycle_seconds_exact_stop": 111.746,
+    "cycle_seconds_tangent": 111.738,
+    "posted_blocks": 135,
+    "post_error": null,
+    "removed_mm3": [
+     36892.82,
+     37206.979
+    ],
+    "material": {
+     "leftover_mm3": [
+      0.944279728319662,
+      194.2064470681434
+     ],
+     "overcut_mm3": [
+      0.0,
+      0.0
+     ],
+     "leftover_cells": [
+      2,
+      4
+     ]
+    }
+   },
+   "engine": {
+    "run_seconds": 0.0214,
+    "first_move_seconds": 0.0058,
+    "post_seconds": 0.008,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 29176,
+     "native": 28792
+    }
+   }
+  },
+  {
+   "name": "lathe-groove",
+   "family": "lathe",
+   "description": "Rough, groove and part off a shaft",
+   "operations": {
+    "face": {
+     "toolpath": "TurnFace",
+     "issue": 49,
+     "moves": 8,
+     "cut_mm": 49.6,
+     "rapid_mm": 52.8,
+     "air_cut_mm": 4.0,
+     "plunges": 0,
+     "retracts": 2,
+     "removed_mm3": 2513.274,
+     "cycle_seconds_exact_stop": 20.759,
+     "cycle_seconds_tangent": 20.759,
+     "engine_seconds": 0.0026
+    },
+    "rough": {
+     "toolpath": "TurnRough",
+     "issue": 50,
+     "moves": 28,
+     "cut_mm": 228.943,
+     "rapid_mm": 295.9,
+     "air_cut_mm": 4.243,
+     "plunges": 0,
+     "retracts": 14,
+     "removed_mm3": 33227.163,
+     "cycle_seconds_exact_stop": 59.363,
+     "cycle_seconds_tangent": 59.363,
+     "engine_seconds": 0.0035
+    },
+    "groove": {
+     "toolpath": "TurnGroove",
+     "issue": 52,
+     "moves": 43,
+     "cut_mm": 38.0,
+     "rapid_mm": 77.0,
+     "air_cut_mm": 26.0,
+     "plunges": 20,
+     "retracts": 1,
+     "removed_mm3": 841.476,
+     "cycle_seconds_exact_stop": 58.251,
+     "cycle_seconds_tangent": 58.251,
+     "engine_seconds": 0.0039
+    },
+    "part": {
+     "toolpath": "TurnPartOff",
+     "issue": 53,
+     "moves": 5,
+     "cut_mm": 22.2,
+     "rapid_mm": 107.2,
+     "air_cut_mm": 0.0,
+     "plunges": 1,
+     "retracts": 1,
+     "removed_mm3": 1286.977,
+     "cycle_seconds_exact_stop": 34.779,
+     "cycle_seconds_tangent": 34.779,
+     "engine_seconds": 0.0024
+    }
+   },
+   "toolpath": {
+    "moves": 84,
+    "cycle_seconds_exact_stop": 173.152,
+    "cycle_seconds_tangent": 173.152,
+    "posted_blocks": 115,
+    "post_error": null,
+    "removed_mm3": [
+     37868.89,
+     38692.27
+    ],
+    "material": {
+     "leftover_mm3": [
+      857.261735223271,
+      1386.5808267906775
+     ],
+     "overcut_mm3": [
+      0.0,
+      0.0
+     ],
+     "leftover_cells": [
+      145,
+      5
+     ]
+    }
+   },
+   "engine": {
+    "run_seconds": 0.0242,
+    "first_move_seconds": 0.0061,
+    "post_seconds": 0.0061,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 28996,
+     "native": 28664
+    }
+   }
+  },
+  {
+   "name": "lathe-thread",
+   "family": "lathe",
+   "description": "Turn and single-point thread M30 x 2",
+   "operations": {
+    "face": {
+     "toolpath": "TurnFace",
+     "issue": 49,
+     "moves": 8,
+     "cut_mm": 49.6,
+     "rapid_mm": 52.8,
+     "air_cut_mm": 4.0,
+     "plunges": 0,
+     "retracts": 2,
+     "removed_mm3": 2513.274,
+     "cycle_seconds_exact_stop": 20.759,
+     "cycle_seconds_tangent": 20.759,
+     "engine_seconds": 0.0026
+    },
+    "rough": {
+     "toolpath": "TurnRough",
+     "issue": 50,
+     "moves": 26,
+     "cut_mm": 228.943,
+     "rapid_mm": 259.9,
+     "air_cut_mm": 4.243,
+     "plunges": 0,
+     "retracts": 13,
+     "removed_mm3": 33227.163,
+     "cycle_seconds_exact_stop": 58.801,
+     "cycle_seconds_tangent": 58.801,
+     "engine_seconds": 0.0034
+    },
+    "finish": {
+     "toolpath": "TurnFinish",
+     "issue": 51,
+     "moves": 76,
+     "cut_mm": 61.114,
+     "rapid_mm": 107.8,
+     "air_cut_mm": 16.653,
+     "plunges": 1,
+     "retracts": 1,
+     "removed_mm3": 1152.382,
+     "cycle_seconds_exact_stop": 32.186,
+     "cycle_seconds_tangent": 32.178,
+     "engine_seconds": 0.0048
+    },
+    "thread": {
+     "toolpath": "TurnThread",
+     "issue": 54,
+     "moves": 31,
+     "cut_mm": 154.7,
+     "rapid_mm": 293.239,
+     "air_cut_mm": 22.1,
+     "plunges": 0,
+     "retracts": 7,
+     "removed_mm3": 0.0,
+     "cycle_seconds_exact_stop": 12.929,
+     "cycle_seconds_tangent": 12.929,
+     "engine_seconds": 0.0022
+    }
+   },
+   "toolpath": {
+    "moves": 141,
+    "cycle_seconds_exact_stop": 124.675,
+    "cycle_seconds_tangent": 124.667,
+    "posted_blocks": 173,
+    "post_error": null,
+    "removed_mm3": [
+     36892.82,
+     39140.067
+    ],
+    "material": {
+     "leftover_mm3": [
+      0.944279728319662,
+      194.2064470681434
+     ],
+     "overcut_mm3": [
+      0.0,
+      0.0
+     ],
+     "leftover_cells": [
+      2,
+      4
+     ]
+    }
+   },
+   "engine": {
+    "run_seconds": 0.0249,
+    "first_move_seconds": 0.0065,
+    "post_seconds": 0.0097,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 29328,
+     "native": 28760
+    }
+   }
+  },
+  {
+   "name": "lathe-bore",
+   "family": "lathe",
+   "description": "Drill on the axis, rough and finish bore",
+   "operations": {
+    "drill": {
+     "toolpath": "TurnDrill",
+     "issue": 55,
+     "moves": 12,
+     "cut_mm": 33.807,
+     "rapid_mm": 193.807,
+     "air_cut_mm": 0.0,
+     "plunges": 3,
+     "retracts": 4,
+     "removed_mm3": 5324.01,
+     "cycle_seconds_exact_stop": 21.636,
+     "cycle_seconds_tangent": 21.636,
+     "engine_seconds": 0.0033
+    },
+    "bore_rough": {
+     "toolpath": "TurnBore",
+     "issue": 56,
+     "moves": 9,
+     "cut_mm": 53.414,
+     "rapid_mm": 91.7,
+     "air_cut_mm": 1.414,
+     "plunges": 0,
+     "retracts": 4,
+     "removed_mm3": 4008.823,
+     "cycle_seconds_exact_stop": 22.765,
+     "cycle_seconds_tangent": 22.765,
+     "engine_seconds": 0.0029
+    },
+    "bore_finish": {
+     "toolpath": "TurnBore",
+     "issue": 56,
+     "moves": 8,
+     "cut_mm": 28.828,
+     "rapid_mm": 87.7,
+     "air_cut_mm": 2.828,
+     "plunges": 1,
+     "retracts": 3,
+     "removed_mm3": 332.133,
+     "cycle_seconds_exact_stop": 19.403,
+     "cycle_seconds_tangent": 19.402,
+     "engine_seconds": 0.0026
+    }
+   },
+   "toolpath": {
+    "moves": 29,
+    "cycle_seconds_exact_stop": 63.804,
+    "cycle_seconds_tangent": 63.802,
+    "posted_blocks": 61,
+    "post_error": null,
+    "removed_mm3": [
+     9664.966,
+     9759.999
+    ],
+    "material": {
+     "leftover_mm3": [
+      9596.719527481593,
+      10035.757100820769
+     ],
+     "overcut_mm3": [
+      0.0,
+      0.0
+     ],
+     "leftover_cells": [
+      162,
+      22
+     ]
+    }
+   },
+   "engine": {
+    "run_seconds": 0.0201,
+    "first_move_seconds": 0.0079,
+    "post_seconds": 0.0038,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 29080,
+     "native": 28792
+    }
+   }
+  },
+  {
+   "name": "lathe-face-groove",
+   "family": "lathe",
+   "description": "Face and cut a face groove",
+   "operations": {
+    "face": {
+     "toolpath": "TurnFace",
+     "issue": 49,
+     "moves": 6,
+     "cut_mm": 17.8,
+     "rapid_mm": 83.8,
+     "air_cut_mm": 2.0,
+     "plunges": 0,
+     "retracts": 2,
+     "removed_mm3": 530.929,
+     "cycle_seconds_exact_stop": 8.367,
+     "cycle_seconds_tangent": 8.367,
+     "engine_seconds": 0.0025
+    },
+    "fg": {
+     "toolpath": "TurnFaceGroove",
+     "issue": 57,
+     "moves": 29,
+     "cut_mm": 22.0,
+     "rapid_mm": 98.0,
+     "air_cut_mm": 22.0,
+     "plunges": 12,
+     "retracts": 13,
+     "removed_mm3": 308.253,
+     "cycle_seconds_exact_stop": 74.968,
+     "cycle_seconds_tangent": 74.968,
+     "engine_seconds": 0.0034
+    }
+   },
+   "toolpath": {
+    "moves": 35,
+    "cycle_seconds_exact_stop": 83.335,
+    "cycle_seconds_tangent": 83.335,
+    "posted_blocks": 66,
+    "post_error": null,
+    "removed_mm3": [
+     839.182,
+     945.996
+    ],
+    "material": {
+     "leftover_mm3": [
+      3121.957699504847,
+      3254.6899891190155
+     ],
+     "overcut_mm3": [
+      0.0,
+      0.0
+     ],
+     "leftover_cells": [
+      159,
+      1
+     ]
+    }
+   },
+   "engine": {
+    "run_seconds": 0.0143,
+    "first_move_seconds": 0.0061,
+    "post_seconds": 0.0043,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 29124,
+     "native": 28628
+    }
+   }
+  }
+ ],
+ "failures": {}
+}
