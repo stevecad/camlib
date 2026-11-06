@@ -120,6 +120,9 @@ These can run in parallel with any phase.
 
 - [ ] #20 Validate every controller post on real machines (start with the LinuxCNC simulator in CI)
 - [ ] #21 Release: PyPI distribution name and published wheels
+- [ ] #64 SurfaceMesh: document the 0.1 mm `surface_error_mm` limit, and say which check failed
+- [ ] #65 Multi-tool jobs: post fails at the first tool change unless `Setup.tool_change` matches the tool table
+- [ ] #66 Undercut neck check: give the clearance and the cell size it needs
 
 ## Done
 
