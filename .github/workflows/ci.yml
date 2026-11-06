@@ -47,8 +47,9 @@ jobs:
 
   rust:
     name: Rust (${{ matrix.os }}, fmt, clippy, tests)
+    # Skipped step by step, not as a job: a skipped matrix job reports one
+    # unexpanded check name that the required checks never match.
     needs: changes
-    if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -57,24 +58,32 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+        if: needs.changes.outputs.code == 'true'
       - uses: actions/setup-python@v5
+        if: needs.changes.outputs.code == 'true'
         with:
           python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
+        if: needs.changes.outputs.code == 'true'
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        if: needs.changes.outputs.code == 'true'
       - name: Format
+        if: needs.changes.outputs.code == 'true'
         run: cargo fmt --check
       - name: Clippy
+        if: needs.changes.outputs.code == 'true'
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
         env:
           PYO3_PYTHON: python
       - name: Tests
+        if: needs.changes.outputs.code == 'true'
         run: cargo test --release --workspace --all-features --lib --tests
         env:
           PYO3_PYTHON: python
       - name: Doctests
+        if: needs.changes.outputs.code == 'true'
         run: cargo test --release --doc
 
   msrv:
@@ -97,8 +106,9 @@ jobs:
 
   python:
     name: Python (${{ matrix.os }}, ruff, tests with CadQuery)
+    # Skipped step by step, not as a job: a skipped matrix job reports one
+    # unexpanded check name that the required checks never match.
     needs: changes
-    if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -107,29 +117,39 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+        if: needs.changes.outputs.code == 'true'
       - uses: actions/setup-python@v5
+        if: needs.changes.outputs.code == 'true'
         with:
           python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
+        if: needs.changes.outputs.code == 'true'
       - uses: Swatinem/rust-cache@v2
+        if: needs.changes.outputs.code == 'true'
       - name: Install CadQuery and ruff
+        if: needs.changes.outputs.code == 'true'
         run: python -m pip install cadquery ruff
       - name: Ruff
+        if: needs.changes.outputs.code == 'true'
         shell: bash
         run: |
           ruff check python examples bench
           ruff format --check python examples bench
       - name: Build the engine and Python extension
+        if: needs.changes.outputs.code == 'true'
         run: cargo build --release --workspace --all-features
         env:
           PYO3_PYTHON: python
       - name: Tests
+        if: needs.changes.outputs.code == 'true'
         run: python -m unittest discover -s python/tests
         env:
           PYTHONPATH: python
       - name: Benchmark platform tests
+        if: needs.changes.outputs.code == 'true'
         run: python -m unittest discover -s bench -p "test_*.py"
       - name: Examples
+        if: needs.changes.outputs.code == 'true'
         shell: bash
         run: |
           python examples/standalone_job.py out
