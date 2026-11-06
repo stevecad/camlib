@@ -33,6 +33,13 @@ def _path(kind, kwargs):
     return FIXTURES / f"{kind}-{hashlib.sha256(key.encode()).hexdigest()[:16]}.json", key
 
 
+def reset():
+    """Start a new build: calls are numbered from 1 again. The runner calls
+    this before every workload and target build (also between the timed
+    repeats in one process), so every build loads the same fixtures."""
+    _seen.clear()
+
+
 def _cached(kind, export, encode, decode):
     def cached(shape, **kwargs):
         path, key = _path(kind, kwargs)

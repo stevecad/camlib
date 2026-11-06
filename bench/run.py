@@ -33,6 +33,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+from geometry import reset as reset_geometry  # noqa: E402
 from workloads import BY_NAME, ROOT, WORKLOADS  # noqa: E402
 
 ACCEL_MM_S2 = 1000.0
@@ -107,6 +108,7 @@ def _material(workload, state):
     from camlib.cadquery import export_surface_mesh
     from camlib.material import SurfaceTarget, Target, Verifier
 
+    reset_geometry()
     kind, *rest = workload.target()
     if kind == "solid":
         surface = export_surface_mesh(rest[0], source=dict(model=workload.name, revision="bench"))
@@ -135,6 +137,7 @@ def _run_once(workload):
     from camlib.simulation import OperationUpdate, Simulation, Update, curve_length
     from camlib.tools import ToolAssembly
 
+    reset_geometry()
     config = workload.build()
     ops = defaultdict(lambda: defaultdict(float))
     events, op_of = [], {}
