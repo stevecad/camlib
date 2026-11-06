@@ -123,7 +123,9 @@ passing; Markdown-only changes skip the build jobs.
 
 ## 17. Toolchains: current stable, declared minimums
 
-**Why:** users build with current tools. **So:** CI builds on current stable
-Rust and checks the declared minimum (MSRV 1.88); the Python extension targets
-CPython 3.12+ (abi3); lint rules are explicit so tool upgrades don't change what
-is checked. Linux wheels come first; other platforms are welcome contributions.
+**Why:** users build with current tools, on Linux and Windows. **So:** CI builds
+and tests on current stable Rust on Linux and native Windows x64, checks the
+declared minimum (MSRV 1.88), and installs and tests a Windows wheel; the Python
+extension targets CPython 3.12+ (abi3); lint rules are explicit so tool upgrades
+don't change what is checked. Other platforms (macOS, ARM64) are welcome
+contributions with their own CI.

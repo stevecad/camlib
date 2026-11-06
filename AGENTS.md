@@ -127,6 +127,9 @@ python bench/compare.py bench/results/baseline.json bench/results/<name>.json
 python bench/report.py bench/results/<name>.json
 ```
 
+On Windows, see [docs/windows.md](docs/windows.md) for the toolchain and the
+PowerShell equivalents of these commands.
+
 Run long test suites with a memory and time limit, using whatever your system
 provides: some tests exercise large inputs on purpose, and an unbounded run
 can exhaust a machine.
