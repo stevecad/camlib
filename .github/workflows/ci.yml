@@ -1,9 +1,11 @@
 name: CI
 
+# Pull requests only: main is protected and every PR must be up to date with
+# main and green before it merges, so the merged tree is already tested; a
+# second run after the merge would only repeat it. Run manually if needed.
 on:
-  push:
-    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
