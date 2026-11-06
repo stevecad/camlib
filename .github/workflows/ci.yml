@@ -121,6 +121,8 @@ jobs:
         if: always()
         with:
           name: benchmarks-${{ github.sha }}
+          # Small, but one per push: keep them only briefly.
+          retention-days: 7
           path: |
             bench/results/github-ubuntu-latest.json
             bench-report.md
