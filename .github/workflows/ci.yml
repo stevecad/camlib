@@ -16,8 +16,37 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Documentation-only changes (Markdown, the license) need no build or tests:
+  # the jobs below are skipped, which branch protection counts as passing.
+  changes:
+    name: Changed files
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: filter
+        shell: bash
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Any changed file that is not Markdown or the license needs the full CI.
+          code_files=$(git diff --name-only "$BASE" HEAD | grep -vE '(\.md$|^LICENSE$)' || true)
+          if [ -n "$code_files" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   rust:
     name: Rust (fmt, clippy, tests)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -44,6 +73,8 @@ jobs:
 
   msrv:
     name: Rust 1.88 (minimum supported version) builds
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -60,6 +91,8 @@ jobs:
 
   python:
     name: Python (ruff, tests with CadQuery)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -92,6 +125,8 @@ jobs:
 
   bench:
     name: Benchmarks (informational)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
