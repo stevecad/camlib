@@ -1,5 +1,5 @@
 {
- "label": "xeon-silver-4112",
+ "label": "baseline",
  "environment": {
   "commit": "d05c0df8d74d6b766e1460da4c70010005e676f8",
   "dirty": false,

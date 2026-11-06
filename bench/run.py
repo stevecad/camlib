@@ -323,7 +323,7 @@ def _environment():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--label", required=False, default=platform.node() or "local")
+    parser.add_argument("--label", default="local", help="results file name (default: local)")
     parser.add_argument("--only", nargs="*")
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--timeout", type=float, default=1800)

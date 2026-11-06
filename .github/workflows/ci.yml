@@ -116,7 +116,7 @@ jobs:
       # baseline is a real toolpath change (update the baseline in the PR).
       - name: Compare toolpaths with the baseline
         shell: bash
-        run: python bench/compare.py bench/results/xeon-silver-4112.json bench/results/github-ubuntu-latest.json | tee bench-compare.md
+        run: python bench/compare.py bench/results/baseline.json bench/results/github-ubuntu-latest.json | tee bench-compare.md
       - uses: actions/upload-artifact@v4
         if: always()
         with:

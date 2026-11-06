@@ -11,3 +11,5 @@ __pycache__/
 /python/camlib/_web/
 /python/camlib/_native*.so
 /python/camlib/_native*.pyd
+
+/CLAUDE.local.md
