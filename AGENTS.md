@@ -1,7 +1,15 @@
 # AGENTS.md
 
 Instructions for anyone, human or AI agent, working on camlib. Read this file
-and [ROADMAP.md](ROADMAP.md) before changing anything.
+and [ROADMAP.md](ROADMAP.md) before changing anything, then:
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how a run flows end to end
+  (frames, stock models, verification, posting), the invariants, what is proven
+  and what is not, known traps, and a glossary.
+- [docs/DECISIONS.md](docs/DECISIONS.md): why camlib is built this way. Don't undo
+  a decision without an issue arguing the case.
+- [docs/CONTRIBUTING-TOOLPATHS.md](docs/CONTRIBUTING-TOOLPATHS.md): the checklist
+  for adding or changing a toolpath.
 
 ## What camlib is
 
