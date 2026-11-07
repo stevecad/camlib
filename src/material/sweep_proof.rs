@@ -69,8 +69,61 @@ struct ToolProof {
     reach: f64,
 }
 
+/// What the motions are proven against.
+enum Geometry {
+    /// A surface target's mesh (height-field solid under it).
+    Mesh(Index),
+    /// A prismatic target: the solid below `floor` (when above the stock
+    /// bottom), and outside `region` everything below `top` (the stock top).
+    Prism {
+        region: Box<crate::planar::PreparedRegion>,
+        floor: Option<f64>,
+        top: f64,
+    },
+}
+
+impl Geometry {
+    /// The prism's walls: the disc of radius `rho` swept from p to q (XY)
+    /// stays inside the region. The signed clearance to the boundary is
+    /// 1-Lipschitz, so a piece of half length h whose midpoint clears
+    /// rho plus h is proven; otherwise it is halved. A midpoint closer than
+    /// rho is a real violation; a piece shorter than the arithmetic floor
+    /// fails.
+    fn segment_inside(
+        region: &crate::planar::PreparedRegion,
+        p: [f64; 2],
+        q: [f64; 2],
+        rho: f64,
+    ) -> Result<bool, String> {
+        let length = (q[0] - p[0]).hypot(q[1] - p[1]);
+        let mut stack = vec![(0f64, 1f64)];
+        let mut queries = 0u32;
+        while let Some((t0, t1)) = stack.pop() {
+            queries += 1;
+            if queries > 1_000_000 {
+                return Ok(false);
+            }
+            let t = (t0 + t1) / 2.;
+            let mid = [p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])];
+            let Some(c) = region.query(mid)?.signed_clearance_mm else {
+                return Ok(false);
+            };
+            let half = length * (t1 - t0) / 2.;
+            if c - half >= rho {
+                continue;
+            }
+            if c < rho || half < 1e-7 {
+                return Ok(false);
+            }
+            stack.push((t, t1));
+            stack.push((t0, t));
+        }
+        Ok(true)
+    }
+}
+
 pub(crate) struct SweepProof {
-    index: Option<Index>,
+    geometry: Option<Geometry>,
     unavailable: Option<String>,
     tolerance: f64,
     surface_error: f64,
@@ -97,7 +150,6 @@ impl SweepProof {
         history_complete: bool,
         cancel: &impl CancelSignal,
     ) -> Result<Self, String> {
-        let (nx, ny, step) = spec.grid()?;
         let tolerance = options.comparison_tolerance_mm;
         let surface_error = target.surface.surface_error_mm;
         let scale = spec
@@ -108,7 +160,7 @@ impl SweepProof {
             .fold(1., f64::max);
         // Strict margin for the containment argument and binary64 rounding.
         let budget = tolerance - surface_error - 1024. * f64::EPSILON * scale;
-        let (index, unavailable) = if budget > 0. {
+        let (geometry, unavailable) = if budget > 0. {
             // Below the stock box there is no stock to gouge: the base plane
             // binds only when it lies above the stock's bottom.
             let floor = if target.base_z_mm > spec.min_mm[2] {
@@ -116,7 +168,15 @@ impl SweepProof {
             } else {
                 spec.min_mm[2] - 1e6
             };
-            (Some(Index::new(&target.surface, floor, 1., cancel)?), None)
+            (
+                Some(Geometry::Mesh(Index::new(
+                    &target.surface,
+                    floor,
+                    1.,
+                    cancel,
+                )?)),
+                None,
+            )
         } else {
             (
                 None,
@@ -125,9 +185,90 @@ impl SweepProof {
                 )),
             )
         };
-        let seen = vec![0; index.as_ref().map_or(0, Index::len)];
+        Self::with(
+            geometry,
+            unavailable,
+            tolerance,
+            surface_error,
+            budget,
+            spec,
+            history_complete,
+        )
+    }
+
+    /// A prismatic target: its region's boundary error (with the numerical
+    /// guard and geometry tolerance, as the cell comparison uses) and its
+    /// floor error are the declared errors spent from the tolerance.
+    pub(crate) fn new_prismatic(
+        target: &Target,
+        options: Options,
+        spec: &StockSpec,
+        history_complete: bool,
+    ) -> Result<Self, String> {
+        let region = target
+            .machining_region
+            .prepare(crate::planar::ConstructionOptions {
+                tolerance_mm: options.geometry_tolerance_mm,
+            })?;
+        let summary = region.summary();
+        let lateral =
+            summary.boundary_error_mm + summary.numerical_guard_mm + options.geometry_tolerance_mm;
+        let surface_error = lateral.max(target.floor_error_mm);
+        let tolerance = options.comparison_tolerance_mm;
+        let scale = spec
+            .min_mm
+            .into_iter()
+            .chain(spec.max_mm)
+            .map(f64::abs)
+            .fold(1., f64::max);
+        let budget = tolerance - surface_error - 1024. * f64::EPSILON * scale;
+        let (geometry, unavailable) = if budget > 0. {
+            (
+                Some(Geometry::Prism {
+                    region: Box::new(region),
+                    floor: (target.floor_z_mm > spec.min_mm[2]).then_some(target.floor_z_mm),
+                    top: spec.max_mm[2],
+                }),
+                None,
+            )
+        } else {
+            (
+                None,
+                Some(format!(
+                    "the comparison tolerance {tolerance} mm does not exceed the target's boundary and floor error {surface_error} mm: no move can be proven within it (raise comparison_tolerance_mm)"
+                )),
+            )
+        };
+        Self::with(
+            geometry,
+            unavailable,
+            tolerance,
+            surface_error,
+            budget,
+            spec,
+            history_complete,
+        )
+    }
+
+    fn with(
+        geometry: Option<Geometry>,
+        unavailable: Option<String>,
+        tolerance: f64,
+        surface_error: f64,
+        budget: f64,
+        spec: &StockSpec,
+        history_complete: bool,
+    ) -> Result<Self, String> {
+        let (nx, ny, step) = spec.grid()?;
+        let seen = vec![
+            0;
+            match &geometry {
+                Some(Geometry::Mesh(index)) => index.len(),
+                _ => 0,
+            }
+        ];
         Ok(Self {
-            index,
+            geometry,
             unavailable,
             tolerance,
             surface_error,
@@ -248,11 +389,17 @@ impl SweepProof {
         tolerance_mm: f64,
         cancel: &impl CancelSignal,
     ) -> Result<bool, String> {
-        let (Some(index), Some(Some(proof))) = (&self.index, self.tools.get(tool)) else {
+        let (Some(geometry), Some(Some(proof))) = (&self.geometry, self.tools.get(tool)) else {
             return Ok(false);
         };
         let a = proof.erosion;
-        let chord = |p: Vec3, q: Vec3, grow: f64, lift: f64, seen: &mut [u32], stamp: &mut u32| {
+        let chord = |p: Vec3,
+                     q: Vec3,
+                     grow: f64,
+                     lift: f64,
+                     seen: &mut [u32],
+                     stamp: &mut u32|
+         -> Result<bool, String> {
             let sections = proof
                 .sections
                 .iter()
@@ -265,11 +412,35 @@ impl SweepProof {
                 .collect::<Vec<_>>();
             // The eroded tool is lifted by a; any extra lift is a required
             // clearance for sub-arc deviation out of the XY plane.
-            index.sections_chord_clear(p, q, &sections, lift - a, seen, stamp)
+            match geometry {
+                Geometry::Mesh(index) => {
+                    Ok(index.sections_chord_clear(p, q, &sections, lift - a, seen, stamp))
+                }
+                Geometry::Prism { region, floor, top } => {
+                    // The eroded tool's lowest point along the chord.
+                    let tip = p[2].min(q[2]) + a - lift;
+                    if let Some(f) = floor
+                        && tip + sections.iter().map(|s| s.z0).fold(f64::INFINITY, f64::min) < *f
+                    {
+                        return Ok(false);
+                    }
+                    // Every section reaching below the stock top must stay
+                    // inside the region, at its full radius (conservative).
+                    let rho = sections
+                        .iter()
+                        .filter(|s| tip + s.z0 < *top)
+                        .map(|s| s.r1)
+                        .fold(f64::NEG_INFINITY, f64::max);
+                    if rho == f64::NEG_INFINITY {
+                        return Ok(true);
+                    }
+                    Geometry::segment_inside(region, [p[0], p[1]], [q[0], q[1]], rho)
+                }
+            }
         };
         match *curve {
             Curve::Line { start, end } => {
-                Ok(chord(start, end, 0., 0., &mut self.seen, &mut self.stamp))
+                chord(start, end, 0., 0., &mut self.seen, &mut self.stamp)
             }
             Curve::Arc {
                 start,
@@ -318,7 +489,7 @@ impl SweepProof {
                     let d = deviation(f0, f1);
                     let lift = if plane == Plane::Xy { 0. } else { d };
                     let (p, q) = (prepared.position(f0)?, prepared.position(f1)?);
-                    if chord(p, q, d, lift, &mut self.seen, &mut self.stamp) {
+                    if chord(p, q, d, lift, &mut self.seen, &mut self.stamp)? {
                         continue;
                     }
                     if d <= a / 4. {
@@ -336,7 +507,7 @@ impl SweepProof {
     /// Cells the proof decides: the whole history proven and no unproven
     /// motion's footprint on the cell.
     pub(crate) fn decides(&self, cell: usize) -> bool {
-        self.history_complete && self.index.is_some() && !self.touched[cell]
+        self.history_complete && self.geometry.is_some() && !self.touched[cell]
     }
 
     pub(crate) fn report(&self, decided_cells: usize) -> SweepProofReport {
@@ -642,6 +813,116 @@ mod tests {
                 line([-5., -5., 10.05], [25., -5., 10.05])
             ));
         }
+    }
+
+    /// A 40 x 30 pocket to a floor at Z 6 in stock to Z 10 (prismatic
+    /// target: below the floor, and outside the pocket up to the top).
+    fn prism(tolerance: f64, error: f64) -> SweepProof {
+        use crate::planar::{Boundary, Component, PlanarRegion};
+        let target = Target {
+            version: 1,
+            units: "mm".into(),
+            id: "pocket".into(),
+            revision: "1".into(),
+            machining_region: PlanarRegion {
+                version: 1,
+                units: "mm".into(),
+                name: "pocket".into(),
+                boundary_error_mm: error,
+                components: vec![Component {
+                    outer: Boundary {
+                        vertices: vec![[0., 0., 0.], [40., 0., 0.], [40., 30., 0.], [0., 30., 0.]],
+                    },
+                    holes: vec![],
+                }],
+                source: serde_json::json!({}),
+            },
+            floor_z_mm: 6.,
+            floor_error_mm: error,
+        };
+        let options = Options {
+            comparison_tolerance_mm: tolerance,
+            ..Options::default()
+        };
+        let mut spec = spec();
+        spec.max_mm[2] = 10.;
+        SweepProof::new_prismatic(&target, options, &spec, true).unwrap()
+    }
+
+    /// Oracle: the deepest sampled point of the real tool inside the prism.
+    fn deepest_in_prism(tool: &PreparedAssembly, curve: &Curve) -> f64 {
+        let prepared = curve.prepare(1e-6).unwrap();
+        let mut worst: f64 = 0.;
+        for i in 0..=100 {
+            let c = prepared.position(i as f64 / 100.).unwrap();
+            for k in 0..=50 {
+                let h = 10. * k as f64 / 50.;
+                let Some(slice) = tool.radius_at(h) else {
+                    continue;
+                };
+                for j in 0..=12 {
+                    let rho = slice.radius_mm * j as f64 / 12.;
+                    for m in 0..72 {
+                        let phi = std::f64::consts::TAU * m as f64 / 72.;
+                        let p = [c[0] + rho * phi.cos(), c[1] + rho * phi.sin(), c[2] + h];
+                        let floor = 6. - p[2];
+                        let outside = (-p[0]).max(p[0] - 40.).max(-p[1]).max(p[1] - 30.);
+                        let wall = outside.min(10. - p[2]);
+                        worst = worst.max(floor).max(wall);
+                    }
+                }
+            }
+        }
+        worst
+    }
+
+    #[test]
+    fn prismatic_target_walls_and_floor_are_proven_exactly() {
+        let flat = tool(CutterShape::Flat).prepare().unwrap();
+        let (tolerance, error) = (0.005, 0.0005);
+        for (curve, expect) in [
+            // Tangent to the x = 0 wall on the floor (3 mm from the y
+            // walls at its ends), and 0.0007 into both.
+            (line([3., 3., 6.], [3., 27., 6.]), true),
+            (line([2.9993, 3., 5.9993], [2.9993, 27., 5.9993]), true),
+            // 0.01 mm into the wall, or into the floor: never proven.
+            (line([2.99, 5., 6.], [2.99, 25., 6.]), false),
+            (line([10., 5., 5.99], [30., 25., 5.99]), false),
+            // A full orbit tangent to three walls' corner region.
+            (
+                Curve::Helix {
+                    start: [6., 3.5, 7.],
+                    end: [6., 3.5, 6.],
+                    center: [6., 6.5, 7.],
+                    plane: Plane::Xy,
+                    sweep_rad: std::f64::consts::TAU,
+                },
+                true,
+            ),
+            // Above the stock top anywhere: clear.
+            (line([-20., -20., 10.5], [60., 50., 10.5]), true),
+        ] {
+            let mut p = prism(tolerance, error);
+            let proven = proves(&mut p, &flat, curve.clone());
+            assert_eq!(proven, expect, "{curve:?}");
+            if proven {
+                assert!(deepest_in_prism(&flat, &curve) <= tolerance - error);
+            }
+        }
+        // The default tolerance is spent by the declared errors here.
+        let mut spent = prism(0.001, 0.001);
+        assert!(!proves(
+            &mut spent,
+            &flat,
+            line([10., 10., 8.], [20., 10., 8.])
+        ));
+        assert!(
+            spent
+                .report(0)
+                .unavailable
+                .unwrap()
+                .contains("boundary and floor error")
+        );
     }
 
     #[test]

@@ -633,11 +633,10 @@ impl Binding {
                                     || r.stats.unexamined_cells != 0))
                     })
                     || r.findings.iter().any(|f| f.cell_index as usize >= nx * ny)
-                    // A proof only for a surface target, deciding at most
-                    // the report's possible-only gouge cells.
+                    // A proof decides at most the report's possible-only
+                    // gouge cells, at the configured tolerance.
                     || sweep_proof.as_ref().is_some_and(|p| {
-                        !matches!(c.target, material::Definition::Surface(_))
-                            || p.decided_cells > r.gouge.possible_only_cells
+                        p.decided_cells > r.gouge.possible_only_cells
                             || p.tolerance_mm != c.options.comparison_tolerance_mm
                     })
                 {
@@ -774,7 +773,13 @@ impl Runtime {
                     material::SweepProof::new(t, c.options, &binding.stock, completed == 0, &never)
                         .map(Some)
                 }
-                material::Definition::Prismatic(_) => Ok(None),
+                material::Definition::Prismatic(t) => material::SweepProof::new_prismatic(
+                    t,
+                    c.options,
+                    &binding.stock,
+                    completed == 0,
+                )
+                .map(Some),
             })
             .collect::<Result<_, String>>()?;
         Ok(Self {
@@ -911,6 +916,10 @@ impl Runtime {
         };
         let (report, sweep_proof) = match (&self.targets[i], &self.proofs[i]) {
             (material::PreparedMaterial::Surface(t), Some(proof)) => {
+                let (report, proof) = t.check_proven(stock, &context, proof, cancel)?;
+                (report, Some(proof))
+            }
+            (material::PreparedMaterial::Prismatic(t), Some(proof)) => {
                 let (report, proof) = t.check_proven(stock, &context, proof, cancel)?;
                 (report, Some(proof))
             }
