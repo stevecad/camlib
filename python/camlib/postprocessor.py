@@ -101,6 +101,13 @@ _DEFAULT_COMMANDS = tuple(
 )
 # Canned tapping cycle (FANUC/Haas style G84 X Y Z R F, cancelled by G80).
 # Declared per machine with with_commands(tap_cycle='G84', tap_synchronized=None).
+# Left-hand canned tapping (FANUC/Haas G74, same words): declared per machine
+# with tap_cycle_left='G74'. The spindle must already turn counterclockwise
+# (M4) before G74 and clockwise (M3) before G84 (FANUC 0i-MB B-63844EN/02
+# 13.1.2: "Before specifying G74, use ... M code to rotate the spindle
+# counterclockwise"). LinuxCNC G33.1 reverses whatever direction is running
+# (interp_convert.cc accepts M3 or M4; tp.c inverts the commanded speed), so
+# M4 + G33.1 taps a left-hand thread.
 # Oriented spindle stop (M19) and the fine boring cycle (G76 X Y Z R Q [P] F:
 # feed to Z, dwell, oriented stop, shift Q away from the edge, rapid out,
 # shift back, spindle CW) need the machine's orientation: declared per
@@ -110,7 +117,15 @@ _DEFAULT_COMMANDS = tuple(
 # Lathe threading: a spindle-synchronized line (LinuxCNC G33 Z K<lead>,
 # FANUC/Centroid G32 Z F<lead>), the lead in thread_lead_word.
 _CYCLE_EFFECTS = frozenset(
-    ('tap_cycle', 'fine_bore_cycle', 'spindle_orient', 'height_control_on', 'height_control_off', 'thread_synchronized')
+    (
+        'tap_cycle',
+        'tap_cycle_left',
+        'fine_bore_cycle',
+        'spindle_orient',
+        'height_control_on',
+        'height_control_off',
+        'thread_synchronized',
+    )
 )
 # Lathe spindle and feed modes, declared per machine: constant surface
 # speed (G96 S<m/min or ft/min>, its rpm limit as G50 S in its own block
@@ -128,6 +143,7 @@ _GROUPS = {
             'arc_ccw',
             'tap_synchronized',
             'tap_cycle',
+            'tap_cycle_left',
             'thread_synchronized',
             'drill_cycle',
             'drill_dwell_cycle',
@@ -906,6 +922,8 @@ class GCodePost(PostProcessor):
         )
         self._spindle_on = event.rpm != 0
         self._rpm = event.rpm
+        if event.rpm != 0:
+            self._spindle_direction = event.direction
 
     def on_coolant(self, event):
         # As commercial posts do: M9 to stop, or before switching between two
@@ -995,6 +1013,7 @@ class GCodePost(PostProcessor):
         self._spindle_on = True
         self._css = True
         self._rpm = event.max_rpm
+        self._spindle_direction = event.direction
 
     def on_feed_per_rev(self, event):
         """G95 F<feed per revolution>, or G94 back to feeds per minute. The
@@ -1178,8 +1197,13 @@ class GCodePost(PostProcessor):
         commands = {x.effect for x in d.commands}
         if getattr(self, '_feed_rev', None) or getattr(self, '_css', False):
             raise ValueError('tapping is written at a fixed rpm with feeds per minute (G97, G94)')
+        direction = getattr(self, '_spindle_direction', None)
+        if direction not in ('cw', 'ccw'):
+            raise ValueError('tapping needs the running spindle direction (the thread hand) known to the post')
+        left = direction == 'ccw'
+        cycle = 'tap_cycle_left' if left else 'tap_cycle'
         if c.end[2] > c.start[2]:
-            if 'tap_cycle' in commands:
+            if cycle in commands:
                 self.emit(d.code('cycles_off'))
             elif d.parentheses_comments:
                 self.comment('G33.1 returns to the start')
@@ -1199,22 +1223,27 @@ class GCodePost(PostProcessor):
                 self.word(d.axes[2], c.end[2]),
                 'K' + (f'{pitch:.6f}'.rstrip('0').rstrip('.')),
             )
-        elif 'tap_cycle' in commands and d.tap_pitch_word is not None:
+        elif cycle in commands and d.tap_pitch_word is not None:
             # Lead per spindle revolution, always with a decimal point so no
             # control reinterprets it as implied decimals.
             lead = f'{motion.feed_mm_min / rpm / scale:.6f}'.rstrip('0')
             self.emit(
-                d.code('tap_cycle'),
+                d.code(cycle),
                 *self.words((d.axes[0], d.axes[1], d.axes[2], 'R'), (c.end[0], c.end[1], c.end[2], c.start[2])),
                 d.tap_pitch_word + lead,
             )
-        elif 'tap_cycle' in commands:
+        elif cycle in commands:
             self.emit(
-                d.code('tap_cycle'),
+                d.code(cycle),
                 *self.words(
                     (d.axes[0], d.axes[1], d.axes[2], 'R', d.feed_word),
                     (c.end[0], c.end[1], c.end[2], c.start[2], motion.feed_mm_min),
                 ),
+            )
+        elif left:
+            raise ValueError(
+                'this machine dialect declares no left-hand tapping (tap_synchronized G33.1, or tap_cycle_left '
+                'such as G74): a left-hand tap cannot be written for it'
             )
         else:
             raise ValueError('this machine dialect declares no tapping cycle (tap_synchronized or tap_cycle)')
@@ -1412,7 +1441,7 @@ class GCodeDecoder(_TransactionCopy):
             if motion is None or motion.curve.start == motion.curve.end:
                 raise ValueError('cutter compensation needs a move in its block')
             return [*change, motion]
-        if len(effects) == 1 and effects[0] in ('tap_synchronized', 'tap_cycle'):
+        if len(effects) == 1 and effects[0] in ('tap_synchronized', 'tap_cycle', 'tap_cycle_left'):
             return [self._tap(effects[0], values, context)]
         if len(effects) == 1 and effects[0] == 'thread_synchronized':
             return [self._thread(values, context)]
@@ -1872,8 +1901,16 @@ class GCodeDecoder(_TransactionCopy):
             raise ValueError('canned cycle already active')
         if self.css is not None or self.feed_rev is not None:
             raise ValueError('tapping needs G97 and G94')
-        if self.rpm <= 0 or self.direction != 'cw':
-            raise ValueError('tapping needs the spindle running clockwise')
+        # G84 taps right-hand (clockwise in), G74 left-hand (counterclockwise
+        # in); G33.1 follows the running direction.
+        need = {'tap_cycle': ('cw',), 'tap_cycle_left': ('ccw',)}.get(effect, ('cw', 'ccw'))
+        if self.rpm <= 0 or self.direction not in need:
+            raise ValueError(
+                'tapping needs the spindle running '
+                + {'tap_cycle': 'clockwise (M3) for G84', 'tap_cycle_left': 'counterclockwise (M4) for G74'}.get(
+                    effect, ''
+                )
+            )
         start = self.position
         for i in (0, 1):
             if d.axes[i] in values:

@@ -13,7 +13,7 @@ _OEM = {'tool_change', 'spindle_cw', 'spindle_ccw', 'spindle_off', 'coolant_off'
 _WORD = re.compile(r'([A-Z])([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))')
 
 
-def _dialect(m_codes, peck_return_mm=None, chip_break_return_mm=None, fine_bore_edge_deg=None):
+def _dialect(m_codes, peck_return_mm=None, chip_break_return_mm=None, fine_bore_edge_deg=None, rigid_tapping=False):
     if set(m_codes) != _OEM or len(set(m_codes.values())) != len(_OEM):
         raise ValueError('bind distinct OEM tool/spindle/flood/off M functions')
     if any(not re.fullmatch(r'M[1-9][0-9]?', c) or int(c[1:]) in (1, 2, 30, 98, 99) for c in m_codes.values()):
@@ -43,6 +43,13 @@ def _dialect(m_codes, peck_return_mm=None, chip_break_return_mm=None, fine_bore_
             # §13.1.3 G76: oriented spindle stop (OSS) and shift Q in the
             # direction of parameter 5101 RD1/RD2, only with the declared edge.
             fine_bore_cycle='G76' if fine_bore_edge_deg is not None else None,
+            # §13.2.1/13.2.2 rigid tapping, only with parameter No. 5200#0 (G84)
+            # = 1 ("Specify G84 for rigid tapping"), so no M29 is needed: G84
+            # (right hand, spindle CW in, CCW out) and G74 (left hand, CCW in,
+            # CW out) X Y Z R F, F = lead x S in G94, cancelled by G80. The
+            # spindle turns in the cycle's direction beforehand (§13.1.2).
+            tap_cycle='G84' if rigid_tapping else None,
+            tap_cycle_left='G74' if rigid_tapping else None,
             **m_codes,
         )
         .commands
@@ -75,6 +82,8 @@ class ReferenceMachine(Machine):
     # oriented spindle stop. Parameter 5101 RD1/RD2 must shift the opposite
     # way (e.g. edge 0 = +X, shift -X).
     fine_bore_edge_deg: float | None = None
+    # Parameter No. 5200#0 (G84) = 1: G84/G74 are rigid tapping cycles.
+    rigid_tapping: bool = False
     reference: str = 'FANUC 0i-MB;B-63844EN/02 February2003;length-offset-A'
 
     def __post_init__(self):
@@ -88,6 +97,8 @@ class ReferenceMachine(Machine):
             )
         if type(self.optional_stop_enabled) is not bool:
             raise ValueError('declare optional-stop switch state')
+        if type(self.rigid_tapping) is not bool:
+            raise ValueError('declare rigid tapping (parameter No. 5200#0 G84) as a boolean')
         if type(self.program_number) is not int or not 1 <= self.program_number <= 7999:
             raise ValueError('reference program number must be 1..7999')
         if self.traverse_feed_mm_min is None or self.arcs or self.helices or self.planes != ('xy',):
@@ -106,7 +117,13 @@ class ReferenceMachine(Machine):
             raise ValueError('stored work offset requires Cartesian translation')
         if (
             self.dialect
-            != _dialect(dict(self.oem_m_codes), self.peck_return_mm, self.chip_break_return_mm, self.fine_bore_edge_deg)
+            != _dialect(
+                dict(self.oem_m_codes),
+                self.peck_return_mm,
+                self.chip_break_return_mm,
+                self.fine_bore_edge_deg,
+                self.rigid_tapping,
+            )
             or self.mist
         ):
             raise ValueError('reference dialect differs from declared FANUC/OEM subset')
@@ -139,6 +156,7 @@ def define_machine(
     peck_return_mm=None,
     chip_break_return_mm=None,
     fine_bore_edge_deg=None,
+    rigid_tapping=False,
     **settings,
 ):
     """Define the installed machine in ordinary Python; no controller writes.
@@ -150,7 +168,8 @@ def define_machine(
     return ReferenceMachine(
         name,
         tools,
-        dialect=_dialect(m_codes, peck_return_mm, chip_break_return_mm, fine_bore_edge_deg),
+        dialect=_dialect(m_codes, peck_return_mm, chip_break_return_mm, fine_bore_edge_deg, rigid_tapping),
+        rigid_tapping=rigid_tapping,
         planes=('xy',),
         peck_return_mm=peck_return_mm,
         chip_break_return_mm=chip_break_return_mm,

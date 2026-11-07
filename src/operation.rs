@@ -204,15 +204,13 @@ fn hole_limits(op: Operation, tool: &ToolAssembly) -> Result<Operation, String> 
             if let Some(limits) = p.limits.take().filter(|l| !l.is_empty()) {
                 let prepared =
                     crate::limits::PreparedLimits::new(&limits, p.width_mm / 2., p.tolerance_mm)?;
-                let line = crate::motion::Curve::Line {
-                    start: [p.start_mm[0], p.start_mm[1], p.floor_z_mm],
-                    end: [p.end_mm[0], p.end_mm[1], p.floor_z_mm],
-                };
-                if !prepared.allows_curve(&line, true)? {
-                    return Err(format!(
-                        "slot {}: the slot reaches into an avoid area or out of the containment",
-                        p.id
-                    ));
+                for curve in crate::slot::centerline_curves(&p, p.floor_z_mm)? {
+                    if !prepared.allows_curve(&curve, true)? {
+                        return Err(format!(
+                            "slot {}: the slot reaches into an avoid area or out of the containment",
+                            p.id
+                        ));
+                    }
                 }
             }
             Operation::TrochoidalSlot(p)
