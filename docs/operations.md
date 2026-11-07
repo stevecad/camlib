@@ -145,7 +145,12 @@ Required: `target` (a `SurfaceMesh` of the part, or use
 
 Clears stock in Z layers while staying above the part surface plus
 `radial_allowance_mm`/`bottom_allowance_mm`. Each layer protects the part's
-projection above it (its "shadow"); holes in that projection smaller than a
+projection above it (its "shadow"), simplified within `contour_tolerance_mm`
+(default a quarter of the radial allowance; 0 keeps the exact shadow) and
+grown by it, so it still contains the exact shadow while its moves no longer
+follow every facet of a fine mesh (at most twice that tolerance more stock
+is left; the layer report's `shadow.simplified` gives the tolerance and the
+exact shadow's vertex count); holes in that projection smaller than a
 disk of half the cutter's radius are protected too, since the cutter cannot
 enter them (the layer report's `shadow.filled_holes`). A target mesh whose faces
 were tessellated separately leaves such slivers between neighbouring faces; a

@@ -1198,6 +1198,8 @@ fn economical_raster_preserves_cuts_whole_part_and_stock_with_half_the_navigatio
         };
         op.clockwise = clockwise;
         op.floor_z_mm = floor;
+        // The golden counts below were taken with the exact shadow.
+        op.contour_tolerance_mm = Some(0.);
         if angle != 0. {
             for triangle in std::sync::Arc::make_mut(&mut op.target.triangles) {
                 for p in triangle {
@@ -1959,6 +1961,8 @@ fn actual_cadquery_empty_cutting_changes_only_bounds_not_reachable_material() {
         for op in &mut m.operations {
             if let Operation::Roughing(op) = op {
                 op.omit_empty_cuts = enabled;
+                // The golden counts below were taken with the exact shadow.
+                op.contour_tolerance_mm = Some(0.);
             }
         }
         let mut stock = Stock::new(m.stock.height().unwrap().clone()).unwrap();
@@ -2782,8 +2786,12 @@ fn smaller_rest_rougher(offset: bool, clockwise: bool) {
 
 #[test]
 fn roughing_reports_preserve_progress_across_reads_rejections_and_finalization() {
-    let m: StreamManifest =
+    let mut m: StreamManifest =
         serde_json::from_str(include_str!("../fixtures/regressions/stock-front.json")).unwrap();
+    // The golden counts below were taken with the exact shadow.
+    if let Operation::Roughing(op) = &mut m.operations[0] {
+        op.contour_tolerance_mm = Some(0.);
+    }
     let tool = m.tools[0].prepare().unwrap();
     let mut stock = Stock::new(m.stock.height().unwrap().clone()).unwrap();
     let mut plan = OperationPlan::prepare_with_stock(
@@ -2969,5 +2977,101 @@ fn holes_a_cutter_fits_in_stay_open() {
         target
             .shadow_for_cutter(2., 0., f64::NAN, &mut 0, &cancel)
             .is_err()
+    );
+}
+
+/// A cone of `n` facets: its shadow at a level below its base is a fine
+/// polygon (n vertices) around a hole-free disc of radius 10.
+fn fine_cone(n: usize) -> Vec<[[f64; 3]; 3]> {
+    (0..n)
+        .map(|k| {
+            let (a, b) = (TAU * k as f64 / n as f64, TAU * (k + 1) as f64 / n as f64);
+            [
+                [10. * a.cos(), 10. * a.sin(), 2.],
+                [10. * b.cos(), 10. * b.sin(), 2.],
+                [0., 0., 6.],
+            ]
+        })
+        .collect()
+}
+
+#[test]
+fn simplified_shadows_contain_the_exact_one_with_few_vertices() {
+    let cancel = AtomicBool::new(false);
+    for n in [256, 4096] {
+        let target =
+            PreparedRoughingTarget::prepare(mesh(fine_cone(n), 0.), 1e-5, &cancel).unwrap();
+        let exact = target
+            .shadow_for_cutter(1., 0., 3., &mut 0, &cancel)
+            .unwrap();
+        let simple = target
+            .shadow_simplified(1., 0., 3., 0.075, &mut 0, &cancel)
+            .unwrap();
+        let report = simple.report.simplified.as_ref().unwrap();
+        assert!(report.reason.is_none(), "{report:?}");
+        assert_eq!(report.exact_vertices, exact.report.output_vertices);
+        let region = simple
+            .region
+            .prepare(ConstructionOptions::default())
+            .unwrap();
+        // Every vertex of the exact shadow is inside the simplified one.
+        for c in &exact.region.components {
+            for v in &c.outer.vertices {
+                assert!(signed(&region, [v[0], v[1]]) > 0., "{n}: {v:?}");
+            }
+        }
+        // ... which is no more than the tolerance and its guard bigger.
+        for c in &simple.region.components {
+            for v in &c.outer.vertices {
+                assert!(
+                    (v[0].hypot(v[1]) - 10.).abs() < 0.075 * 2f64.sqrt() + 1e-3,
+                    "{v:?}"
+                );
+            }
+        }
+        // Its size no longer follows the facets: the same for 256 and 4096.
+        assert!(
+            simple.report.output_vertices < 160,
+            "{n}: {}",
+            simple.report.output_vertices
+        );
+    }
+    // A hole (a ring of fine facets around an opening a 6 mm cutter fits)
+    // shrinks, so the protected area grows, and stays open.
+    let mut ring = vec![];
+    let n = 2048;
+    for k in 0..n {
+        let (a, b) = (TAU * k as f64 / n as f64, TAU * (k + 1) as f64 / n as f64);
+        let at = |r: f64, t: f64| [r * t.cos(), r * t.sin(), 4.];
+        ring.push([at(8., a), at(14., a), at(14., b)]);
+        ring.push([at(8., a), at(14., b), at(8., b)]);
+    }
+    let target = PreparedRoughingTarget::prepare(mesh(ring, 0.), 1e-5, &cancel).unwrap();
+    let simple = target
+        .shadow_simplified(2., 0., 3., 0.075, &mut 0, &cancel)
+        .unwrap();
+    let region = simple
+        .region
+        .prepare(ConstructionOptions::default())
+        .unwrap();
+    assert_eq!(region.summary().holes, 1);
+    for r in [8f64, 14.] {
+        for k in 0..64 {
+            let t = TAU * k as f64 / 64.;
+            assert!(
+                signed(&region, [r * t.cos(), r * t.sin()]) > 0.,
+                "r {r} at {t}"
+            );
+        }
+    }
+    assert!(signed(&region, [0., 0.]) < -7.);
+    // 0 keeps the exact shadow.
+    assert!(
+        target
+            .shadow_simplified(2., 0., 3., 0., &mut 0, &cancel)
+            .unwrap()
+            .report
+            .simplified
+            .is_none()
     );
 }

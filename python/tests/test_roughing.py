@@ -298,3 +298,42 @@ class RoughingTest(unittest.TestCase):
             self.assertFalse(changed[('main', 'rough')]['cache_hit'])
             self.assertTrue(changed[('other', 'other-rough')]['cache_hit'])
             self.assertEqual(heights, same)
+
+
+class MeshFinenessTest(unittest.TestCase):
+    """Roughing's moves do not follow a fine mesh's facets (issue #89)."""
+
+    def test_moves_do_not_grow_with_mesh_fineness_and_nothing_is_gouged(self):
+        from camlib.material import Options, SurfaceTarget, Verifier
+        from support import filleted_boss
+
+        counts, fine = {}, None
+        for error in (0.005, 0.05):
+            config = filleted_boss.roughing_job(error)
+            report = None
+            with Simulation(**config) as sim:
+                moves = 0
+                for update in sim.run_operations():
+                    if isinstance(update, OperationUpdate):
+                        if update.stage == "end":
+                            report = update.report
+                    else:
+                        moves += 1
+                if error == 0.005:
+                    fine = config["operations"][0].target
+                    material = Verifier(
+                        SurfaceTarget("boss", "1", fine, 0, source_enclosure="offset"), Options()
+                    ).check(sim.state)
+            counts[error] = moves
+            # On the fine mesh every layer's shadow was simplified (a quarter
+            # of the 0.3 mm radial allowance, from at least twice as many
+            # vertices); a coarse one may keep its exact shadow.
+            for layer in report["layers"]:
+                simplified = layer["shadow"]["simplified"]
+                self.assertEqual(simplified["tolerance_mm"], 0.075)
+                if error == 0.005:
+                    self.assertNotIn("reason", simplified)
+        # 27,258 against 3,050 facets: the same number of moves, give or take.
+        self.assertLess(abs(counts[0.005] - counts[0.05]), 0.15 * counts[0.05], counts)
+        self.assertEqual(material["gouge"]["definite_cells"], 0)
+        self.assertTrue(material["complete"])
