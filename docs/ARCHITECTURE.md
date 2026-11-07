@@ -104,9 +104,20 @@ whose old value doesn't match its own stock.
   volumes with per-cell findings. A `SurfaceTarget`'s upper bound over a
   cell takes only facets whose XY projection meets the cell (exact test), so
   a cell inside a through hole is bounded by the target's base. A cell that
-  straddles a vertical wall stays `possible`: its whole-cell stock bounds
-  hold both the wall and the cut-away side, and cannot tell a cut tangent to
-  the wall from one into it (issue #72). Lathe runs report
+  straddles a vertical wall is `possible` in the cell comparison: its
+  whole-cell stock bounds hold both the wall and the cut-away side, and cannot
+  tell a cut tangent to the wall from one into it. In a run, a `SurfaceTarget`
+  check also proves every motion against the target mesh
+  (`src/material/sweep_proof.rs`, issue #72). The tool is eroded by the
+  comparison tolerance less the mesh's surface error, and the exact section
+  contact of `flat::Index::sections_chord_clear` proves it clear. A possible
+  gouge cell that no unproven motion touches is then within tolerance. At such
+  cells "within tolerance" is a depth into the part (distance), not a vertical
+  height. The report itself stays the cell comparison, reproducible from the
+  stock alone; the record's `sweep_proof`, beside it, gives the proven and
+  unproven motions and the decided cells. `export.material_status(report,
+  sweep_proof)` is clear when the proof decides every possible-only gouge cell.
+  Lathe runs report
   `turning::ops::material_report` after every operation; there, gouges are
   excluded per move by the planner's exact checks.
 - **Export gate** (`camlib/export.py`): a program with unaccepted `violation`
@@ -147,7 +158,9 @@ whose old value doesn't match its own stock.
 ## What is proven and what is not
 
 - **Proven by camlib:** planned moves against stock, fixtures and machine
-  limits (where configured); stock against the target; posted output against
+  limits (where configured); stock against the target, and in a run every
+  motion against a surface target (no cut deeper than the comparison
+  tolerance into the part); posted output against
   the plan (decoded); finishing chords between samples (certified, not just
   sampled endpoints).
 - **Not proven:** posts have not been run on real machines (issue #20); camlib
@@ -161,11 +174,15 @@ whose old value doesn't match its own stock.
   `docs/posts.md` and issue #58.
 - Coarse stock cells inflate "possible" bounds. Compare certain values, or use a
   finer `cell_size_mm`. A finer grid does not decide cells along vertical walls
-  cut by the side of a cutter: those need sub-cell stock (the 3D stock, #1).
-  Stock and target approximations also add up: the stock sweep's
+  cut by the side of a cutter; the per-move proof does, but only when the
+  comparison tolerance exceeds the target mesh's `surface_error_mm` plus the
+  program's own resolution. At 3 decimals a tangent pass can sit up to
+  0.0007 mm into the wall, and a default CadQuery mesh carries about 0.0009 mm,
+  so the default 0.001 mm cannot prove tangent walls; 0.005 mm can. Stock and
+  target approximations also add up: the stock sweep's
   `SweepOptions.chord_error_mm` (0.002 mm by default) and the target's
-  `surface_error_mm` both widen "possible" bounds against the 0.001 mm
-  comparison tolerance.
+  `surface_error_mm` both widen "possible" bounds against the comparison
+  tolerance.
 - Different CadQuery/OCP versions tessellate the same solid differently. That
   is why the benchmark freezes its geometry (`bench/fixtures/`).
 - The Python extension targets CPython 3.12+ (abi3); the Rust MSRV is 1.88.

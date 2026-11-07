@@ -14,7 +14,7 @@ level `Setup` is the job setup (`camlib.jobs.Setup`).
 | `camlib.tools` | `EndMill`, `BallEndMill`, `BullEndMill`, `Drill`, `ChamferMill`, `ThreadMill`, `Tap`, `BoringBar`, `Torch`, `LaserHead`, `Neck`, `ToolAssembly`, `HolderSection` |
 | `camlib.planar` | `PlanarRegion` (`components`, reported `boundary_error_mm`), `Component`, `Boundary` (line/arc regions) |
 | `camlib.surface` | `SurfaceMesh` (triangle surfaces with their stated `surface_error_mm`) |
-| `camlib.simulation` | `StockSpec(min, max, cell_size, max_cells=)`, `SweepOptions` (chord error, tip step and work budgets of the stock sweep), `Simulation`, `ToolChangePosition`, `SimulationError`, `CamWarning`, low-level streaming |
+| `camlib.simulation` | `StockSpec(min, max, cell_size, max_cells=)`, `SweepOptions` (chord error, tip step and work budgets of the stock sweep), `Simulation`, `ToolChangePosition`, `ToolChangeTable`, `SimulationError`, `CamWarning`, low-level streaming |
 | `camlib.verification` | `StreamChecks(scene=, options=, material=, stock_contact=)`, `StockContactOptions` (resolution, work and finding limits), `Scene(id, revision, bodies, machine, work_to_machine)`, `Prism` (fixture or protected part; `z_error_mm`, `representation`), `MachineLimits` (tip travel, feed, acceleration, axis feeds), `MaterialCheck(target, after_operation=)` |
 | `camlib.playback` | `Player`, `Cursor` (operation, motion and `fraction` along it), `RecordedRun` (replay, seek, save) |
 | `camlib.post` | `Machine`, `ToolSetting`, `GCodeDialect`, `GCodePost`, `NativeGCodeDecoder`, `LoweringOptions`, `post_program`, `post_events` (post an event list you built) |
@@ -42,7 +42,10 @@ to one operation; see [Operations](operations.md#machining-limits-avoid-areas-an
 
 `Setup(tool_change=ToolChangePosition(gauge_z_mm=..., xy_mm=None))` declares
 where the machine leaves a new tool (in work coordinates; `xy_mm=None` keeps X
-and Y). Without it, each tool starts where the previous operation ended. See
+and Y). `Setup(tool_change=ToolChangeTable({tool_id: (x, y, z), ...}))` gives
+each tool's tip after its change instead (`ToolChangeTable.from_machine(machine)`
+takes them from a `"table"` machine's `position_after_mm`). Without either,
+each tool starts where the previous operation ended. See
 [Posts](posts.md) for the matching machine setting.
 
 `job.regenerate(cache)` yields motion, stock and operation updates as they are

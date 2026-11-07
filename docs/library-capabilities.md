@@ -58,8 +58,10 @@ combinations and impossible dimensions are rejected before any motion.
   the cut left the tool (`Setup(rapid_retracts=False)` keeps them fed).
 - Pocket links stay at depth only through stock proven cleared, when faster
   than leaving, or up to `max_stay_down_mm`.
-- `Setup(tool_change=ToolChangePosition(...))` declares where a new tool
-  arrives (e.g. M6 to Z home); its first move is checked like any rapid.
+- `Setup(tool_change=ToolChangePosition(...))` or `ToolChangeTable(...)`
+  declares where a new tool arrives (M6 to Z home, or each tool's table pose);
+  its first move is checked like any rapid, and posting refuses a setup that
+  disagrees with the machine.
 - Avoid areas and containment regions apply to every operation and to every
   rapid and link.
 
@@ -103,7 +105,12 @@ Also available:
 
 - **Material checks** (`MaterialCheck(target, after_operation=...)`): the
   actual stock after an operation (or at the end) against the part, reporting
-  gouges and remaining material.
+  gouges and remaining material. With a `SurfaceTarget`, every motion of the
+  run is also proven against the part, so cells along walls the tool ran
+  tangent to are decided when `Options(comparison_tolerance_mm=...)` exceeds
+  the mesh's surface error and the program's resolution (for example 0.005 mm
+  at 3 decimals); the material record's `sweep_proof` says which motions were
+  proven and which cells they decide.
 - **Machine dynamics** (`MachineLimits`, `Machine.max_normal_accel_mm_s2`,
   `max_axis_feed_mm_min`): curve feeds that need more acceleration or axis
   speed than declared are reported; with a `MotionPolicy` the program can be

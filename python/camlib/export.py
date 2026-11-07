@@ -55,6 +55,16 @@ def _material(report):
         text += f", residual {residual['assessment']} ({_cells(residual)})"
     if not report["complete"]:
         text += ", analysis incomplete"
+    proof = report.get("sweep_proof")
+    if proof is not None and proof["decided_cells"] != gouge["possible_only_cells"]:
+        if proof.get("unavailable"):
+            text += f"; per-move proof unavailable: {proof['unavailable']}"
+        else:
+            text += (
+                f"; per-move proof: {proof['unproven_moves']} of {proof['proven_moves'] + proof['unproven_moves']} "
+                f"moves not proven within {proof['tolerance_mm']} mm (a larger comparison_tolerance_mm can decide "
+                "cells along walls the tool runs tangent to)"
+            )
     return text
 
 
@@ -78,14 +88,23 @@ def gate(findings, accept):
         raise ExportRefused(refused, {f["status"] for f in refused})
 
 
-def material_status(report):
+def material_status(report, sweep_proof=None):
     """A material report's export status: a definite gouge is a violation; a
     possible gouge or an incomplete analysis is uncertain. Leftover material
-    is reported, not refused (a roughing setup leaves its allowance)."""
+    is reported, not refused (a roughing setup leaves its allowance).
+
+    ``sweep_proof``: the run's per-move gouge proof recorded beside the
+    report (issue #72). Possible-only gouge cells it decides (every motion
+    that touches them proven not to cut deeper than the tolerance into the
+    part) are within tolerance; the gouge is clear when it decides all of
+    them."""
     gouge = report["gouge"]
     if gouge["definite_cells"]:
         return "violation"
-    if gouge["possible_only_cells"] or not report["complete"]:
+    if not report["complete"]:
+        return "uncertain"
+    possible = gouge["possible_only_cells"]
+    if possible and (sweep_proof is None or sweep_proof["decided_cells"] != possible):
         return "uncertain"
     return "clear"
 

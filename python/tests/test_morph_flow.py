@@ -93,6 +93,49 @@ class MorphFlowTest(unittest.TestCase):
         self.assertNotIn("violation", statuses)
         self.assertGreater(removed, 0.5)
 
+    def test_flow_rows_are_not_repeated(self):
+        # A torus fillet's u lines: the bisection stops a rounding error short
+        # of the last line, which then came again (issue #87).
+        import math
+
+        import cadquery as cq
+        from camlib.cadquery import flow_paths
+
+        part = cq.Workplane("XY").box(80, 80, 10, centered=False)
+        part = part.faces(">Z").workplane().center(40, 40).circle(25).extrude(12)
+        solid = part.faces(">Z").edges().fillet(8).val()
+        torus = next(f for f in solid.Faces() if f.geomType() == "TORUS")
+        paths = flow_paths(torus, stepover_mm=1, along="u")
+        starts = [p.start_mm for p in paths]
+        self.assertEqual(len(paths), 9)
+        self.assertTrue(all(math.dist(a, b) > 0.5 for a, b in zip(starts, starts[1:])), starts)
+        self.assertAlmostEqual(starts[-1][0], 57, places=6)
+
+    def test_project_passes_that_meet_but_for_rounding_link(self):
+        # Project over two passes whose end and start coincide but for
+        # rounding (a 1e-11 mm link, issue #87): planned, the link left out.
+        config = roof().parallel_job()
+        tool, surface = config["tools"][0], config["operations"][0].surface
+        a = camlib.TracePath((1, 6), (camlib.TraceLine((23, 6)),))
+        b = camlib.TracePath((23 + 1e-11, 6), (camlib.TraceLine((1, 8)),))
+        op = camlib.Project(
+            "flow",
+            tool,
+            surface,
+            0,
+            12,
+            (a, b),
+            feed_mm_min=600,
+            plunge_mm_min=150,
+            spindle_rpm=12000,
+            tool_number=1,
+            length_register=1,
+            coolant="flood",
+        )
+        report, moves, statuses, removed = run(config, op)
+        self.assertNotIn("violation", statuses)
+        self.assertEqual(report["rows_completed"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

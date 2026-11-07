@@ -132,6 +132,10 @@ pub enum Check {
     Material {
         after_operation: Option<String>,
         report: Box<material::Report>,
+        /// The run's per-move gouge proof against a surface target (#72):
+        /// the possible-only gouge cells of `report` it decides.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sweep_proof: Option<material::SweepProofReport>,
     },
 }
 /// The internally tagged form, decoded without buffering: records are
@@ -238,16 +242,17 @@ impl<'de> Deserialize<'de> for Check {
                         })
                     }
                     "material" => {
-                        let (mut after, mut report) = (None, None);
+                        let (mut after, mut report, mut proof) = (None, None, None);
                         while let Some(key) = map.next_key::<std::borrow::Cow<'de, str>>()? {
                             once(&key)?;
                             match key.as_ref() {
                                 "after_operation" => after = map.next_value()?,
                                 "report" => report = Some(map.next_value()?),
+                                "sweep_proof" => proof = map.next_value()?,
                                 other => {
                                     return Err(A::Error::unknown_field(
                                         other,
-                                        &["kind", "after_operation", "report"],
+                                        &["kind", "after_operation", "report", "sweep_proof"],
                                     ));
                                 }
                             }
@@ -255,6 +260,7 @@ impl<'de> Deserialize<'de> for Check {
                         Ok(Check::Material {
                             after_operation: after,
                             report: report.ok_or_else(|| A::Error::missing_field("report"))?,
+                            sweep_proof: proof,
                         })
                     }
                     other => Err(A::Error::unknown_variant(
@@ -564,6 +570,7 @@ impl Binding {
             Check::Material {
                 after_operation,
                 report: r,
+                sweep_proof,
             } => {
                 let i = self.material_index(after_operation)?;
                 let c = &self.config.material[i];
@@ -626,6 +633,13 @@ impl Binding {
                                     || r.stats.unexamined_cells != 0))
                     })
                     || r.findings.iter().any(|f| f.cell_index as usize >= nx * ny)
+                    // A proof only for a surface target, deciding at most
+                    // the report's possible-only gouge cells.
+                    || sweep_proof.as_ref().is_some_and(|p| {
+                        !matches!(c.target, material::Definition::Surface(_))
+                            || p.decided_cells > r.gouge.possible_only_cells
+                            || p.tolerance_mm != c.options.comparison_tolerance_mm
+                    })
                 {
                     return Err("material verification source, cursor or coverage mismatch".into());
                 }
@@ -733,6 +747,10 @@ impl Tracker {
 pub(crate) struct Runtime {
     scene: Option<verification::PreparedScene>,
     targets: Vec<material::PreparedMaterial>,
+    /// Per surface target: every motion proven against it (#72).
+    proofs: Vec<Option<material::SweepProof>>,
+    /// The stream's curve tolerance (validated every motion already).
+    sweep_tolerance_mm: f64,
     pub tracker: Tracker,
 }
 impl Runtime {
@@ -744,6 +762,21 @@ impl Runtime {
     }
     pub fn prepare(manifest: &StreamManifest, completed: u64) -> Result<Self, String> {
         let binding = Arc::new(Binding::new(manifest)?);
+        let never = std::sync::atomic::AtomicBool::new(false);
+        let proofs = binding
+            .config
+            .material
+            .iter()
+            .map(|c| match &c.target {
+                // The motions are proven only from the raw stock on: a
+                // resumed stream decides no cell (history incomplete).
+                material::Definition::Surface(t) => {
+                    material::SweepProof::new(t, c.options, &binding.stock, completed == 0, &never)
+                        .map(Some)
+                }
+                material::Definition::Prismatic(_) => Ok(None),
+            })
+            .collect::<Result<_, String>>()?;
         Ok(Self {
             scene: binding
                 .config
@@ -757,17 +790,23 @@ impl Runtime {
                 .iter()
                 .map(|c| c.target.prepare(c.options))
                 .collect::<Result<_, _>>()?,
+            proofs,
+            sweep_tolerance_mm: manifest.sweep.tolerance_mm,
             tracker: Tracker::new(binding, completed),
         })
     }
     pub fn motion(
-        &self,
+        &mut self,
         stock: &Stock,
         tool: &PreparedAssembly,
         motion: &Motion,
         completed: u64,
         cancel: &impl CancelSignal,
     ) -> Result<Option<Vec<u8>>, String> {
+        let tolerance = self.sweep_tolerance_mm;
+        for proof in self.proofs.iter_mut().flatten() {
+            proof.motion(tool, motion, tolerance, cancel)?;
+        }
         if !self.tracker.binding.config.motion_checks() {
             return Ok(None);
         }
@@ -870,7 +909,13 @@ impl Runtime {
                 manifest_sha256: b.manifest_sha256.clone(),
             }),
         };
-        let report = self.targets[i].check(stock, &context, cancel)?;
+        let (report, sweep_proof) = match (&self.targets[i], &self.proofs[i]) {
+            (material::PreparedMaterial::Surface(t), Some(proof)) => {
+                let (report, proof) = t.check_proven(stock, &context, proof, cancel)?;
+                (report, Some(proof))
+            }
+            (target, _) => (target.check(stock, &context, cancel)?, None),
+        };
         let mut progress = self.tracker.progress.clone();
         progress.records += 1;
         progress.material_reports += 1;
@@ -880,6 +925,7 @@ impl Runtime {
             check: Check::Material {
                 after_operation: b.config.material[i].after_operation.clone(),
                 report: Box::new(report),
+                sweep_proof,
             },
         })?;
         self.tracker.accept(&bytes, completed, None)?;

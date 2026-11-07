@@ -83,7 +83,16 @@ _EXPORTS = {
         "tools",
     ),
     **dict.fromkeys(
-        ("Simulation", "StockSpec", "SweepOptions", "SimulationError", "CamWarning", "ToolChangePosition"), "simulation"
+        (
+            "Simulation",
+            "StockSpec",
+            "SweepOptions",
+            "SimulationError",
+            "CamWarning",
+            "ToolChangePosition",
+            "ToolChangeTable",
+        ),
+        "simulation",
     ),
     **dict.fromkeys(("Player", "Cursor", "RecordedRun"), "playback"),
     **dict.fromkeys(("Limits", "AvoidArea"), "limits"),

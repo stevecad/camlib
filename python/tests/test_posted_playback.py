@@ -385,32 +385,41 @@ class PostedPlaybackTest(unittest.TestCase):
             self.assertEqual(run.status()['available'], 0)
             self.assertLessEqual(run.status()['retained_bytes'], 1024)
 
-    def test_tool_pose_reset_is_rejected_without_a_fabricated_sweep(self):
-        p, options = config()
-        second = replace(
-            options['machine'].tools[0], tool='second', number=3, length_register=8, position_after_mm=(0, 0, 12)
-        )
-        tool = replace(p.tools[0], id='second')
+    def test_tool_pose_reset_is_the_table_premise_without_a_fabricated_sweep(self):
+        # A table machine's tool change leaves the new tool at its declared
+        # pose: the replay accepts that pose as the premise it is (as for
+        # z_home, #65), without inserting a sweep along the unmodelled change
+        # route. A plan that disagrees with the table is still refused.
         from camlib.motion import ToolChange
 
-        events = (
-            *p.events[:3],
-            p.events[4],
-            Spindle(0),
-            ToolChange('second', 3, 8, (0, 0, 12)),
-            Spindle(1200),
-            Motion(2, 'second', 'second', Line((0, 0, 12), (0, 0, 3)), 1200),
-        )
-        p = replace(p, tools=(*p.tools, tool), events=events)
-        options['machine'] = replace(options['machine'], tools=(*options['machine'].tools, second))
+        def program(planned):
+            p, options = config()
+            second = replace(
+                options['machine'].tools[0], tool='second', number=3, length_register=8, position_after_mm=(0, 0, 12)
+            )
+            tool = replace(p.tools[0], id='second')
+            events = (
+                *p.events[:3],
+                p.events[4],
+                Spindle(0),
+                ToolChange('second', 3, 8, planned),
+                Spindle(1200),
+                Motion(2, 'second', 'second', Line(planned, (0, 0, 3)), 1200),
+            )
+            p = replace(p, tools=(*p.tools, tool), events=events)
+            options['machine'] = replace(options['machine'], tools=(*options['machine'].tools, second))
+            return p, options
+
+        p, options = program((0, 0, 12))
         with PostedRun(p, lowering=LoweringOptions(), batch_size=1, **options) as run:
-            with self.assertRaisesRegex(SimulationError, 'continuity|discontinuous'):
+            run.wait()
+            # Exactly the two planned motions: nothing fabricated.
+            self.assertEqual(run.status()['available'], 2)
+            self.assertEqual(tuple(run.posted_motion(1)['motion']['curve']['start']), (0, 0, 12))
+        p, options = program((0, 0, 10))
+        with PostedRun(p, lowering=LoweringOptions(), batch_size=1, **options) as run:
+            with self.assertRaisesRegex(SimulationError, 'tool-change pose deviation'):
                 run.wait()
-            self.assertEqual(run.status()['available'], 1)
-            self.assertGreaterEqual(run.status()['posting']['checked_motions'], 2)
-            with self.assertRaises(NotReady):
-                run.posted_motion(1)
-            self.assertFalse(run.posted_motion(1, computed=True)['stock_committed'])
 
     def test_native_operation_events_reuse_planner_and_cleanup_both_processes(self):
         from test_operations import small

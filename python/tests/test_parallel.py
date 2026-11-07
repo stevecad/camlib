@@ -6,6 +6,7 @@ from pathlib import Path
 import unittest
 from unittest import mock
 
+import camlib
 from camlib import Engine
 from camlib.cadquery import export_surface_mesh
 from camlib.operations import Facing
@@ -165,3 +166,77 @@ class ParallelTest(unittest.TestCase):
             with self.assertRaisesRegex(SimulationError, "parallel finishing"):
                 list(sim.run_operations())
             self.assertEqual(sim.state.completed, 0)
+
+
+class ActualDepthTest(unittest.TestCase):
+    """A part taller than the flutes (issue #88): parallel passes are refused
+    only where they really cut deeper than the cutting length."""
+
+    def setUp(self):
+        import cadquery as cq
+
+        from camlib.cadquery import export_surface_mesh
+
+        # A 40 x 40 x 4 plate with a 10 x 10 mesa 16 mm tall (top Z 20).
+        part = cq.Workplane("XY").box(40, 40, 4, centered=False)
+        part = part.union(cq.Workplane("XY").box(10, 10, 20, centered=False).translate((15, 15, 0)))
+        self.mesh = export_surface_mesh(part.val())
+        holder = (camlib.HolderSection(40, 80, 10, 10),)
+        self.mill = camlib.ToolAssembly(
+            "em8", camlib.EndMill("em8", diameter=8, flute_length=25, overall_length=60), 40, 80, holder
+        )
+        self.ball = camlib.ToolAssembly(
+            "b6", camlib.BallEndMill("b6", diameter=6, flute_length=18, overall_length=60), 40, 80, holder
+        )
+        self.cut = dict(feed_mm_min=1200, plunge_mm_min=300, spindle_rpm=9000, coolant="flood")
+
+    def run_ops(self, operations):
+        config = dict(
+            stock=camlib.StockSpec((-1, -1, 0), (41, 41, 20.5), 0.5),
+            tools=(self.mill, self.ball),
+            operations=operations,
+            revision="1",
+            initial_position_mm=(0, 0, 40),
+        )
+        moves = 0
+        with Simulation(**config) as sim:
+            for update in sim.run_operations():
+                moves += hasattr(update, "motion")
+        return moves
+
+    def finish(self):
+        return camlib.Parallel(
+            "finish",
+            self.ball,
+            self.mesh,
+            0,
+            3,
+            30,
+            tool_number=2,
+            length_register=2,
+            **self.cut,
+        )
+
+    def test_passes_after_roughing_reach_only_what_the_flutes_cut(self):
+        rough = camlib.Roughing(
+            "rough",
+            self.mill,
+            self.mesh,
+            top_z_mm=20.5,
+            floor_z_mm=4,
+            stepdown_mm=4,
+            clearance_z_mm=30,
+            clearing=camlib.OffsetClearing(3),
+            radial_allowance_mm=0.3,
+            bottom_allowance_mm=0.2,
+            tool_number=1,
+            length_register=1,
+            **self.cut,
+        )
+        # The stock top stays 20.5 over the mesa (20.5 mm above the floor,
+        # past the 18 mm flutes), but no pass cuts more than the flutes.
+        self.assertGreater(self.run_ops((rough, self.finish())), 100)
+
+    def test_a_pass_really_deeper_than_the_flutes_is_refused(self):
+        with self.assertRaisesRegex(Exception, "cuts deeper than the cutting length 18"):
+            self.run_ops((self.finish(),))
