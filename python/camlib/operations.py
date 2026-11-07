@@ -1519,7 +1519,15 @@ class Trace:
 
 @dataclass(frozen=True)
 class TrochoidalSlot:
-    """Straight capsule slot with bounded steady cutting-edge engagement.
+    """Slot of constant width with bounded steady cutting-edge engagement.
+
+    Straight from ``start_mm`` to ``end_mm``, or along ``path_mm`` (pass None
+    for both points): an open centreline of lines and arcs, vertices
+    ``(x, y, bulge_to_next)`` with bulge = tan(sweep / 4) in [-1, 1] (at most a
+    half turn per arc, as in ``camlib.planar.Boundary``) and the last bulge 0.
+    Orbits sit at every vertex; the step follows the outside of each bend, and
+    an arc bending toward the orbit side needs a radius above the orbit radius
+    (width/2 - tool radius), otherwise the slot is refused.
 
     The plunge and first orbit at each depth use entry_feed_mm_min and are
     explicitly outside the engagement limit. Width must be in (D, 2D].
@@ -1552,11 +1560,26 @@ class TrochoidalSlot:
     # clearance_z_mm for both. Required: stock top < feed <= retract <= clearance.
     retract_z_mm: float | None = None
     feed_z_mm: float | None = None
+    path_mm: tuple | None = field(default=None, kw_only=True)
+
+    def __post_init__(self):
+        if self.path_mm is not None:
+            object.__setattr__(self, "path_mm", tuple(tuple(float(v) for v in vertex) for vertex in self.path_mm))
+            if any(len(vertex) != 3 for vertex in self.path_mm):
+                raise ValueError("TrochoidalSlot path_mm vertices are (x, y, bulge_to_next)")
+        if (self.path_mm is None) == (self.start_mm is None and self.end_mm is None) or (
+            (self.start_mm is None) != (self.end_mm is None)
+        ):
+            raise ValueError(
+                "TrochoidalSlot needs either start_mm and end_mm (straight) or path_mm (and None for both)"
+            )
 
     def to_dict(self):
         result = {field: getattr(self, field) for field in self.__dataclass_fields__}
         result.update(kind="trochoidal_slot", tool=getattr(self.tool, "id", self.tool))
-        for key in ('retract_z_mm', 'feed_z_mm'):
+        for key in ('retract_z_mm', 'feed_z_mm', 'start_mm', 'end_mm', 'path_mm'):
             if result[key] is None:
                 result.pop(key)
+        if "path_mm" in result:
+            result["path_mm"] = [list(vertex) for vertex in result["path_mm"]]
         return result

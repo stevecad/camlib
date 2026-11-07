@@ -35,7 +35,7 @@ See [Operations](operations.md) for parameters. Summary:
 | Drilling, pecking | Tip or full-diameter depth; full-retract or chip-break pecks; dwell at depth (G4 or G82); canned cycles G81/G82/G83/G73, decoded and checked move by move |
 | Reaming, boring | Feed out (G85), dwell (G89), spindle stop and rapid out (G86) or fine boring with an oriented stop and shift (G76, or M19 and explicit moves), as canned cycles where declared; pilot hole proven open first; every shift proven inside the bore |
 | Bore milling | Helical full-hole clearing |
-| Trochoidal slot | Straight slots, width between 1x and 2x tool diameter |
+| Trochoidal slot | Straight slots, or along a centreline of lines and arcs; width between 1x and 2x tool diameter |
 | Thread milling | Internal/external helical threads; hole or boss proven in the stock first |
 | Tapping | Rigid right- and left-hand tapping cycles (G33.1 under M3/M4, or G84/G74 and G80 where declared); drilled hole proven first |
 | Chamfer | Top edges, depth from the chamfer tool's angle and tip; stepped widths, leads |
@@ -44,7 +44,7 @@ See [Operations](operations.md) for parameters. Summary:
 | Plasma and laser cutting | Sheet parts with holes: kerf compensation (computed or G41/G42 wear), arc/line leads from the scrap, overcut or negative overburn, pierce clearance (center pierce in small holes), inner features and nested parts first, small-hole feed and THC off, micro-joints, fixed or programmed pierce/cut heights; every lead, kerf path and pierce proven clear of the parts; sheet simulated cut through |
 | Turning (lathe) | Facing, outside roughing (axial passes, every diameter left at its allowance), finishing, external, internal and face grooving, parting off, external and internal single-point threading, drilling on the axis (pecks), inside roughing and finishing (boring bars) of a turned profile and bore with insert/holder/bar geometry; every move checked against the part, its bore, the stock and the chuck; axisymmetric stock with outer and inner bounds; constant surface speed (G96 with its G50/D limit) and feed per revolution (G95/G99); G18 output, radius or diameter X, T0101 words; a lathe setup is an ordinary `Setup` streamed like every run (per-move stock, playback with partial moves, cancellation, posted replay on the stock) with a material check (leftover material against the part) after each operation |
 
-Not supported: trochoidal curved slots, undercuts,
+Not supported: undercuts,
 4th/5th axis. Unsupported tool/operation
 combinations and impossible dimensions are rejected before any motion.
 

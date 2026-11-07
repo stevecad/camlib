@@ -342,11 +342,34 @@ inside a hole (by diameter / (diameter − tool diameter)).
 
 ## Trochoidal slot: `TrochoidalSlot`
 
-Required: `start_mm`, `end_mm`, `width_mm`, `top_z_mm`, `floor_z_mm`,
-`stepdown_mm`, `clearance_z_mm`. Straight slots whose width is more than the
-tool diameter and at most twice it, cut with looping low-engagement passes.
-`entry_feed_mm_min` (150) is the entry feed. Curved slots: use `Trace` with a
-tool of the slot width, or a `Pocket` of the slot outline.
+Required: `start_mm` and `end_mm` (straight), or `path_mm` (along a
+centreline; pass `None` for both points), and `width_mm`, `top_z_mm`,
+`floor_z_mm`, `stepdown_mm`, `clearance_z_mm`. Slots whose width is more than
+the tool diameter and at most twice it, cut with looping low-engagement passes:
+full orbits at stations along the centreline, joined by links on the
+centreline's offset. `entry_feed_mm_min` (150) is the entry feed.
+
+```python
+# An S-shaped slot: two half turns of radius 7, tangent where they meet.
+TrochoidalSlot("s", tool, None, None, 6, 10, 8, 1, 12,
+               path_mm=((6, 12, 1), (20, 12, -1), (34, 12, 0)), ...)
+```
+
+- `path_mm` vertices are `(x, y, bulge_to_next)`, bulge = tan(sweep / 4) in
+  [-1, 1] (at most a half turn per arc, as in `Boundary`); the last bulge is 0.
+- The engagement limit holds on curves too: after each orbit, everything left
+  lies outside its disk, and the next link and orbit stay within the chord to
+  the next station plus the orbit radius, so `max_engagement_deg` bounds the
+  exposed edge angle whatever the curvature.
+- The step follows the outside of each bend, where the gap between two orbits'
+  disks is widest, so the swept width stays within `boundary_tolerance_mm` of
+  the slot width.
+- Every vertex gets an orbit. At a corner, a straight link inside that orbit's
+  disk joins the two offsets (`corner_links` in the report).
+- Links run on the left of the centreline for `clockwise=True`, on the right
+  otherwise. An arc bending toward that side needs a radius above the orbit
+  radius (width/2 − tool radius), otherwise the slot is refused, naming the
+  radius. Reverse `clockwise`, or use a narrower slot or a larger tool.
 
 ## V-carve: `VCarve`
 
@@ -815,6 +838,6 @@ gives the `effective_diameter_mm` it used. camlib does not pick cutting data.
 
 ## Not supported
 
-Trochoidal curved slots, undercuts (other than thread
+Undercuts (other than thread
 grooves and the stopped boring bar's shift) and 4/5-axis motion. Surfaces must
 be reachable from above (a part seen as a height map).
