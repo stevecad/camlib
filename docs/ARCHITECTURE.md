@@ -106,11 +106,14 @@ whose old value doesn't match its own stock.
   a cell inside a through hole is bounded by the target's base. A cell that
   straddles a vertical wall is `possible` in the cell comparison: its
   whole-cell stock bounds hold both the wall and the cut-away side, and cannot
-  tell a cut tangent to the wall from one into it. In a run, a `SurfaceTarget`
-  check also proves every motion against the target mesh
-  (`src/material/sweep_proof.rs`, issue #72). The tool is eroded by the
-  comparison tolerance less the mesh's surface error, and the exact section
-  contact of `flat::Index::sections_chord_clear` proves it clear. A possible
+  tell a cut tangent to the wall from one into it. In a run, a material check
+  also proves every motion against the target (`src/material/sweep_proof.rs`,
+  issues #72 and #106). The tool is eroded by the comparison tolerance less the
+  target's declared error. Against a `SurfaceTarget` mesh, the exact section
+  contact of `flat::Index::sections_chord_clear` proves it clear. Against a
+  prismatic `Target`, the floor is checked exactly and the walls by the region's
+  1-Lipschitz signed clearance on bisected chords; the boundary error and floor
+  error are the declared error. A possible
   gouge cell that no unproven motion touches is then within tolerance. At such
   cells "within tolerance" is a depth into the part (distance), not a vertical
   height. The report itself stays the cell comparison, reproducible from the

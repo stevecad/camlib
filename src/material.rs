@@ -326,6 +326,18 @@ impl PreparedTarget {
     ) -> Result<Report, String> {
         check_material(self, heights, context, None, cancel).map(|(r, _)| r)
     }
+    /// As `check`, plus the per-move proof's account of the possible-only
+    /// gouge cells it decides (the report itself is unchanged).
+    pub(crate) fn check_proven(
+        &self,
+        heights: &impl HeightRead,
+        context: &Context,
+        proof: &SweepProof,
+        cancel: &impl CancelSignal,
+    ) -> Result<(Report, SweepProofReport), String> {
+        let (report, decided) = check_material(self, heights, context, Some(proof), cancel)?;
+        Ok((report, proof.report(decided)))
+    }
 }
 
 trait MaterialGeometry {

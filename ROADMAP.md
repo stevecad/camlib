@@ -35,7 +35,7 @@ is ordered by real dependency, not by size:
 
 ## Phase 1: Correctness
 
-- [ ] #106 Material check: per-move gouge proof for prismatic targets
+No open correctness issues.
 
 ## Phase 2: Complete milling
 
@@ -140,3 +140,4 @@ These can run in parallel with any phase.
 - [x] #87 Project along flow_paths(along="u") fails: duplicate last row gives a zero-length link
 - [x] #88 steep_and_shallow: Waterline and Parallel floor rules conflict for parts taller than the cutting length
 - [x] #72 Material check stays uncertain on a correctly machined prismatic part (wall cells, through-hole interiors)
+- [x] #106 Material check: per-move gouge proof for prismatic targets
