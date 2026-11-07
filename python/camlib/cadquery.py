@@ -1142,6 +1142,8 @@ def flow_paths(face, *, stepover_mm, along="u", sample_mm=0.5, zigzag=True):
     previous (bisection on the parameter, the XY gap measured at
     ``sample_mm`` along both lines). Project then follows the paths on the
     surface mesh with its own proven clearance; the face only shapes them.
+    A line that coincides with the previous one (a closed face's seam, or
+    the last line reached but for rounding) is not repeated.
     """
     from camlib.operations import TracePath, TraceLine
 
@@ -1170,9 +1172,15 @@ def flow_paths(face, *, stepover_mm, along="u", sample_mm=0.5, zigzag=True):
 
     lines = [line(v0, n)]
     t = v0
+    # A line within this of the previous one adds no pass (the bisection can
+    # stop a rounding error short of the last line).
+    same = 1e-6
     while t < v1:
         lo, hi = t, v1
-        if gap(lines[-1], line(v1, n)) <= stepover_mm:
+        last = line(v1, n)
+        if gap(lines[-1], last) <= same:
+            break
+        if gap(lines[-1], last) <= stepover_mm:
             t = v1
         else:
             for _ in range(40):
@@ -1184,6 +1192,10 @@ def flow_paths(face, *, stepover_mm, along="u", sample_mm=0.5, zigzag=True):
             if lo == t:
                 raise ValueError("flow lines cannot meet the stepover (degenerate face parameterization)")
             t = lo
+            if gap(line(t, n), last) <= same:
+                # The farthest line within the stepover is the last one, but
+                # for rounding: take the last one itself.
+                t = v1
         lines.append(line(t, n))
     paths = []
     for k, points in enumerate(lines):
