@@ -37,9 +37,12 @@ machine = Machine(
 Key settings:
 
 - **`tools`**: the machine tool table. `position_after_mm` is where the tool
-  tip is after a tool change; the next operation travels at the higher of
-  that height and its clearance before it descends (no rapid moves sideways
-  while descending), so the declared pose must match the real machine. With
+  tip is after a tool change (`tool_change_position_mode="table"`); the next
+  operation travels at the higher of that height and its clearance before it
+  descends (no rapid moves sideways while descending), so the declared pose
+  must match the real machine. Plan a multi-tool job with
+  `Setup(tool_change=ToolChangeTable.from_machine(machine))` so each new tool
+  starts at its table pose (see [Getting started](getting-started.md#more-than-one-tool)). With
   `tool_change_position_mode="preserve_tip"` the tip is instead assumed to
   return to where it was. With `tool_change_position_mode="z_home"` and
   `tool_change_home_z_mm` (the spindle gauge line's machine Z after M6), M6
@@ -47,7 +50,8 @@ Key settings:
   job with the matching `Setup(tool_change=ToolChangePosition(gauge_z_mm=...))`
   (the same height in work coordinates: home Z minus the work offset Z), so
   each new tool's first move comes down from there and is checked like any
-  other rapid.
+  other rapid. `job.post` and `job.post_nc` refuse a setup whose tool-change
+  pose disagrees with the machine's, before planning.
 - **`diameter_register`** (per `ToolSetting`): the D register holding the
   tool's wear, written with `G41`/`G42` for `Contour(compensation="wear")`.
 - **`decimals`**: output precision. 3 mm / 4 inch is what FANUC/Haas-class

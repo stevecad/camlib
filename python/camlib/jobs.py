@@ -436,7 +436,10 @@ class Job:
 
         accept = accepted(accept)
 
+        from .posted import check_tool_change_pose
+
         setup = self.compile().setup(setup_id)
+        check_tool_change_pose(machine, setup.config)
         if (setup.config.get('verification') or {}).get('material'):
             raise ValueError('material checks need the posted stock replay: use Job.post')
         findings = []
@@ -495,9 +498,10 @@ class Job:
         return PostedProgram('', lines, motions, tuple(findings), str(target), **release)
 
     def post(self, setup_id, *, machine, cache=None, **options):
-        from .posted import PostedRun, OperationEvents
+        from .posted import PostedRun, OperationEvents, check_tool_change_pose
 
         setup = self.compile().setup(setup_id)
+        check_tool_change_pose(machine, setup.config)
         simulation = Simulation(**setup.simulation_options(cache), executable=options.get('executable'))
         source = OperationEvents(simulation, reuse_active_tool=True, on_operation=options.pop('on_operation', None))
         try:

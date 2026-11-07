@@ -120,6 +120,48 @@ Lathe setups work the same way: a `Setup` with turning stock and
 `turning=camlib.TurningSetup(...)` (see [Operations](operations.md), Turning)
 records, plays back, posts and exports through these same calls.
 
+## More than one tool
+
+The job above uses one tool, so the tip simply starts where the machine is.
+With several tools the planner must start each new tool where the machine's
+tool change really leaves it, and the machine and the setup must say the same
+thing. Choose the pair that matches your controller:
+
+| Machine (`tool_change_position_mode`) | Setup (`Setup(tool_change=...)`) |
+|---|---|
+| `"table"`: each `ToolSetting.position_after_mm` is the tip after its change | `ToolChangeTable.from_machine(machine)` |
+| `"z_home"`: M6 sends the gauge line to `tool_change_home_z_mm`, XY stays | `ToolChangePosition(gauge_z_mm=<home Z minus work offset Z>)` |
+| `"preserve_tip"`: the tip stays where it was | `None` (the default) |
+
+```python
+from camlib import Drill, Drilling, ToolChangeTable
+
+drill = ToolAssembly("drill5", Drill("drill5", diameter=5, point_angle=118,
+                     flute_length=20, overall_length=60), 40, 80,
+                     (HolderSection(40, 80, 10, 10),))
+holes = Drilling("holes", drill, ((10, 10), (30, 20)), 4.0, 15,
+                 feed_mm_min=150, retract_feed_mm_min=600, spindle_rpm=6000,
+                 coolant="flood", tool_number=2, length_register=2)
+
+# Where the machine's tool change leaves each tool, measured on your machine
+# (here: the gauge line 100 mm above the work origin, over X0 Y0).
+machine = Machine("My mill", (
+    ToolSetting.for_tool(mill, number=1, length_register=1,
+                         position_after_mm=(0, 0, 100 - mill.gauge_length_mm)),
+    ToolSetting.for_tool(drill, number=2, length_register=2,
+                         position_after_mm=(0, 0, 100 - drill.gauge_length_mm)),
+    ), **machine_settings, tool_change_position_mode="table")
+
+setup = Setup("top", stock=..., tools=(mill, drill),
+              operations=(face, pocket, holes), initial_position_mm=(0, 0, 15),
+              tool_change=ToolChangeTable.from_machine(machine))
+```
+
+`machine_settings` stands for the dialect, units, limits and capabilities of
+step 5. `job.post` and `job.post_nc` refuse a setup that disagrees with the
+machine before planning, naming the tool, both poses and the setup to declare.
+Each posted tool change is also decoded and checked against the plan.
+
 ## Reading the results
 
 Replay the run to the end to see the final stock and check summary:

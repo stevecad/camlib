@@ -96,6 +96,58 @@ class ToolChangePosition:
 
 
 @dataclass(frozen=True)
+class ToolChangeTable:
+    """Where a tool change leaves each tool: its tip in work coordinates, per
+    tool assembly id. This is the machine behaviour of posts with
+    ``Machine(tool_change_position_mode="table")``, where each
+    ``ToolSetting.position_after_mm`` states the tip after the change;
+    ``ToolChangeTable.from_machine(machine)`` takes the poses from there.
+    Operations with a new tool start at its pose."""
+
+    tips_mm: tuple
+
+    def __post_init__(self):
+        items = self.tips_mm.items() if isinstance(self.tips_mm, dict) else self.tips_mm
+        tips = tuple(sorted((str(tool), tuple(tip)) for tool, tip in items))
+        if (
+            not tips
+            or len({tool for tool, _ in tips}) != len(tips)
+            or not all(
+                len(tip) == 3 and all(isinstance(v, (int, float)) and math.isfinite(v) and abs(v) <= 1e6 for v in tip)
+                for _, tip in tips
+            )
+        ):
+            raise ValueError("a tool-change table needs one finite tip position per tool")
+        object.__setattr__(self, "tips_mm", tips)
+
+    @classmethod
+    def from_machine(cls, machine, tools=None):
+        """The poses of a ``tool_change_position_mode="table"`` machine's tool
+        table, for ``tools`` (assembly ids or assemblies; default: all)."""
+        if machine.tool_change_position_mode != "table":
+            raise ValueError(
+                f"the machine's tool changes are {machine.tool_change_position_mode!r}, not a table of poses"
+            )
+        wanted = None if tools is None else {getattr(t, "id", t) for t in tools}
+        # A machine lists each tool assembly once (Machine checks it).
+        tips = {
+            s.tool: tuple(float(v) for v in s.position_after_mm)
+            for s in machine.tools
+            if wanted is None or s.tool in wanted
+        }
+        missing = None if wanted is None else wanted - set(tips)
+        if missing:
+            raise ValueError(f"the machine's tool table has no entry for tool(s) {sorted(missing)}")
+        return cls(tips)
+
+    def tip(self, tool):
+        return dict(self.tips_mm).get(tool)
+
+    def to_dict(self):
+        return {"tips_mm": {tool: [float(v) for v in tip] for tool, tip in self.tips_mm}}
+
+
+@dataclass(frozen=True)
 class SweepOptions:
     tolerance_mm: float = 1e-5
     chord_error_mm: float = 0.002
@@ -543,7 +595,15 @@ class StockState:
         self._gauges = {t["id"]: t["gauge_length_mm"] for t in m["tools"]}
         change = m.get("tool_change")
         if change is not None and (
-            set(change) - {"gauge_z_mm", "xy_mm"} or not math.isfinite(change["gauge_z_mm"]) or m["version"] != 1
+            m["version"] != 1
+            or (
+                set(change) != {"tips_mm"}
+                or not change["tips_mm"]
+                or not set(change["tips_mm"]) <= set(self._gauges)
+                or not all(len(t) == 3 and all(map(math.isfinite, t)) for t in change["tips_mm"].values())
+            )
+            if "tips_mm" in change
+            else (set(change) - {"gauge_z_mm", "xy_mm"} or not math.isfinite(change["gauge_z_mm"]))
         ):
             raise ProtocolError("invalid tool change pose")
         self._tool_change = change
@@ -555,6 +615,10 @@ class StockState:
         change = self._tool_change
         if change is None:
             return None
+        if "tips_mm" in change:
+            if tool not in change["tips_mm"]:
+                raise ProtocolError(f"the tool-change table declares no position after a change to tool {tool}")
+            return tuple(float(v) for v in change["tips_mm"][tool])
         position = self.position if position is None else position
         xy = change.get("xy_mm") or position[:2]
         return (float(xy[0]), float(xy[1]), change["gauge_z_mm"] - self._gauges[tool])
@@ -758,13 +822,16 @@ class StockState:
                 last_motion,
                 limit,
                 None
-                if self._tool_change is None
+                if self._tool_change is None or "tips_mm" in self._tool_change
                 else (
                     float(self._tool_change["gauge_z_mm"]),
                     None if self._tool_change.get("xy_mm") is None else tuple(self._tool_change["xy_mm"]),
                     self._gauges,
                 ),
                 self._last_tool,
+                None
+                if self._tool_change is None or "tips_mm" not in self._tool_change
+                else {k: tuple(map(float, v)) for k, v in self._tool_change["tips_mm"].items()},
             )
         except (ValueError, TypeError) as error:
             raise ProtocolError(str(error)) from error

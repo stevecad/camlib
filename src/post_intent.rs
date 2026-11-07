@@ -670,7 +670,7 @@ impl IntentChecker {
                 let bound = (0..3).map(|k| (ap[k] - bp[k]).powi(2)).sum::<f64>().sqrt();
                 if bound > self.settings.tolerance_mm {
                     return Err(format!(
-                        "event {index}: decoded tool-change pose deviation {bound}mm exceeds output tolerance"
+                        "event {index}: decoded tool-change pose deviation {bound}mm exceeds output tolerance: the plan starts tool {a} at {ap:?} after its change, the machine leaves it at {bp:?}; plan with the machine's tool-change pose (Setup.tool_change: ToolChangeTable.from_machine for a table, ToolChangePosition for Z home, None to keep the tip)"
                     ));
                 }
                 self.check_point(*bp)?;

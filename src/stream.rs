@@ -142,15 +142,29 @@ pub struct StreamManifest {
     /// A lathe run's turning setup (with turning stock); None otherwise.
     pub turning: Option<TurnSetup>,
 }
-/// The machine's tool-change pose, in work coordinates: the spindle gauge
-/// line at `gauge_z_mm` (e.g. Z home, where M6 sends it), over `xy_mm` or
-/// over the position where the change was called.
+/// The machine's tool-change pose, in work coordinates.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ToolChangePose {
+    /// The spindle gauge line at `gauge_z_mm` (e.g. Z home, where M6 sends
+    /// it), over `xy_mm` or over the position where the change was called.
+    Gauge(GaugePose),
+    /// Each tool's tip after its change, declared per tool (a tool table:
+    /// posts with `tool_change_position_mode="table"`).
+    Table(TablePose),
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ToolChangePose {
+pub struct GaugePose {
     pub gauge_z_mm: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub xy_mm: Option<[f64; 2]>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TablePose {
+    /// Tool assembly id -> tip position after the change to it.
+    pub tips_mm: std::collections::BTreeMap<String, Vec3>,
 }
 impl StreamManifest {
     /// With `rapid_retracts`, a plan's straight-up retract becomes a rapid,
@@ -197,8 +211,19 @@ impl StreamManifest {
             .iter()
             .find(|t| t.id == tool)
             .ok_or("tool change to an undeclared tool")?;
-        let xy = pose.xy_mm.unwrap_or([position[0], position[1]]);
-        Ok(Some([xy[0], xy[1], pose.gauge_z_mm - t.gauge_length_mm]))
+        match pose {
+            ToolChangePose::Gauge(g) => {
+                let xy = g.xy_mm.unwrap_or([position[0], position[1]]);
+                Ok(Some([xy[0], xy[1], g.gauge_z_mm - t.gauge_length_mm]))
+            }
+            ToolChangePose::Table(table) => {
+                table.tips_mm.get(tool).copied().map(Some).ok_or_else(|| {
+                    format!(
+                        "the tool-change table declares no position after a change to tool {tool}"
+                    )
+                })
+            }
+        }
     }
     pub fn validate(&self) -> Result<(), String> {
         if ![1, 2].contains(&self.version)
@@ -256,16 +281,23 @@ impl StreamManifest {
             }
         }
         self.sweep.validate()?;
+        let finite = |v: &f64| v.is_finite() && v.abs() <= 1e6;
         if let Some(pose) = &self.tool_change
-            && (!pose.gauge_z_mm.is_finite()
-                || pose.gauge_z_mm.abs() > 1e6
-                || pose
-                    .xy_mm
-                    .is_some_and(|p| !p.iter().all(|v| v.is_finite() && v.abs() <= 1e6))
-                || self.version != 1)
+            && (self.version != 1
+                || match pose {
+                    ToolChangePose::Gauge(g) => {
+                        !finite(&g.gauge_z_mm) || g.xy_mm.is_some_and(|p| !p.iter().all(finite))
+                    }
+                    ToolChangePose::Table(t) => {
+                        t.tips_mm.is_empty()
+                            || t.tips_mm.iter().any(|(tool, tip)| {
+                                !tip.iter().all(finite) || !self.tools.iter().any(|a| &a.id == tool)
+                            })
+                    }
+                })
         {
             return Err(
-                "tool change pose needs finite work coordinates (operation runs only)".into(),
+                "tool change pose needs finite work coordinates, for declared tools (operation runs only)".into(),
             );
         }
         if self.version == 2 && !self.operations.is_empty() {

@@ -219,7 +219,7 @@ fn decode_committed_chunk<'py>(
 /// Items: (1, raw, motion, end, changed count, changes offset) or
 /// (8, raw, completed, progress JSON, check JSON).
 #[pyfunction]
-#[pyo3(signature = (buffer, offset, run_id, revision, digest, control_wire, tolerance, cells, completed, position, last_id, tools, expect=None, control=None, verification=None, last_motion=None, limit=4096, tool_change=None, last_tool=None))]
+#[pyo3(signature = (buffer, offset, run_id, revision, digest, control_wire, tolerance, cells, completed, position, last_id, tools, expect=None, control=None, verification=None, last_motion=None, limit=4096, tool_change=None, last_tool=None, tool_change_tips=None))]
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn accept_motion_frames<'py>(
     py: Python<'py>,
@@ -247,6 +247,8 @@ fn accept_motion_frames<'py>(
         std::collections::HashMap<String, f64>,
     )>,
     mut last_tool: Option<String>,
+    // A tool-change table instead: each tool's tip after its change.
+    tool_change_tips: Option<std::collections::HashMap<String, (f64, f64, f64)>>,
 ) -> PyResult<(usize, Vec<Bound<'py, pyo3::types::PyTuple>>, Option<String>)> {
     let mut items = vec![];
     let mut motions = 0;
@@ -350,10 +352,12 @@ fn accept_motion_frames<'py>(
             // The first motion with a new tool may start at the declared
             // tool-change pose (as the stream state allows).
             let changed = last_tool.as_deref() != Some(tool.as_str())
-                && tool_change.as_ref().is_some_and(|(z, xy, gauges)| {
+                && (tool_change.as_ref().is_some_and(|(z, xy, gauges)| {
                     let (x, y) = xy.unwrap_or((position.0, position.1));
                     gauges.get(&tool).is_some_and(|g| start == (x, y, z - g))
-                });
+                }) || tool_change_tips
+                    .as_ref()
+                    .is_some_and(|tips| tips.get(&tool) == Some(&start)));
             if (start != position && !changed) || last_id.is_some_and(|l| identifier <= l) {
                 return Err(PyValueError::new_err(
                     "motion continuity or ID order mismatch",

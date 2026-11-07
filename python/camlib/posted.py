@@ -57,6 +57,81 @@ def _motion_digest(m):
     return hashlib.sha256(b''.join(parts)).digest()
 
 
+def check_tool_change_pose(machine, config):
+    """Before posting: the setup's tool-change pose (``Setup.tool_change``,
+    where the planner starts each new tool) must be where the machine's tool
+    change leaves it (``Machine.tool_change_position_mode`` and the tool
+    table's ``position_after_mm``). Compares every pose fixed before the run;
+    the posted output check compares each actual change again. Raises
+    ValueError naming the tool, both poses and the setup to declare."""
+    if 'turning' in config:
+        return
+    mode = machine.tool_change_position_mode
+    change = config.get('tool_change')
+    gauges = {t['id']: t['gauge_length_mm'] for t in config['tools']}
+    used = list(dict.fromkeys(op['tool'] for op in config['operations']))
+    initial = tuple(config['initial_position_mm'])
+    tolerance = machine.tolerance_mm
+
+    def planned(tool, first):
+        # (x or None, y or None, z) the planner gives the tip after the change.
+        if change is None:
+            return initial if first else None
+        if 'tips_mm' in change:
+            return tuple(change['tips_mm'][tool]) if tool in change['tips_mm'] else None
+        xy = change.get('xy_mm') or (initial[:2] if first else (None, None))
+        return (*xy, change['gauge_z_mm'] - gauges[tool])
+
+    def describe():
+        if change is None:
+            return 'Setup.tool_change is None: the tip stays where it was'
+        if 'tips_mm' in change:
+            return 'Setup.tool_change is a ToolChangeTable'
+        return (
+            f'Setup.tool_change is ToolChangePosition(gauge_z_mm={change["gauge_z_mm"]}, xy_mm={change.get("xy_mm")})'
+        )
+
+    if mode == 'preserve_tip':
+        if change is not None:
+            raise ValueError(
+                f'the machine keeps the tip where it was at a tool change (tool_change_position_mode="preserve_tip"), '
+                f'but {describe()}: plan with Setup(tool_change=None)'
+            )
+        return
+    if mode == 'z_home':
+        gauge_z = machine.tool_change_home_z_mm - machine.work_to_machine.origin_mm[2]
+        fix = f'plan with Setup(tool_change=ToolChangePosition(gauge_z_mm={gauge_z}))'
+        if change is not None and ('tips_mm' in change or change.get('xy_mm') is not None):
+            raise ValueError(
+                f'M6 sends the spindle to Z home and keeps XY (tool_change_position_mode="z_home"), '
+                f'but {describe()}: {fix}'
+            )
+        tips = {tool: {(None, None, gauge_z - gauges[tool])} for tool in used}
+        source = f'Z home: gauge line at work Z {gauge_z}'
+    else:
+        tips = {s.tool: {tuple(float(v) for v in s.position_after_mm)} for s in machine.tools if s.tool in gauges}
+        missing = [tool for tool in used if tool not in tips]
+        if missing:
+            raise ValueError(f'the machine tool table has no entry for tool(s) {missing}: add a ToolSetting for each')
+        source = 'its tool table position_after_mm'
+        fix = 'plan with Setup(tool_change=ToolChangeTable.from_machine(machine))'
+    for k, tool in enumerate(used):
+        plan = planned(tool, k == 0)
+        if plan is None:
+            continue
+
+        def agrees(tip):
+            return all(a is None or b is None or abs(a - b) <= tolerance for a, b in zip(plan, tip))
+
+        if not any(agrees(tip) for tip in tips[tool]):
+            (shown,) = tips[tool]
+            raise ValueError(
+                f'tool {tool}: the setup starts it at {plan} after its tool change ({describe()}), '
+                f'but the machine leaves it at {shown} '
+                f'(tool_change_position_mode="{mode}", {source}); {fix}'
+            )
+
+
 def _is_stop(events):
     kinds = [e['kind'] for e in events]
     return sorted(kinds) == ['coolant', 'spindle'] and all(
@@ -253,6 +328,12 @@ class PostedRun(RecordedRun):
             options['tool_change'] = ToolChangePosition(
                 machine.tool_change_home_z_mm - machine.work_to_machine.origin_mm[2]
             )
+        elif machine.tool_change_position_mode == 'table' and 'turning' not in options:
+            # Each decoded tool change puts the tool at its table pose: the
+            # replay stock run accepts exactly those poses.
+            from .simulation import ToolChangeTable
+
+            options['tool_change'] = ToolChangeTable.from_machine(machine, tools=[t.id for t in program.tools])
         owner = program.events if events is None else events
         self._events = iter(owner)
         self._event_owner = owner

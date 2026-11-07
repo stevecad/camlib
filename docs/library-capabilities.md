@@ -58,8 +58,10 @@ combinations and impossible dimensions are rejected before any motion.
   the cut left the tool (`Setup(rapid_retracts=False)` keeps them fed).
 - Pocket links stay at depth only through stock proven cleared, when faster
   than leaving, or up to `max_stay_down_mm`.
-- `Setup(tool_change=ToolChangePosition(...))` declares where a new tool
-  arrives (e.g. M6 to Z home); its first move is checked like any rapid.
+- `Setup(tool_change=ToolChangePosition(...))` or `ToolChangeTable(...)`
+  declares where a new tool arrives (M6 to Z home, or each tool's table pose);
+  its first move is checked like any rapid, and posting refuses a setup that
+  disagrees with the machine.
 - Avoid areas and containment regions apply to every operation and to every
   rapid and link.
 
