@@ -190,14 +190,16 @@ impl SweepProof {
 
     /// Prove one motion; an unproven motion marks the stock cells its
     /// footprint (the whole assembly's reach) touches.
+    /// `tolerance_mm`: the stream's curve tolerance (`SweepOptions`), which
+    /// validated the motion already (a posted arc's rounded endpoints agree
+    /// with its centre only to that).
     pub(crate) fn motion(
         &mut self,
         tool: &PreparedAssembly,
         motion: &Motion,
+        tolerance_mm: f64,
         cancel: &impl CancelSignal,
     ) -> Result<(), String> {
-        // Curve preparation tolerance (validation only; geometry is exact).
-        let tolerance_mm = 1e-6;
         self.tool(tool)?;
         let proven = self.prove(&tool.definition().id, &motion.curve, tolerance_mm, cancel)?;
         if proven {
@@ -485,7 +487,7 @@ mod tests {
     fn proves(proof: &mut SweepProof, tool: &PreparedAssembly, curve: Curve) -> bool {
         let before = proof.proven;
         proof
-            .motion(tool, &motion(curve), &AtomicBool::new(false))
+            .motion(tool, &motion(curve), 1e-5, &AtomicBool::new(false))
             .unwrap();
         proof.proven > before
     }
@@ -640,6 +642,23 @@ mod tests {
                 line([-5., -5., 10.05], [25., -5., 10.05])
             ));
         }
+    }
+
+    #[test]
+    fn posted_arcs_are_proven_at_the_stream_tolerance() {
+        // A 3-decimal arc's end agrees with its centre only to the stream's
+        // tolerance (here 5e-6 mm off the radius): proven, never an error.
+        let flat = tool(CutterShape::Flat).prepare().unwrap();
+        let mut p = proof(0.005, 0.0005, true);
+        let arc = Curve::Arc {
+            start: [-8., 10., 11.],
+            end: [-8., 15.000005, 11.],
+            center: [-8., 12.5, 11.],
+            plane: Plane::Xy,
+            sweep_rad: std::f64::consts::PI,
+        };
+        assert!(arc.prepare(1e-6).is_err());
+        assert!(proves(&mut p, &flat, arc));
     }
 
     #[test]

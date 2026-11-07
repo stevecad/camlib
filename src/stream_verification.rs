@@ -749,6 +749,8 @@ pub(crate) struct Runtime {
     targets: Vec<material::PreparedMaterial>,
     /// Per surface target: every motion proven against it (#72).
     proofs: Vec<Option<material::SweepProof>>,
+    /// The stream's curve tolerance (validated every motion already).
+    sweep_tolerance_mm: f64,
     pub tracker: Tracker,
 }
 impl Runtime {
@@ -789,6 +791,7 @@ impl Runtime {
                 .map(|c| c.target.prepare(c.options))
                 .collect::<Result<_, _>>()?,
             proofs,
+            sweep_tolerance_mm: manifest.sweep.tolerance_mm,
             tracker: Tracker::new(binding, completed),
         })
     }
@@ -800,8 +803,9 @@ impl Runtime {
         completed: u64,
         cancel: &impl CancelSignal,
     ) -> Result<Option<Vec<u8>>, String> {
+        let tolerance = self.sweep_tolerance_mm;
         for proof in self.proofs.iter_mut().flatten() {
-            proof.motion(tool, motion, cancel)?;
+            proof.motion(tool, motion, tolerance, cancel)?;
         }
         if !self.tracker.binding.config.motion_checks() {
             return Ok(None);
