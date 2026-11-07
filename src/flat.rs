@@ -194,6 +194,286 @@ fn bull_profile(d: f64, r: f64, rc: f64) -> f64 {
         rc - (rc * rc - s * s).max(0.).sqrt()
     }
 }
+/// One rotationally symmetric part of a tool assembly, seen from below: its
+/// lower surface is flat out to `r0` at `z0` above the tool tip, then rises
+/// linearly (`rise` mm of height per mm of radius) out to `r1`. A chamfer
+/// mill's cone (tip radius r0, rise = 1 / tan(half angle)), a flat end
+/// (rise 0, r0 = r1) and every cylinder or frustum of a shank, neck or holder
+/// (at its lower end) are sections. The profile is convex and non-decreasing
+/// in the radius, so contact on a triangle is a concave maximisation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Section {
+    pub z0: f64,
+    pub r0: f64,
+    pub r1: f64,
+    pub rise: f64,
+}
+impl Section {
+    /// Height of the lower surface above the tip at radius `d` (None
+    /// beyond `r1`).
+    fn profile(&self, d: f64) -> Option<f64> {
+        if d <= self.r0 {
+            Some(self.z0)
+        } else if d <= self.r1 {
+            Some(self.z0 + (d - self.r0) * self.rise)
+        } else {
+            None
+        }
+    }
+    pub(crate) fn valid(&self) -> bool {
+        [self.z0, self.r0, self.r1, self.rise]
+            .iter()
+            .all(|v| v.is_finite())
+            && self.z0 >= 0.
+            && 0. <= self.r0
+            && self.r0 <= self.r1
+            && self.r1 > 0.
+            && self.rise >= 0.
+    }
+}
+
+/// The sections of a tool assembly, tip upward: the cutter's cutting end
+/// (a chamfer mill's or drill's cone, or a flat end), then the neck and
+/// shank cylinders and every holder frustum at their lower ends. Each
+/// section bounds the tool from below wherever it is the lowest part at a
+/// radius; higher parts at the same radius only add dominated candidates.
+/// Ball and bull-nose ends are not sections (curved): refused here.
+pub(crate) fn assembly_sections(
+    tool: &crate::tool::PreparedAssembly,
+) -> Result<Vec<Section>, String> {
+    let def = tool.definition();
+    let cutter = tool.cutter();
+    let c = cutter.definition();
+    let radius = c.diameter_mm / 2.;
+    let mut out = vec![match c.shape {
+        CutterShape::Flat => Section {
+            z0: 0.,
+            r0: radius,
+            r1: radius,
+            rise: 0.,
+        },
+        CutterShape::Chamfer {
+            tip_diameter_mm, ..
+        } => {
+            let r0 = tip_diameter_mm / 2.;
+            let top = cutter
+                .tip_height_at_radius(radius)
+                .ok_or("chamfer cutter profile")?;
+            Section {
+                z0: 0.,
+                r0,
+                r1: radius,
+                rise: top / (radius - r0),
+            }
+        }
+        CutterShape::Drill { .. } => Section {
+            z0: 0.,
+            r0: 0.,
+            r1: radius,
+            rise: cutter.tip_height_at_radius(radius).ok_or("drill profile")? / radius,
+        },
+        _ => {
+            return Err(
+                "tool sections cover flat, chamfer and drill ends (a ball or bull-nose end is curved)"
+                    .into(),
+            );
+        }
+    }];
+    // Neck and shank below the holder: cylinders at their lower ends.
+    let mut breaks = vec![c.cutting_length_mm];
+    if let Some(neck) = &c.neck {
+        breaks.push(c.cutting_length_mm + neck.length_mm);
+    }
+    for z0 in breaks.into_iter().filter(|z| *z < def.stickout_mm) {
+        let r = tool
+            .radius_at((z0 + 1e-9).min(def.stickout_mm))
+            .ok_or("tool body profile")?
+            .radius_mm;
+        out.push(Section {
+            z0,
+            r0: r,
+            r1: r,
+            rise: 0.,
+        });
+    }
+    for h in &def.holders {
+        out.push(if h.radius_max_mm > h.radius_min_mm {
+            Section {
+                z0: h.z_min_mm,
+                r0: h.radius_min_mm,
+                r1: h.radius_max_mm,
+                rise: (h.z_max_mm - h.z_min_mm) / (h.radius_max_mm - h.radius_min_mm),
+            }
+        } else {
+            Section {
+                z0: h.z_min_mm,
+                r0: h.radius_min_mm,
+                r1: h.radius_min_mm,
+                rise: 0.,
+            }
+        });
+    }
+    if out.iter().any(|s| !s.valid()) {
+        return Err("tool sections must be finite with nonnegative heights and radii".into());
+    }
+    Ok(out)
+}
+
+/// Upper bound of the maximum of a concave function on [lo, hi]: the best
+/// golden-section value plus `lipschitz` times the final bracket (the
+/// maximum lies in it, and the function changes by at most that there).
+fn golden_max_bound(f: impl FnMut(f64) -> f64, lo: f64, hi: f64, lipschitz: f64) -> f64 {
+    const STEPS: usize = 60;
+    let bracket = (hi - lo) * ((5f64.sqrt() - 1.) / 2.).powi(STEPS as i32);
+    golden_max(f, lo, hi, STEPS) + lipschitz * bracket
+}
+
+/// Upper bound of the maximum of a concave function on [lo, hi] (values may
+/// be -infinity outside its domain only at the ends). Golden-section search
+/// keeps a bracket [a, b] with interior points x1 < x2 holding the maximum;
+/// concavity puts the function below every secant's extension, which bounds
+/// it on each of [a, x1], [x1, x2] and [x2, b].
+fn concave_max_upper(mut f: impl FnMut(f64) -> f64, lo: f64, hi: f64) -> f64 {
+    // Not an interval (or NaN): just the ends.
+    if hi.partial_cmp(&lo) != Some(std::cmp::Ordering::Greater) {
+        return f(lo).max(f(hi));
+    }
+    let phi = (5f64.sqrt() - 1.) / 2.;
+    let (mut a, mut b) = (lo, hi);
+    let (mut fa, mut fb) = (f(a), f(b));
+    let mut x1 = b - phi * (b - a);
+    let mut x2 = a + phi * (b - a);
+    let (mut f1, mut f2) = (f(x1), f(x2));
+    for _ in 0..60 {
+        if f1 < f2 {
+            (a, fa) = (x1, f1);
+            (x1, f1) = (x2, f2);
+            x2 = a + phi * (b - a);
+            f2 = f(x2);
+        } else {
+            (b, fb) = (x2, f2);
+            (x2, f2) = (x1, f1);
+            x1 = b - phi * (b - a);
+            f1 = f(x1);
+        }
+        if x1.partial_cmp(&x2) != Some(std::cmp::Ordering::Less) {
+            break;
+        }
+    }
+    let slope = |(xa, ya): (f64, f64), (xb, yb): (f64, f64)| (yb - ya) / (xb - xa);
+    let best = fa.max(fb).max(f1).max(f2);
+    if !f1.is_finite() || !f2.is_finite() {
+        return if f1 == f64::NEG_INFINITY && f2 == f64::NEG_INFINITY && best == f64::NEG_INFINITY {
+            best
+        } else {
+            f64::INFINITY
+        };
+    }
+    if x1.partial_cmp(&x2) != Some(std::cmp::Ordering::Less) {
+        return best;
+    }
+    let s12 = slope((x1, f1), (x2, f2));
+    // [a, x1]: below the (x1, x2) secant extended leftward.
+    let left = f1 + (-s12).max(0.) * (x1 - a);
+    // [x2, b]: below the same secant extended rightward.
+    let right = f2 + s12.max(0.) * (b - x2);
+    // [x1, x2]: below the (a, x1) secant extended right and the (x2, b)
+    // secant extended left.
+    let from_a = if fa.is_finite() {
+        f1 + slope((a, fa), (x1, f1)).max(0.) * (x2 - x1)
+    } else {
+        f64::INFINITY
+    };
+    let from_b = if fb.is_finite() {
+        f2 + (-slope((x2, f2), (b, fb))).max(0.) * (x2 - x1)
+    } else {
+        f64::INFINITY
+    };
+    let middle = from_a.min(from_b);
+    // Without a finite end there is no bound: not proven (+infinity).
+    best.max(left).max(right).max(middle)
+}
+
+impl Tri {
+    /// Highest tip of a tool section with its axis at `p` resting on this
+    /// triangle: an upper bound of max over triangle points q within `r1`
+    /// of `p` of z(q) - profile(|q - p|) (None if the triangle does not reach
+    /// the section). Concave objective on a convex domain: the maximum is at
+    /// the facet's critical point (closed form), on an edge (golden section
+    /// with a Lipschitz bound) or at a vertex; the disk's rim needs no
+    /// candidate of its own (from the critical point outward the objective
+    /// does not increase, so a rim maximum inside the triangle is matched by
+    /// a triangle edge).
+    fn section_contact(&self, p: [f64; 2], s: &Section) -> Option<f64> {
+        let mut best: Option<f64> = None;
+        fn take(best: &mut Option<f64>, z: f64) {
+            *best = Some(best.map_or(z, |b| b.max(z)));
+        }
+        for v in self.p {
+            if let Some(h) = s.profile((v[0] - p[0]).hypot(v[1] - p[1])) {
+                take(&mut best, v[2] - h);
+            }
+        }
+        for k in 0..3 {
+            let (a, b) = (self.p[k], self.p[(k + 1) % 3]);
+            let e = [b[0] - a[0], b[1] - a[1]];
+            let w = [a[0] - p[0], a[1] - p[1]];
+            let (qa, qb, qc) = (
+                e[0] * e[0] + e[1] * e[1],
+                2. * (e[0] * w[0] + e[1] * w[1]),
+                w[0] * w[0] + w[1] * w[1] - s.r1 * s.r1,
+            );
+            if qa <= 0. {
+                continue;
+            }
+            let disc = qb * qb - 4. * qa * qc;
+            if disc < 0. {
+                continue;
+            }
+            let root = disc.sqrt();
+            let (t0, t1) = (
+                ((-qb - root) / (2. * qa)).max(0.),
+                ((-qb + root) / (2. * qa)).min(1.),
+            );
+            if t0 > t1 {
+                continue;
+            }
+            let at = |t: f64| {
+                let q: Vec3 = std::array::from_fn(|i| a[i] + t * (b[i] - a[i]));
+                let d = (q[0] - p[0]).hypot(q[1] - p[1]).min(s.r1);
+                q[2] - s.profile(d).unwrap_or(f64::INFINITY)
+            };
+            let lipschitz = (b[2] - a[2]).abs() + s.rise * qa.sqrt();
+            take(&mut best, golden_max_bound(at, t0, t1, lipschitz));
+        }
+        // Facet z = A x + B y + C: along the gradient (slope g) the objective
+        // grows at g until r0, then at g - rise: the maximum is at r0 when
+        // g <= rise, at r1 otherwise (any point within r0 when g = 0).
+        let [a, b, c] = self.p;
+        let det = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+        if det.abs() > 1e-300 {
+            let gx = ((b[2] - a[2]) * (c[1] - a[1]) - (c[2] - a[2]) * (b[1] - a[1])) / det;
+            let gy = ((c[2] - a[2]) * (b[0] - a[0]) - (b[2] - a[2]) * (c[0] - a[0])) / det;
+            let g = gx.hypot(gy);
+            let (q, h) = if g < 1e-15 {
+                (p, s.z0)
+            } else {
+                let reach = if g <= s.rise { s.r0 } else { s.r1 };
+                (
+                    [p[0] + gx / g * reach, p[1] + gy / g * reach],
+                    s.profile(reach).unwrap(),
+                )
+            };
+            if let Some(w) = self.bary(q)
+                && w.iter().all(|w| *w >= -1e-12)
+            {
+                take(&mut best, w[0] * a[2] + w[1] * b[2] + w[2] * c[2] - h);
+            }
+        }
+        best
+    }
+}
+
 impl Tri {
     /// Highest tip of a bull-nose cutter (radius r, corner rc; rc = 0 flat,
     /// rc = r ball) at axis `p` resting on this triangle: the maximum of
@@ -488,6 +768,129 @@ impl Index {
             }
         }
         true
+    }
+    /// Highest tip of a tool made of `sections` with its axis at `p`
+    /// resting on the part (an upper bound), at least the base.
+    pub(crate) fn max_sections(
+        &self,
+        p: [f64; 2],
+        sections: &[Section],
+        seen: &mut [u32],
+        stamp: &mut u32,
+    ) -> f64 {
+        let reach = sections.iter().map(|s| s.r1).fold(0., f64::max);
+        let mut best = self.floor;
+        self.visit(p, p, reach, seen, stamp, |t| {
+            if t.max[2] - sections.iter().map(|s| s.z0).fold(f64::INFINITY, f64::min) <= best {
+                return true;
+            }
+            for s in sections {
+                if let Some(z) = t.section_contact(p, s) {
+                    best = best.max(z);
+                }
+            }
+            true
+        });
+        best
+    }
+    /// Proven: a tool made of `sections` moving straight from tip `a` to
+    /// tip `b`, lifted by `lift`, stays above every triangle. Per triangle and
+    /// section the contact along the chord is concave in the position (the
+    /// maximum over the triangle of a jointly concave function) and the tip
+    /// height is linear, so the gap has one maximum; it is bounded from the
+    /// final golden-section bracket by concavity (secant extensions), with no
+    /// Lipschitz assumption (vertical walls included).
+    pub(crate) fn sections_chord_clear(
+        &self,
+        a: Vec3,
+        b: Vec3,
+        sections: &[Section],
+        lift: f64,
+        seen: &mut [u32],
+        stamp: &mut u32,
+    ) -> bool {
+        if a[2].min(b[2]) < self.floor + lift {
+            return false;
+        }
+        let reach = sections.iter().map(|s| s.r1).fold(0., f64::max);
+        let low = a[2].min(b[2]);
+        let lowest = sections.iter().map(|s| s.z0).fold(f64::INFINITY, f64::min);
+        let at = |t: f64| [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
+        let tip = |t: f64| a[2] + t * (b[2] - a[2]);
+        let mut clear = true;
+        self.visit([a[0], a[1]], [b[0], b[1]], reach, seen, stamp, |t| {
+            if t.max[2] - lowest + lift <= low {
+                return true;
+            }
+            for s in sections {
+                let dist = |u: f64| t.distance_xy(at(u));
+                let near = golden_argmin(dist, 0., 1., 60);
+                if dist(near) > s.r1 {
+                    continue;
+                }
+                let edge = |inside: f64, outside: f64| {
+                    if dist(outside) <= s.r1 {
+                        return outside;
+                    }
+                    let (mut i, mut o) = (inside, outside);
+                    for _ in 0..60 {
+                        let m = (i + o) / 2.;
+                        if dist(m) <= s.r1 { i = m } else { o = m }
+                    }
+                    i
+                };
+                let (u0, u1) = (edge(near, 0.), edge(near, 1.));
+                let gap = |u: f64| {
+                    t.section_contact(at(u), s)
+                        .map_or(f64::NEG_INFINITY, |c| c + lift - tip(u))
+                };
+                if concave_max_upper(gap, u0, u1) > 0. {
+                    clear = false;
+                    return false;
+                }
+            }
+            true
+        });
+        clear
+    }
+    /// Calls `f` once for each triangle binned near the XY capsule of radius
+    /// `r` around p-q, until it returns false.
+    fn visit(
+        &self,
+        p: [f64; 2],
+        q: [f64; 2],
+        r: f64,
+        seen: &mut [u32],
+        stamp: &mut u32,
+        mut f: impl FnMut(&Tri) -> bool,
+    ) {
+        *stamp = stamp.wrapping_add(1);
+        if *stamp == 0 {
+            seen.iter_mut().for_each(|s| *s = 0);
+            *stamp = 1;
+        }
+        let range = |k: usize| {
+            let lo = ((p[k].min(q[k]) - r - self.origin[k]) / self.cell).floor();
+            let hi = ((p[k].max(q[k]) + r - self.origin[k]) / self.cell).floor();
+            let n = self.dims[k] as f64;
+            if hi < 0. || lo >= n {
+                return 0..0;
+            }
+            lo.max(0.) as usize..(hi.min(n - 1.) as usize + 1)
+        };
+        for y in range(1) {
+            for x in range(0) {
+                for &i in &self.bins[y * self.dims[0] + x] {
+                    if seen[i as usize] == *stamp {
+                        continue;
+                    }
+                    seen[i as usize] = *stamp;
+                    if !f(&self.tris[i as usize]) {
+                        return;
+                    }
+                }
+            }
+        }
     }
     /// Highest tip of a bull-nose cutter (radius r, corner rc) at axis `p`
     /// resting on the part, at least the base.
@@ -1219,6 +1622,232 @@ mod tests {
         let (a, b) = ([1., 2., peak - 0.5], [9., 2., peak - 0.5]);
         assert!(ridge.bull_contact([1., 2.], 2., 0.7).unwrap() < a[2]);
         assert!(!index.bull_chord_clear(a, b, 2., 0.7, 0., &mut seen, &mut stamp));
+    }
+
+    /// Dense oracle: the highest tip over many triangle points, from the
+    /// section's own profile (independent of the closed-form candidates).
+    fn sampled_section(corners: [Vec3; 3], p: [f64; 2], s: &Section, n: usize) -> f64 {
+        let mut best = f64::NEG_INFINITY;
+        for i in 0..=n {
+            for j in 0..=n - i {
+                let (u, v) = (i as f64 / n as f64, j as f64 / n as f64);
+                let w = [1. - u - v, u, v];
+                let q: Vec3 = std::array::from_fn(|k| {
+                    w[0] * corners[0][k] + w[1] * corners[1][k] + w[2] * corners[2][k]
+                });
+                let d = (q[0] - p[0]).hypot(q[1] - p[1]);
+                let h = if d <= s.r0 {
+                    s.z0
+                } else if d <= s.r1 {
+                    s.z0 + (d - s.r0) * s.rise
+                } else {
+                    continue;
+                };
+                best = best.max(q[2] - h);
+            }
+        }
+        best
+    }
+
+    #[test]
+    fn section_contact_bounds_dense_sampling_for_cones_flats_and_frusta() {
+        let triangles = [
+            [[0., 0., 0.], [10., 0., 5.], [0., 10., 2.]],
+            [[2., 2., 3.], [8., 3., 1.], [4., 9., 6.]],
+            [[0., 0., 4.], [6., 0., 4.], [0., 6., 4.]],
+            // Steep (nearly vertical) wall.
+            [[5., 0., 0.], [5., 8., 0.], [5.0001, 4., 9.]],
+        ];
+        let sections = [
+            // 90 degree chamfer mill, 0.2 tip, 6 mm.
+            Section {
+                z0: 0.,
+                r0: 0.1,
+                r1: 3.,
+                rise: 1.,
+            },
+            // 60 degree spot drill.
+            Section {
+                z0: 0.,
+                r0: 0.,
+                r1: 2.,
+                rise: 1. / (30f64.to_radians()).tan(),
+            },
+            // Flat end, and a holder frustum higher up.
+            Section {
+                z0: 0.,
+                r0: 2.,
+                r1: 2.,
+                rise: 0.,
+            },
+            Section {
+                z0: 20.,
+                r0: 8.,
+                r1: 14.,
+                rise: 2.5,
+            },
+        ];
+        for corners in triangles {
+            let t = tri(corners);
+            for p in [
+                [3., 3.],
+                [11., 1.],
+                [5., 5.],
+                [0.5, 4.],
+                [4.2, 4.],
+                [7.2, 1.],
+            ] {
+                for s in &sections {
+                    let sampled = sampled_section(corners, p, s, 500);
+                    match t.section_contact(p, s) {
+                        None => assert_eq!(sampled, f64::NEG_INFINITY, "{corners:?} {p:?} {s:?}"),
+                        // Reached only at the rim, between samples.
+                        Some(_) if sampled == f64::NEG_INFINITY => {
+                            assert!(t.distance_xy(p) > s.r1 - 0.05, "{corners:?} {p:?} {s:?}")
+                        }
+                        // Never below a sampled point (an upper bound); close to the
+                        // samples within their spacing times the steepest slope.
+                        Some(z) => assert!(
+                            z >= sampled - 1e-9 && z - sampled < 0.2,
+                            "{corners:?} {p:?} {s:?}: {z} vs {sampled}"
+                        ),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn chamfer_assembly_sections_follow_its_profile() {
+        use crate::tool::{Cutter, HolderSection, ToolAssembly};
+        let tool = ToolAssembly {
+            id: "c90".into(),
+            cutter: Cutter {
+                id: "c90".into(),
+                name: String::new(),
+                shape: CutterShape::Chamfer {
+                    included_angle_rad: std::f64::consts::FRAC_PI_2,
+                    tip_diameter_mm: 0.2,
+                },
+                diameter_mm: 6.,
+                cutting_length_mm: 4.,
+                overall_length_mm: 50.,
+                shank_diameter_mm: 6.,
+                flutes: 2,
+                center_cutting: false,
+                material: "carbide".into(),
+                neck: None,
+            },
+            stickout_mm: 20.,
+            gauge_length_mm: 60.,
+            holders: vec![HolderSection {
+                z_min_mm: 20.,
+                z_max_mm: 60.,
+                radius_min_mm: 8.,
+                radius_max_mm: 16.,
+            }],
+        };
+        let sections = assembly_sections(&tool.prepare().unwrap()).unwrap();
+        // 90 degrees: rise 1 from the 0.1 tip radius to the 3 mm rim.
+        let s0 = sections[0];
+        assert_eq!((s0.z0, s0.r0, s0.r1), (0., 0.1, 3.));
+        assert!((s0.rise - 1.).abs() < 1e-12);
+        assert_eq!(
+            sections[1],
+            Section {
+                z0: 4.,
+                r0: 3.,
+                r1: 3.,
+                rise: 0.
+            }
+        );
+        assert_eq!(
+            sections[2],
+            Section {
+                z0: 20.,
+                r0: 8.,
+                r1: 16.,
+                rise: 5.
+            }
+        );
+        // Each section agrees with the assembly's radius at its heights.
+        let prepared = tool.prepare().unwrap();
+        for z in [0.5, 1.9, 2.5] {
+            let r = prepared.radius_at(z).unwrap().radius_mm;
+            assert!((sections[0].r0 + z / sections[0].rise - r).abs() < 1e-12);
+        }
+        let r = prepared.radius_at(40.).unwrap().radius_mm;
+        assert!((sections[2].r0 + (40. - 20.) / sections[2].rise - r).abs() < 1e-12);
+    }
+
+    #[test]
+    fn concave_upper_bound_holds_for_kinked_and_steep_functions() {
+        for (f, max) in [
+            (
+                Box::new(|x: f64| -(x - 0.3).abs()) as Box<dyn Fn(f64) -> f64>,
+                0.,
+            ),
+            (
+                Box::new(|x: f64| (1000. * x).min(10. - x)),
+                10. - 0.01 / 1.001,
+            ),
+            (Box::new(|x: f64| -(x - 0.71) * (x - 0.71)), 0.),
+            (Box::new(|x: f64| 5. - x), 5.),
+        ] {
+            let bound = concave_max_upper(&f, 0., 1.);
+            assert!(bound >= max - 1e-12, "{bound} < {max}");
+            assert!(bound - max < 1e-6, "{bound} far above {max}");
+        }
+    }
+
+    #[test]
+    fn sections_chord_clearance_agrees_with_dense_positions() {
+        let mesh = SurfaceMesh {
+            version: 1,
+            units: "mm".into(),
+            triangles: std::sync::Arc::new(vec![
+                [[0., 0., 0.], [20., 0., 0.], [0., 20., 0.]],
+                // A wall rising to Z 6 along x = 10.
+                [[10., 0., 0.], [10., 20., 0.], [10.0001, 10., 6.]],
+            ]),
+            surface_error_mm: 0.,
+            source: serde_json::json!({}),
+        };
+        let index = Index::new(&mesh, -1., 3., &|| false).unwrap();
+        let mut seen = vec![0; index.len()];
+        let mut stamp = 0;
+        let cone = [Section {
+            z0: 0.,
+            r0: 0.1,
+            r1: 3.,
+            rise: 1.,
+        }];
+        for (a, b) in [
+            ([2., 5., 0.5], [6., 15., 0.5]),
+            ([4., 5., 1.], [9.5, 15., 1.]),
+            ([12., 2., 1.], [16., 18., 2.]),
+            ([2., 10., 4.], [12., 10., 4.]),
+        ] {
+            let proven = index.sections_chord_clear(a, b, &cone, 0., &mut seen, &mut stamp);
+            let mut lowest = f64::INFINITY;
+            for i in 0..=2000 {
+                let t = i as f64 / 2000.;
+                let p = [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
+                let need = index.max_sections(p, &cone, &mut seen, &mut stamp);
+                lowest = lowest.min(a[2] + t * (b[2] - a[2]) - need);
+            }
+            // Proven clear only if every sampled position clears; a clearly
+            // clear chord is proven.
+            if proven {
+                assert!(
+                    lowest >= -1e-9,
+                    "{a:?}->{b:?} proven but gouges by {lowest}"
+                );
+            }
+            if lowest > 1e-3 {
+                assert!(proven, "{a:?}->{b:?} clear by {lowest} but not proven");
+            }
+        }
     }
 
     #[test]

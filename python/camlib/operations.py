@@ -668,6 +668,72 @@ class Flat:
 
 
 @dataclass(frozen=True)
+class DeburrLevel:
+    """The upward-facing planar faces of a part at one height ``z_mm``, as
+    planar regions (unioned). ``camlib.cadquery.deburr_levels`` makes them
+    from a solid."""
+
+    regions: tuple
+    z_mm: float
+
+    def __post_init__(self):
+        object.__setattr__(self, "regions", tuple(self.regions))
+
+    def to_dict(self):
+        return dict(regions=[r.to_dict() if hasattr(r, "to_dict") else r for r in self.regions], z_mm=float(self.z_mm))
+
+
+@dataclass(frozen=True)
+class Deburr:
+    """Break the horizontal edges of a finished part with a chamfer mill.
+
+    Each level's face boundaries are broken ``width_mm`` wide on the face
+    (and the chamfer depth down a vertical wall), with the tool's cone. The
+    rest of the part (``surface``, the finished part as a ``SurfaceMesh``) is
+    proven untouched for the whole tool assembly; a stretch that cannot be
+    proven is not cut and is reported (``unreachable_length_mm``; concave
+    stretches, where a wall rises from the face, in ``concave_length_mm``).
+    The stock must already be machined to the part.
+    """
+
+    id: str
+    tool: object
+    surface: object
+    levels: tuple
+    width_mm: float
+    clearance_z_mm: float
+    tip_clearance_mm: float = 0.5
+    cutting_sense: str = "climb"
+    boundary_tolerance_mm: float = 0.01
+    tolerance_mm: float = 1e-5
+    feed_mm_min: float = field(kw_only=True)
+    plunge_mm_min: float = field(kw_only=True)
+    spindle_rpm: float = field(kw_only=True)
+    work_offset: int = 1
+    tool_number: int = field(kw_only=True)
+    length_register: int = field(kw_only=True)
+    coolant: str = field(kw_only=True)
+    retract_z_mm: float | None = None
+    feed_z_mm: float | None = None
+
+    def __post_init__(self):
+        object.__setattr__(self, "levels", tuple(self.levels))
+
+    def to_dict(self):
+        result = {field: getattr(self, field) for field in self.__dataclass_fields__}
+        result.update(
+            kind="deburr",
+            tool=getattr(self.tool, "id", self.tool),
+            surface=self.surface.to_dict() if hasattr(self.surface, "to_dict") else self.surface,
+            levels=[level.to_dict() if hasattr(level, "to_dict") else level for level in self.levels],
+        )
+        for key in ("retract_z_mm", "feed_z_mm"):
+            if result[key] is None:
+                result.pop(key)
+        return result
+
+
+@dataclass(frozen=True)
 class Chamfer:
     """Bevel selected closed top edges with the tool's included angle/flat tip.
 

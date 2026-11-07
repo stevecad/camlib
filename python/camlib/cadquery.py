@@ -417,6 +417,45 @@ def export_floor_region(face, *, name, source, work_frame=None, max_error_mm=0.0
     return region
 
 
+def deburr_levels(shape, *, source=None, max_error_mm=0.005, level_tolerance_mm=1e-6, cancel=None):
+    """The upward-facing planar faces of a solid, grouped by height, as
+    ``camlib.operations.DeburrLevel`` (highest first), for ``camlib.Deburr``.
+
+    A face counts when its outward normal is +Z (a top, a step, a pocket
+    floor); its boundary is exported exactly (lines and circles kept) with
+    ``export_floor_region``. Faces within ``level_tolerance_mm`` in height
+    form one level. Which boundary stretches are convex edges to break, and
+    which are concave (a wall rises there), the operation decides against the
+    part itself.
+    """
+    from .operations import DeburrLevel
+
+    solid = shape.val() if hasattr(shape, "val") else shape
+    groups = []
+    for index, face in enumerate(solid.Faces()):
+        _fixture_cancel(cancel)
+        if face.geomType() != "PLANE":
+            continue
+        normal = face.normalAt()
+        if math.hypot(normal.x, normal.y) > 1e-9 or normal.z <= 0:
+            continue
+        z = face.Center().z
+        region = export_floor_region(
+            face,
+            name=f"deburr-face-{index}",
+            source=dict(source or {}, face=index),
+            max_error_mm=max_error_mm,
+            cancel=cancel,
+        )
+        for group in groups:
+            if abs(group[0] - z) <= level_tolerance_mm:
+                group[1].append(region)
+                break
+        else:
+            groups.append((z, [region]))
+    return tuple(DeburrLevel(tuple(regions), z) for z, regions in sorted(groups, key=lambda g: -g[0]))
+
+
 def _analytic_floor_region(
     face, *, name, source, topology_tolerance, started, chord_budget=None, max_segments=None, cancel=None
 ):

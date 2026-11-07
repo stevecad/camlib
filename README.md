@@ -31,7 +31,7 @@ and writes G-code through a postprocessor you can read and change.
 | Contour | Outer walls / holes of a part: climb or conventional, leads, wear compensation (G41/G42), holding tabs |
 | Drilling, peck drilling, spot/counterbore dwell | Canned cycles (G81/G82/G83/G73) where the machine declares them, explicit moves elsewhere |
 | Reaming, boring, fine boring, bore milling | G85/G89/G86 from proven pilot holes; G76 or M19 fine boring with an oriented stop and shift proven inside the bore; helical bore milling |
-| Trochoidal slot, chamfer, V-carve | Straight or curved slots; chamfer on top edges; sharp-cornered V-carving of letters and logos |
+| Trochoidal slot, chamfer, V-carve | Straight or curved slots; chamfer on top edges; deburring of horizontal edges; sharp-cornered V-carving of letters and logos |
 | Thread milling, tapping | Internal and external thread milling; rigid right- and left-hand tapping (G33.1, or G84/G74 where declared) |
 | Trace / engrave | Open or closed line/arc paths at depth, no radius offset |
 | Flat-area finishing | Horizontal faces at their exact heights, flat end mills |
