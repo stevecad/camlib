@@ -47,7 +47,48 @@ fn short_ball_finishing_uses_remaining_stock_and_preserves_complete_paths() {
                 &cancel,
             )
         };
-        assert!(prepare(&original, &|| false).is_err());
+        // Stock standing higher above the floor than the flutes reach.
+        // Waterline refuses it while preparing. Parallel checks the depth it
+        // actually cuts, move by move against the stock (issue #88): the
+        // roof keeps its tip at Z4 or above, 8 mm under the 12 mm stock top
+        // and within the 10 mm flutes, so it is accepted; with 7 mm flutes
+        // the same passes really cut deeper and are refused.
+        let refused = |tool: &camlib::tool::ToolAssembly, stock: &Stock| {
+            let prepared = tool.prepare().unwrap();
+            match OperationPlan::prepare_with_stock(
+                m.operations[0].clone(),
+                tool,
+                stock,
+                m.initial_position_mm,
+                1,
+                &|| false,
+            ) {
+                Err(_) => true,
+                Ok(mut plan) => {
+                    let mut stock = stock.clone();
+                    loop {
+                        match plan.next_motion_with_stock(&stock, &|| false) {
+                            Err(e) => break e.contains("cuts deeper than the cutting length"),
+                            Ok(Some(motion)) => {
+                                let delta = stock
+                                    .preview_sweep(&prepared, &motion, 1., m.sweep, &|| false)
+                                    .unwrap();
+                                stock.apply_delta(&delta).unwrap();
+                            }
+                            Ok(None) => break false,
+                        }
+                    }
+                }
+            }
+        };
+        let mut seven = m.tools[0].clone();
+        seven.cutter.cutting_length_mm = 7.;
+        if waterline {
+            assert!(prepare(&original, &|| false).is_err());
+        } else {
+            assert!(!refused(&m.tools[0], &original));
+            assert!(refused(&seven, &original));
+        }
         let polls = Cell::new(0);
         assert!(
             prepare(&actual, &|| {
@@ -63,7 +104,11 @@ fn short_ball_finishing_uses_remaining_stock_and_preserves_complete_paths() {
         // A single uncertain high column invalidates the whole-stock premise.
         snapshot.cells.last_mut().unwrap().upper_mm = 12.;
         let unknown = Stock::from_snapshot(snapshot).unwrap();
-        assert!(prepare(&unknown, &|| false).is_err());
+        if waterline {
+            assert!(prepare(&unknown, &|| false).is_err());
+        } else {
+            assert!(refused(&seven, &unknown));
+        }
         assert!(plan.next_motion_with_stock(&unknown, &|| false).is_err());
         assert!(plan.next_motion_with_stock(&actual, &|| true).is_err());
 
