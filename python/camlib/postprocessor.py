@@ -2094,6 +2094,15 @@ def _is_closed_curve(event):
     return curve['start'][u] == curve['end'][u] and curve['start'][v] == curve['end'][v]
 
 
+def _cycle_covers(event):
+    """How many following events a canned cycle event covers (None: not a
+    cycle)."""
+    data = _event_data(event)
+    if isinstance(data, dict) and data.get('kind') == 'cycle':
+        return int(data['covers'])
+    return None
+
+
 def _is_curve(event):
     """Whether a source event is an arc or helix motion (in any accepted
     form: typed, an event dict, or a native Motion body)."""
@@ -2587,40 +2596,104 @@ class PostEngine:
                 limit = 64 if (queue or ready is not None) and not self.machine.schedule_post_feeds else 1
                 done = False
                 batch = []
-                while len(self._sources) + len(batch) < limit:
+                # A canned cycle and the events it covers (its hole's moves,
+                # written as its one block) are checked in one batch: their
+                # lines are the cycle's, so a batch of covered moves alone
+                # would have no lines to prove them against.
+                covered = 0
+                while covered or len(self._sources) + len(batch) < limit:
                     queued = self._sources or batch
                     if held is None:
-                        if queued and not queue and not ready():
+                        if not covered and queued and not queue and not ready():
                             break
                         self._session.check_cancel(cancel)
                         try:
                             held = next(iterator)
                         except StopIteration:
+                            if covered:
+                                raise ValueError(
+                                    f'the events end inside a canned cycle ({covered} covered events missing)'
+                                )
                             done = True
                             break
+                    covers = _cycle_covers(held)
+                    if covers is not None:
+                        if covered:
+                            raise ValueError('a canned cycle starts inside another one')
+                        if queued:
+                            break  # the cycle starts a batch of its own
+                        if covers + 1 > 64:
+                            raise ValueError(
+                                f'a canned cycle covering {covers} events cannot be checked in one batch '
+                                '(at most 63): post this hole as explicit moves (canned_cycle=False)'
+                            )
+                        covered = covers
+                        batch.append(held)
+                        held = None
+                        continue
                     # Only a native arc's output form depends on the decoded
                     # start (exact words there); lowered to lines it does not.
                     # A closed curve's lowered chain ends at its decoded
                     # start, known once the queued sources are output.
-                    if queued and (
-                        getattr(self.lowering, 'native_arcs', False) and _is_curve(held) or _is_closed_curve(held)
+                    if (
+                        not covered
+                        and queued
+                        and (getattr(self.lowering, 'native_arcs', False) and _is_curve(held) or _is_closed_curve(held))
                     ):
                         break
                     batch.append(held)
                     held = None
+                    if covered:
+                        covered -= 1
+                group = bool(batch) and _cycle_covers(batch[0]) is not None
                 if batch:
                     self._start_many(batch, cancel=cancel)
                 if self.pending:
-                    yield self.drain(cancel=cancel)
+                    chunk = self.drain(cancel=cancel)
+                    if group and self.pending:
+                        # The cycle's covered moves lowered to more segments
+                        # than one checked batch holds.
+                        raise ValueError(
+                            'a canned cycle and its covered moves did not fit one checked batch; '
+                            'post this hole as explicit moves (canned_cycle=False)'
+                        )
+                    yield chunk
                 if done:
                     while self.pending:
                         yield self.drain(cancel=cancel)
                     return
             else:
-                batch = tuple(islice(iterator, 64))
+                # At most 64 events, never ending inside a canned cycle (its
+                # covered moves have only the cycle's block as their lines).
+                batch = []
+                covered = 0
+                while len(batch) < 64:
+                    if held is None:
+                        try:
+                            held = next(iterator)
+                        except StopIteration:
+                            break
+                    covers = _cycle_covers(held)
+                    if covers is not None:
+                        if covered:
+                            raise ValueError('a canned cycle starts inside another one')
+                        if covers + 1 > 64:
+                            raise ValueError(
+                                f'a canned cycle covering {covers} events cannot be checked in one batch '
+                                '(at most 63): post this hole as explicit moves (canned_cycle=False)'
+                            )
+                        if len(batch) + covers + 1 > 64:
+                            break  # the cycle starts the next batch
+                        covered = covers + 1
+                    batch.append(held)
+                    held = None
+                    if covered:
+                        covered -= 1
+                if covered:
+                    raise ValueError(f'the events end inside a canned cycle ({covered} covered events missing)')
                 if not batch:
                     return
-                yield self.consume(batch, cancel=cancel)
+                yield self.consume(tuple(batch), cancel=cancel)
 
     def finish(self, *, cancel=None):
         if self._session is None or self.finished or self.pending:

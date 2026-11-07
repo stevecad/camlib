@@ -30,6 +30,8 @@ _EXPORTS = {
             "Tabs",
             "VCarve",
             "Chamfer",
+            "Deburr",
+            "DeburrLevel",
             "Drilling",
             "Bore",
             "TrochoidalSlot",

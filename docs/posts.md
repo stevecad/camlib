@@ -180,7 +180,10 @@ hole and `G80` before the next other block. The dialect declares the codes
 (`drill_cycle`, `drill_dwell_cycle`, `peck_cycle`, `chip_break_cycle`,
 `cycle_return_initial`), the G82 dwell unit (`cycle_dwell_unit`, `"s"` or
 `"ms"`) and the controller's fixed return amounts (`peck_reentry_mm`,
-`chip_break_lift_mm`; LinuxCNC 0.254 mm). Boring cycles (`Reaming(canned_cycle=True)`)
+`chip_break_lift_mm`; LinuxCNC 0.254 mm). A cycle block and the hole's moves
+it covers are checked in one batch, with or without `lowering=`; a cycle
+covering more than 63 events is refused (post that hole with
+`canned_cycle=False`). Boring cycles (`Reaming(canned_cycle=True)`)
 use `bore_cycle` (G85), `bore_dwell_cycle` (G89) and `bore_stop_cycle` (G86,
 whose spindle stop and restart are part of the block); they start at the R
 plane so every controller runs them alike. Fine boring needs the machine's
