@@ -7,7 +7,7 @@ import cadquery as cq
 
 import camlib
 from camlib.cadquery import turning_section
-from test_turning import job
+from test_turning import job, tool
 
 
 def revolve(points):
@@ -73,13 +73,11 @@ class TurningSectionTest(unittest.TestCase):
         self.assertEqual([(g.inner_radius_mm, g.outer_radius_mm, g.bottom_z_mm) for g in s.face_grooves], [(4, 7, -3)])
         self.assertTrue(all(z <= 0 for _, z, _ in s.profile))
         self.assertAlmostEqual(s.volume_mm3, s.revolved_volume_mm3, places=4)
-        tool = camlib.TurningTool(
-            "fg", insert=camlib.FaceGrooveInsert(2, 8), nose_radius_mm=0.2, holder_width_mm=2, holder_length_mm=40
-        )
+        blade = tool("fg", camlib.FaceGrooveInsert(2, 8), nose_radius_mm=0.2, width_mm=2, length_mm=40)
         plan = job(
             stock=camlib.TurnStockSpec(-60, 0, 13),
             profile=s.profile,
-            tools=(camlib.TurnToolSetting(tool, 1, 1),),
+            tools=(camlib.TurnToolSetting(blade, 1, 1),),
             face_grooves=s.face_grooves,
             operations=(camlib.TurnFaceGroove("fg", "fg", 4, 7, -3, peck_mm=1, feed_mm_rev=0.03, rpm=600),),
         ).plan()

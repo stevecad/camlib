@@ -619,7 +619,12 @@ with the exact stock change it makes (`Simulation`, `RecordedRun`/`Player`,
 `Job.post`, `Job.post_nc`, `run.export`).
 
 ```python
-tool = camlib.TurningTool("cnmg", insert=camlib.TurningInsert(80, 95), nose_radius_mm=0.8)
+# Every tool value is stated: an ISO 1832 insert on an ISO 5608 holder style,
+# and camlib's rectangular holder (or your holder's outline).
+insert = camlib.TurningInsert.iso_code("CNMG120408", holder="PCLNR2525M12")  # style L: 95 degrees
+holder = camlib.TurningHolder.rectangle(insert=insert, nose_radius_mm=insert.nose_radius_mm, side="outer",
+                                        width_mm=25, length_mm=150, offset_mm=0)
+tool = camlib.TurningTool("cnmg", insert=insert, side="outer", hand="right", holder=holder)
 lathe = camlib.Setup(
     "lathe",
     stock=camlib.TurnStockSpec(z_min_mm=-60, z_max_mm=2, outer_radius_mm=20),
@@ -716,19 +721,54 @@ roughing setup its allowance.
   cutting toward the chuck), turned on over the straight entry and off
   over the retract, so the control applies only the wear in its offset's
   nose radius (tip direction from the offset).
-- Tools: `TurningTool(insert=TurningInsert(included_angle_deg,
-  approach_angle_deg, edge_length_mm) | GrooveInsert(width, depth) |
-  ThreadInsert(profile_angle, depth) | DrillInsert(...), nose_radius_mm,
-  side, hand, holder_width_mm, holder_length_mm, holder_offset_mm)`. The
-  insert is a polygon containing its nose. Outside (`side="outer"`) the
-  holder is a box behind it; boring (`side="inner"`, the insert cutting
-  outward) it is an axial bar `holder_width_mm` across, its top
-  `holder_offset_mm` under the nose center, `holder_length_mm` out of the
-  bore.
+- Tools: `TurningTool(id, insert=, side=, hand=, holder=, nose_radius_mm=)`,
+  every value required (a missing one is refused by name; nothing stands in
+  for a tool that isn't yours). Geometry is in the tool's XZ frame: x away
+  from the spindle axis, z along it, drawn as an outside, right-hand tool
+  cutting toward -z (camlib mirrors it for `side="inner"` and
+  `hand="left"`).
+  - Inserts: `InsertOutline(outline, corner, cutting, programming_point_mm)`
+    for any shape (round, trigon, a real insert's back edge or wiper):
+    `outline` is `turning.Outline(start_mm, segments)` of `turning.Line(to_mm)`
+    and `turning.Arc(center_mm, radius_mm, start_deg, end_deg)` (closed, not
+    crossing itself); `corner` is the index of the arc that is the cutting
+    corner (its center the nose center, its radius the nose radius, a circle
+    that must lie in the insert); `cutting` the indices of the segments that
+    may cut (every other segment is checked to stay clear of the stock when
+    it leads, like an insert's back); `programming_point_mm` the point offsets
+    are touched off with (the imaginary tip). Constructors:
+    `TurningInsert.iso(included_angle_deg=, approach_angle_deg=,
+    edge_length_mm=, nose_radius_mm=)` (camlib's wedge: nose, two edges,
+    straight back) and `TurningInsert.iso_code(code, approach_angle_deg= |
+    holder=)` (the whole insert, every corner rounded, from an ISO 1832
+    designation: shapes C, D, V, S, T, W negative, R; the approach angle from
+    an ISO 5608 holder style letter). `GrooveInsert(width, depth)`,
+    `FaceGrooveInsert(width, depth)`, `ThreadInsert(profile_angle, depth)`
+    and `DrillInsert(diameter, point_angle, flute_length)` keep their
+    parameters (their operations plan from them) and take `nose_radius_mm`.
+  - Holders: `TurningHolder(outline, bar=None)`, an outline in the same
+    frame, anywhere relative to the insert (a head ahead of it, a stepped
+    head), and for a boring bar a `TurningBar(diameter_mm, axis_x_mm, z_mm)`.
+    `TurningHolder.rectangle(insert=, nose_radius_mm=, side=, width_mm=,
+    length_mm=, offset_mm=)` builds camlib's rectangle: outside, a shank
+    behind the insert's reach; boring, an axial bar `width_mm` across, its
+    top `offset_mm` under the nose center, `length_mm` out of the bore.
+  - ISO values: shapes and corner angles from ISO 1832:1991 section 4.1
+    table 1; size codes (inscribed circle per shape) and corner radius codes
+    from the Sumitomo Electric Hardmetal general catalog, section B
+    "Indexable Insert Identification Code", tables 5 and 7, p. B3, which
+    reproduce ISO 1832's designations (edge length from the inscribed circle
+    by each shape's geometry, matching the tabulated lengths); holder styles
+    (cutting edge angle) from ISO 5608:1995 section 4.3 table 3. Round
+    sizes 12 and 25 each name two diameters and are refused (give an
+    outline).
 - Checks on every move: the swept insert against the part (a tolerance of
   touching allowed), so a profile the insert's trailing edge cannot follow is
   refused; drills and boring tools inside the `bore` on both sides of the
-  axis; the holder or bar against the stock left after the move; rapids
+  axis; the holder (outline and bar, swept like the insert, in convex
+  pieces when it is not convex) against the part, its bore and the stock
+  left after the move; non-cutting insert segments that lead against the
+  stock; rapids
   against the stock (inside tools: within the hole the stock certainly has
   open); nothing past the chuck face. The turning stock (outer and inner
   radius bounds per z bin) is updated by each cut and returned.

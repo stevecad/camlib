@@ -530,8 +530,11 @@ enum Spin {
 
 struct ToolGeom {
     id: String,
-    insert: Vec<[f64; 2]>, // (u, v) relative to the nose center
-    holder: Vec<[f64; 2]>,
+    /// Convex pieces of the insert and of the holder (and boring bar), (u,
+    /// v) relative to the nose center: a straight move sweeps each piece
+    /// into the hull of its two ends.
+    insert: Vec<Vec<[f64; 2]>>,
+    holder: Vec<Vec<[f64; 2]>>,
     rn: f64,
     /// Grooving blade: the trailing corner's nose center this far along z
     /// (signed by hand) from the leading corner's; zero for one nose.
@@ -545,11 +548,12 @@ struct ToolGeom {
     /// A face grooving blade (pointing -z; `blade` is then the second
     /// corner's offset along r).
     axial: bool,
-    /// The insert's back (non-cutting) side, opposite the nose, for turning
-    /// and grooving inserts: material reaching it means the depth of cut
-    /// exceeds the cutting edges. With it, the stock removal is the whole
-    /// region the insert sweeps.
-    back: Option<[[f64; 2]; 2]>,
+    /// The insert's non-cutting sides (an outline insert's segments that do
+    /// not cut, a grooving blade's top), each with its outward normal:
+    /// material reaching one that leads means the depth of cut exceeds the
+    /// cutting edges. With them, the stock removal is the whole region the
+    /// insert sweeps.
+    back: Option<Vec<super::tool::BackSide>>,
     /// The insert's exact straight sides (relative to the nose center).
     edges: Vec<[[f64; 2]; 2]>,
 }
@@ -614,22 +618,11 @@ impl Planner<'_> {
                 [s * p[1], m * p[0]]
             }
         };
-        let holder: Vec<[f64; 2]> = if boring {
-            // The boring bar: axial, below the insert, holder_offset_mm
-            // under the nose center and holder_width_mm across.
-            let (r0, r1) = (t.holder_offset_mm, t.holder_offset_mm + t.holder_width_mm);
-            [
-                [r0, 0.],
-                [r1, 0.],
-                [r1, t.holder_length_mm],
-                [r0, t.holder_length_mm],
-            ]
-            .iter()
-            .map(map)
-            .collect()
-        } else {
-            shape.holder.iter().map(map).collect()
-        };
+        let mapped = |polygon: &[[f64; 2]]| polygon.iter().map(map).collect::<Vec<_>>();
+        let mut holder = super::tool::convex_pieces(&mapped(&shape.holder));
+        if let Some(bar) = &shape.bar {
+            holder.push(mapped(bar));
+        }
         let is_drill = matches!(t.insert, super::tool::Insert::Drill { .. });
         let rn = t.nose_radius_mm;
         let tip = match (self.job.controlled_point, &t.insert) {
@@ -637,20 +630,17 @@ impl Planner<'_> {
             (_, super::tool::Insert::Thread { .. }) => [0., -m * rn],
             // Touched off on the face and the groove's inner diameter.
             (_, super::tool::Insert::FaceGroove { .. }) => [-rn, -rn],
+            (_, super::tool::Insert::Outline { .. }) => map(&shape
+                .programming_point
+                .ok_or("outline insert without a programming point")?),
             _ => [-s * rn, -m * rn],
         };
-        let back = match t.insert {
-            // The chord closing the polygon from the major edge's end back
-            // to the minor edge's (its first point).
-            super::tool::Insert::Turning { .. } => {
-                Some([map(shape.insert.last().unwrap()), map(&shape.insert[0])])
-            }
-            // The blade's top, at its depth.
-            super::tool::Insert::Groove { .. } => {
-                Some([map(&shape.insert[0]), map(&shape.insert[1])])
-            }
-            _ => None,
-        };
+        let back = shape.back.as_ref().map(|pieces| {
+            pieces
+                .iter()
+                .map(|(e, n)| ([map(&e[0]), map(&e[1])], map(n)))
+                .collect()
+        });
         let edges = shape
             .edges
             .iter()
@@ -660,7 +650,7 @@ impl Planner<'_> {
             id: t.id.clone(),
             back,
             edges,
-            insert: shape.insert.iter().map(map).collect(),
+            insert: super::tool::convex_pieces(&mapped(&shape.insert)),
             holder,
             tip,
             axial,
@@ -712,11 +702,17 @@ impl Planner<'_> {
                 .map(|q| [q[0] + p[0], q[1] + p[1]])
                 .collect::<Vec<_>>()
         };
-        let insert = hull([at(&tool.insert, from), at(&tool.insert, to)].concat());
-        let holder = hull([at(&tool.holder, from), at(&tool.holder, to)].concat());
+        let swept = |pieces: &[Vec<[f64; 2]>]| {
+            pieces
+                .iter()
+                .map(|piece| hull([at(piece, from), at(piece, to)].concat()))
+                .collect::<Vec<_>>()
+        };
+        let insert = swept(&tool.insert);
+        let holder = swept(&tool.holder);
         // No tool part below the chuck face.
         let chuck = self.job.chuck_z_mm + self.guard;
-        if insert.iter().chain(&holder).any(|p| p[0] < chuck) {
+        if insert.iter().chain(&holder).flatten().any(|p| p[0] < chuck) {
             return Err(format!(
                 "{op}: the tool would reach the chuck (z below {:.3}) moving to r {:.3}, z {:.3}",
                 self.job.chuck_z_mm, to[1], to[0]
@@ -725,18 +721,28 @@ impl Planner<'_> {
         // Drills and boring tools work inside the part's bore (clear of both
         // walls); every other tool outside the part.
         let face_z = self.job.part.z_range()[1];
-        let below_face = insert.iter().any(|p| p[0] < face_z - self.guard);
-        let part = if tool.axial && below_face {
-            // A face grooving blade below the face: inside a declared groove.
-            in_face_groove(&insert, face_z, &self.job.face_grooves, self.guard)
-        } else if tool.inner {
-            let bore = self.bore.as_ref().ok_or_else(|| {
-                format!("{op}: drilling and boring need the part's bore (TurningJob.bore): the hole's half-section from the front face to its deepest point")
-            })?;
-            outside(bore, &insert, self.guard)
-        } else {
-            self.part.penetration(&insert, self.guard)
+        // How far tool pieces reach into the part (outside tools) or out
+        // of its bore (drills and boring tools).
+        let into_part = |pieces: &[Vec<[f64; 2]>]| -> Result<f64, String> {
+            let mut worst = f64::NEG_INFINITY;
+            for piece in pieces {
+                let below_face = piece.iter().any(|p| p[0] < face_z - self.guard);
+                worst = worst.max(if tool.axial && below_face {
+                    // A face grooving blade below the face: inside a
+                    // declared groove.
+                    in_face_groove(piece, face_z, &self.job.face_grooves, self.guard)
+                } else if tool.inner {
+                    let bore = self.bore.as_ref().ok_or_else(|| {
+                        format!("{op}: drilling and boring need the part's bore (TurningJob.bore): the hole's half-section from the front face to its deepest point")
+                    })?;
+                    outside(bore, piece, self.guard)
+                } else {
+                    self.part.penetration(piece, self.guard)
+                });
+            }
+            Ok(worst)
         };
+        let part = into_part(&insert)?;
         if part > 0. {
             return Err(format!(
                 "{op}: the insert would cut {part:.4} mm into the part moving to r {:.3}, z {:.3}; check the insert's angles against the profile",
@@ -744,6 +750,23 @@ impl Planner<'_> {
             ));
         }
         report.min_part_clearance_mm = report.min_part_clearance_mm.min(-part - self.guard);
+        // The holder (and bar) against the part and its bore, wherever it
+        // is relative to the insert (a face grooving blade's arm stays out
+        // of the groove: its holder is checked like an outside tool's).
+        let holder_part = if tool.axial {
+            holder
+                .iter()
+                .map(|piece| self.part.penetration(piece, self.guard))
+                .fold(f64::NEG_INFINITY, f64::max)
+        } else {
+            into_part(&holder)?
+        };
+        if holder_part > 0. {
+            return Err(format!(
+                "{op}: the holder would hit the part ({holder_part:.4} mm) moving to r {:.3}, z {:.3}",
+                to[1], to[0]
+            ));
+        }
         let curve = Curve::Line {
             start: [from[1], 0., from[0]],
             end: [to[1], 0., to[0]],
@@ -785,34 +808,25 @@ impl Planner<'_> {
                     after.thread_cut(from[0], to[0], to[1].min(from[1]) - tool.rn)
                 };
                 after.apply(&changes)?;
-            } else if let Some(back) = tool.back {
-                // A convex insert moving straight meets material only through
-                // the part of its outline facing the motion. When the back
-                // faces forward it may meet stock first: its sweep must then
-                // stay clear of the stock there may still be. Trailing, it
-                // meets only what the cutting edges have already cut.
-                let n = tool.insert.len() as f64;
-                let c = tool
-                    .insert
-                    .iter()
-                    .fold([0., 0.], |a, p| [a[0] + p[0] / n, a[1] + p[1] / n]);
-                let mid = [
-                    (back[0][0] + back[1][0]) / 2.,
-                    (back[0][1] + back[1][1]) / 2.,
-                ];
-                let mut normal = [back[1][1] - back[0][1], back[0][0] - back[1][0]];
-                if normal[0] * (mid[0] - c[0]) + normal[1] * (mid[1] - c[1]) < 0. {
-                    normal = [-normal[0], -normal[1]];
+            } else if let Some(back) = &tool.back {
+                // An insert moving straight meets material only through the
+                // part of its outline facing the motion. Where a non-cutting
+                // side faces forward it may meet stock first: its sweep must
+                // then stay clear of the stock there may still be. Trailing,
+                // it meets only what the cutting edges have already cut.
+                let mut reach = f64::NEG_INFINITY;
+                for (piece, normal) in back {
+                    let leads = normal[0] * (to[0] - from[0]) + normal[1] * (to[1] - from[1]) > 0.;
+                    if !leads {
+                        continue;
+                    }
+                    let swept = hull([at(piece, from), at(piece, to)].concat());
+                    reach = reach.max(if tool.inner {
+                        outside(&stock_bore(&self.stock), &swept, self.guard)
+                    } else {
+                        stock_envelope(&self.stock).penetration(&swept, self.guard)
+                    });
                 }
-                let leads = normal[0] * (to[0] - from[0]) + normal[1] * (to[1] - from[1]) > 0.;
-                let back = hull([at(&back, from), at(&back, to)].concat());
-                let reach = if !leads {
-                    f64::NEG_INFINITY
-                } else if tool.inner {
-                    outside(&stock_bore(&self.stock), &back, self.guard)
-                } else {
-                    stock_envelope(&self.stock).penetration(&back, self.guard)
-                };
                 if reach > 0. {
                     return Err(format!(
                         "{op}: the depth of cut reaches the insert's back, beyond its cutting edges ({reach:.4} mm) moving to r {:.3}, z {:.3}; take less per pass",
@@ -848,12 +862,19 @@ impl Planner<'_> {
             }
         }
         let stock = stock_envelope(&after);
-        let holder_hit = if tool.inner {
-            // The bar or drill body inside the bore the stock has opened.
-            outside(&stock_bore(&after), &holder, self.guard)
-        } else {
-            stock.penetration(&holder, self.guard)
-        };
+        let open = stock_bore(&after);
+        let holder_hit = holder
+            .iter()
+            .map(|piece| {
+                if tool.inner {
+                    // The bar or drill body inside the bore the stock has
+                    // opened.
+                    outside(&open, piece, self.guard)
+                } else {
+                    stock.penetration(piece, self.guard)
+                }
+            })
+            .fold(f64::NEG_INFINITY, f64::max);
         if holder_hit > 0. {
             return Err(format!(
                 "{op}: the holder would hit the stock ({holder_hit:.4} mm) moving to r {:.3}, z {:.3}",
@@ -885,12 +906,14 @@ impl Planner<'_> {
             } else {
                 to[1] > from[1]
             };
-        let touches = if tool.inner {
-            // Inside the bore the stock certainly has open.
-            outside(&stock_bore(&after), &insert, self.guard) > 0.
-        } else {
-            stock.penetration(&insert, self.guard) > 0.
-        };
+        let touches = insert.iter().any(|piece| {
+            if tool.inner {
+                // Inside the bore the stock certainly has open.
+                outside(&open, piece, self.guard) > 0.
+            } else {
+                stock.penetration(piece, self.guard) > 0.
+            }
+        });
         if kind == MoveKind::Rapid && !retraces && !pullout && touches {
             return Err(format!(
                 "{op}: a rapid would touch the stock moving to r {:.3}, z {:.3}",
@@ -2826,24 +2849,55 @@ mod tests {
     }
     use crate::{
         motion::{Program, ProgramValidator, WorkFrame},
-        turning::tool::Insert,
+        turning::tool::{Holder, Insert},
     };
 
+    /// A tool with camlib's rectangular holder (`Holder::rectangle`).
+    #[allow(clippy::too_many_arguments)]
+    fn test_tool(
+        id: String,
+        insert: Insert,
+        nose_radius_mm: f64,
+        side: TurnSide,
+        hand: Hand,
+        width: f64,
+        length: f64,
+        offset: f64,
+    ) -> TurningTool {
+        let holder =
+            Holder::rectangle(&insert, nose_radius_mm, side, width, length, offset).unwrap();
+        TurningTool {
+            id,
+            insert,
+            nose_radius_mm,
+            side,
+            hand,
+            holder,
+        }
+    }
+    fn rebuild_holder(tool: &mut TurningTool, width: f64, length: f64, offset: f64) {
+        tool.holder = Holder::rectangle(
+            &tool.insert,
+            tool.nose_radius_mm,
+            tool.side,
+            width,
+            length,
+            offset,
+        )
+        .unwrap();
+    }
+
     fn job() -> TurningJob {
-        let tool = TurningTool {
-            id: "cnmg".into(),
-            insert: Insert::Turning {
-                included_angle_deg: 80.,
-                approach_angle_deg: 95.,
-                edge_length_mm: 12.,
-            },
-            nose_radius_mm: 0.8,
-            side: TurnSide::Outer,
-            hand: Hand::Right,
-            holder_width_mm: 20.,
-            holder_length_mm: 100.,
-            holder_offset_mm: 0.,
-        };
+        let tool = test_tool(
+            "cnmg".into(),
+            Insert::iso_turning(80., 95., 12., 0.8).unwrap(),
+            0.8,
+            TurnSide::Outer,
+            Hand::Right,
+            20.,
+            100.,
+            0.,
+        );
         TurningJob {
             id: "shaft".into(),
             stock: TurnStockSpec {
@@ -2993,20 +3047,20 @@ mod tests {
             [15., -40., 0.],
         ];
         j.tools.push(TurnToolSetting {
-            tool: TurningTool {
-                id: "groove3".into(),
-                // Deeper than the bar's radius, so it can part off.
-                insert: Insert::Groove {
+            // Deeper than the bar's radius, so it can part off.
+            tool: test_tool(
+                "groove3".into(),
+                Insert::Groove {
                     width_mm: 2.,
                     depth_mm: 22.,
                 },
-                nose_radius_mm: 0.2,
-                side: TurnSide::Outer,
-                hand: Hand::Right,
-                holder_width_mm: 2.,
-                holder_length_mm: 60.,
-                holder_offset_mm: 0.,
-            },
+                0.2,
+                TurnSide::Outer,
+                Hand::Right,
+                2.,
+                60.,
+                0.,
+            ),
             number: 2,
             offset: 2,
         });
@@ -3070,19 +3124,19 @@ mod tests {
     fn single_point_threading() {
         let mut j = job();
         j.tools.push(TurnToolSetting {
-            tool: TurningTool {
-                id: "thread60".into(),
-                insert: Insert::Thread {
+            tool: test_tool(
+                "thread60".into(),
+                Insert::Thread {
                     profile_angle_deg: 60.,
                     depth_mm: 3.,
                 },
-                nose_radius_mm: 0.1,
-                side: TurnSide::Outer,
-                hand: Hand::Right,
-                holder_width_mm: 16.,
-                holder_length_mm: 60.,
-                holder_offset_mm: 0.,
-            },
+                0.1,
+                TurnSide::Outer,
+                Hand::Right,
+                16.,
+                60.,
+                0.,
+            ),
             number: 3,
             offset: 3,
         });
@@ -3142,20 +3196,20 @@ mod tests {
             points: vec![[5., 0., 0.], [5., -20., 0.], [0., -20. - cone, 0.]],
         });
         j.tools.push(TurnToolSetting {
-            tool: TurningTool {
-                id: "drill10".into(),
-                insert: Insert::Drill {
+            tool: test_tool(
+                "drill10".into(),
+                Insert::Drill {
                     diameter_mm: 10.,
                     point_angle_deg: 118.,
                     flute_length_mm: 40.,
                 },
-                nose_radius_mm: 0.,
-                side: TurnSide::Outer,
-                hand: Hand::Right,
-                holder_width_mm: 30.,
-                holder_length_mm: 60.,
-                holder_offset_mm: 0.,
-            },
+                0.,
+                TurnSide::Outer,
+                Hand::Right,
+                30.,
+                60.,
+                0.,
+            ),
             number: 4,
             offset: 4,
         });
@@ -3210,21 +3264,8 @@ mod tests {
             ],
         });
         j.tools.push(TurnToolSetting {
-            tool: TurningTool {
-                id: "bar".into(),
-                insert: Insert::Turning {
-                    included_angle_deg: 55.,
-                    approach_angle_deg: 95.,
-                    edge_length_mm: 6.,
-                },
-                nose_radius_mm: 0.4,
-                side: TurnSide::Inner,
-                hand: Hand::Right,
-                // A 10 mm bar, its top 1 mm under the nose center.
-                holder_width_mm: 10.,
-                holder_length_mm: 80.,
-                holder_offset_mm: 1.,
-            },
+            tool: // A 10 mm bar, its top 1 mm under the nose center.
+test_tool("bar".into(), Insert::iso_turning(55., 95., 6., 0.4).unwrap(), 0.4, TurnSide::Inner, Hand::Right, 10., 80., 1.),
             number: 5,
             offset: 5,
         });
@@ -3285,7 +3326,7 @@ mod tests {
         );
         // Too fat a bar for the hole: its far side hits the bore wall.
         let mut fat = bore_job();
-        fat.tools.last_mut().unwrap().tool.holder_width_mm = 17.;
+        rebuild_holder(&mut fat.tools.last_mut().unwrap().tool, 17., 80., 1.);
         let err = plan_err(&fat);
         assert!(err.contains("holder"), "{err}");
         // Deeper than the bore: the insert would cut past its bottom.
@@ -3311,19 +3352,19 @@ mod tests {
             points: vec![[11., 0., 0.], [11., -30., 0.]],
         });
         j.tools.push(TurnToolSetting {
-            tool: TurningTool {
-                id: "thread_in".into(),
-                insert: Insert::Thread {
+            tool: test_tool(
+                "thread_in".into(),
+                Insert::Thread {
                     profile_angle_deg: 60.,
                     depth_mm: 2.,
                 },
-                nose_radius_mm: 0.1,
-                side: TurnSide::Inner,
-                hand: Hand::Right,
-                holder_width_mm: 10.,
-                holder_length_mm: 80.,
-                holder_offset_mm: 1.,
-            },
+                0.1,
+                TurnSide::Inner,
+                Hand::Right,
+                10.,
+                80.,
+                1.,
+            ),
             number: 6,
             offset: 6,
         });
@@ -3510,20 +3551,9 @@ mod tests {
             ],
         });
         j.tools.push(TurnToolSetting {
-            tool: TurningTool {
-                id: "groove_in".into(),
-                insert: Insert::Groove {
-                    width_mm: 3.,
-                    depth_mm: 4.,
-                },
-                nose_radius_mm: 0.2,
-                side: TurnSide::Inner,
-                hand: Hand::Right,
-                // A 10 mm bar, its top the blade's depth under the tip.
-                holder_width_mm: 10.,
-                holder_length_mm: 80.,
-                holder_offset_mm: 4.,
-            },
+            tool: // A 10 mm bar, its top the blade's depth under the tip.
+test_tool("groove_in".into(), Insert::Groove { width_mm: 3.,
+                    depth_mm: 4. }, 0.2, TurnSide::Inner, Hand::Right, 10., 80., 4.),
             number: 7,
             offset: 7,
         });
@@ -3563,7 +3593,7 @@ mod tests {
         assert!(plan_err(&deep).contains("into the part"));
         // The bar must clear the bore at the groove's bottom.
         let mut thick = j.clone();
-        thick.tools.last_mut().unwrap().tool.holder_offset_mm = 1.;
+        rebuild_holder(&mut thick.tools.last_mut().unwrap().tool, 10., 80., 1.);
         assert!(plan_err(&thick).contains("holder"));
     }
 
@@ -3635,19 +3665,19 @@ mod tests {
             bottom_z_mm: -3.,
         }];
         j.tools.push(TurnToolSetting {
-            tool: TurningTool {
-                id: "face_groove".into(),
-                insert: Insert::FaceGroove {
+            tool: test_tool(
+                "face_groove".into(),
+                Insert::FaceGroove {
                     width_mm: 2.,
                     depth_mm: 8.,
                 },
-                nose_radius_mm: 0.2,
-                side: TurnSide::Outer,
-                hand: Hand::Right,
-                holder_width_mm: 2.,
-                holder_length_mm: 40.,
-                holder_offset_mm: 0.,
-            },
+                0.2,
+                TurnSide::Outer,
+                Hand::Right,
+                2.,
+                40.,
+                0.,
+            ),
             number: 8,
             offset: 8,
         });
@@ -3747,7 +3777,16 @@ mod tests {
     #[test]
     fn facing_deeper_than_the_nose_is_cut_by_the_edges() {
         let mut j = job();
-        j.tools[0].tool.nose_radius_mm = 0.4;
+        j.tools[0].tool = test_tool(
+            "cnmg".into(),
+            Insert::iso_turning(80., 95., 12., 0.4).unwrap(),
+            0.4,
+            TurnSide::Outer,
+            Hand::Right,
+            20.,
+            100.,
+            0.,
+        );
         j.stock.z_max_mm = 3.;
         j.operations = vec![TurnOperation::Face {
             id: "face".into(),
@@ -3853,5 +3892,196 @@ mod tests {
         j.operations.remove(0);
         let err = plan(&j).err().unwrap();
         assert!(err.contains("into the part"), "{err}");
+    }
+
+    /// The shaft job turned with `insert` (nose radius `rn`) on camlib's
+    /// rectangular holder.
+    fn shaft_with(insert: Insert, rn: f64) -> TurningJob {
+        let mut j = job();
+        j.tools[0].tool = test_tool(
+            "cnmg".into(),
+            insert,
+            rn,
+            TurnSide::Outer,
+            Hand::Right,
+            20.,
+            100.,
+            0.,
+        );
+        j
+    }
+
+    #[test]
+    fn round_and_trigon_inserts_profile_the_shaft_with_clearance() {
+        // A round insert of 8 mm: its 4 mm nose fits the 5 mm shoulder.
+        for code in ["RCMT0803M0", "WNMG080408", "CNMG120408"] {
+            let (insert, rn) = Insert::iso_code(code, 95.).unwrap();
+            // The passes end the clearance short of the chuck (for the nose
+            // center): a nose larger than the default 2 mm needs more.
+            let mut j = shaft_with(insert, rn);
+            j.clearance_mm = rn + 1.;
+            let plan = plan(&j).unwrap_or_else(|e| panic!("{code}: {e}"));
+            assert!(
+                plan.reports
+                    .iter()
+                    .all(|r| r.min_part_clearance_mm >= -1e-3),
+                "{code}"
+            );
+            // Finished to size along both diameters, away from the inside
+            // corner a nose of this radius cannot reach into.
+            for (i, c) in plan.stock.cells().iter().enumerate() {
+                let [z0, z1] = plan.stock.bin(i);
+                if z0 >= -20. + rn + 1. && z1 <= -1.5 {
+                    assert!(
+                        (c.outer.upper_mm - 10.).abs() < 1e-6 && c.outer.lower_mm >= 10. - 1e-6,
+                        "{code} {z0} {c:?}"
+                    );
+                }
+                if z0 >= -38.5 && z1 <= -21.5 {
+                    assert!(
+                        (c.outer.upper_mm - 15.).abs() < 1e-6 && c.outer.lower_mm >= 15. - 1e-6,
+                        "{code} {z0} {c:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A holder whose head reaches `ahead` mm ahead of the nose (toward -z)
+    /// at `above` mm above it (away from the axis), 30 mm long.
+    fn head_ahead(ahead: f64, above: f64) -> Holder {
+        let (x0, x1, z0, z1) = (above, above + 30., -ahead, 20.);
+        Holder {
+            outline: crate::turning::tool::Outline {
+                start_mm: [x0, z0],
+                segments: vec![
+                    crate::turning::tool::Segment::Line { to_mm: [x1, z0] },
+                    crate::turning::tool::Segment::Line { to_mm: [x1, z1] },
+                    crate::turning::tool::Segment::Line { to_mm: [x0, z1] },
+                    crate::turning::tool::Segment::Line { to_mm: [x0, z0] },
+                ],
+            },
+            bar: None,
+        }
+    }
+
+    #[test]
+    fn a_holder_head_ahead_of_the_insert_is_caught() {
+        // Roughing only, the stock already faced.
+        // The stock ends at z -45: no uncut ring between the passes' end
+        // (the chuck plus the clearance) and the chuck for a head to meet.
+        let rough = |holder: Holder, chuck: f64| {
+            let mut j = job();
+            j.stock.z_max_mm = 0.;
+            j.stock.z_min_mm = -45.;
+            j.chuck_z_mm = chuck;
+            j.operations
+                .retain(|o| matches!(o, TurnOperation::Rough { .. }));
+            j.tools[0].tool.holder = holder;
+            j
+        };
+        // 1.5 mm ahead, clear of the stock ahead of each pass (2 mm above
+        // the nose center, the passes 2 mm deep): the last pass under r 15
+        // runs the head into the shoulder at z -20, below the part's r 15.
+        let err = plan_err(&rough(head_ahead(1.5, 2.), -50.));
+        assert!(err.contains("the holder would hit the part"), "{err}");
+        // High enough for the shoulder, but 6 mm ahead: past the chuck face
+        // (z -50) at the end of the outer passes (2 mm before it).
+        let err = plan_err(&rough(head_ahead(6., 6.), -50.));
+        assert!(err.contains("reach the chuck"), "{err}");
+        // The same head 1.5 mm ahead clears both.
+        plan(&rough(head_ahead(1.5, 6.), -50.)).unwrap();
+    }
+
+    #[test]
+    fn a_boring_bar_outline_is_caught_in_a_small_bore() {
+        // The boring job's 10 mm bar as a round bar under a small head.
+        let bar = |diameter: f64| Holder {
+            outline: crate::turning::tool::Outline {
+                start_mm: [1., 0.5],
+                segments: vec![
+                    crate::turning::tool::Segment::Line { to_mm: [6., 0.5] },
+                    crate::turning::tool::Segment::Line { to_mm: [6., 6.] },
+                    crate::turning::tool::Segment::Line { to_mm: [1., 6.] },
+                    crate::turning::tool::Segment::Line { to_mm: [1., 0.5] },
+                ],
+            },
+            bar: Some(crate::turning::tool::Bar {
+                diameter_mm: diameter,
+                axis_x_mm: 1. + diameter / 2.,
+                z_mm: [0., 80.],
+            }),
+        };
+        let mut fits = bore_job();
+        fits.tools.last_mut().unwrap().tool.holder = bar(10.);
+        let fitted = plan(&fits).unwrap();
+        assert!(
+            fitted
+                .reports
+                .iter()
+                .all(|r| r.min_holder_clearance_mm > 0.)
+        );
+        // A 17 mm bar does not fit the bore: its far side hits the wall.
+        let mut fat = bore_job();
+        fat.tools.last_mut().unwrap().tool.holder = bar(17.);
+        let err = plan_err(&fat);
+        assert!(err.contains("the holder would hit the part"), "{err}");
+    }
+
+    #[test]
+    fn a_tool_without_a_holder_or_with_unknown_values_is_refused() {
+        let tool = serde_json::to_value(&job().tools[0].tool).unwrap();
+        let mut missing = tool.clone();
+        missing.as_object_mut().unwrap().remove("holder");
+        let err = serde_json::from_value::<TurningTool>(missing)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("missing field `holder`"), "{err}");
+        let mut old = tool.clone();
+        old.as_object_mut()
+            .unwrap()
+            .insert("holder_width_mm".into(), 20.into());
+        assert!(serde_json::from_value::<TurningTool>(old).is_err());
+        let mut no_nose = tool;
+        no_nose.as_object_mut().unwrap().remove("nose_radius_mm");
+        let err = serde_json::from_value::<TurningTool>(no_nose)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("missing field `nose_radius_mm`"), "{err}");
+    }
+
+    #[test]
+    fn iso_wedge_outlines_keep_the_old_geometry() {
+        // The wedge camlib has always modelled, exactly: the nose arc
+        // circumscribed in 2 degree steps between the two edges' tangent
+        // points, the edge ends at the edge length, the straight back.
+        let t = test_tool(
+            "t".into(),
+            Insert::iso_turning(80., 95., 12., 0.8).unwrap(),
+            0.8,
+            TurnSide::Outer,
+            Hand::Right,
+            20.,
+            100.,
+            0.,
+        );
+        let s = t.shape().unwrap();
+        let (major, minor) = (5f64, 85f64);
+        let d = |a: f64| [a.to_radians().cos(), a.to_radians().sin()];
+        let end = |a: f64, side: f64| {
+            let (u, n) = (d(a), d(a + side * 90.));
+            [0.8 * n[0] + 12. * u[0], 0.8 * n[1] + 12. * u[1]]
+        };
+        assert_eq!(s.insert[0], end(minor, 1.));
+        assert_eq!(*s.insert.last().unwrap(), end(major, -1.));
+        // 50 two-degree steps from 175 to 275 degrees: two tangent points
+        // and 50 corners, plus the two edge ends.
+        assert_eq!(s.insert.len(), 54);
+        assert_eq!(s.edges.len(), 3);
+        assert_eq!(s.back.as_ref().unwrap().len(), 1);
+        // The holder starts at the insert's reach, 20 mm along z.
+        let reach = s.insert.iter().map(|p| p[0]).fold(0., f64::max);
+        assert_eq!(s.holder[0], [reach, 0.]);
+        assert_eq!(s.holder[2], [reach + 100., 20.]);
     }
 }

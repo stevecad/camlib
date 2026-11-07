@@ -21,7 +21,7 @@ level `Setup` is the job setup (`camlib.jobs.Setup`).
 | `camlib.posted` | `PostedRun`: replays a posted program from its decoded G-code (what the controller will do), with stock and checks |
 | `camlib.dynamics` | `MotionPolicy` (acceleration, rapid feed, junction mode) and feed scheduling / time estimates |
 | `camlib.motion` | Typed motion and events (`Motion`, `Line`, `Arc`, `Helix`, `Dwell`, `Cycle`, `SpindleOrient`, `CutterCompensation`, `Beam`, `HeightControl`, `SurfaceSpeed`, `FeedPerRev`, ...), `WorkFrame(origin_mm, x, y, z)` |
-| `camlib.turning` | Lathe setups (`Setup(turning=...)`): `TurningSetup`, `TurnStockSpec`, `TurningTool`, `TurningInsert`, `GrooveInsert`, `ThreadInsert`, `TurnToolSetting`, `TurnFace`, `TurnRough`, `TurnFinish`, `TurnGroove`, `TurnPartOff`, `TurnThread`, `DrillInsert`, `TurnDrill`, `TurnBoreRough`, `TurnBoreFinish`, `FaceGroove`, `FaceGrooveInsert`, `TurnFaceGroove` |
+| `camlib.turning` | Lathe setups (`Setup(turning=...)`): `TurningSetup`, `TurnStockSpec`, `TurningTool`, `TurningInsert` (`iso`, `iso_code` constructors), `InsertOutline`, `TurningHolder` (`rectangle`), `TurningBar`, `Outline`/`Line`/`Arc`, `GrooveInsert`, `ThreadInsert`, `TurnToolSetting`, `TurnFace`, `TurnRough`, `TurnFinish`, `TurnGroove`, `TurnPartOff`, `TurnThread`, `DrillInsert`, `TurnDrill`, `TurnBoreRough`, `TurnBoreFinish`, `FaceGroove`, `FaceGrooveInsert`, `TurnFaceGroove` |
 | `camlib.cadquery` | Optional CadQuery adapter (`export_floor_region`, `export_surface_mesh`, `flow_paths`, `turning_section`) |
 
 Typical flow, as in [Getting started](getting-started.md):

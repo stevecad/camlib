@@ -8,7 +8,8 @@ the bulge being tan(sweep / 4) of the arc to the next point (positive: G3).
 A lathe setup is a ``camlib.jobs.Setup`` with ``TurnStockSpec`` stock and a
 ``TurningSetup``. Its run plans each operation natively when it is reached
 and checks every move: the swept insert against the part (eroded by the
-tolerance), the holder against the stock, rapids against the stock, nothing
+tolerance), the holder against the part, its bore and the stock, rapids
+against the stock, nothing
 past the chuck face. The run streams every move with the exact stock change
 it makes, like a milling run: playback, posting and export work the same.
 """
@@ -41,26 +42,172 @@ class TurnStockSpec:
         )
 
 
-@dataclass(frozen=True)
-class TurningInsert:
-    """An ISO turning insert: ``included_angle_deg`` (80 C, 55 D, 35 V, 90 S,
-    60 T) on a holder with ``approach_angle_deg`` (e.g. 95 or 93)."""
+# Turning tools. Every geometric value is stated: nothing defaults to a tool
+# that isn't the caller's (AGENTS.md: no assumed tools). Outlines are in the
+# tool's XZ frame: x away from the spindle axis for an outside tool, z along
+# the axis, drawn as an outside, right-hand tool cutting toward -z (a boring
+# tool is the same drawing, mirrored by camlib; a left-hand tool too).
 
-    included_angle_deg: float = 80
-    approach_angle_deg: float = 95
-    edge_length_mm: float = 12
+
+def _pair(value, what):
+    pair = tuple(float(v) for v in value)
+    if len(pair) != 2:
+        raise ValueError(f"{what} must be an (x, z) pair in mm")
+    return pair
+
+
+@dataclass(frozen=True)
+class Line:
+    """A straight segment to ``to_mm`` (x, z)."""
+
+    to_mm: tuple
+
+    def to_dict(self):
+        return dict(kind="line", to_mm=list(_pair(self.to_mm, "Line.to_mm")))
+
+
+@dataclass(frozen=True)
+class Arc:
+    """A circular arc around ``center_mm`` of ``radius_mm`` (0: a sharp
+    corner) from ``start_deg`` to ``end_deg`` (degrees from +x toward +z;
+    increasing is counterclockwise), at most a full turn. It starts where
+    the previous segment ends."""
+
+    center_mm: tuple
+    radius_mm: float
+    start_deg: float
+    end_deg: float
 
     def to_dict(self):
         return dict(
-            kind="turning",
-            included_angle_deg=self.included_angle_deg,
-            approach_angle_deg=self.approach_angle_deg,
-            edge_length_mm=self.edge_length_mm,
+            kind="arc",
+            center_mm=list(_pair(self.center_mm, "Arc.center_mm")),
+            radius_mm=self.radius_mm,
+            start_deg=self.start_deg,
+            end_deg=self.end_deg,
         )
+
+
+def _segment(data):
+    data = dict(data)
+    kind = data.pop("kind")
+    if kind == "line":
+        return Line(tuple(data["to_mm"]))
+    return Arc(tuple(data["center_mm"]), data["radius_mm"], data["start_deg"], data["end_deg"])
+
+
+@dataclass(frozen=True)
+class Outline:
+    """A closed outline: ``start_mm`` (x, z), then ``segments`` (``Line``,
+    ``Arc``), the last ending at the start. It must not cross itself."""
+
+    start_mm: tuple
+    segments: tuple
+
+    def to_dict(self):
+        return dict(
+            start_mm=list(_pair(self.start_mm, "Outline.start_mm")), segments=[s.to_dict() for s in self.segments]
+        )
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(tuple(data["start_mm"]), tuple(_segment(s) for s in data["segments"]))
+
+
+@dataclass(frozen=True)
+class InsertOutline:
+    """A turning insert of any shape (round, trigon, a real insert's back
+    edge or wiper): its ``outline``; ``corner``, the index of the arc
+    segment that is the cutting corner (its center is the nose center, its
+    radius the nose radius); ``cutting``, the indices of the segments that
+    may cut (the corner and the edges next to it; every other segment must
+    stay clear of the stock); and ``programming_point_mm``, the point the
+    tool's offsets are touched off with (the imaginary tip), all in the
+    tool's XZ frame. ``TurningInsert.iso`` and ``TurningInsert.iso_code``
+    build one from ISO values."""
+
+    outline: Outline
+    corner: int
+    cutting: tuple
+    programming_point_mm: tuple
+
+    @property
+    def nose_radius_mm(self):
+        segment = self.outline.segments[self.corner]
+        if not isinstance(segment, Arc):
+            raise ValueError("InsertOutline.corner must be the index of an Arc segment (the nose)")
+        return segment.radius_mm
+
+    def to_dict(self):
+        return dict(
+            kind="outline",
+            outline=self.outline.to_dict(),
+            corner=self.corner,
+            cutting=list(self.cutting),
+            programming_point_mm=list(_pair(self.programming_point_mm, "programming_point_mm")),
+        )
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(
+            Outline.from_dict(data["outline"]),
+            data["corner"],
+            tuple(data["cutting"]),
+            tuple(data["programming_point_mm"]),
+        )
+
+
+class TurningInsert:
+    """Constructors of turning inserts (``InsertOutline``) from ISO values.
+
+    ``TurningInsert.iso(...)``: the wedge camlib has always modelled (nose,
+    two edges, straight back) from its angles and edge length.
+    ``TurningInsert.iso_code(code, ...)``: the whole insert from its ISO 1832
+    designation. There are no defaults: every value is the caller's."""
+
+    def __init__(self, *args, **kwargs):
+        raise TypeError(
+            "TurningInsert(...) no longer has default angles or edge length: use "
+            "TurningInsert.iso(included_angle_deg=, approach_angle_deg=, edge_length_mm=, nose_radius_mm=), "
+            "TurningInsert.iso_code(code, approach_angle_deg= or holder=), or an InsertOutline"
+        )
+
+    @staticmethod
+    def iso(*, included_angle_deg, approach_angle_deg, edge_length_mm, nose_radius_mm):
+        """A nose of ``nose_radius_mm`` between two edges of
+        ``edge_length_mm`` at ``included_angle_deg`` (80 C, 55 D, 35 V, 90 S,
+        60 T), on a holder with ``approach_angle_deg`` (the cutting edge
+        angle, e.g. 93 or 95), closed straight across the back. The
+        programming point is the imaginary tip."""
+        data = native.turning_iso_insert(
+            float(included_angle_deg), float(approach_angle_deg), float(edge_length_mm), float(nose_radius_mm)
+        )
+        return InsertOutline.from_dict(json.loads(data))
+
+    @staticmethod
+    def iso_code(code, *, approach_angle_deg=None, holder=None):
+        """The whole insert from its ISO 1832 designation (e.g.
+        ``"CNMG120408"``): shape C, D, V, S, T, W (negative) or R, size and
+        nose radius; every corner rounded, the cutting corner at the nose.
+        The approach angle comes from the holder: ``approach_angle_deg``, or
+        ``holder`` as an ISO 5608 designation (e.g. ``"PCLNR2525M12"``, style
+        L: 95 degrees). Values: ISO 1832:1991 and ISO 5608:1995 tables, and
+        the size and corner radius tables of Sumitomo's code key (see
+        docs/operations.md)."""
+        if (approach_angle_deg is None) == (holder is None):
+            raise ValueError(
+                "TurningInsert.iso_code needs the holder's approach angle: approach_angle_deg= or holder= (an ISO 5608 code)"
+            )
+        if holder is not None:
+            approach_angle_deg = native.turning_holder_approach(str(holder))
+        data, _ = native.turning_iso_code(str(code), float(approach_angle_deg))
+        return InsertOutline.from_dict(json.loads(data))
 
 
 @dataclass(frozen=True)
 class GrooveInsert:
+    """A grooving or parting insert ``width_mm`` wide, ``depth_mm`` deep."""
+
     width_mm: float
     depth_mm: float
 
@@ -74,8 +221,8 @@ class FaceGrooveInsert:
     ``width_mm`` across in r, reaching ``depth_mm``; the nose radius at both
     corners. Its reference is the inner corner (toward the axis)."""
 
-    width_mm: float = 2
-    depth_mm: float = 8
+    width_mm: float
+    depth_mm: float
 
     def to_dict(self):
         return dict(kind="face_groove", width_mm=self.width_mm, depth_mm=self.depth_mm)
@@ -83,8 +230,11 @@ class FaceGrooveInsert:
 
 @dataclass(frozen=True)
 class ThreadInsert:
-    profile_angle_deg: float = 60
-    depth_mm: float = 3
+    """A threading insert: ``profile_angle_deg`` (60 metric and UN, 55
+    Whitworth), reaching ``depth_mm`` beyond its nose."""
+
+    profile_angle_deg: float
+    depth_mm: float
 
     def to_dict(self):
         return dict(kind="thread", profile_angle_deg=self.profile_angle_deg, depth_mm=self.depth_mm)
@@ -96,8 +246,8 @@ class DrillInsert:
     flat) and flute length. Its reference point is the tip."""
 
     diameter_mm: float
-    point_angle_deg: float = 118
-    flute_length_mm: float = 50
+    point_angle_deg: float
+    flute_length_mm: float
 
     def to_dict(self):
         return dict(
@@ -109,23 +259,121 @@ class DrillInsert:
 
 
 @dataclass(frozen=True)
-class TurningTool:
-    """A turning tool: insert, nose radius, outside ("outer") or boring
-    ("inner"), right hand (cuts toward the chuck) or left, and the holder,
-    used for collision checks. Outside: the holder's width along z and
-    length away from the cut. Boring ("inner", the insert cutting outward):
-    an axial bar ``holder_width_mm`` across (its diameter), its top
-    ``holder_offset_mm`` under the nose center, ``holder_length_mm`` out of
-    the bore; both sides of the bar are checked inside the bore."""
+class Bar:
+    """A round boring bar: ``diameter_mm``, its axis at ``axis_x_mm`` in the
+    tool frame (parallel to z), from ``z_mm[0]`` to ``z_mm[1]``. Its section
+    through its axis bounds its reach on both sides of the spindle axis."""
 
-    id: str
-    insert: object = TurningInsert()
-    nose_radius_mm: float = 0.8
-    side: str = "outer"
-    hand: str = "right"
-    holder_width_mm: float = 20
-    holder_length_mm: float = 100
-    holder_offset_mm: float = 0
+    diameter_mm: float
+    axis_x_mm: float
+    z_mm: tuple
+
+    def to_dict(self):
+        return dict(diameter_mm=self.diameter_mm, axis_x_mm=self.axis_x_mm, z_mm=list(_pair(self.z_mm, "Bar.z_mm")))
+
+
+@dataclass(frozen=True)
+class Holder:
+    """The holder (or boring bar) as an ``Outline`` in its insert's tool
+    frame, anywhere relative to the insert (a head reaching ahead of it, a
+    stepped or angled head), and a round ``bar`` for a boring bar. It is
+    checked like the insert: against the part, its bore, the chuck and the
+    stock. ``Holder.rectangle`` builds camlib's rectangular holder."""
+
+    outline: Outline
+    bar: Bar | None = None
+
+    def to_dict(self):
+        data = dict(outline=self.outline.to_dict())
+        if self.bar is not None:
+            data["bar"] = self.bar.to_dict()
+        return data
+
+    @classmethod
+    def rectangle(cls, *, insert, nose_radius_mm, side, width_mm, length_mm, offset_mm):
+        """camlib's rectangular holder for ``insert``: outside, a shank
+        ``width_mm`` along z and ``length_mm`` away from the cut, starting
+        ``offset_mm`` behind the insert's reach (a turning insert's nose
+        center toward +z; across a grooving or threading blade); boring
+        (``side="inner"``), an axial bar ``width_mm`` across, its top
+        ``offset_mm`` under the nose center, ``length_mm`` out of the bore;
+        a drill's chuck ``width_mm`` across, ``offset_mm`` behind the
+        flutes, ``length_mm`` long."""
+        data = native.turning_rectangle_holder(
+            json.dumps(insert.to_dict()),
+            float(nose_radius_mm),
+            str(side),
+            float(width_mm),
+            float(length_mm),
+            float(offset_mm),
+        )
+        data = json.loads(data)
+        return cls(Outline.from_dict(data["outline"]))
+
+
+# Top-level names (camlib.TurningHolder, camlib.TurningBar; camlib.BoringBar
+# is the milling boring bar).
+TurningHolder = Holder
+TurningBar = Bar
+
+_REMOVED = ("holder_width_mm", "holder_length_mm", "holder_offset_mm")
+
+
+class TurningTool:
+    """A turning tool: ``id``, ``insert`` (an ``InsertOutline``, e.g. from
+    ``TurningInsert.iso``/``iso_code``, or a ``GrooveInsert``,
+    ``FaceGrooveInsert``, ``ThreadInsert`` or ``DrillInsert``), ``side``
+    ("outer", or "inner" for a boring tool cutting outward), ``hand``
+    ("right": cuts toward the chuck, or "left"), and ``holder`` (a
+    ``Holder``, e.g. ``Holder.rectangle``). ``nose_radius_mm`` is the
+    insert's: an ``InsertOutline`` states it (its corner's radius); the
+    other inserts need it. Every value is required: a missing one is
+    refused with its name."""
+
+    __slots__ = ("id", "insert", "nose_radius_mm", "side", "hand", "holder")
+
+    def __init__(self, id, *, insert=None, side=None, hand=None, holder=None, nose_radius_mm=None, **removed):
+        if removed:
+            names = ", ".join(sorted(removed))
+            hint = (
+                "; the holder is now a Holder (Holder.rectangle(insert=, nose_radius_mm=, side=, width_mm=, length_mm=, offset_mm=) gives camlib's rectangle)"
+                if set(removed) & set(_REMOVED)
+                else ""
+            )
+            raise TypeError(f"TurningTool {id!r}: unknown value(s) {names}{hint}")
+        missing = [
+            name
+            for name, value in (("insert", insert), ("side", side), ("hand", hand), ("holder", holder))
+            if value is None
+        ]
+        if isinstance(insert, InsertOutline):
+            if nose_radius_mm is None:
+                nose_radius_mm = insert.nose_radius_mm
+        elif nose_radius_mm is None:
+            missing.append("nose_radius_mm")
+        if missing:
+            raise TypeError(f"TurningTool {id!r} needs {', '.join(missing)} (turning tools have no default values)")
+        for name, value in (
+            ("id", id),
+            ("insert", insert),
+            ("nose_radius_mm", nose_radius_mm),
+            ("side", side),
+            ("hand", hand),
+            ("holder", holder),
+        ):
+            object.__setattr__(self, name, value)
+
+    def __setattr__(self, name, value):
+        raise AttributeError("TurningTool is immutable")
+
+    def __eq__(self, other):
+        return isinstance(other, TurningTool) and self.to_dict() == other.to_dict()
+
+    def __hash__(self):
+        return hash(json.dumps(self.to_dict(), sort_keys=True))
+
+    def __repr__(self):
+        return f"TurningTool({self.id!r}, insert={self.insert!r}, nose_radius_mm={self.nose_radius_mm!r}, side={self.side!r}, hand={self.hand!r}, holder={self.holder!r})"
 
     def to_dict(self):
         return dict(
@@ -134,10 +382,14 @@ class TurningTool:
             nose_radius_mm=self.nose_radius_mm,
             side=self.side,
             hand=self.hand,
-            holder_width_mm=self.holder_width_mm,
-            holder_length_mm=self.holder_length_mm,
-            holder_offset_mm=self.holder_offset_mm,
+            holder=self.holder.to_dict(),
         )
+
+    def validate(self):
+        """Check the tool natively (outlines, corner, holder); raises
+        ValueError naming what is wrong."""
+        native.turning_validate_tool(json.dumps(self.to_dict()))
+        return self
 
 
 @dataclass(frozen=True)

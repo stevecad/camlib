@@ -462,6 +462,76 @@ fn turn_proxy_tools(setup: &str) -> PyResult<String> {
     serde_json::to_string(&setup.proxy_tools()).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
+/// An ISO-style turning insert outline (`Insert::iso_turning`), as JSON.
+#[pyfunction]
+fn turning_iso_insert(
+    included_angle_deg: f64,
+    approach_angle_deg: f64,
+    edge_length_mm: f64,
+    nose_radius_mm: f64,
+) -> PyResult<String> {
+    let insert = camlib::turning::tool::Insert::iso_turning(
+        included_angle_deg,
+        approach_angle_deg,
+        edge_length_mm,
+        nose_radius_mm,
+    )
+    .map_err(PyValueError::new_err)?;
+    serde_json::to_string(&insert).map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+/// An insert from its ISO 1832 code (`Insert::iso_code`): (JSON, nose radius).
+#[pyfunction]
+fn turning_iso_code(code: &str, approach_angle_deg: f64) -> PyResult<(String, f64)> {
+    let (insert, rn) = camlib::turning::tool::Insert::iso_code(code, approach_angle_deg)
+        .map_err(PyValueError::new_err)?;
+    Ok((
+        serde_json::to_string(&insert).map_err(|e| PyValueError::new_err(e.to_string()))?,
+        rn,
+    ))
+}
+
+/// The approach angle of an ISO 5608 holder designation.
+#[pyfunction]
+fn turning_holder_approach(code: &str) -> PyResult<f64> {
+    camlib::turning::tool::iso_holder_approach_deg(code).map_err(PyValueError::new_err)
+}
+
+/// camlib's rectangular holder for an insert (`Holder::rectangle`), as JSON.
+#[pyfunction]
+fn turning_rectangle_holder(
+    insert: &str,
+    nose_radius_mm: f64,
+    side: &str,
+    width_mm: f64,
+    length_mm: f64,
+    offset_mm: f64,
+) -> PyResult<String> {
+    let insert: camlib::turning::tool::Insert =
+        serde_json::from_str(insert).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let side: camlib::turning::stock::TurnSide =
+        serde_json::from_value(serde_json::Value::String(side.into()))
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let holder = camlib::turning::tool::Holder::rectangle(
+        &insert,
+        nose_radius_mm,
+        side,
+        width_mm,
+        length_mm,
+        offset_mm,
+    )
+    .map_err(PyValueError::new_err)?;
+    serde_json::to_string(&holder).map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+/// Check a turning tool (JSON): its outlines, corner, holder and values.
+#[pyfunction]
+fn turning_validate_tool(tool: &str) -> PyResult<()> {
+    let tool: camlib::turning::tool::TurningTool =
+        serde_json::from_str(tool).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    tool.validate().map_err(PyValueError::new_err)
+}
+
 #[pyfunction]
 fn validate_heights(
     py: Python<'_>,
@@ -1931,6 +2001,11 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(grbl_start_mm, module)?)?;
     module.add_function(wrap_pyfunction!(apply_delta, module)?)?;
     module.add_function(wrap_pyfunction!(turn_proxy_tools, module)?)?;
+    module.add_function(wrap_pyfunction!(turning_iso_insert, module)?)?;
+    module.add_function(wrap_pyfunction!(turning_iso_code, module)?)?;
+    module.add_function(wrap_pyfunction!(turning_holder_approach, module)?)?;
+    module.add_function(wrap_pyfunction!(turning_rectangle_holder, module)?)?;
+    module.add_function(wrap_pyfunction!(turning_validate_tool, module)?)?;
     module.add_function(wrap_pyfunction!(schedule_motion, module)?)?;
     module.add_function(wrap_pyfunction!(validate_heights, module)?)?;
     module.add_function(wrap_pyfunction!(decode_committed_chunk, module)?)?;

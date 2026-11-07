@@ -17,6 +17,27 @@ SHAFT = ((0, 0, 0), (10, 0, 0), (10, -20, 0), (15, -20, 0), (15, -40, 0))
 TURNING = {f.name for f in fields(camlib.TurningSetup)}
 
 
+def tool(id, insert, *, nose_radius_mm, width_mm, length_mm, offset_mm=0, side="outer", hand="right"):
+    """A turning tool with camlib's rectangular holder (every value stated)."""
+    holder = camlib.TurningHolder.rectangle(
+        insert=insert,
+        nose_radius_mm=nose_radius_mm,
+        side=side,
+        width_mm=width_mm,
+        length_mm=length_mm,
+        offset_mm=offset_mm,
+    )
+    return camlib.TurningTool(id, insert=insert, nose_radius_mm=nose_radius_mm, side=side, hand=hand, holder=holder)
+
+
+def cnmg(nose_radius_mm=0.8):
+    """The 80 degree insert on a 95 degree holder these tests turn with."""
+    insert = camlib.TurningInsert.iso(
+        included_angle_deg=80, approach_angle_deg=95, edge_length_mm=12, nose_radius_mm=nose_radius_mm
+    )
+    return tool("cnmg", insert, nose_radius_mm=nose_radius_mm, width_mm=20, length_mm=100)
+
+
 @dataclass
 class Planned:
     """A lathe setup's run: its operation reports, final stock and program
@@ -52,7 +73,7 @@ class LatheJob:
 def job(**changes):
     """A lathe job (one setup, "lathe"); ``changes`` replace setup or
     turning-setup values."""
-    tool = camlib.TurningTool("cnmg", nose_radius_mm=0.8)
+    tool = cnmg()
     values = dict(
         stock=camlib.TurnStockSpec(-60, 2, 20),
         profile=SHAFT,
@@ -283,9 +304,7 @@ class TurningTest(unittest.TestCase):
         self.assertNotIn(10.8, xs)
 
     def test_groove_and_part_off(self):
-        groove = camlib.TurningTool(
-            "groove2", insert=camlib.GrooveInsert(2, 22), nose_radius_mm=0.2, holder_width_mm=2, holder_length_mm=60
-        )
+        groove = tool("groove2", camlib.GrooveInsert(2, 22), nose_radius_mm=0.2, width_mm=2, length_mm=60)
         profile = (
             (0, 0, 0),
             (10, 0, 0),
@@ -299,7 +318,7 @@ class TurningTest(unittest.TestCase):
         )
         plan = job(
             profile=profile,
-            tools=(camlib.TurnToolSetting(camlib.TurningTool("cnmg"), 1, 1), camlib.TurnToolSetting(groove, 2, 2)),
+            tools=(camlib.TurnToolSetting(cnmg(), 1, 1), camlib.TurnToolSetting(groove, 2, 2)),
             operations=(
                 camlib.TurnFace("face", "cnmg", 0, feed_mm_rev=0.15, rpm=1000),
                 camlib.TurnRough("rough", "cnmg", feed_mm_rev=0.25, rpm=1000),
@@ -313,11 +332,9 @@ class TurningTest(unittest.TestCase):
         self.assertEqual(cells[int((-41 - -60) / 0.25)]["outer"]["upper_mm"], 0)
 
     def test_threading_posts_synchronized_moves(self):
-        thread = camlib.TurningTool(
-            "thread60", insert=camlib.ThreadInsert(60, 3), nose_radius_mm=0.1, holder_width_mm=16, holder_length_mm=60
-        )
+        thread = tool("thread60", camlib.ThreadInsert(60, 3), nose_radius_mm=0.1, width_mm=16, length_mm=60)
         plan = job(
-            tools=(camlib.TurnToolSetting(camlib.TurningTool("cnmg"), 1, 1), camlib.TurnToolSetting(thread, 2, 2)),
+            tools=(camlib.TurnToolSetting(cnmg(), 1, 1), camlib.TurnToolSetting(thread, 2, 2)),
             operations=(
                 camlib.TurnFace("face", "cnmg", 0, feed_mm_rev=0.15, rpm=1000),
                 camlib.TurnRough("rough", "cnmg", feed_mm_rev=0.25, rpm=1000),
@@ -392,12 +409,10 @@ class TurningTest(unittest.TestCase):
         import math
 
         cone = 5 / math.tan(math.radians(59))
-        drill = camlib.TurningTool(
-            "drill10", insert=camlib.DrillInsert(10, 118, 40), nose_radius_mm=0, holder_width_mm=30, holder_length_mm=60
-        )
+        drill = tool("drill10", camlib.DrillInsert(10, 118, 40), nose_radius_mm=0, width_mm=30, length_mm=60)
         plan = job(
             bore=((5, 0, 0), (5, -20, 0), (0, -20 - cone, 0)),
-            tools=(camlib.TurnToolSetting(camlib.TurningTool("cnmg"), 1, 1), camlib.TurnToolSetting(drill, 2, 2)),
+            tools=(camlib.TurnToolSetting(cnmg(), 1, 1), camlib.TurnToolSetting(drill, 2, 2)),
             operations=(
                 camlib.TurnFace("face", "cnmg", 0, feed_mm_rev=0.15, rpm=1000),
                 camlib.TurnDrill("drill", "drill10", -20 - cone, peck_mm=6, feed_mm_rev=0.12, rpm=900),
@@ -411,26 +426,26 @@ class TurningTest(unittest.TestCase):
         import math
 
         cone = 8 / math.tan(math.radians(59))
-        drill = camlib.TurningTool(
-            "drill16", insert=camlib.DrillInsert(16, 118, 50), nose_radius_mm=0, holder_width_mm=40, holder_length_mm=60
-        )
-        bar = camlib.TurningTool(
+        drill = tool("drill16", camlib.DrillInsert(16, 118, 50), nose_radius_mm=0, width_mm=40, length_mm=60)
+        bar = tool(
             "bar",
-            insert=camlib.TurningInsert(55, 95, 6),
+            camlib.TurningInsert.iso(
+                included_angle_deg=55, approach_angle_deg=95, edge_length_mm=6, nose_radius_mm=0.4
+            ),
             nose_radius_mm=0.4,
+            width_mm=10,
+            length_mm=80,
+            offset_mm=1,
             side="inner",
-            holder_width_mm=10,
-            holder_length_mm=80,
-            holder_offset_mm=1,
         )
-        thread = camlib.TurningTool(
+        thread = tool(
             "thread_in",
-            insert=camlib.ThreadInsert(60, 2),
+            camlib.ThreadInsert(60, 2),
             nose_radius_mm=0.1,
+            width_mm=10,
+            length_mm=80,
+            offset_mm=1,
             side="inner",
-            holder_width_mm=10,
-            holder_length_mm=80,
-            holder_offset_mm=1,
         )
         plan = job(
             stock=camlib.TurnStockSpec(-60, 0, 20),
@@ -490,10 +505,8 @@ class TurningTest(unittest.TestCase):
         from dataclasses import replace
 
         css = dict(rpm=3000, surface_speed_m_min=200)
-        thread = camlib.TurningTool(
-            "thread60", insert=camlib.ThreadInsert(60, 3), nose_radius_mm=0.1, holder_width_mm=16, holder_length_mm=60
-        )
-        plan_tools = (camlib.TurnToolSetting(camlib.TurningTool("cnmg"), 1, 1), camlib.TurnToolSetting(thread, 2, 2))
+        thread = tool("thread60", camlib.ThreadInsert(60, 3), nose_radius_mm=0.1, width_mm=16, length_mm=60)
+        plan_tools = (camlib.TurnToolSetting(cnmg(), 1, 1), camlib.TurnToolSetting(thread, 2, 2))
         plan = job(
             feed_per_rev=True,
             tools=plan_tools,
@@ -591,12 +604,10 @@ class TurningTest(unittest.TestCase):
 
         c = example("centroid_lathe_post")
         css = dict(rpm=3000, surface_speed_m_min=200)
-        thread = camlib.TurningTool(
-            "thread60", insert=camlib.ThreadInsert(60, 3), nose_radius_mm=0.1, holder_width_mm=16, holder_length_mm=60
-        )
+        thread = tool("thread60", camlib.ThreadInsert(60, 3), nose_radius_mm=0.1, width_mm=16, length_mm=60)
         plan = job(
             feed_per_rev=True,
-            tools=(camlib.TurnToolSetting(camlib.TurningTool("cnmg"), 1, 1), camlib.TurnToolSetting(thread, 2, 2)),
+            tools=(camlib.TurnToolSetting(cnmg(), 1, 1), camlib.TurnToolSetting(thread, 2, 2)),
             operations=(
                 camlib.TurnFace("face", "cnmg", 0, **{'feed_mm_rev': 0.15, 'rpm': 1000, **css}),
                 camlib.TurnRough("rough", "cnmg", **{'feed_mm_rev': 0.25, 'rpm': 1000, **css}),
@@ -700,12 +711,10 @@ class TurningTest(unittest.TestCase):
 
         f = example("fanuc_lathe_post")
         css = dict(rpm=3000, surface_speed_m_min=200)
-        thread = camlib.TurningTool(
-            "thread60", insert=camlib.ThreadInsert(60, 3), nose_radius_mm=0.1, holder_width_mm=16, holder_length_mm=60
-        )
+        thread = tool("thread60", camlib.ThreadInsert(60, 3), nose_radius_mm=0.1, width_mm=16, length_mm=60)
         plan = job(
             feed_per_rev=True,
-            tools=(camlib.TurnToolSetting(camlib.TurningTool("cnmg"), 1, 1), camlib.TurnToolSetting(thread, 2, 2)),
+            tools=(camlib.TurnToolSetting(cnmg(), 1, 1), camlib.TurnToolSetting(thread, 2, 2)),
             operations=(
                 camlib.TurnFace("face", "cnmg", 0, **{'feed_mm_rev': 0.15, 'rpm': 1000, **css}),
                 camlib.TurnRough("rough", "cnmg", **{'feed_mm_rev': 0.25, 'rpm': 1000, **css}),
@@ -785,7 +794,7 @@ class TurningTest(unittest.TestCase):
             ).plan()
         # A face deeper than twice the nose radius is cut by the insert's edges.
         job(
-            tools=(camlib.TurnToolSetting(camlib.TurningTool("cnmg", nose_radius_mm=0.4), 1, 1),),
+            tools=(camlib.TurnToolSetting(cnmg(0.4), 1, 1),),
             operations=(camlib.TurnFace("face", "cnmg", 0, stepdown_mm=2, feed_mm_rev=0.15, rpm=1000),),
         ).plan()
         with self.assertRaisesRegex(Exception, "unknown tool"):

@@ -397,10 +397,9 @@ def _lathe(**changes):
 
 def _lathe_groove():
     import camlib
+    from test_turning import cnmg, tool
 
-    groove = camlib.TurningTool(
-        "groove2", insert=camlib.GrooveInsert(2, 22), nose_radius_mm=0.2, holder_width_mm=2, holder_length_mm=60
-    )
+    groove = tool("groove2", camlib.GrooveInsert(2, 22), nose_radius_mm=0.2, width_mm=2, length_mm=60)
     profile = (
         (0, 0, 0),
         (10, 0, 0),
@@ -414,7 +413,7 @@ def _lathe_groove():
     )
     return _lathe(
         profile=profile,
-        tools=(camlib.TurnToolSetting(camlib.TurningTool("cnmg"), 1, 1), camlib.TurnToolSetting(groove, 2, 2)),
+        tools=(camlib.TurnToolSetting(cnmg(), 1, 1), camlib.TurnToolSetting(groove, 2, 2)),
         operations=(
             camlib.TurnFace("face", "cnmg", 0, feed_mm_rev=0.15, rpm=1000),
             camlib.TurnRough("rough", "cnmg", feed_mm_rev=0.25, rpm=1000),
@@ -426,12 +425,11 @@ def _lathe_groove():
 
 def _lathe_thread():
     import camlib
+    from test_turning import cnmg, tool
 
-    thread = camlib.TurningTool(
-        "thread60", insert=camlib.ThreadInsert(60, 3), nose_radius_mm=0.1, holder_width_mm=16, holder_length_mm=60
-    )
+    thread = tool("thread60", camlib.ThreadInsert(60, 3), nose_radius_mm=0.1, width_mm=16, length_mm=60)
     return _lathe(
-        tools=(camlib.TurnToolSetting(camlib.TurningTool("cnmg"), 1, 1), camlib.TurnToolSetting(thread, 2, 2)),
+        tools=(camlib.TurnToolSetting(cnmg(), 1, 1), camlib.TurnToolSetting(thread, 2, 2)),
         operations=(
             camlib.TurnFace("face", "cnmg", 0, feed_mm_rev=0.15, rpm=1000),
             camlib.TurnRough("rough", "cnmg", feed_mm_rev=0.25, rpm=1000),
@@ -443,19 +441,18 @@ def _lathe_thread():
 
 def _lathe_bore():
     import camlib
+    from test_turning import tool
 
     cone = 8 / math.tan(math.radians(59))
-    drill = camlib.TurningTool(
-        "drill16", insert=camlib.DrillInsert(16, 118, 50), nose_radius_mm=0, holder_width_mm=40, holder_length_mm=60
-    )
-    bar = camlib.TurningTool(
+    drill = tool("drill16", camlib.DrillInsert(16, 118, 50), nose_radius_mm=0, width_mm=40, length_mm=60)
+    bar = tool(
         "bar",
-        insert=camlib.TurningInsert(55, 95, 6),
+        camlib.TurningInsert.iso(included_angle_deg=55, approach_angle_deg=95, edge_length_mm=6, nose_radius_mm=0.4),
         nose_radius_mm=0.4,
+        width_mm=10,
+        length_mm=80,
+        offset_mm=1,
         side="inner",
-        holder_width_mm=10,
-        holder_length_mm=80,
-        holder_offset_mm=1,
     )
     return _lathe(
         stock=camlib.TurnStockSpec(-60, 0, 20),
@@ -472,14 +469,13 @@ def _lathe_bore():
 
 def _lathe_face_groove():
     import camlib
+    from test_turning import cnmg, tool
 
-    blade = camlib.TurningTool(
-        "fg", insert=camlib.FaceGrooveInsert(2, 8), nose_radius_mm=0.2, holder_width_mm=2, holder_length_mm=40
-    )
+    blade = tool("fg", camlib.FaceGrooveInsert(2, 8), nose_radius_mm=0.2, width_mm=2, length_mm=40)
     return _lathe(
         stock=camlib.TurnStockSpec(-60, 1, 13),
         profile=((0, 0, 0), (12, 0, 0), (12, -40, 0)),
-        tools=(camlib.TurnToolSetting(camlib.TurningTool("cnmg"), 1, 1), camlib.TurnToolSetting(blade, 8, 8)),
+        tools=(camlib.TurnToolSetting(cnmg(), 1, 1), camlib.TurnToolSetting(blade, 8, 8)),
         face_grooves=(camlib.FaceGroove(4, 7, -3),),
         operations=(
             camlib.TurnFace("face", "cnmg", 0, feed_mm_rev=0.15, rpm=1000),
