@@ -1466,3 +1466,53 @@ impl RoughingPlan {
         }
     }
 }
+
+#[cfg(test)]
+mod simplify_tests {
+    use super::*;
+    use crate::planar::{Boundary, Component, ConstructionOptions, PlanarRegion};
+
+    fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Boundary {
+        Boundary {
+            vertices: vec![[x0, y0, 0.], [x1, y0, 0.], [x1, y1, 0.], [x0, y1, 0.]],
+        }
+    }
+
+    #[test]
+    fn a_ring_simplification_would_collapse_is_refused_not_dropped() {
+        // A shadow island narrower than twice the tolerance collapses to a
+        // segment under Douglas-Peucker. Dropping it would lose protected
+        // area: the simplification is refused instead, so the layer keeps
+        // its exact shadow (and reports why).
+        let region = PlanarRegion {
+            version: 1,
+            units: "mm".into(),
+            name: "shadow".into(),
+            components: vec![
+                Component {
+                    outer: rect(0., 0., 10., 10.),
+                    holes: vec![],
+                },
+                Component {
+                    outer: rect(20., 0., 30., 0.05),
+                    holes: vec![],
+                },
+            ],
+            boundary_error_mm: 0.,
+            source: serde_json::Value::Null,
+        };
+        let options = ConstructionOptions { tolerance_mm: 1e-5 };
+        assert!(simplify_shadow(&region, 0.075, 1e-5, 0., options).is_err());
+        // Wide enough to keep its ring: simplified, and the island stays
+        // protected.
+        let mut wide = region.clone();
+        wide.components[1].outer = rect(20., 0., 30., 0.2);
+        let grown = simplify_shadow(&wide, 0.075, 1e-5, 0., options)
+            .unwrap()
+            .prepare(options)
+            .unwrap();
+        for p in [[20., 0.], [30., 0.2], [25., 0.1], [0., 0.], [10., 10.]] {
+            assert!(grown.query(p).unwrap().signed_clearance_mm.unwrap() > 0.07);
+        }
+    }
+}
