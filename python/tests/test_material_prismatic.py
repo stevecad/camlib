@@ -9,6 +9,10 @@ stock is compared with the CAD solid (SurfaceTarget with inner patches).
 - What the check cannot decide stays undecided, and real errors are found:
   a top faced 1 mm into the part is a violation, a profile cut 0.1 mm into the
   part's walls is never clear, and drilling through a blind hole is a gouge.
+- Cells along walls the tools ran tangent to are decided by the per-move
+  proof (every motion proven against the target mesh) when the comparison
+  tolerance exceeds the mesh's surface error and the program's resolution;
+  a real cut into the walls is never proven.
 """
 
 import math
@@ -76,7 +80,7 @@ def cut(tool):
     )
 
 
-def run(cell, *, solid=None, face_z=20, outline=None):
+def run(cell, *, solid=None, face_z=20, outline=None, tolerance=None, export=False):
     from camlib.cadquery import export_floor_region, export_inner_patches, export_surface_mesh
     from camlib.material import SurfaceTarget
 
@@ -149,7 +153,13 @@ def run(cell, *, solid=None, face_z=20, outline=None):
         tuple(TOOLS.values()),
         operations,
         (0, 0, 60),
-        verification=StreamChecks(material=(MaterialCheck(target),)),
+        verification=StreamChecks(
+            material=(
+                MaterialCheck(
+                    target, options=None if tolerance is None else Options(comparison_tolerance_mm=tolerance)
+                ),
+            )
+        ),
     )
     job = Job("plate", "1", (setup,))
     header = job.compile().setup("top").program_header()
@@ -187,6 +197,18 @@ def run(cell, *, solid=None, face_z=20, outline=None):
         if status["error"]:
             raise AssertionError(status["error"])
         material = posted.verification_status(sample_limit=0)["material"]
+        if export:
+            import tempfile
+            from pathlib import Path
+
+            from camlib.export import ExportRefused
+
+            with tempfile.TemporaryDirectory() as directory:
+                try:
+                    posted.export(Path(directory) / "plate.nc")
+                    material["exported"] = True
+                except ExportRefused:
+                    material["exported"] = False
         player = Player(posted)
         player.seek(Cursor(status["available"]))
         report = Verifier(target, Options(max_findings=4096)).check(player.state)
@@ -229,6 +251,45 @@ class PrismaticMaterialTest(unittest.TestCase):
         material, report = run(0.5, outline=bottom)
         self.assertNotEqual(material_status(report), "clear")
         self.assertTrue(material["gouge"]["definite_cells"] or material["gouge"]["possible_only_cells"])
+
+    def test_tangent_walls_are_decided_by_the_per_move_proof(self):
+        # The program is posted at 3 decimals (up to 0.0007 mm of XY
+        # rounding) and the mesh carries 0.00088 mm of surface error: at
+        # 0.005 mm every move is proven and the part is decided.
+        material, report = run(0.5, tolerance=0.005, export=True)
+        proof = material["sweep_proof"]
+        self.assertEqual((proof["unproven_moves"], proof["history_complete"]), (0, True))
+        self.assertGreater(proof["proven_moves"], 100)
+        # The report stays the cell comparison; the proof decides every
+        # possible-only gouge cell in it, so the program exports.
+        self.assertEqual(material["gouge"]["definite_cells"], 0)
+        self.assertGreater(material["gouge"]["possible_only_cells"], 1000)
+        self.assertEqual(proof["decided_cells"], material["gouge"]["possible_only_cells"])
+        self.assertEqual(material_status({**report, "gouge": material["gouge"]}, proof), "clear")
+        self.assertTrue(material["exported"])
+
+    def test_default_tolerance_cannot_prove_tangent_walls(self):
+        # 0.001 mm is below the mesh error plus the posted rounding: the
+        # wall passes stay unproven (and say so); other cells are decided.
+        material, report = run(0.5, export=True)
+        proof = material["sweep_proof"]
+        self.assertGreater(proof["unproven_moves"], 0)
+        self.assertGreater(proof["decided_cells"], 0)
+        self.assertLess(proof["decided_cells"], material["gouge"]["possible_only_cells"])
+        self.assertEqual(material_status({**report, "gouge": material["gouge"]}, proof), "uncertain")
+        self.assertFalse(material["exported"])
+        from camlib.export import describe
+
+        self.assertIn("per-move proof", describe({"findings": [{**report, **material, "complete": True}]}))
+
+    def test_a_profile_cut_into_the_walls_is_never_proven(self):
+        inner = cq.Workplane("XY").box(99.8, 59.8, 1, centered=False).translate((0.1, 0.1, 0)).val()
+        bottom = next(f for f in inner.Faces() if f.normalAt().z < -0.999)
+        material, report = run(0.5, outline=bottom, tolerance=0.005, export=True)
+        proof = material["sweep_proof"]
+        self.assertGreater(proof["unproven_moves"], 0)
+        self.assertNotEqual(material_status({**report, "gouge": material["gouge"]}, proof), "clear")
+        self.assertFalse(material["exported"])
 
     def test_drilling_through_a_blind_hole_is_a_gouge(self):
         material, report = run(0.5, solid=plate(blind_holes=True))

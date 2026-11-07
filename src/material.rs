@@ -15,6 +15,7 @@ pub use contact_points::ContactWitnesses;
 pub use inner_patches::InnerPlanarPatch;
 mod finishing;
 mod surface_target;
+mod sweep_proof;
 pub use finishing::{
     AccessFinding, AccessUncertainty, FinishingReport, FinishingScope, FinishingUncertainty,
 };
@@ -22,6 +23,8 @@ use sha2::{Digest, Sha256};
 pub use surface_target::{
     Definition, PreparedMaterial, PreparedSurfaceTarget, SurfaceEnclosure, SurfaceTarget,
 };
+pub(crate) use sweep_proof::SweepProof;
+pub use sweep_proof::SweepProofReport;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -127,6 +130,7 @@ pub struct Summary {
     /// Raw physical excess volume, not a tolerance-subtracted volume.
     pub volume_mm3: [f64; 2],
 }
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Stats {
     pub validated_cells: usize,
@@ -320,7 +324,7 @@ impl PreparedTarget {
         context: &Context,
         cancel: &impl CancelSignal,
     ) -> Result<Report, String> {
-        check_material(self, heights, context, cancel)
+        check_material(self, heights, context, None, cancel).map(|(r, _)| r)
     }
 }
 
@@ -422,8 +426,9 @@ fn check_material(
     target: &impl MaterialGeometry,
     heights: &impl HeightRead,
     context: &Context,
+    proof: Option<&SweepProof>,
     cancel: &impl CancelSignal,
-) -> Result<Report, String> {
+) -> Result<(Report, usize), String> {
     let options = target.options();
     cancelled(cancel)?;
     let spec = &context.stock;
@@ -488,6 +493,7 @@ fn check_material(
         .map(|t| finishing::FinishingAccumulator::new(t, spec))
         .transpose()?;
     let (mut residual, mut gouge) = (Accumulator::default(), Accumulator::default());
+    let mut decided = 0;
     let area = step[0] * step[1];
     let magnitude = spec
         .min_mm
@@ -579,6 +585,14 @@ fn check_material(
                 ];
                 let rc = residual.add(r, area, options.comparison_tolerance_mm);
                 let gc = gouge.add(g, area, options.comparison_tolerance_mm);
+                // The report stays the cell comparison (reproducible from
+                // the stock alone); the per-move proof counts, beside it,
+                // the possible-only gouge cells it rules out (no swept
+                // point deeper than the tolerance into the part, no
+                // unproven motion on the cell). Definite cells never.
+                if gc == Assessment::PossibleExcess && proof.is_some_and(|p| p.decides(i)) {
+                    decided += 1;
+                }
                 stats.classified_cells += 1;
                 if class == FootprintClass::Mixed {
                     stats.mixed_cells += 1;
@@ -631,5 +645,5 @@ fn check_material(
         finishing,
     };
     cancelled(cancel)?;
-    Ok(report)
+    Ok((report, decided))
 }

@@ -241,6 +241,21 @@ impl Section {
 pub(crate) fn assembly_sections(
     tool: &crate::tool::PreparedAssembly,
 ) -> Result<Vec<Section>, String> {
+    sections_of(tool, false)
+}
+/// As `assembly_sections`, with a ball or bull-nose end replaced by the flat
+/// end of the same radius. That cylinder contains the curved end (whose
+/// lower surface is never below the tip), so a proof that the enclosing
+/// sections stay clear holds for the real tool; it is only conservative.
+pub(crate) fn enclosing_sections(
+    tool: &crate::tool::PreparedAssembly,
+) -> Result<Vec<Section>, String> {
+    sections_of(tool, true)
+}
+fn sections_of(
+    tool: &crate::tool::PreparedAssembly,
+    enclose_curved: bool,
+) -> Result<Vec<Section>, String> {
     let def = tool.definition();
     let cutter = tool.cutter();
     let c = cutter.definition();
@@ -271,6 +286,12 @@ pub(crate) fn assembly_sections(
             r0: 0.,
             r1: radius,
             rise: cutter.tip_height_at_radius(radius).ok_or("drill profile")? / radius,
+        },
+        CutterShape::Ball | CutterShape::Bull { .. } if enclose_curved => Section {
+            z0: 0.,
+            r0: radius,
+            r1: radius,
+            rise: 0.,
         },
         _ => {
             return Err(
@@ -823,6 +844,21 @@ impl Index {
                 return true;
             }
             for s in sections {
+                // The section's contact height is at most the triangle's
+                // top less the section's lowest height above the tip.
+                if t.max[2] - s.z0 + lift <= low {
+                    continue;
+                }
+                // Triangle box farther than the section's reach from the
+                // move's box: no contact.
+                let gap = |k: usize| {
+                    (t.min[k] - a[k].max(b[k]))
+                        .max(a[k].min(b[k]) - t.max[k])
+                        .max(0.)
+                };
+                if gap(0).hypot(gap(1)) > s.r1 {
+                    continue;
+                }
                 let dist = |u: f64| t.distance_xy(at(u));
                 let near = golden_argmin(dist, 0., 1., 60);
                 if dist(near) > s.r1 {

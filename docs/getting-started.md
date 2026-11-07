@@ -113,7 +113,12 @@ print(program.lines, program.motions, program.unchecked)
 ```
 
 Milling material checks (`StreamChecks(material=...)`) need the posted-stock
-replay, so they require `job.post`. A lathe setup's material check runs with
+replay, so they require `job.post`. Against a `SurfaceTarget` every posted move
+is also proven not to cut deeper into the part than the comparison tolerance,
+which decides cells along walls the tool ran tangent to. Choose a tolerance
+above the program's resolution and the mesh's surface error, for example
+`MaterialCheck(target, options=camlib.material.Options(comparison_tolerance_mm=0.005))`
+at 3 decimals; the default 0.001 mm leaves those cells uncertain. A lathe setup's material check runs with
 every operation, so `job.post_nc` reports it too (`program.material`).
 
 Lathe setups work the same way: a `Setup` with turning stock and

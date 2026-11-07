@@ -105,7 +105,12 @@ Also available:
 
 - **Material checks** (`MaterialCheck(target, after_operation=...)`): the
   actual stock after an operation (or at the end) against the part, reporting
-  gouges and remaining material.
+  gouges and remaining material. With a `SurfaceTarget`, every motion of the
+  run is also proven against the part, so cells along walls the tool ran
+  tangent to are decided when `Options(comparison_tolerance_mm=...)` exceeds
+  the mesh's surface error and the program's resolution (for example 0.005 mm
+  at 3 decimals); the material record's `sweep_proof` says which motions were
+  proven and which cells they decide.
 - **Machine dynamics** (`MachineLimits`, `Machine.max_normal_accel_mm_s2`,
   `max_axis_feed_mm_min`): curve feeds that need more acceleration or axis
   speed than declared are reported; with a `MotionPolicy` the program can be

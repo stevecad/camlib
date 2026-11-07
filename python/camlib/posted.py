@@ -837,8 +837,9 @@ class PostedRun(RecordedRun):
                 detail = list(update.findings())
                 if update.kind == "material":
                     # The material report itself is the finding (as for a lathe).
-                    status = material_status(update.check["report"])
-                    detail = [update.check["report"]]
+                    report, proof = update.check["report"], update.check.get("sweep_proof")
+                    status = material_status(report, proof)
+                    detail = [report if proof is None else {**report, "sweep_proof": proof}]
                 if status not in (None, "clear"):
                     findings.append(dict(completed=update.completed, status=status, findings=detail))
             start += len(page)

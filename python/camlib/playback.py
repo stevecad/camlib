@@ -636,6 +636,10 @@ class RecordedRun:
                 residual=None if report is None else report["residual"],
                 gouge=None if report is None else report["gouge"],
             )
+            if data.get("sweep_proof") is not None:
+                # The per-move gouge proof against the target (decided cells,
+                # proven and unproven moves), recorded beside the report.
+                result["material"]["sweep_proof"] = dict(data["sweep_proof"])
             if report is not None and report.get("finishing") is not None:
                 # Bounded status projection; localized cell findings stay in
                 # the existing paged verification journal.

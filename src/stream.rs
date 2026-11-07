@@ -873,7 +873,7 @@ impl StreamProducer {
         let report = {
             #[cfg(feature = "profile-planning")]
             let _profile = crate::planning_profile::span("stream.verification");
-            if let Some(checks) = &self.checks {
+            if let Some(checks) = &mut self.checks {
                 checks.ready_for_motion()?;
                 checks.motion(
                     self.state.stock.height()?,
