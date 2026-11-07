@@ -2047,6 +2047,16 @@ class NativeGCodeDecoder(GCodeDecoder):
         return [motion]
 
 
+def _is_closed_curve(event):
+    """Whether a source event is an arc or helix whose start and end coincide
+    in its plane (a full turn)."""
+    if not _is_curve(event):
+        return False
+    curve = _event_data(event)['motion']['curve']
+    u, v = {'xy': (0, 1), 'xz': (0, 2), 'yz': (1, 2)}[curve['plane']]
+    return curve['start'][u] == curve['end'][u] and curve['start'][v] == curve['end'][v]
+
+
 def _is_curve(event):
     """Whether a source event is an arc or helix motion (in any accepted
     form: typed, an event dict, or a native Motion body)."""
@@ -2553,7 +2563,11 @@ class PostEngine:
                             break
                     # Only a native arc's output form depends on the decoded
                     # start (exact words there); lowered to lines it does not.
-                    if queued and getattr(self.lowering, 'native_arcs', False) and _is_curve(held):
+                    # A closed curve's lowered chain ends at its decoded
+                    # start, known once the queued sources are output.
+                    if queued and (
+                        getattr(self.lowering, 'native_arcs', False) and _is_curve(held) or _is_closed_curve(held)
+                    ):
                         break
                     batch.append(held)
                     held = None

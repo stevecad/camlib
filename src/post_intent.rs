@@ -927,6 +927,14 @@ impl IntentChecker {
         {
             return Err("drain pending source before start/finish".into());
         }
+        // A closed curve's lowered chain ends at its decoded start, which is
+        // known only once every earlier source has been output.
+        if !self.pending.is_empty()
+            && let Event::Motion { motion } = &event
+            && crate::post_lowering::closed_axes(&motion.curve).is_some()
+        {
+            return Err("drain pending sources before starting a closed arc/helix".into());
+        }
         let options = self
             .settings
             .lowering

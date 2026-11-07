@@ -35,7 +35,7 @@ is ordered by real dependency, not by size:
 
 ## Phase 1: Correctness
 
-- [ ] #58 Posting: adaptive orbits cannot be posted at 3 decimals (native_arcs lowering refuses closed circles)
+No open correctness issues.
 
 ## Phase 2: Complete milling
 
@@ -127,3 +127,4 @@ These can run in parallel with any phase.
 ## Done
 
 - [x] #22 Optimization baseline: benchmark workloads and toolpath quality metrics
+- [x] #58 Posting: adaptive orbits cannot be posted at 3 decimals (native_arcs lowering refuses closed circles)
