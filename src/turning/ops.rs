@@ -1557,7 +1557,20 @@ impl<'a> TurnSession<'a> {
                 // -z wall, the last against the +z wall.
                 let first = z_lo + rn;
                 let last = z_hi - rn - geom.blade.abs();
-                let n = ((last - first) / (width - overlap_mm)).ceil().max(0.) as usize;
+                // A groove one blade wide within the tolerance: one plunge,
+                // centred (at most tol/2 off either wall). Otherwise a
+                // rounding-sized span would add a pass a hair from the
+                // first, a zero-length move (#101).
+                let (first, last, n) = if last - first <= tol {
+                    let middle = (first + last) / 2.;
+                    (middle, middle, 0)
+                } else {
+                    (
+                        first,
+                        last,
+                        ((last - first) / (width - overlap_mm)).ceil() as usize,
+                    )
+                };
                 // Inside a bore (an internal groove) the plunges go outward
                 // from a radius clear of the open hole, which the tool enters
                 // and leaves along the axis.
@@ -1566,15 +1579,23 @@ impl<'a> TurnSession<'a> {
                     if geom.drill.is_some() {
                         return Err(format!("{id}: grooving needs a grooving insert"));
                     }
+                    // The hole the tool enters through: the smallest certain
+                    // inner radius over the bins in front of the groove that
+                    // may still hold material. A bin with none (its outer
+                    // bound at or below its inner one, e.g. faced off) is
+                    // open space and limits nothing (#102).
                     let open = (0..planner.stock.cells().len())
                         .filter(|&i| {
                             let [a, b] = planner.stock.bin(i);
-                            b > z_lo && a < job.stock.z_max_mm
+                            let c = planner.stock.cells()[i];
+                            b > z_lo
+                                && a < job.stock.z_max_mm
+                                && c.outer.upper_mm > c.inner.lower_mm
                         })
                         .map(|i| planner.stock.cells()[i].inner.lower_mm)
                         .fold(f64::INFINITY, f64::min);
                     let clear = open - rn - job.clearance_mm.min((open - rn) / 2.);
-                    if clear.is_nan() || clear <= 0. || *bottom_radius_mm <= open {
+                    if !clear.is_finite() || clear <= 0. || *bottom_radius_mm <= open {
                         return Err(format!(
                             "{id}: an internal groove needs an open hole in front of it and its bottom outside that hole"
                         ));
@@ -1662,26 +1683,16 @@ impl<'a> TurnSession<'a> {
                 }
                 let internal = geom.inner;
                 let root = major_radius_mm - depth_mm;
-                // The thread is cut into the profile's diameter there; past
-                // its end the leading flank reaches depth x tan(half angle)
-                // (the run-out, which must be free of shoulders). Inside, its
-                // roots open the bore out to the major radius.
-                let half = match setting.tool.insert {
-                    super::tool::Insert::Thread {
-                        profile_angle_deg, ..
-                    } => profile_angle_deg / 2.,
-                    _ => 0.,
-                };
-                let runout = depth_mm * half.to_radians().tan() + rn;
                 let (part, bore) = (planner.part.clone(), planner.bore.clone());
-                if internal {
-                    let b = planner.bore.as_ref().ok_or_else(|| {
-                        format!("{id}: an internal thread needs the part's bore (TurningJob.bore)")
-                    })?;
-                    planner.bore = Some(b.raised(z_end_mm - runout, *z_start_mm, *major_radius_mm));
-                } else {
-                    planner.part = planner.part.carved(z_end_mm - runout, *z_start_mm, root);
-                }
+                let (relieved_part, relieved_bore) = thread_relief(
+                    op,
+                    &setting.tool,
+                    internal,
+                    &planner.part,
+                    planner.bore.as_ref(),
+                )?;
+                planner.part = relieved_part;
+                planner.bore = relieved_bore;
                 let feed = Some(*pitch_mm);
                 let start = z_start_mm + 2. * pitch_mm + rn;
                 // Outside: back out past the crests. Inside: in toward the
@@ -1968,7 +1979,20 @@ impl<'a> TurnSession<'a> {
                 // in front of the face to the bottom.
                 let first = inner_radius_mm + rn;
                 let last = outer_radius_mm - rn - geom.blade;
-                let n = ((last - first) / (width - overlap_mm)).ceil().max(0.) as usize;
+                // A groove one blade wide within the tolerance: one plunge,
+                // centred (at most tol/2 off either wall). Otherwise a
+                // rounding-sized span would add a pass a hair from the
+                // first, a zero-length move (#101).
+                let (first, last, n) = if last - first <= tol {
+                    let middle = (first + last) / 2.;
+                    (middle, middle, 0)
+                } else {
+                    (
+                        first,
+                        last,
+                        ((last - first) / (width - overlap_mm)).ceil() as usize,
+                    )
+                };
                 let bottom = bottom_z_mm + rn;
                 let entry = face.max(job.stock.z_max_mm) + rn + job.clearance_mm;
                 for k in 0..=n {
@@ -2294,6 +2318,54 @@ impl<'a> TurnSession<'a> {
     }
 }
 
+/// The part and bore a thread operation's moves are checked against: the
+/// thread is cut into the profile's diameter over its length, and past its
+/// end the leading flank reaches depth x tan(half angle) plus the nose
+/// radius (the run-out, which must be free of shoulders); inside, its roots
+/// open the bore out to the major radius. The planner and the replay of a
+/// posted program use this one definition, so they agree on every thread
+/// move (#100). Other operations: the part and bore unchanged.
+fn thread_relief(
+    op: &TurnOperation,
+    tool: &TurningTool,
+    internal: bool,
+    part: &Envelope,
+    bore: Option<&Envelope>,
+) -> Result<(Envelope, Option<Envelope>), String> {
+    let TurnOperation::Thread {
+        id,
+        z_start_mm,
+        z_end_mm,
+        major_radius_mm,
+        depth_mm,
+        ..
+    } = op
+    else {
+        return Ok((part.clone(), bore.cloned()));
+    };
+    let half = match tool.insert {
+        super::tool::Insert::Thread {
+            profile_angle_deg, ..
+        } => profile_angle_deg / 2.,
+        _ => 0.,
+    };
+    let runout = depth_mm * half.to_radians().tan() + tool.nose_radius_mm;
+    if internal {
+        let b = bore.ok_or_else(|| {
+            format!("{id}: an internal thread needs the part's bore (TurningJob.bore)")
+        })?;
+        Ok((
+            part.clone(),
+            Some(b.raised(z_end_mm - runout, *z_start_mm, *major_radius_mm)),
+        ))
+    } else {
+        Ok((
+            part.carved(z_end_mm - runout, *z_start_mm, major_radius_mm - depth_mm),
+            bore.cloned(),
+        ))
+    }
+}
+
 /// Replays given lathe moves (a posted program read back) on the setup's
 /// stock with the planner's own move kernel: each move is checked exactly as
 /// a planned one (insert against the part, bore and chuck, holder and rapids
@@ -2371,8 +2443,27 @@ impl TurnReplay {
             last_thread: self.last_thread,
             spindle: Spin::Rpm(0.),
         };
+        // A thread operation's moves are checked against the part with its
+        // thread cut, exactly as the planner checked them.
+        let operation = self
+            .job
+            .operations
+            .iter()
+            .find(|o| o.id() == motion.operation);
+        let plain = (planner.part.clone(), planner.bore.clone());
         let result = (|| {
             let geom = planner.geometry(&setting.tool)?;
+            if let Some(op) = operation {
+                let (part, bore) = thread_relief(
+                    op,
+                    &setting.tool,
+                    geom.inner,
+                    &planner.part,
+                    planner.bore.as_ref(),
+                )?;
+                planner.part = part;
+                planner.bore = bore;
+            }
             let t = geom.tip;
             // Program point to nose center: (u, v) = (z, r) less the tip.
             planner.position = [start[2] - t[0], start[0] - t[1]];
@@ -2389,8 +2480,10 @@ impl TurnReplay {
             planner.emit(&geom, &motion.operation, to, motion.kind, feed, &mut report)
         })();
         let delta = planner.deltas.pop();
-        self.part = Some(planner.part);
-        self.bore = planner.bore;
+        // The plain part and bore for the next move (the relief belongs to
+        // this move's operation only).
+        self.part = Some(plain.0);
+        self.bore = plain.1;
         self.stock = Some(planner.stock);
         self.last_cut = planner.last_cut;
         self.last_thread = planner.last_thread;
@@ -2763,6 +2856,38 @@ mod tests {
             );
             assert!(sent < frames.len());
         }
+    }
+
+    /// Replays every planned move (as a posted program read back would be)
+    /// and checks the replay accepts it and ends with the planned stock;
+    /// then replays the plan again up to its first thread pass and offers
+    /// that pass `deeper` mm deeper toward the part, which must be refused.
+    fn replay_threads(j: &TurningJob, batch: &TurnPlan, deeper: f64) {
+        let mut replay = TurnReplay::new(j.clone()).unwrap();
+        let mut stock = TurnStock::new(j.stock.clone()).unwrap();
+        for e in &batch.events {
+            if let Event::Motion { motion } = e {
+                let d = replay.motion(motion).unwrap();
+                stock.apply_move(&d.changes, &d.rings).unwrap();
+            }
+        }
+        assert_eq!(stock.cells(), batch.stock.cells());
+        let mut replay = TurnReplay::new(j.clone()).unwrap();
+        for e in &batch.events {
+            if let Event::Motion { motion } = e {
+                if motion.kind == MoveKind::Thread {
+                    let mut deep = motion.clone();
+                    if let Curve::Line { start, end } = &mut deep.curve {
+                        start[0] -= deeper;
+                        end[0] -= deeper;
+                    }
+                    assert!(replay.motion(&deep).unwrap_err().contains("into the part"));
+                    return;
+                }
+                replay.motion(motion).unwrap();
+            }
+        }
+        panic!("no thread pass");
     }
 
     #[test]
@@ -3157,6 +3282,10 @@ mod tests {
         });
         let plan = plan(&j).unwrap();
         assert_eq!(plan.reports[3].passes, 7);
+        // The replay of the posted passes checks them against the part with
+        // its thread cut, as the planner does (#100): accepted, the same
+        // stock; a first pass 1 mm deeper (past the 1.227 mm depth) is not.
+        replay_threads(&j, &plan, 1.);
         // Starting a millimetre into the diameter is refused (the passes
         // would cut the stretch before it).
         let mut early = j.clone();
@@ -3385,6 +3514,9 @@ test_tool("bar".into(), Insert::iso_turning(55., 95., 6., 0.4).unwrap(), 0.4, Tu
         }];
         let plan = plan(&j).unwrap();
         assert_eq!(plan.reports[0].passes, 7);
+        // Inside: deeper means outward, past the major radius (negative x
+        // shift toward the axis would be shallower).
+        replay_threads(&j, &plan, -1.);
         for (i, c) in plan.stock.cells().iter().enumerate() {
             let [z0, z1] = plan.stock.bin(i);
             if z0 >= -19. && z1 <= -1. {

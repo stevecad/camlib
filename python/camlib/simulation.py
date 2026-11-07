@@ -1515,8 +1515,9 @@ class Simulation:
                 updates = self._next_motions(expect=(active, definitions[completed_operations]["tool"]), checks=checks)
                 for update in updates or ():
                     if isinstance(update, Update):
-                        # Moves that cut material: drilling plunges and tapping count.
-                        active_cuts += update.motion["kind"] in ("cut", "plunge", "lead", "tap")
+                        # Moves that cut material: drilling plunges, tapping and
+                        # thread passes count.
+                        active_cuts += update.motion["kind"] in ("cut", "plunge", "lead", "tap", "thread")
                         active_taps += update.motion["kind"] == "tap"
                     yield update
                 if updates is not None:
