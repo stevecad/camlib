@@ -126,6 +126,10 @@ pub struct TurningTool {
     pub side: TurnSide,
     pub hand: Hand,
     pub holder: Holder,
+    /// The body off the centre plane (#103): required (validate refuses a
+    /// tool without it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<super::body::ToolBody>,
 }
 
 /// A non-cutting side of an insert (its two ends) and its outward normal.
@@ -1257,6 +1261,11 @@ impl TurningTool {
         self.holder
             .outline
             .validate(&format!("tool {id}: holder"))?;
+        // The body off the centre plane (#103): every tool declares it.
+        self.body
+            .as_ref()
+            .ok_or_else(|| super::body::missing_body(id))?
+            .validate(id, matches!(self.insert, Insert::Drill { .. }))?;
         if let Some(bar) = &self.holder.bar
             && (!positive(bar.diameter_mm)
                 || !(bar.axis_x_mm.is_finite() && bar.axis_x_mm.abs() <= 1e4)
@@ -1393,6 +1402,18 @@ mod tests {
             side: TurnSide::Outer,
             hand: Hand::Right,
             holder,
+            body: Some(super::super::body::ToolBody {
+                insert: Some(super::super::body::InsertBody {
+                    insert_thickness_mm: 3.,
+                    insert_clearance_deg: 7.,
+                    rake_deg: 0.,
+                    inclination_deg: 0.,
+                    edge_deg: 5.,
+                    curved_for_diameter_mm: None,
+                }),
+                holder_y_mm: [-10., 2.],
+                bar_axis_y_mm: 0.,
+            }),
         }
     }
     fn convex(p: &[[f64; 2]]) -> bool {

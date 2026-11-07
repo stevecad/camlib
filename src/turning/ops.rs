@@ -530,11 +530,15 @@ enum Spin {
 
 struct ToolGeom {
     id: String,
-    /// Convex pieces of the insert and of the holder (and boring bar), (u,
-    /// v) relative to the nose center: a straight move sweeps each piece
-    /// into the hull of its two ends.
+    /// Convex pieces of the insert's outline on the centre plane, (u, v)
+    /// relative to the nose center: a straight move sweeps each piece into
+    /// the hull of its two ends (the cutting face's reach).
     insert: Vec<Vec<[f64; 2]>>,
-    holder: Vec<Vec<[f64; 2]>>,
+    /// The insert's and the holder's bodies off the centre plane (#103):
+    /// convex 3D pieces (u, v, y), y across the plane; every check uses
+    /// their images (projection or radial), the 2D outline only the cut.
+    insert_body: Vec<Vec<[f64; 3]>>,
+    holder_body: Vec<Vec<[f64; 3]>>,
     rn: f64,
     /// Grooving blade: the trailing corner's nose center this far along z
     /// (signed by hand) from the leading corner's; zero for one nose.
@@ -565,30 +569,40 @@ fn mirrored(polygon: &[[f64; 2]]) -> Vec<[f64; 2]> {
 /// How far a face grooving blade (a convex polygon) reaches outside the
 /// declared face grooves where it is below the face: its part below the face
 /// must lie in one groove (vertical walls, flat bottom), within `tol`.
-fn in_face_groove(polygon: &[[f64; 2]], face: f64, grooves: &[FaceGroove], tol: f64) -> f64 {
-    // The polygon clipped to u <= face (convex: its vertices bound it).
-    let n = polygon.len();
-    let mut clipped = vec![];
-    for i in 0..n {
-        let (p, q) = (polygon[i], polygon[(i + 1) % n]);
-        if p[0] <= face {
-            clipped.push(p);
+fn in_face_groove(
+    polygon: &[[f64; 2]],
+    face: f64,
+    grooves: &[FaceGroove],
+    tol: f64,
+    radial: Option<&[[f64; 2]]>,
+) -> f64 {
+    // A polygon clipped to u <= face (convex: its vertices bound it).
+    let clip = |polygon: &[[f64; 2]]| {
+        let n = polygon.len();
+        let mut clipped = vec![];
+        for i in 0..n {
+            let (p, q) = (polygon[i], polygon[(i + 1) % n]);
+            if p[0] <= face {
+                clipped.push(p);
+            }
+            if (p[0] - face) * (q[0] - face) < 0. {
+                let t = (face - p[0]) / (q[0] - p[0]);
+                clipped.push([face, p[1] + t * (q[1] - p[1])]);
+            }
         }
-        if (p[0] - face) * (q[0] - face) < 0. {
-            let t = (face - p[0]) / (q[0] - p[0]);
-            clipped.push([face, p[1] + t * (q[1] - p[1])]);
-        }
-    }
+        clipped
+    };
+    // The inner wall and the bottom against `polygon` (the projection: a
+    // body point's radius is at least its |v|); the outer wall against the
+    // radial image when given (off the centre plane the body reaches out).
+    let near = clip(polygon);
+    let far = radial.map_or_else(|| near.clone(), clip);
     grooves
         .iter()
         .map(|g| {
-            clipped
-                .iter()
-                .map(|p| {
-                    (g.inner_radius_mm - p[1])
-                        .max(p[1] - g.outer_radius_mm)
-                        .max(g.bottom_z_mm - p[0])
-                })
+            near.iter()
+                .map(|p| (g.inner_radius_mm - p[1]).max(g.bottom_z_mm - p[0]))
+                .chain(far.iter().map(|p| p[1] - g.outer_radius_mm))
                 .fold(f64::NEG_INFINITY, f64::max)
                 - tol
         })
@@ -619,10 +633,22 @@ impl Planner<'_> {
             }
         };
         let mapped = |polygon: &[[f64; 2]]| polygon.iter().map(map).collect::<Vec<_>>();
-        let mut holder = super::tool::convex_pieces(&mapped(&shape.holder));
-        if let Some(bar) = &shape.bar {
-            holder.push(mapped(bar));
-        }
+        let (insert_body, holder_body) = super::body::body_pieces(t)?;
+        let mapped3 = |pieces: Vec<Vec<[f64; 3]>>| {
+            pieces
+                .into_iter()
+                .map(|piece| {
+                    piece
+                        .into_iter()
+                        .map(|p| {
+                            let [u, v] = map(&[p[0], p[1]]);
+                            [u, v, p[2]]
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        let (insert_body, holder_body) = (mapped3(insert_body), mapped3(holder_body));
         let is_drill = matches!(t.insert, super::tool::Insert::Drill { .. });
         let rn = t.nose_radius_mm;
         let tip = match (self.job.controlled_point, &t.insert) {
@@ -651,7 +677,8 @@ impl Planner<'_> {
             back,
             edges,
             insert: super::tool::convex_pieces(&mapped(&shape.insert)),
-            holder,
+            insert_body,
+            holder_body,
             tip,
             axial,
             inner: boring || is_drill,
@@ -708,8 +735,36 @@ impl Planner<'_> {
                 .map(|piece| hull([at(piece, from), at(piece, to)].concat()))
                 .collect::<Vec<_>>()
         };
-        let insert = swept(&tool.insert);
-        let holder = swept(&tool.holder);
+        // The bodies' images over the move (each piece swept into the hull
+        // of its two ends, then imaged): the XZ projection bounds what lies
+        // outside the tool's radius (a point's radius is at least its |v|);
+        // the radial image (u, √(v² + y²)) of the vertices bounds what lies
+        // beyond it (the radius is convex: exact at vertices, never under).
+        let image = |pieces: &[Vec<[f64; 3]>], radial: bool| {
+            pieces
+                .iter()
+                .map(|piece| {
+                    let ends = piece.iter().flat_map(|p| {
+                        [from, to].map(|c| {
+                            let v = c[1] + p[1];
+                            [c[0] + p[0], if radial { v.hypot(p[2]) } else { v }]
+                        })
+                    });
+                    hull(ends.collect())
+                })
+                .collect::<Vec<_>>()
+        };
+        let face = swept(&tool.insert);
+        let insert_proj = image(&tool.insert_body, false);
+        let insert_rad = image(&tool.insert_body, true);
+        let holder_proj = image(&tool.holder_body, false);
+        let holder_rad = image(&tool.holder_body, true);
+        // Drills and boring tools work in a bore: material lies beyond them.
+        let (insert, holder) = if tool.inner {
+            (insert_rad.clone(), holder_rad.clone())
+        } else {
+            (insert_proj.clone(), holder_proj.clone())
+        };
         // No tool part below the chuck face.
         let chuck = self.job.chuck_z_mm + self.guard;
         if insert.iter().chain(&holder).flatten().any(|p| p[0] < chuck) {
@@ -723,14 +778,17 @@ impl Planner<'_> {
         let face_z = self.job.part.z_range()[1];
         // How far tool pieces reach into the part (outside tools) or out
         // of its bore (drills and boring tools).
-        let into_part = |pieces: &[Vec<[f64; 2]>]| -> Result<f64, String> {
+        let into_part = |pieces: &[Vec<[f64; 2]>],
+                         radial: &[Vec<[f64; 2]>]|
+         -> Result<f64, String> {
             let mut worst = f64::NEG_INFINITY;
-            for piece in pieces {
+            for (piece, far) in pieces.iter().zip(radial) {
                 let below_face = piece.iter().any(|p| p[0] < face_z - self.guard);
                 worst = worst.max(if tool.axial && below_face {
                     // A face grooving blade below the face: inside a
-                    // declared groove.
-                    in_face_groove(piece, face_z, &self.job.face_grooves, self.guard)
+                    // declared groove (its inner wall against the
+                    // projection, its outer wall against the radial image).
+                    in_face_groove(piece, face_z, &self.job.face_grooves, self.guard, Some(far))
                 } else if tool.inner {
                     let bore = self.bore.as_ref().ok_or_else(|| {
                         format!("{op}: drilling and boring need the part's bore (TurningJob.bore): the hole's half-section from the front face to its deepest point")
@@ -742,7 +800,7 @@ impl Planner<'_> {
             }
             Ok(worst)
         };
-        let part = into_part(&insert)?;
+        let part = into_part(&insert, &insert_rad)?;
         if part > 0. {
             return Err(format!(
                 "{op}: the insert would cut {part:.4} mm into the part moving to r {:.3}, z {:.3}; check the insert's angles against the profile",
@@ -759,7 +817,7 @@ impl Planner<'_> {
                 .map(|piece| self.part.penetration(piece, self.guard))
                 .fold(f64::NEG_INFINITY, f64::max)
         } else {
-            into_part(&holder)?
+            into_part(&holder, &holder_rad)?
         };
         if holder_part > 0. {
             return Err(format!(
@@ -883,6 +941,32 @@ impl Planner<'_> {
         }
         report.min_holder_clearance_mm =
             report.min_holder_clearance_mm.min(-holder_hit - self.guard);
+        // The insert's body below its cutting face against the stock this
+        // move leaves (#103): it must reach the stock no farther than the
+        // cutting face itself does (the face's own reach is the cut, judged
+        // by the rules above). Beyond it, the heel rubs the wall just cut: a
+        // too thick or too little cleared insert for this radius or seat.
+        let reach = |pieces: &[Vec<[f64; 2]>]| {
+            pieces
+                .iter()
+                .map(|piece| {
+                    if tool.inner {
+                        outside(&open, piece, self.guard)
+                    } else {
+                        stock.penetration(piece, self.guard)
+                    }
+                })
+                .fold(f64::NEG_INFINITY, f64::max)
+        };
+        let (body_reach, face_reach) = (reach(&insert), reach(&face));
+        if kind != MoveKind::Rapid && body_reach > face_reach.max(0.) + self.guard {
+            return Err(format!(
+                "{op}: the insert's body below its cutting face would rub the stock ({:.4} mm beyond the cutting face) moving to r {:.3}, z {:.3}; it needs more clearance here (a thinner or more positive insert, or a different seat)",
+                body_reach - face_reach.max(0.),
+                to[1],
+                to[0]
+            ));
+        }
         // A rapid straight back along the last cutting move's line (out of a
         // groove or plunge) passes only through space that move's insert
         // swept: certified clear of the stock.
@@ -1967,6 +2051,22 @@ impl<'a> TurnSession<'a> {
                         "{id}: declare the groove in TurningJob.face_grooves (the part's own geometry the blade is checked against)"
                     ));
                 }
+                // A blade curved to follow a groove serves its maker's
+                // diameter range only (its body is checked as following it).
+                if let Some([lo, hi]) = setting
+                    .tool
+                    .body
+                    .as_ref()
+                    .and_then(|b| b.insert.as_ref())
+                    .and_then(|b| b.curved_for_diameter_mm)
+                    && (2. * inner_radius_mm < lo - tol || 2. * outer_radius_mm > hi + tol)
+                {
+                    return Err(format!(
+                        "{id}: the groove (diameters {:.3}..{:.3} mm) is outside the curved blade's range {lo}..{hi} mm",
+                        2. * inner_radius_mm,
+                        2. * outer_radius_mm
+                    ));
+                }
                 let width = geom.blade + 2. * rn;
                 let span = outer_radius_mm - inner_radius_mm;
                 if span < width - tol || !(*overlap_mm >= 0. && *overlap_mm < width) {
@@ -2991,6 +3091,7 @@ mod tests {
     ) -> TurningTool {
         let holder =
             Holder::rectangle(&insert, nose_radius_mm, side, width, length, offset).unwrap();
+        let body = Some(test_body(&insert, side));
         TurningTool {
             id,
             insert,
@@ -2998,6 +3099,35 @@ mod tests {
             side,
             hand,
             holder,
+            body,
+        }
+    }
+    /// The test tools' body, physically plausible for the tests' parts:
+    /// outside, a 3 mm positive insert (7 degrees clearance) on a flat seat,
+    /// the holder 10 mm below the face to 2 mm above; inside a bore, a
+    /// 1.5 mm insert (11 degrees), the bar 1.5 mm below to 1 mm above; a face
+    /// grooving blade curved for the tests' 8..14 mm grooves.
+    fn test_body(insert: &Insert, side: TurnSide) -> crate::turning::body::ToolBody {
+        use crate::turning::body::{InsertBody, ToolBody};
+        let edge = match insert {
+            Insert::Outline { .. } => 5.,
+            Insert::Groove { .. } | Insert::Thread { .. } => 90.,
+            Insert::FaceGroove { .. } => 0.,
+            Insert::Drill { .. } => 0.,
+        };
+        let inner = side == TurnSide::Inner;
+        ToolBody {
+            insert: (!matches!(insert, Insert::Drill { .. })).then_some(InsertBody {
+                insert_thickness_mm: if inner { 1.5 } else { 3. },
+                insert_clearance_deg: if inner { 11. } else { 7. },
+                rake_deg: 0.,
+                inclination_deg: 0.,
+                edge_deg: edge,
+                curved_for_diameter_mm: matches!(insert, Insert::FaceGroove { .. })
+                    .then_some([8., 14.]),
+            }),
+            holder_y_mm: if inner { [-1.5, 1.] } else { [-10., 2.] },
+            bar_axis_y_mm: 0.,
         }
     }
     fn rebuild_holder(tool: &mut TurningTool, width: f64, length: f64, offset: f64) {
@@ -3492,7 +3622,10 @@ test_tool("bar".into(), Insert::iso_turning(55., 95., 6., 0.4).unwrap(), 0.4, Tu
                 Hand::Right,
                 10.,
                 80.,
-                1.,
+                // The bar's top 2 mm under the nose: at the last pass (nose
+                // at r 11.9) it stays clear of the 11 mm crests off the
+                // centre plane too (#103).
+                2.,
             ),
             number: 6,
             offset: 6,

@@ -73,7 +73,16 @@ class TurningSectionTest(unittest.TestCase):
         self.assertEqual([(g.inner_radius_mm, g.outer_radius_mm, g.bottom_z_mm) for g in s.face_grooves], [(4, 7, -3)])
         self.assertTrue(all(z <= 0 for _, z, _ in s.profile))
         self.assertAlmostEqual(s.volume_mm3, s.revolved_volume_mm3, places=4)
-        blade = tool("fg", camlib.FaceGrooveInsert(2, 8), nose_radius_mm=0.2, width_mm=2, length_mm=40)
+        # A blade curved for 8..14 mm grooves (its maker's range): it follows
+        # this 8..14 mm groove off the centre plane (#103).
+        blade = tool(
+            "fg",
+            camlib.FaceGrooveInsert(2, 8),
+            nose_radius_mm=0.2,
+            width_mm=2,
+            length_mm=40,
+            curved_for_diameter_mm=(8, 14),
+        )
         plan = job(
             stock=camlib.TurnStockSpec(-60, 0, 13),
             profile=s.profile,

@@ -17,8 +17,26 @@ SHAFT = ((0, 0, 0), (10, 0, 0), (10, -20, 0), (15, -20, 0), (15, -40, 0))
 TURNING = {f.name for f in fields(camlib.TurningSetup)}
 
 
-def tool(id, insert, *, nose_radius_mm, width_mm, length_mm, offset_mm=0, side="outer", hand="right"):
-    """A turning tool with camlib's rectangular holder (every value stated)."""
+def body(insert, side):
+    """These tests' tool bodies off the centre plane (#103), physically
+    plausible for their parts: outside, a 3 mm positive insert (7 degrees)
+    on a flat seat, the shank 10 mm below the face to 2 mm above; inside a
+    bore, a 1.5 mm insert (11 degrees), the bar 1.5 mm below to 1 mm above;
+    a drill has no insert body."""
+    if isinstance(insert, camlib.DrillInsert):
+        return dict(y_mm=(-10, 10)), {}
+    inner = side == "inner"
+    return dict(y_mm=(-1.5, 1) if inner else (-10, 2)), dict(
+        seat=camlib.TurningSeat(0, 0),
+        insert_thickness_mm=1.5 if inner else 3,
+        insert_clearance_deg=11 if inner else 7,
+    )
+
+
+def tool(id, insert, *, nose_radius_mm, width_mm, length_mm, offset_mm=0, side="outer", hand="right", **declared):
+    """A turning tool with camlib's rectangular holder (every value stated);
+    ``declared`` overrides the test body (``y_mm``, ``seat``, thickness...)."""
+    holder_body, insert_body = body(insert, side)
     holder = camlib.TurningHolder.rectangle(
         insert=insert,
         nose_radius_mm=nose_radius_mm,
@@ -26,8 +44,17 @@ def tool(id, insert, *, nose_radius_mm, width_mm, length_mm, offset_mm=0, side="
         width_mm=width_mm,
         length_mm=length_mm,
         offset_mm=offset_mm,
+        y_mm=declared.pop("y_mm", holder_body["y_mm"]),
     )
-    return camlib.TurningTool(id, insert=insert, nose_radius_mm=nose_radius_mm, side=side, hand=hand, holder=holder)
+    return camlib.TurningTool(
+        id,
+        insert=insert,
+        nose_radius_mm=nose_radius_mm,
+        side=side,
+        hand=hand,
+        holder=holder,
+        **{**insert_body, **declared},
+    )
 
 
 def cnmg(nose_radius_mm=0.8):
@@ -444,7 +471,9 @@ class TurningTest(unittest.TestCase):
             nose_radius_mm=0.1,
             width_mm=10,
             length_mm=80,
-            offset_mm=1,
+            # The bar's top 2 mm under the nose: off the centre plane it clears
+            # the 11 mm crests at the last pass too (#103).
+            offset_mm=2,
             side="inner",
         )
         plan = job(

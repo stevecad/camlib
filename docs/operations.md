@@ -706,11 +706,15 @@ with the exact stock change it makes (`Simulation`, `RecordedRun`/`Player`,
 
 ```python
 # Every tool value is stated: an ISO 1832 insert on an ISO 5608 holder style,
-# and camlib's rectangular holder (or your holder's outline).
+# and camlib's rectangular holder (or your holder's outline), with its body
+# off the centre plane: the shank's height (25 mm below the cutting face, its
+# clamp 3 mm above) and the seat's rake and inclination from the holder's
+# catalogue page (-6/-6 for a typical negative P-clamp holder: check yours).
 insert = camlib.TurningInsert.iso_code("CNMG120408", holder="PCLNR2525M12")  # style L: 95 degrees
 holder = camlib.TurningHolder.rectangle(insert=insert, nose_radius_mm=insert.nose_radius_mm, side="outer",
-                                        width_mm=25, length_mm=150, offset_mm=0)
-tool = camlib.TurningTool("cnmg", insert=insert, side="outer", hand="right", holder=holder)
+                                        width_mm=25, length_mm=150, offset_mm=0, y_mm=(-25, 3))
+tool = camlib.TurningTool("cnmg", insert=insert, side="outer", hand="right", holder=holder,
+                          seat=camlib.TurningSeat(rake_deg=-6, inclination_deg=-6))
 lathe = camlib.Setup(
     "lathe",
     stock=camlib.TurnStockSpec(z_min_mm=-60, z_max_mm=2, outer_radius_mm=20),
@@ -832,13 +836,53 @@ roughing setup its allowance.
     `FaceGrooveInsert(width, depth)`, `ThreadInsert(profile_angle, depth)`
     and `DrillInsert(diameter, point_angle, flute_length)` keep their
     parameters (their operations plan from them) and take `nose_radius_mm`.
-  - Holders: `TurningHolder(outline, bar=None)`, an outline in the same
-    frame, anywhere relative to the insert (a head ahead of it, a stepped
-    head), and for a boring bar a `TurningBar(diameter_mm, axis_x_mm, z_mm)`.
-    `TurningHolder.rectangle(insert=, nose_radius_mm=, side=, width_mm=,
-    length_mm=, offset_mm=)` builds camlib's rectangle: outside, a shank
-    behind the insert's reach; boring, an axial bar `width_mm` across, its
-    top `offset_mm` under the nose center, `length_mm` out of the bore.
+  - Holders: `TurningHolder(outline, bar=None, y_mm=)`, an outline in the
+    same frame, anywhere relative to the insert (a head ahead of it, a
+    stepped head), its extent across the centre plane `y_mm=(low, high)`,
+    and for a boring bar a `TurningBar(diameter_mm, axis_x_mm, z_mm,
+    axis_y_mm)`. `TurningHolder.rectangle(insert=, nose_radius_mm=, side=,
+    width_mm=, length_mm=, offset_mm=, y_mm=)` builds camlib's rectangle:
+    outside, a shank behind the insert's reach; boring, an axial bar
+    `width_mm` across, its top `offset_mm` under the nose center,
+    `length_mm` out of the bore.
+  - The body off the centre plane (#103), required for every tool: a
+    point of the tool at x out and y across the plane lies at radius
+    √(x² + y²), so in a bore a thick insert's heel reaches past its
+    outline. `TurningTool(..., seat=TurningSeat(rake_deg, inclination_deg),
+    insert_thickness_mm=, insert_clearance_deg=, edge_deg=,
+    curved_for_diameter_mm=)`:
+    - `seat`: the holder seat's orthogonal rake and inclination (ISO 3002-1,
+      about the major cutting edge), from the holder maker (ISO 5608 codes
+      do not carry them; ISO 5610 gives only recommended values).
+      `TurningSeat(0, 0)` for a flat seat. Not for a drill.
+    - The insert's thickness below its cutting face and its normal clearance
+      (its sides taper inward by thickness x tan(clearance)). From
+      `TurningInsert.iso_code` they default to the code's worst case: ISO
+      1832:1985 §3.6 gives the thickness symbol as the thickness in mm
+      "disregarding any decimals" (T1, T3 for 1.98, 3.97 mm), so `04` is
+      4.00 to 5.00 mm, plus the tolerance class's ±0.025 or ±0.13 mm
+      (§3.3); the clearance letter is §3.2's (N 0, A 3, B 5, C 7, P 11,
+      D 15, E 20, F 25, G 30 degrees; O must be declared). Declare the
+      insert's catalogue thickness to tighten it.
+    - `edge_deg`: the major edge's direction (the rake's axis), known for
+      ISO, grooving, threading and face grooving inserts; declared for a
+      drawn `InsertOutline`.
+    - `curved_for_diameter_mm`: a face grooving blade curved to follow the
+      groove, its maker's (min, max) diameter range; every groove it cuts
+      must lie in it. Without it the blade is checked as straight.
+    - A drill on the axis is a solid of revolution: its outline is its exact
+      section, so it takes no seat or insert body (its holder's `y_mm`
+      still).
+
+    The checks use the body's convex pieces: their XZ projection against
+    material outside the tool's radius (outside turning: a point's radius
+    is at least its |x|), and the radial image (z, √(x² + y²)) of their
+    vertices against material beyond it (in a bore; the radius is convex, so
+    exact at the vertices and never under-reporting). The insert's body
+    must also reach the stock left by a cut no farther than its cutting
+    face does: a heel rubbing the wall just cut is refused. The insert's
+    in-plane size tolerance (ISO 1832 d and m) is not yet applied (issue
+    #113).
   - ISO values: shapes and corner angles from ISO 1832:1991 section 4.1
     table 1; size codes (inscribed circle per shape) and corner radius codes
     from the Sumitomo Electric Hardmetal general catalog, section B
@@ -848,9 +892,9 @@ roughing setup its allowance.
     (cutting edge angle) from ISO 5608:1995 section 4.3 table 3. Round
     sizes 12 and 25 each name two diameters and are refused (give an
     outline).
-- Checks on every move: the swept insert against the part (a tolerance of
-  touching allowed), so a profile the insert's trailing edge cannot follow is
-  refused; drills and boring tools inside the `bore` on both sides of the
+- Checks on every move: the swept insert body against the part (a
+  tolerance of touching allowed), so a profile the insert's trailing edge
+  cannot follow is refused; drills and boring tools inside the `bore` on both sides of the
   axis; the holder (outline and bar, swept like the insert, in convex
   pieces when it is not convex) against the part, its bore and the stock
   left after the move; non-cutting insert segments that lead against the
