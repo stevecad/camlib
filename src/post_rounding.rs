@@ -80,6 +80,24 @@ pub fn circular_words(
     for value in &mut end {
         *value = quantize(*value)?;
     }
+    // A source closed in its plane (a full turn: adaptive orbits, helical
+    // bores) is written as a full circle: the end word repeats the actual
+    // start, which is already representable (it is the decoded position).
+    // That makes the start and end radii identical whatever the centre words,
+    // so radius consistency is exact; only the I/J rounding remains, and the
+    // independent comparison below bounds it against the source. Rounding the
+    // source end instead would open the circle whenever the start was moved
+    // by an earlier block's word choice. (LinuxCNC G2/G3 "full circle" when
+    // the end equals the start with I/J offsets; FANUC/Haas likewise with
+    // I/J, never R.)
+    let closed = {
+        let (a0, a1) = (source.start(), source.end());
+        a0[u] == a1[u] && a0[v] == a1[v]
+    };
+    if closed {
+        end[u] = start[u];
+        end[v] = start[v];
+    }
     if !helix {
         end[a] = start[a];
     }
@@ -141,6 +159,29 @@ pub fn circular_words(
         return Ok((end, offsets));
     }
     let step = unit * 10f64.powi(-(decimals as i32));
+    if closed {
+        // The end stays the start (a closed curve must close exactly); only
+        // the centre words may move. Search the representable centres next to
+        // the authored one, keeping the smallest independently assessed error.
+        let mut best: Option<(f64, Vec3)> = None;
+        for iu in -2..=2 {
+            for iv in -2..=2 {
+                let mut o = [0.; 3];
+                o[u] = quantize(center[u] - start[u] + iu as f64 * step)?;
+                o[v] = quantize(center[v] - start[v] + iv as f64 * step)?;
+                if let Some(error) = assess(end, o)
+                    && best.as_ref().is_none_or(|b| error < b.0)
+                {
+                    best = Some((error, o));
+                }
+            }
+        }
+        return best.map(|(_, o)| (end, o)).ok_or_else(|| {
+            "no full-circle centre words within the error budget at configured precision; \
+             increase decimals or use bounded lowering"
+                .into()
+        });
+    }
     let mut best: Option<(f64, Vec3, Vec3)> = None;
     // At most 625 candidates. Project the authored centre onto each rounded
     // chord's bisector, then test nearby representable IJK words. Nothing in
@@ -317,6 +358,59 @@ mod tests {
         }
         // ...and stay inside the output budget against the source arc.
         assert!(curve_difference(&source, &posted, 1e-5).unwrap() <= 0.01);
+    }
+
+    /// #58: a full orbit whose decoded start was moved off its rounded source
+    /// start (by an earlier block's word choice) is still one full circle: the
+    /// end word is the start, so the radii agree exactly, and the posted
+    /// circle stays within the budget of the source.
+    #[test]
+    fn full_circle_words_close_on_a_moved_start() {
+        for (plane, sweep) in [(Plane::Xy, TAU), (Plane::Xy, -TAU), (Plane::Xz, TAU)] {
+            let [u, v, a] = plane.axes();
+            let mut center = [0.; 3];
+            center[u] = 7.5;
+            center[a] = 3.;
+            let mut point = center;
+            point[u] += 1.764 * 0.2_f64.cos();
+            point[v] += 1.764 * 0.2_f64.sin();
+            let source = Curve::Arc {
+                start: point,
+                end: point,
+                center,
+                plane,
+                sweep_rad: sweep,
+            };
+            let mut start = point;
+            // Two grid steps away from the source start rounded alone.
+            start[u] = (point[u] * 1e3).round() / 1e3 - 0.002;
+            start[v] = (point[v] * 1e3).round() / 1e3 + 0.001;
+            let (end, offsets) = circular_words(
+                &source,
+                start,
+                1.,
+                3,
+                1e-5,
+                0.01,
+                RadiusTolerance::default(),
+            )
+            .expect("full-circle words");
+            assert_eq!(end, start);
+            for value in offsets {
+                assert!((value * 1e3 - (value * 1e3).round()).abs() < 1e-9);
+            }
+            let mut c = start;
+            c[u] += offsets[u];
+            c[v] += offsets[v];
+            let posted = Curve::Arc {
+                start,
+                end,
+                center: c,
+                plane,
+                sweep_rad: sweep,
+            };
+            assert!(curve_difference(&source, &posted, 1e-5).unwrap() <= 0.01);
+        }
     }
 
     #[test]

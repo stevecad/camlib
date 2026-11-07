@@ -35,15 +35,12 @@ is ordered by real dependency, not by size:
 
 ## Phase 1: Correctness
 
-- [ ] #58 Posting: adaptive orbits cannot be posted at 3 decimals (native_arcs lowering refuses closed circles)
+No open correctness issues.
 
 ## Phase 2: Complete milling
 
 Smaller, independent items first, then the 3D stock and what needs it.
 
-- [ ] #10 Left-hand tapping
-- [ ] #13 Haas NGC post: dwell and canned drilling cycles
-- [ ] #9 Trochoidal slots along curved paths
 - [ ] #11 Deburr finishing (edge breaking along sharp edges)
 - [ ] #12 Geodesic finishing
 - [ ] #7 Probing: work offset, feature and tool-setting cycles (3-axis; tilted planes come with #5)
@@ -127,3 +124,7 @@ These can run in parallel with any phase.
 ## Done
 
 - [x] #22 Optimization baseline: benchmark workloads and toolpath quality metrics
+- [x] #58 Posting: adaptive orbits cannot be posted at 3 decimals (native_arcs lowering refuses closed circles)
+- [x] #10 Left-hand tapping
+- [x] #9 Trochoidal slots along curved paths
+- [x] #13 Haas NGC post: dwell and canned drilling cycles

@@ -1,6 +1,6 @@
 use camlib::{
-    holes::{DrillingOperation, DrillingPlan, TappingOperation, TappingPlan},
-    motion::{Curve, Event, Motion, MoveKind, ProgramValidator},
+    holes::{DrillingOperation, DrillingPlan, Hand, TappingOperation, TappingPlan},
+    motion::{Curve, Event, Motion, MoveKind, ProgramValidator, SpindleDirection},
     pocket::Operation,
     stock::Stock,
     stream::StreamManifest,
@@ -29,6 +29,7 @@ fn operation() -> TappingOperation {
         tool: "m5".into(),
         centers_mm: vec![[10., 12.], [28., 12.]],
         pitch_mm: 0.8,
+        hand: Hand::Right,
         depth_z_mm: 5.,
         bottom_clearance_mm: None,
         clearance_z_mm: 12.,
@@ -73,11 +74,14 @@ fn drilled(depth: f64) -> Stock {
     stock
 }
 fn run(stock: &mut Stock) -> Result<(Vec<Motion>, TappingPlan), String> {
+    run_op(stock, operation())
+}
+fn run_op(stock: &mut Stock, op: TappingOperation) -> Result<(Vec<Motion>, TappingPlan), String> {
     let m = fixture();
     let cancel = AtomicBool::new(false);
     let tool = tap_tool();
     let mut plan = TappingPlan::prepare(
-        operation(),
+        op,
         &tool,
         m.stock.height().unwrap(),
         m.initial_position_mm,
@@ -165,4 +169,86 @@ fn shallow_or_missing_holes_are_refused_before_the_tap_goes_down() {
     let mut shallow = drilled(6.);
     let error = run(&mut shallow).err().unwrap();
     assert!(error.contains("drill the hole deeper"), "{error}");
+}
+
+fn program() -> camlib::motion::Program {
+    let m = fixture();
+    camlib::motion::Program {
+        version: 1,
+        id: "p".into(),
+        revision: "1".into(),
+        units: "mm".into(),
+        frame: camlib::motion::WorkFrame::identity(),
+        tolerance_mm: 1e-5,
+        initial_position_mm: m.initial_position_mm,
+        tools: vec![tap_tool()],
+        events: vec![],
+    }
+}
+
+/// #10: a left-hand tap turns counterclockwise into the hole (M4), with the
+/// same synchronized pair; the spindle direction is the thread hand.
+#[test]
+fn left_hand_tap_runs_the_spindle_counterclockwise() {
+    let mut stock = drilled(2.);
+    let mut op = operation();
+    op.hand = Hand::Left;
+    let (motions, plan) = run_op(&mut stock, op).unwrap();
+    assert_eq!(plan.report().hand, Hand::Left);
+    assert_eq!(plan.report().synchronized_feed_mm_min, 400.);
+    let events = plan.prefix_events();
+    let spindles: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Spindle { rpm, direction } => Some((*rpm, *direction)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(spindles, vec![(500., SpindleDirection::Ccw)]);
+    let (right, right_plan) = run(&mut drilled(2.)).unwrap();
+    assert!(right_plan.prefix_events().iter().any(|e| matches!(
+        e,
+        Event::Spindle {
+            direction: SpindleDirection::Cw,
+            ..
+        }
+    )));
+    // Same motions; only the spindle sense differs.
+    assert_eq!(
+        right.iter().map(|m| &m.curve).collect::<Vec<_>>(),
+        motions.iter().map(|m| &m.curve).collect::<Vec<_>>()
+    );
+    let mut all = events.clone();
+    all.extend(motions.iter().map(|m| Event::Motion { motion: m.clone() }));
+    ProgramValidator::new(&program(), None)
+        .unwrap()
+        .consume(&all)
+        .unwrap();
+    // Serialized only when left (right is the designation default).
+    let json = serde_json::to_value(operation()).unwrap();
+    assert!(json.get("hand").is_none());
+    let mut left = operation();
+    left.hand = Hand::Left;
+    assert_eq!(serde_json::to_value(left).unwrap()["hand"], "left");
+}
+
+#[test]
+fn tapping_with_the_spindle_stopped_is_refused() {
+    let mut stock = drilled(2.);
+    let (motions, plan) = run(&mut stock).unwrap();
+    let mut events: Vec<_> = plan
+        .prefix_events()
+        .into_iter()
+        .map(|e| match e {
+            Event::Spindle { direction, .. } => Event::Spindle { rpm: 0., direction },
+            e => e,
+        })
+        .collect();
+    events.extend(motions.iter().map(|m| Event::Motion { motion: m.clone() }));
+    let error = ProgramValidator::new(&program(), None)
+        .unwrap()
+        .consume(&events)
+        .err()
+        .unwrap();
+    assert!(error.contains("spindle running"), "{error}");
 }

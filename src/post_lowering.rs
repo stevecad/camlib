@@ -158,9 +158,20 @@ impl SourceCursor {
                 }
                 return Ok(Event::Motion { motion });
             }
+            let mut end = curve.position(b)?;
+            if b == 1.
+                && let Some([u, v]) = closed_axes(&motion.curve)
+            {
+                // A closed source's chain ends where it began: the decoded
+                // start, not the source end rounded on its own (which differs
+                // whenever an earlier block's words moved the start).
+                // `certify` still bounds this endpoint against the source.
+                end[u] = self.actual_start[u];
+                end[v] = self.actual_start[v];
+            }
             motion.curve = Curve::Line {
                 start: curve.position(a)?,
-                end: curve.position(b)?,
+                end,
             };
             Ok(Event::Motion { motion })
         } else if a == 0. && b == 1. {
@@ -281,16 +292,22 @@ pub fn certify(
     }
     Ok(bound)
 }
+/// The in-plane axes of an arc or helix whose source start and end coincide
+/// in its plane (a full turn), or None.
+pub(crate) fn closed_axes(curve: &Curve) -> Option<[usize; 2]> {
+    let (_, _, plane, _) = circular(curve)?;
+    let [u, v, _] = plane.axes();
+    let (a, b) = (curve.start(), curve.end());
+    (a[u] == b[u] && a[v] == b[v]).then_some([u, v])
+}
 pub(crate) fn check_closure(curve: &Curve, start: Vec3, end: Vec3) -> Result<(), String> {
-    if let Some((_, _, plane, _)) = circular(curve) {
-        let [u, v, _] = plane.axes();
-        let a = curve.start();
-        let b = curve.end();
-        if a[u] == b[u] && a[v] == b[v] && (start[u] != end[u] || start[v] != end[v]) {
-            return Err(
-                "lowering cannot preserve declared planar closure at controller precision".into(),
-            );
-        }
+    if let Some([u, v]) = closed_axes(curve)
+        && (start[u] != end[u] || start[v] != end[v])
+    {
+        return Err(format!(
+            "lowering cannot preserve declared planar closure at controller precision: \
+             closed source starts at {start:?} but its output ends at {end:?}"
+        ));
     }
     Ok(())
 }

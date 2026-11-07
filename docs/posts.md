@@ -90,6 +90,7 @@ Key settings:
 | `dwell_word`, `dwell_resolution_s`, `dwell_max_s` | Dwell word, step and range |
 | `cycle_dwell_unit`, `peck_reentry_mm`, `chip_break_lift_mm` | Canned-cycle dwell unit and the controller's peck return amounts |
 | `tap_pitch_word` | Lead word of a rigid tapping cycle (Centroid Q), or feed |
+| `tap_cycle`, `tap_cycle_left` | Canned rigid tapping, right hand (`G84`) and left hand (`G74`), declared with `with_commands`. The spindle turns in the cycle's direction beforehand (M3 for G84, M4 for G74, FANUC 0i-MB §13.1.2); the decoder refuses a cycle under the other direction. Without `tap_cycle_left` (and without `tap_synchronized` G33.1) a left-hand tap is refused |
 | `compensation_word` | D register word of G41/G42 |
 | `compensation_with_move` | G41/G42/G40 written in the block of the move that turns compensation on or off (FANUC, Haas), not alone |
 | `oriented_edge_deg` | Where the boring bar's edge points after the oriented spindle stop |
@@ -128,8 +129,12 @@ accept a small start/end radius mismatch and cut a spiral between the two radii:
 | FANUC 0i | Parameter 3410 (machine-specific) |
 | Centroid CNC12 | Not documented, so the example post uses `radius_tolerance_mm=0` |
 
-A representable arc end can differ from the planned end by part of a word. A
-straight vertical move that follows (a retract out of the cut, a plunge) keeps
+A representable arc end can differ from the planned end by part of a word.
+A full circle (an adaptive orbit, a closed helix turn) always closes exactly:
+its end word repeats the controller's actual start, so start and end radius
+are identical and only the I/J rounding remains (checked against the planned
+circle like any arc). When a full circle becomes line segments instead, the
+last segment ends on that same start. A straight vertical move that follows (a retract out of the cut, a plunge) keeps
 the controller's current XY when that is within half the posting tolerance, so
 it never adds a sideways step while leaving or entering a surface; the decoded
 block is still checked against its source motion.

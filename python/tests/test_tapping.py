@@ -5,7 +5,7 @@ import unittest
 
 import camlib
 from camlib.post import Machine, ToolSetting
-from camlib.simulation import Simulation, SimulationError
+from camlib.simulation import Simulation, SimulationError, ToolChangePosition
 from camlib.tools import HolderSection, Tap, ToolAssembly
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -21,7 +21,7 @@ def tools():
     return drill, tap
 
 
-def job(tap_op, drill_depth=0.5):
+def job(tap_op, drill_depth=0.5, tool_change=None):
     drill, tap = tools()
     ops = (
         camlib.Drilling(
@@ -46,6 +46,7 @@ def job(tap_op, drill_depth=0.5):
         operations=tuple(camlib.OperationNode(op, sources=()) for op in ops),
         initial_position_mm=(0, 0, 12),
         verification=camlib.StreamChecks(stock_contact=camlib.StockContactOptions()),
+        tool_change=tool_change,
     )
     return camlib.Job("tap", "1", (setup,))
 
@@ -198,6 +199,185 @@ class TappingTest(unittest.TestCase):
         with Simulation(**config) as sim:
             with self.assertRaisesRegex(SimulationError, "tapping hole 0: the stock is not proven open"):
                 list(sim.run_operations())
+
+
+def example(name):
+    spec = importlib.util.spec_from_file_location(name, ROOT / f"examples/{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# Where M6 leaves each tool: gauge line at Z 100 over the work origin; the
+# FANUC tool table declares the same tip poses (tool_change_position_mode
+# "table").
+CHANGE = ToolChangePosition(gauge_z_mm=100, xy_mm=(0, 0))
+
+
+def tool_table(j):
+    header = j.compile().setup("top").program_header()
+    return tuple(
+        ToolSetting.for_tool(t, number=i, length_register=i, position_after_mm=(0, 0, 100 - t.gauge_length_mm))
+        for i, t in enumerate(header.tools, 1)
+    )
+
+
+def fanuc_machine(fanuc, j, **settings):
+    oem = dict(tool_change="M6", spindle_cw="M3", spindle_ccw="M4", spindle_off="M5", coolant_off="M9", flood="M8")
+    from camlib.motion import WorkFrame
+
+    return fanuc.define_machine(
+        "FANUC",
+        tool_table(j),
+        startup_units="mm",
+        startup_standard_modes=True,
+        g92_shift_mm=(0, 0, 0),
+        m_codes=oem,
+        traverse_feed_mm_min=3000,
+        work_to_machine=WorkFrame(),
+        decimals=3,
+        tool_change_position_mode="table",
+        output_units="mm",
+        max_feed_mm_min=10000,
+        max_spindle_rpm=30000,
+        max_sweep_rad=6.283185307179586,
+        tool_changes=True,
+        flood=True,
+        rapid_mm_min=6000,
+        **settings,
+    )
+
+
+def spindle_before(nc, index):
+    """The last spindle block (M3/M4/M5) before line ``index``."""
+    return next(line for line in reversed(nc[:index]) if any(m in line.split() for m in ("M3", "M4", "M5")))
+
+
+class LeftHandTappingTest(unittest.TestCase):
+    """#10: Tapping(hand="left") turns the spindle counterclockwise into the
+    hole; posts write a left-hand cycle and decoders read the hand back."""
+
+    def test_hand_is_validated_and_serialized_only_when_left(self):
+        drill, tap = tools()
+        self.assertNotIn("hand", tapping(tap).to_dict())
+        self.assertEqual(tapping(tap, hand="left").to_dict()["hand"], "left")
+        with self.assertRaisesRegex(ValueError, "hand must be 'right' or 'left'"):
+            tapping(tap, hand="LH")
+
+    def test_linuxcnc_g33_1_under_m4(self):
+        j = job(lambda tap: tapping(tap, hand="left"))
+        nc = posted_text(j, machine(j))
+        cycles = [i for i, line in enumerate(nc) if line.startswith("G33.1")]
+        self.assertEqual([nc[i] for i in cycles], ["G33.1 Z4 K1"] * 2)
+        for i in cycles:
+            self.assertIn("M4", spindle_before(nc, i).split())
+        right = posted_text(job(tapping), machine(j))
+        i = next(i for i, line in enumerate(right) if line.startswith("G33.1"))
+        self.assertIn("M3", spindle_before(right, i).split())
+
+    def test_fanuc_rigid_g74_left_and_g84_right(self):
+        fanuc = example("fanuc_0imb_post")
+        for hand, code, spindle in (("left", "G74", "M4"), ("right", "G84", "M3")):
+            with self.subTest(hand):
+                j = job(lambda tap: tapping(tap, hand=hand), tool_change=CHANGE)
+                m = fanuc_machine(fanuc, j, rigid_tapping=True)
+                nc = j.post_nc(
+                    "top", machine=m, post=fanuc.Fanuc0iMBPost, decoder=fanuc.Fanuc0iMBDecoder
+                ).text.splitlines()
+                cycles = [i for i, line in enumerate(nc) if line.startswith(("G74", "G84"))]
+                # F = lead x S = 1 mm x 600 rpm (G94), R = the current Z.
+                self.assertEqual(
+                    [nc[i] for i in cycles], [f"{code} X8. Y8. Z4. R11. F600.", f"{code} X20. Y8. Z4. R11. F600."]
+                )
+                for i in cycles:
+                    self.assertEqual(nc[i + 1], "G80")
+                    self.assertIn(spindle, spindle_before(nc, i).split())
+
+    def test_haas_g74_reverse_tap(self):
+        from camlib.motion import WorkFrame
+
+        haas = example("haas_ngc_post")
+        j = job(lambda tap: tapping(tap, hand="left"))
+        header = j.compile().setup("top").program_header()
+        tools = tuple(
+            ToolSetting.for_tool(t, number=i, length_register=i, position_after_mm=header.initial_position_mm)
+            for i, t in enumerate(header.tools, 1)
+        )
+        m = haas.define_machine(
+            "Haas",
+            tools,
+            traverse_feed_mm_min=5000,
+            coordinate_system="fanuc",
+            h_t_agreement=True,
+            g92_shift_mm=(0, 0, 0),
+            rotation_scaling=False,
+            work_to_machine=WorkFrame(),
+            decimals=3,
+            tool_change_position_mode="preserve_tip",
+            rigid_tapping=True,
+            output_units="mm",
+            max_feed_mm_min=10000,
+            max_spindle_rpm=30000,
+            max_sweep_rad=6.283185307179586,
+            tool_changes=True,
+            flood=True,
+            rapid_mm_min=6000,
+        )
+        nc = posted_text(j, m, haas.HaasNGCPost, haas.HaasNGCDecoder)
+        cycles = [i for i, line in enumerate(nc) if line.startswith(("G74", "G84"))]
+        self.assertEqual([nc[i] for i in cycles], ["G74 X8. Y8. Z4. R11. F600.", "G74 X20. Y8. Z4. R11. F600."])
+        for i in cycles:
+            self.assertEqual(nc[i + 1], "G80")
+            self.assertIn("M4", spindle_before(nc, i).split())
+
+    def test_dialects_without_left_hand_tapping_refuse(self):
+        fanuc = example("fanuc_0imb_post")
+        j = job(lambda tap: tapping(tap, hand="left"), tool_change=CHANGE)
+        # FANUC without rigid tapping declared: no tapping cycle at all.
+        with self.assertRaisesRegex(Exception, "declares no left-hand tapping"):
+            j.post_nc("top", machine=fanuc_machine(fanuc, j), post=fanuc.Fanuc0iMBPost, decoder=fanuc.Fanuc0iMBDecoder)
+        # A G84-only dialect (right-hand canned cycle) refuses a left-hand tap.
+        j = job(lambda tap: tapping(tap, hand="left"))
+        g84 = GCodeDialect.linuxcnc().with_commands(tap_synchronized=None, tap_cycle="G84")
+        with self.assertRaisesRegex(Exception, "declares no left-hand tapping"):
+            posted_text(j, machine(j, dialect=g84))
+
+    def test_decoder_reads_the_hand_a_right_hand_block_cannot_pass_as_left(self):
+        from camlib.post import GCodePost, NativeGCodeDecoder
+
+        class WrongCycle(GCodePost):
+            """Writes G84 (right hand) whatever the spindle direction."""
+
+            def tap(self, motion):
+                saved = self._spindle_direction
+                self._spindle_direction = "cw"
+                try:
+                    super().tap(motion)
+                finally:
+                    self._spindle_direction = saved
+
+        class WrongSpindle(GCodePost):
+            """Writes M3 for a counterclockwise spindle event."""
+
+            def on_spindle(self, event):
+                from dataclasses import replace as _replace
+
+                super().on_spindle(_replace(event, direction="cw") if event.rpm else event)
+                if event.rpm:
+                    self._spindle_direction = event.direction
+
+        j = job(lambda tap: tapping(tap, hand="left"))
+        both = GCodeDialect.linuxcnc().with_commands(tap_synchronized=None, tap_cycle="G84", tap_cycle_left="G74")
+        # Control: the honest post writes G74 and passes.
+        nc = posted_text(j, machine(j, dialect=both))
+        self.assertEqual(sum(line.startswith("G74") for line in nc), 2)
+        # G84 under the decoded M4: the decoder refuses the block.
+        with self.assertRaisesRegex(Exception, "clockwise \\(M3\\) for G84"):
+            posted_text(j, machine(j, dialect=both), WrongCycle, NativeGCodeDecoder)
+        # M3 where the plan turns counterclockwise: the decoded spindle
+        # direction differs from the plan.
+        with self.assertRaisesRegex(Exception, "decoded effects differ from source"):
+            posted_text(j, machine(j), WrongSpindle, NativeGCodeDecoder)
 
 
 class ReamingTest(unittest.TestCase):

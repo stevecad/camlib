@@ -380,7 +380,8 @@ pub enum MoveKind {
     Lead,
     Link,
     Retract,
-    /// Spindle-synchronized tapping (feed = pitch x rpm, clockwise spindle):
+    /// Spindle-synchronized tapping (feed = pitch x rpm; a clockwise spindle
+    /// taps a right-hand thread, counterclockwise a left-hand one):
     /// a vertical line down, immediately followed by its exact return. A
     /// post writes the pair as one controller tapping cycle.
     Tap,
@@ -1339,9 +1340,11 @@ impl ProgramValidator {
                                 if start[0] != end[0] || start[1] != end[1] || end[2] >= start[2] {
                                     return Err(m_error("tapping motion must go straight down"));
                                 }
-                                if rpm == 0. || !clockwise || feed <= 0. {
+                                // Either direction: the spindle sense is
+                                // the thread hand (M3 right, M4 left).
+                                if rpm == 0. || feed <= 0. {
                                     return Err(m_error(
-                                        "tapping needs a clockwise spindle and a feed",
+                                        "tapping needs the spindle running and a feed",
                                     ));
                                 }
                                 tap = Some((start, end, feed));

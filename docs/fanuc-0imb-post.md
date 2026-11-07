@@ -27,6 +27,7 @@ are retained privately; the manual is not redistributed in the library.
 | Dwell word P (whole milliseconds, no decimal point) | 70 (§5.5) |
 | Canned drilling G73/G81/G82/G83, G98, G80 | 134–149 (§13.1–13.1.6) |
 | Canned boring G85/G86/G89 | 156–159, 164–165 (§13.1.9–13.1.10, §13.1.13) |
+| Left-handed tapping G74; rigid tapping G84/G74 | 140 (§13.1.2), 169–175 (§13.2–13.2.2) |
 
 G43/H and G49 can cause axis movement. The reference therefore uses explicit
 G1 compensation blocks whose spindle-axis endpoints preserve the declared tip
@@ -56,6 +57,13 @@ moves. The operation's `reentry_clearance_mm` or `chip_break_lift_mm` must equal
 the declared value, or posting stops with that message. The small-hole G83 mode
 (§13.1.7) needs the M code from parameter 5163, which this post never writes.
 Standalone dwell (`G04`) is not declared; drilling dwell uses `G82`.
+
+Rigid tapping needs `rigid_tapping=True`, the premise that parameter No.
+5200#0 (G84) is 1, so G84 and G74 are rigid tapping cycles without `M29`
+(§13.2.1–13.2.2). A right-hand tap is written `G84 X Y Z R F` under `M3`, a
+left-hand tap (`Tapping(hand="left")`) `G74 X Y Z R F` under `M4`, each
+followed by `G80`. F = lead × S (G94). Without the premise, tapping is
+refused; the `M29 S` form is not written.
 Cutter compensation is started and cancelled in the block of the straight XY
 lead move (§14.4): `G1 G41 D… X… Y… F…` and `G1 G40 X… Y… F…`. Offset memory A
 keeps one value per number for H and D, so every tool's D register must

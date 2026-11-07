@@ -149,3 +149,102 @@ class TrochoidalSlotTest(unittest.TestCase):
                 list(sim.run_operations())
             self.assertFalse(sim.state.finished)
             self.assertEqual(sim.state.completed, 0)
+
+
+S_PATH = ((6, 12, 1), (20, 12, -1), (34, 12, 0))
+
+
+def s_slot(**overrides):
+    values = dict(
+        feed_mm_min=600,
+        entry_feed_mm_min=150,
+        spindle_rpm=12000,
+        tool_number=1,
+        length_register=1,
+        coolant="flood",
+        path_mm=S_PATH,
+    )
+    values.update(overrides)
+    return TrochoidalSlot("s", tool(), None, None, 6, 10, 9, 1, 12, **values)
+
+
+class CurvedSlotTest(unittest.TestCase):
+    """#9: slots along a centreline of lines and arcs."""
+
+    def test_s_slot_plans_within_the_engagement_limit_and_posts(self):
+        import camlib
+        from camlib.post import LoweringOptions, Machine, ToolSetting
+        from camlib.postprocessor import GCodeDialect
+
+        op = s_slot(max_engagement_deg=75)
+        self.assertEqual(op.to_dict()["path_mm"], [list(map(float, v)) for v in S_PATH])
+        self.assertNotIn("start_mm", op.to_dict())
+        setup = camlib.Setup("top", StockSpec((0, 0, 0), (40, 24, 10), 0.25), (tool(),), (op,), (0, 0, 12))
+        job = camlib.Job("s-slot", "1", (setup,))
+        report = None
+        with job.regenerate() as run:
+            for event in run:
+                if isinstance(event.update, OperationUpdate) and event.update.stage == "end":
+                    report = event.update.report
+        self.assertEqual(report["path_pieces"], 2)
+        self.assertEqual(report["corner_links"], 0)
+        self.assertLessEqual(report["max_bounded_engagement_deg"], 75)
+        machine = Machine(
+            "mill",
+            (ToolSetting.for_tool(tool(), number=1, length_register=1, position_after_mm=(0, 0, 12)),),
+            dialect=GCodeDialect.linuxcnc(),
+            output_units="mm",
+            decimals=3,
+            max_feed_mm_min=10000,
+            max_spindle_rpm=30000,
+            planes=("xy", "xz", "yz"),
+            arcs=True,
+            helices=True,
+            max_sweep_rad=math.tau,
+            max_tool_number=99,
+            max_length_register=99,
+            tool_changes=True,
+            flood=True,
+            mist=False,
+            tool_change_position_mode="preserve_tip",
+            rapid_mm_min=6000,
+        )
+        text = job.post_nc("top", machine=machine, lowering=LoweringOptions(native_arcs=True)).text
+        # Orbits and the links along the arcs are circular blocks.
+        self.assertGreater(sum(line.startswith(("G2", "G3")) for line in text.splitlines()), 10)
+
+    def test_path_or_points_not_both(self):
+        with self.assertRaisesRegex(ValueError, "either start_mm and end_mm"):
+            TrochoidalSlot(
+                "s",
+                tool(),
+                (8, 12),
+                (14, 12),
+                6,
+                10,
+                9,
+                1,
+                12,
+                feed_mm_min=600,
+                entry_feed_mm_min=150,
+                spindle_rpm=12000,
+                tool_number=1,
+                length_register=1,
+                coolant="flood",
+                path_mm=S_PATH,
+            )
+        with self.assertRaisesRegex(ValueError, "x, y, bulge_to_next"):
+            s_slot(path_mm=((6, 12), (20, 12)))
+
+    def test_too_tight_bend_is_refused_before_any_motion(self):
+        op = s_slot(path_mm=((10, 12, 1), (11.8, 12, 0)))
+        config = dict(
+            stock=StockSpec((0, 0, 0), (40, 24, 10), 0.25),
+            tools=(tool(),),
+            operations=(op,),
+            revision="tight",
+            initial_position_mm=(0, 0, 12),
+        )
+        with Simulation(**config) as sim:
+            with self.assertRaisesRegex(SimulationError, "bends toward the orbit side"):
+                list(sim.run_operations())

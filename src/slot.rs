@@ -1,5 +1,28 @@
-//! Lazy engagement-bounded straight slots. See docs/trochoidal-slot.md for proof
-//! scope, explicit seed exceptions and the separate stock-clearance certificate.
+//! Lazy engagement-bounded trochoidal slots along a centreline of lines and
+//! arcs (a straight slot is one line).
+//!
+//! Each depth pass orbits full circles of radius rho = width/2 - r - guard at
+//! stations along the centreline; an orbit clears the disk of radius
+//! a = rho + r around its station. Links follow the exact rho-offset of the
+//! centreline on the orbit's side, so they join the orbits tangentially.
+//!
+//! - Engagement: after an orbit at C_k all remaining material lies outside
+//!   that disk. Up to the next orbit the cutter centre stays within
+//!   max_s |C(s) - C_k| + rho of C_k; on a line or an arc of at most a half
+//!   turn (|bulge| <= 1) that maximum is the chord to the next station. The
+//!   exposed edge angle 2 acos((a^2 - q^2 - r^2) / (2 q r)) grows with q, so a
+//!   chord bound bounds the engagement, whatever the curvature.
+//! - Coverage: stations sit at every vertex, so each step lies on one piece.
+//!   Two disks whose stations are seen from an arc's centre at half-angle
+//!   alpha leave their deepest cusp on the bisector at the outer wall:
+//!   a - sqrt(a^2 - R^2 sin^2 alpha) + R (1 - cos alpha) <= t (on a line,
+//!   R -> infinity: a - sqrt(a^2 - (p/2)^2) <= t). The outside of a bend sets
+//!   the step.
+//! - Corners: the orbit at the vertex clears a disk that contains both the
+//!   incoming and the outgoing link offsets; a straight link between them
+//!   stays inside it (no engagement).
+//! - Links need the offset defined: an arc bending toward the orbit side needs
+//!   a radius above rho (refused otherwise, naming the radius).
 use crate::{
     Point,
     motion::{Coolant, Curve, Event, Motion, MoveKind, Plane, SpindleDirection, Vec3},
@@ -15,8 +38,17 @@ use std::f64::consts::TAU;
 pub struct TrochoidalSlotOperation {
     pub id: String,
     pub tool: String,
-    pub start_mm: Point,
-    pub end_mm: Point,
+    /// A straight slot from `start_mm` to `end_mm`, or (instead) `path_mm`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_mm: Option<Point>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_mm: Option<Point>,
+    /// The slot centreline as an open polyline of lines and arcs: vertices
+    /// `[x_mm, y_mm, bulge_to_next]`, bulge = tan(signed sweep / 4) within
+    /// [-1, 1] (at most a half turn per arc, as for planar boundaries); the
+    /// last vertex's bulge is 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_mm: Option<Vec<[f64; 3]>>,
     pub width_mm: f64,
     pub top_z_mm: f64,
     pub floor_z_mm: f64,
@@ -63,6 +95,208 @@ pub struct SlotReport {
     pub stock_clear_advances: usize,
     pub stock_query_work: usize,
     pub stock_query_work_exhausted: bool,
+    /// Lines and arcs of the centreline (1 for a straight slot).
+    pub path_pieces: usize,
+    /// Straight links across corners, inside the vertex orbit's disk.
+    pub corner_links: usize,
+}
+
+/// One piece of the slot centreline.
+#[derive(Clone, Copy, Debug)]
+enum Piece {
+    Line {
+        a: Point,
+        b: Point,
+        length: f64,
+        dir: Point,
+    },
+    /// Counter-clockwise for a positive sweep (at most a half turn).
+    Arc {
+        a: Point,
+        b: Point,
+        center: Point,
+        radius: f64,
+        start: f64,
+        sweep: f64,
+    },
+}
+
+fn distance(a: Vec3, b: Vec3) -> f64 {
+    (a[0] - b[0]).hypot(a[1] - b[1])
+}
+
+impl Piece {
+    /// Cursor range: mm along a line, radians along an arc.
+    fn extent(&self) -> f64 {
+        match self {
+            Piece::Line { length, .. } => *length,
+            Piece::Arc { sweep, .. } => sweep.abs(),
+        }
+    }
+    fn point(&self, along: f64) -> Point {
+        match *self {
+            Piece::Line {
+                a, b, length, dir, ..
+            } => {
+                if along == length {
+                    b
+                } else {
+                    [a[0] + dir[0] * along, a[1] + dir[1] * along]
+                }
+            }
+            Piece::Arc {
+                a,
+                b,
+                center,
+                radius,
+                start,
+                sweep,
+            } => {
+                if along == 0. {
+                    a
+                } else if along == sweep.abs() {
+                    b
+                } else {
+                    let t = start + sweep.signum() * along;
+                    [center[0] + radius * t.cos(), center[1] + radius * t.sin()]
+                }
+            }
+        }
+    }
+    /// Unit forward tangent.
+    fn tangent(&self, along: f64) -> Point {
+        match *self {
+            Piece::Line { dir, .. } => dir,
+            Piece::Arc { start, sweep, .. } => {
+                let t = start + sweep.signum() * along;
+                [-sweep.signum() * t.sin(), sweep.signum() * t.cos()]
+            }
+        }
+    }
+    fn curve(&self, z: f64) -> Curve {
+        match *self {
+            Piece::Line { a, b, .. } => Curve::Line {
+                start: [a[0], a[1], z],
+                end: [b[0], b[1], z],
+            },
+            Piece::Arc {
+                a,
+                b,
+                center,
+                sweep,
+                ..
+            } => Curve::Arc {
+                start: [a[0], a[1], z],
+                end: [b[0], b[1], z],
+                center: [center[0], center[1], z],
+                plane: Plane::Xy,
+                sweep_rad: sweep,
+            },
+        }
+    }
+}
+
+/// The centreline pieces of a slot operation (validated).
+fn pieces(op: &TrochoidalSlotOperation, guard: f64) -> Result<Vec<Piece>, String> {
+    let vertices: Vec<[f64; 3]> = match (&op.start_mm, &op.end_mm, &op.path_mm) {
+        (Some(a), Some(b), None) => vec![[a[0], a[1], 0.], [b[0], b[1], 0.]],
+        (None, None, Some(path)) => path.clone(),
+        _ => {
+            return Err(
+                "a trochoidal slot needs either start_mm and end_mm (straight) or path_mm".into(),
+            );
+        }
+    };
+    if vertices.len() < 2 || vertices.len() > 1_000_000 {
+        return Err("path_mm needs 2..1000000 vertices".into());
+    }
+    if vertices
+        .iter()
+        .any(|v| v.iter().any(|x| !x.is_finite()) || v[0].abs() > 1e6 || v[1].abs() > 1e6)
+        || vertices.iter().any(|v| v[2].abs() > 1.)
+    {
+        return Err(
+            "path vertices need finite coordinates within ±1e6 mm and bulge within [-1, 1]".into(),
+        );
+    }
+    if vertices.last().unwrap()[2] != 0. {
+        return Err("the last path vertex starts no piece: its bulge must be 0".into());
+    }
+    let mut out = Vec::with_capacity(vertices.len() - 1);
+    for (i, w) in vertices.windows(2).enumerate() {
+        let (a, b, bulge) = ([w[0][0], w[0][1]], [w[1][0], w[1][1]], w[0][2]);
+        let chord = (b[0] - a[0]).hypot(b[1] - a[1]);
+        if chord <= guard {
+            return Err(format!(
+                "path piece {i}: its end points coincide (start_mm and end_mm must be different points)"
+            ));
+        }
+        let dir = [(b[0] - a[0]) / chord, (b[1] - a[1]) / chord];
+        if bulge == 0. {
+            out.push(Piece::Line {
+                a,
+                b,
+                length: chord,
+                dir,
+            });
+            continue;
+        }
+        let sweep = 4. * bulge.atan();
+        let radius = chord / (2. * (sweep / 2.).sin().abs());
+        if radius > 1e6 {
+            return Err(format!(
+                "path piece {i}: bulge {bulge} is too small for an arc; use a line (bulge 0)"
+            ));
+        }
+        // The centre is on the chord's bisector, left of it for a
+        // counter-clockwise arc.
+        let h = chord / 2. / (sweep / 2.).tan();
+        let center = [
+            (a[0] + b[0]) / 2. - dir[1] * h,
+            (a[1] + b[1]) / 2. + dir[0] * h,
+        ];
+        out.push(Piece::Arc {
+            a,
+            b,
+            center,
+            radius,
+            start: (a[1] - center[1]).atan2(a[0] - center[0]),
+            sweep,
+        });
+    }
+    Ok(out)
+}
+
+/// The slot centreline as motion curves at `z` (for limit checks).
+pub fn centerline_curves(op: &TrochoidalSlotOperation, z: f64) -> Result<Vec<Curve>, String> {
+    Ok(pieces(op, 16. * op.tolerance_mm)?
+        .iter()
+        .map(|p| p.curve(z))
+        .collect())
+}
+
+/// The largest half-angle alpha (seen from the centre of an arc of radius
+/// `radius`) between two stations whose disks of radius `a` leave at most `t`
+/// uncovered at the outer wall: a - sqrt(a^2 - R^2 sin^2 alpha) +
+/// R (1 - cos alpha) <= t. The left side grows with alpha (bisection).
+fn arc_coverage_half_angle(radius: f64, a: f64, t: f64) -> f64 {
+    let gap = |alpha: f64| {
+        let s = radius * alpha.sin();
+        a - (a * a - s * s).max(0.).sqrt() + 2. * radius * (alpha / 2.).sin().powi(2)
+    };
+    let mut lo = 0f64;
+    let mut hi = std::f64::consts::FRAC_PI_2.min((a / radius).min(1.).asin());
+    if gap(hi) <= t {
+        return hi;
+    }
+    for _ in 0..200 {
+        let mid = (lo + hi) / 2.;
+        if mid <= lo || mid >= hi {
+            break;
+        }
+        if gap(mid) <= t { lo = mid } else { hi = mid }
+    }
+    lo
 }
 
 /// Stores only a scalar path cursor, not a list of generated orbits/motions.
@@ -72,9 +306,12 @@ pub struct SlotPlan {
     spec: StockSpec,
     initial: Vec3,
     position: Vec3,
-    direction: Point,
-    normal: Point,
-    length: f64,
+    pieces: Vec<Piece>,
+    /// Bounded advance per piece (mm on a line, radians on an arc).
+    steps: Vec<f64>,
+    /// +1: links run on the left of the centreline (clockwise orbits), -1 right.
+    side: f64,
+    piece: usize,
     radius: f64,
     cutter_radius: f64,
     guard: f64,
@@ -117,7 +354,7 @@ impl SlotPlan {
             op.spindle_rpm,
         ];
         let guard = 16. * op.tolerance_mm;
-        let length = (op.end_mm[0] - op.start_mm[0]).hypot(op.end_mm[1] - op.start_mm[1]);
+        let pieces = pieces(&op, guard)?;
         crate::heights::require(
             "trochoidal slot",
             [
@@ -138,12 +375,7 @@ impl SlotPlan {
                 ),
                 (
                     values.iter().all(|v| v.is_finite())
-                        && op
-                            .start_mm
-                            .iter()
-                            .chain(&op.end_mm)
-                            .chain(&initial)
-                            .all(|v| v.is_finite() && v.abs() <= 1e6),
+                        && initial.iter().all(|v| v.is_finite() && v.abs() <= 1e6),
                     "all numeric parameters and points must be finite".into(),
                 ),
                 (
@@ -172,10 +404,6 @@ impl SlotPlan {
                         op.width_mm,
                         2. * r
                     ),
-                ),
-                (
-                    length > guard,
-                    "start_mm and end_mm must be different points".into(),
                 ),
                 (
                     op.stepdown_mm > guard && op.stepdown_mm <= cutter.cutting_length_mm,
@@ -256,10 +484,42 @@ impl SlotPlan {
                 "slot engagement/geometry tolerance or motion budget is too restrictive".into(),
             );
         }
-        let direction = [
-            (op.end_mm[0] - op.start_mm[0]) / length,
-            (op.end_mm[1] - op.start_mm[1]) / length,
-        ];
+        // Clockwise orbits leave and rejoin their links on the left of the
+        // centreline (moving forward there), counter-clockwise on the right.
+        let side = if op.clockwise { 1. } else { -1. };
+        let mut steps = Vec::with_capacity(pieces.len());
+        for (i, piece) in pieces.iter().enumerate() {
+            steps.push(match *piece {
+                Piece::Line { .. } => pitch,
+                Piece::Arc { radius: big, sweep, .. } => {
+                    // The links' offset radius on the orbit side.
+                    let offset = big - side * sweep.signum() * radius;
+                    if offset <= guard {
+                        return Err(format!(
+                            "slot {}: path piece {i} bends toward the orbit side with radius {big:.4} mm, \
+                             not more than the orbit radius {radius:.4} mm (width/2 - tool radius): \
+                             the centreline needs a larger radius there, a narrower slot or a larger \
+                             tool, or clockwise reversed",
+                            op.id
+                        ));
+                    }
+                    // Engagement: the chord to the next station (a half turn
+                    // at most) is at most the straight pitch. Coverage: the
+                    // outer-wall cusp between the two disks.
+                    let chord = (engagement_pitch * (1. - 1e-9) / (2. * big)).min(1.).asin();
+                    let cover = arc_coverage_half_angle(big, a, t);
+                    let step = 2. * chord.min(cover) * (1. - 1e-9);
+                    if !step.is_finite() || step * big <= guard {
+                        return Err(format!(
+                            "slot {}: path piece {i} (radius {big:.4} mm) leaves no bounded advance; \
+                             increase boundary_tolerance_mm or max_engagement_deg",
+                            op.id
+                        ));
+                    }
+                    step
+                }
+            });
+        }
         let report = SlotReport {
             strategy: "trochoidal_slot",
             geometric_residual_status: ResidualStatus::Pending,
@@ -277,12 +537,8 @@ impl SlotPlan {
             stock_clear_advances: 0,
             stock_query_work: 0,
             stock_query_work_exhausted: false,
-        };
-        // Both senses leave/rejoin the forward connector tangentially.
-        let normal = if op.clockwise {
-            [-direction[1], direction[0]]
-        } else {
-            [direction[1], -direction[0]]
+            path_pieces: pieces.len(),
+            corner_links: 0,
         };
         let heights = crate::heights::Heights::resolve(
             op.clearance_z_mm,
@@ -297,9 +553,10 @@ impl SlotPlan {
             spec: spec.clone(),
             initial,
             position: initial,
-            direction,
-            normal,
-            length,
+            pieces,
+            steps,
+            side,
+            piece: 0,
             radius,
             cutter_radius: r,
             guard,
@@ -353,24 +610,27 @@ impl SlotPlan {
             },
         ]
     }
-    fn center(&self, distance: f64, z: f64) -> Vec3 {
-        let p = if distance == self.length {
-            self.op.end_mm
-        } else {
-            [
-                self.op.start_mm[0] + self.direction[0] * distance,
-                self.op.start_mm[1] + self.direction[1] * distance,
-            ]
-        };
+    fn center_on(&self, piece: usize, along: f64, z: f64) -> Vec3 {
+        let p = self.pieces[piece].point(along);
         [p[0], p[1], z]
     }
-    fn orbit_start(&self, distance: f64, z: f64) -> Vec3 {
-        let c = self.center(distance, z);
+    fn center(&self, along: f64, z: f64) -> Vec3 {
+        self.center_on(self.piece, along, z)
+    }
+    /// The rho-offset of the centreline on the orbit side: where an orbit
+    /// starts and ends, and the links' path.
+    fn orbit_start_on(&self, piece: usize, along: f64, z: f64) -> Vec3 {
+        let c = self.center_on(piece, along, z);
+        let t = self.pieces[piece].tangent(along);
+        let normal = [self.side * -t[1], self.side * t[0]];
         [
-            c[0] + self.normal[0] * self.radius,
-            c[1] + self.normal[1] * self.radius,
+            c[0] + normal[0] * self.radius,
+            c[1] + normal[1] * self.radius,
             z,
         ]
+    }
+    fn orbit_start(&self, along: f64, z: f64) -> Vec3 {
+        self.orbit_start_on(self.piece, along, z)
     }
     fn emit(&mut self, curve: Curve, kind: MoveKind, entry: bool) -> Result<Motion, String> {
         curve.prepare(self.op.tolerance_mm)?;
@@ -472,14 +732,41 @@ impl SlotPlan {
                     return Ok(Some(motion));
                 }
                 4 => {
-                    if self.distance == self.length {
-                        self.phase = 6;
-                        continue;
+                    let piece = self.pieces[self.piece];
+                    let extent = piece.extent();
+                    if self.distance == extent {
+                        if self.piece + 1 == self.pieces.len() {
+                            self.phase = 6;
+                            continue;
+                        }
+                        // A vertex: its orbit is done. Cross to the next
+                        // piece's offset inside that orbit's disk.
+                        let next = self.orbit_start_on(self.piece + 1, 0., z);
+                        self.piece += 1;
+                        self.distance = 0.;
+                        if distance(self.position, next) <= self.op.tolerance_mm {
+                            continue;
+                        }
+                        let motion = self.emit(
+                            Curve::Line {
+                                start: self.position,
+                                end: next,
+                            },
+                            MoveKind::Link,
+                            false,
+                        )?;
+                        self.report.corner_links += 1;
+                        self.expected_generation = Some(stock.generation() + 1);
+                        return Ok(Some(motion));
                     }
-                    let remaining = self.length - self.distance;
-                    let mut advance = self.report.bounded_advance_mm.min(remaining);
+                    let remaining = extent - self.distance;
+                    let mut advance = self.steps[self.piece].min(remaining);
                     let mut known_clear = false;
-                    if remaining > advance && !self.report.stock_query_work_exhausted {
+                    // Stock already clear along the rest of a line: one link.
+                    if matches!(piece, Piece::Line { .. })
+                        && remaining > advance
+                        && !self.report.stock_query_work_exhausted
+                    {
                         let query = Motion {
                             id: self.next_id,
                             operation: self.op.id.clone(),
@@ -487,7 +774,7 @@ impl SlotPlan {
                             kind: MoveKind::Link,
                             curve: Curve::Line {
                                 start: self.center(self.distance, z),
-                                end: self.center(self.length, z),
+                                end: self.center(extent, z),
                             },
                             feed_mm_min: Some(self.op.feed_mm_min),
                         };
@@ -509,24 +796,37 @@ impl SlotPlan {
                     }
                     // Choose exact endpoint when consuming the remainder; no cumulative overshoot.
                     let next = if advance == remaining {
-                        self.length
+                        extent
                     } else {
                         self.distance + advance
                     };
-                    let motion = self.emit(
-                        Curve::Line {
-                            start: self.position,
-                            end: self.orbit_start(next, z),
-                        },
-                        MoveKind::Link,
-                        false,
-                    )?;
+                    let end = self.orbit_start(next, z);
+                    let (link, chord) = match piece {
+                        Piece::Line { .. } => (
+                            Curve::Line {
+                                start: self.position,
+                                end,
+                            },
+                            advance,
+                        ),
+                        Piece::Arc { center, sweep, .. } => (
+                            Curve::Arc {
+                                start: self.position,
+                                end,
+                                center: [center[0], center[1], z],
+                                plane: Plane::Xy,
+                                sweep_rad: sweep.signum() * (next - self.distance),
+                            },
+                            distance(self.center(self.distance, z), self.center(next, z)),
+                        ),
+                    };
+                    let motion = self.emit(link, MoveKind::Link, false)?;
                     if known_clear {
                         self.report.stock_clear_advances += 1;
                     } else {
                         let r = self.cutter_radius;
                         let a = self.radius + r;
-                        let q = self.radius + advance + self.guard;
+                        let q = self.radius + chord + self.guard;
                         let phi = 2.
                             * ((a * a - q * q - r * r) / (2. * q * r))
                                 .clamp(-1., 1.)
@@ -576,6 +876,7 @@ impl SlotPlan {
             let motion = self.emit(curve, kind, entry)?;
             if self.phase == 6 {
                 self.pass += 1;
+                self.piece = 0;
                 self.distance = 0.;
                 self.phase = next_phase;
             } else {

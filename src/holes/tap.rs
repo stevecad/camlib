@@ -4,18 +4,43 @@
 //! (G33.1 on LinuxCNC, G84 ... G80 where declared) and its decoder reads the
 //! cycle back into the same pair.
 //!
-//! Right-hand taps only (clockwise spindle). The current stock must show
+//! A right-hand tap turns clockwise (M3) into the hole, a left-hand tap
+//! counterclockwise (M4); the controller reverses the spindle for the return
+//! (LinuxCNC G33.1 reverses whatever direction is running; FANUC G84 / G74,
+//! B-63844EN/02 13.1.2 and 13.2). The current stock must show
 //! each hole drilled below the tap depth plus the bottom clearance before
 //! the tap goes down. The tap is modeled by its drill (minor) diameter, so
 //! the stock keeps the material of the thread flanks: conservative.
 use super::{Core, ResidualStatus, thread::column_open};
 use crate::{
     Point,
-    motion::{Coolant, Event, Motion, MoveKind, Vec3},
+    motion::{Coolant, Event, Motion, MoveKind, SpindleDirection, Vec3},
     stock::{CancelSignal, Stock, StockSpec},
     tool::{CutterShape, ToolAssembly},
 };
 use serde::{Deserialize, Serialize};
+
+/// Thread hand. Right unless designated left: a thread designation without
+/// "LH" is right-hand (ISO 965-1, ASME B1.1).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Hand {
+    #[default]
+    Right,
+    Left,
+}
+impl Hand {
+    fn is_right(&self) -> bool {
+        *self == Hand::Right
+    }
+    /// The spindle direction that drives the tap into the hole.
+    pub fn spindle(self) -> SpindleDirection {
+        match self {
+            Hand::Right => SpindleDirection::Cw,
+            Hand::Left => SpindleDirection::Ccw,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,6 +49,10 @@ pub struct TappingOperation {
     pub tool: String,
     pub centers_mm: Vec<Point>,
     pub pitch_mm: f64,
+    /// The tap's thread hand: the spindle turns clockwise (right) or
+    /// counterclockwise (left) into the hole.
+    #[serde(default, skip_serializing_if = "Hand::is_right")]
+    pub hand: Hand,
     /// Tap tip depth (absolute Z).
     pub depth_z_mm: f64,
     /// Space the hole must have below the tap tip (controller overrun,
@@ -54,6 +83,7 @@ pub struct TappingReport {
     pub strategy: &'static str,
     pub geometric_residual_status: ResidualStatus,
     pub holes: usize,
+    pub hand: Hand,
     pub synchronized_feed_mm_min: f64,
     pub r_plane_z_mm: f64,
     pub depth_z_mm: f64,
@@ -170,6 +200,7 @@ impl TappingPlan {
             strategy: "tapping",
             geometric_residual_status: ResidualStatus::Pending,
             holes: core.centers.len(),
+            hand: op.hand,
             synchronized_feed_mm_min: feed,
             r_plane_z_mm: heights.feed,
             depth_z_mm: op.depth_z_mm,
@@ -191,7 +222,13 @@ impl TappingPlan {
         &self.report
     }
     pub fn prefix_events(&self) -> Vec<Event> {
-        self.core.prefix()
+        let mut events = self.core.prefix();
+        for event in &mut events {
+            if let Event::Spindle { direction, .. } = event {
+                *direction = self.op.hand.spindle();
+            }
+        }
+        events
     }
     pub fn suffix_events(&self) -> Vec<Event> {
         self.core.suffix()

@@ -14,7 +14,7 @@ mod ream;
 mod tap;
 mod thread;
 pub use ream::{ReamingOperation, ReamingPlan, ReamingReport};
-pub use tap::{TappingOperation, TappingPlan, TappingReport};
+pub use tap::{Hand, TappingOperation, TappingPlan, TappingReport};
 pub use thread::{ThreadMillOperation, ThreadMillPlan, ThreadMillReport};
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
