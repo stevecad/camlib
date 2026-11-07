@@ -59,12 +59,12 @@ def tool_table(j):
     )
 
 
-def linuxcnc(j):
+def linuxcnc(j, dialect=None):
     return Machine(
         "mill",
         tool_table(j),
         tool_change_position_mode="preserve_tip",
-        dialect=GCodeDialect.linuxcnc(),
+        dialect=dialect or GCodeDialect.linuxcnc(),
         output_units='mm',
         decimals=3,
         max_feed_mm_min=10000,
@@ -116,8 +116,14 @@ class DrillCycleTest(unittest.TestCase):
             posted_text(j, linuxcnc(j))
 
     def test_undeclared_cycles_are_written_as_explicit_moves(self):
-        haas = example("haas_ngc_post")
         j = job(peck_mm=1.5)
+        no_peck = GCodeDialect.linuxcnc().with_commands(peck_cycle=None)
+        nc = posted_text(j, linuxcnc(j, dialect=no_peck))
+        self.assertEqual(cycle_lines(nc), [])
+        self.assertTrue(any(line.startswith("G1 X8 Y8 Z9.5") for line in nc), nc)
+
+    def haas(self, j, **settings):
+        haas = example("haas_ngc_post")
         m = haas.define_machine(
             "Haas",
             tool_table(j),
@@ -136,10 +142,53 @@ class DrillCycleTest(unittest.TestCase):
             tool_changes=True,
             flood=True,
             rapid_mm_min=6000,
+            **settings,
         )
-        nc = posted_text(j, m, haas.HaasNGCPost, haas.HaasNGCDecoder)
-        self.assertEqual(cycle_lines(nc), [])
-        self.assertIn("G1 X8. Y8. Z9.5 F150.", nc)
+        return haas, m
+
+    def test_haas_canned_cycles(self):
+        """#13: Haas NGC writes G81/G82/G83/G73 (96-8210 Rev N), decoded back
+        into the controller's moves and checked against the plan."""
+        for drilling, block in (
+            (dict(), "G81 X{x}. Y8. Z4. R11. F150."),
+            (dict(dwell_s=0.5), "G82 X{x}. Y8. Z4. R11. P0.5 F150."),
+            (dict(peck_mm=1.5), "G83 X{x}. Y8. Z4. R11. Q1.5 F150."),
+            (dict(peck_mm=1.5, peck_mode="chip_break"), "G73 X{x}. Y8. Z4. R11. Q1.5 F150."),
+        ):
+            with self.subTest(drilling):
+                j = job(**drilling)
+                haas, m = self.haas(j, setting_22_mm=0.254, setting_52_mm=0)
+                nc = posted_text(j, m, haas.HaasNGCPost, haas.HaasNGCDecoder)
+                self.assertEqual(cycle_lines(nc), ["G98", block.format(x=8), block.format(x=20), "G80"])
+
+    def test_haas_pecking_needs_its_settings(self):
+        j = job(peck_mm=1.5)
+        haas, m = self.haas(j)
+        with self.assertRaisesRegex(Exception, "G83 needs Setting 22 \\(Can Cycle Delta Z\\)"):
+            posted_text(j, m, haas.HaasNGCPost, haas.HaasNGCDecoder)
+        haas, m = self.haas(j, setting_22_mm=0.254)
+        with self.assertRaisesRegex(Exception, "G83 needs Setting 52"):
+            posted_text(j, m, haas.HaasNGCPost, haas.HaasNGCDecoder)
+        haas, m = self.haas(j, setting_22_mm=0.254, setting_52_mm=2)
+        with self.assertRaisesRegex(Exception, "Setting 52 = 2 mm clears chips above R"):
+            posted_text(j, m, haas.HaasNGCPost, haas.HaasNGCDecoder)
+        chip = job(peck_mm=1.5, peck_mode="chip_break")
+        haas, m = self.haas(chip)
+        with self.assertRaisesRegex(Exception, "G73 needs Setting 22"):
+            posted_text(chip, m, haas.HaasNGCPost, haas.HaasNGCDecoder)
+        # The operation's return amount must be the installed Setting 22.
+        haas, m = self.haas(j, setting_22_mm=0.5, setting_52_mm=0)
+        with self.assertRaisesRegex(Exception, "differs from Setting 22 .* set reentry_clearance_mm=0.5"):
+            posted_text(j, m, haas.HaasNGCPost, haas.HaasNGCDecoder)
+
+    def test_haas_decoder_reads_undotted_p_as_milliseconds(self):
+        j = job(dwell_s=0.5)
+        haas, m = self.haas(j)
+        decoder = haas.HaasNGCDecoder(m, j.compile().setup("top").program_header())
+        decoder.read_line("%")
+        decoder.read_line(f"O{m.program_number}")
+        with self.assertRaisesRegex(ValueError, "without a decimal point is milliseconds"):
+            decoder.read_line("G82 X8. Y8. Z4. R11. P500 F150.", None)
 
     def test_centroid_and_fanuc_cycles(self):
         centroid = example("centroid_post")
@@ -302,6 +351,25 @@ class BoringCycleTest(unittest.TestCase):
             # The spindle stop/restart of G86 is part of the cycle block.
             first = nc.index(bores[0])
             self.assertFalse(any(line.startswith(("M5", "M3")) for line in nc[first : nc.index("G80", first)]))
+
+    def test_haas_boring_cycles(self):
+        """#13: Haas G85/G89 (96-8210 Rev N); G86 is not declared (the manual
+        does not say the spindle restarts), so a stop-boring hole is written
+        as explicit moves."""
+        for reaming, block in (
+            (dict(), "G85 X{x}. Y8. Z4. R11. F100."),
+            (dict(dwell_s=0.4), "G89 X{x}. Y8. Z4. R11. P0.4 F100."),
+        ):
+            with self.subTest(reaming):
+                j = boring_job(**reaming)
+                haas, m = DrillCycleTest.haas(None, j)
+                nc = posted_text(j, m, haas.HaasNGCPost, haas.HaasNGCDecoder)
+                bores = [line for line in nc if line.startswith(("G85", "G86", "G89"))]
+                self.assertEqual(bores, [block.format(x=8), block.format(x=20)])
+        j = boring_job(spindle_stop=True)
+        haas, m = DrillCycleTest.haas(None, j)
+        nc = posted_text(j, m, haas.HaasNGCPost, haas.HaasNGCDecoder)
+        self.assertFalse(any(line.startswith("G86") for line in nc))
 
     def test_every_check_is_clear_and_events_follow_the_controller(self):
         from camlib.simulation import VerificationUpdate

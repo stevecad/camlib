@@ -59,9 +59,33 @@ tangent leads is the same under Setting 58 Fanuc or YASNAC. Source: Haas Mill
 Programming Manual (Haas Factory Outlet / Productivity Inc., rev. 06/26),
 cutter compensation chapter.
 
-Dwell (`Drilling(dwell_s=...)`) and canned drilling cycles are not yet
-declared for this post: dwell is refused rather than dropped, and drilling
-cycles are written as explicit moves.
+## Dwell and canned drilling cycles
+
+From the Haas Mill Operator's Manual 96-8210 Rev N (G-codes chapter, §5.8),
+holes with `canned_cycle=True` are written as one block per hole after `G98`,
+cancelled by `G80`:
+
+| Cycle | Block | Notes |
+| --- | --- | --- |
+| Drill, spot drill | `G81 X Y Z R F` | |
+| Dwell, counterbore | `G82 X Y Z R P F` | P in seconds |
+| Peck | `G83 X Y Z R Q F` | Needs `setting_22_mm` (Setting 22, Can Cycle Delta Z: re-entry above the last peck) and `setting_52_mm=0` (Setting 52, G83 Retract Above R) |
+| Chip break | `G73 X Y Z R Q F` | Needs `setting_22_mm` (the chip-clearing retract) |
+| Boring | `G85 X Y Z R F` | Feeds back out |
+| Boring with dwell | `G89 X Y Z R P F` | P in seconds |
+
+A standalone dwell (`Drilling(dwell_s=...)` without a cycle) is `G4 P`. Every P
+is written in seconds with a decimal point, to the millisecond: Haas reads
+`P10.` as 10 seconds but `P10` as 10 milliseconds (G04 note), and the decoder
+refuses an undotted P.
+
+Settings are declared, never assumed. A peck or chip-break hole with
+`canned_cycle=True` is refused, naming Setting 22 or Setting 52, when the setting
+it needs is not declared. A nonzero Setting 52 is refused too: G83 then clears
+chips above R, which camlib does not model. The operation's
+`reentry_clearance_mm` / `chip_break_lift_mm` must equal Setting 22. `G86`
+(bore and stop) is not declared: the manual does not say the spindle restarts
+after the cycle, so those holes are written as explicit moves.
 
 ## Semantics and setup premises
 
