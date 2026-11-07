@@ -35,7 +35,7 @@ is ordered by real dependency, not by size:
 
 ## Phase 1: Correctness
 
-- [ ] #103 Turning: tools need an insert thickness and out-of-plane holder bodies (unsafe: a body into the bore wall without a finding)
+No open correctness issues.
 
 ## Phase 2: Complete milling
 
@@ -54,6 +54,8 @@ Smaller, independent items first, then the 3D stock and what needs it.
 
 - [ ] #14 Turning: post profile arcs as native G2/G3 instead of chords
 - [ ] #110 Tool and holder bodies from supplied models (mesh in the engine; STEP via the CadQuery adapter)
+- [ ] #113 Turning: apply the insert's in-plane size tolerance (ISO 1832 d and m) to its body
+- [ ] #114 Turning: solid (one-piece) boring bars with a ground head on a round bar
 
 ## Phase 4: Complete plasma/laser
 
@@ -145,3 +147,4 @@ These can run in parallel with any phase.
 - [x] #100 Turning: a thread plans and simulates but Job.post stops after the first pass
 - [x] #101 Turning: a face groove as wide as the face-grooving blade fails with 'line must have nonzero length'
 - [x] #102 Turning: an inside groove after facing fails with 'needs an open hole in front of it'
+- [x] #103 Turning: tools need an insert thickness and out-of-plane holder bodies
