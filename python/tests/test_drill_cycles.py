@@ -110,6 +110,39 @@ class DrillCycleTest(unittest.TestCase):
             # Only the lift, traverse and final retract remain as explicit moves.
             self.assertFalse(any(line.startswith(("G0 ", "G1 ")) for line in nc), nc)
 
+    def test_cycles_post_with_every_lowering_mode(self):
+        # A canned cycle's block carries its hole's moves: checked in one
+        # batch with them under lowering too (issue #77), decoded back and
+        # compared with the plan move by move.
+        from camlib.post import LoweringOptions
+
+        modes = ((), (LoweringOptions(),), (LoweringOptions(native_arcs=True),))
+        for drilling, code in ((dict(), "G81"), (dict(peck_mm=1.5), "G83")):
+            j = job(**drilling)
+            expected = None
+            for mode in modes:
+                options = dict(lowering=mode[0]) if mode else {}
+                with j.post("top", machine=linuxcnc(j), **options) as posted:
+                    posted.wait()
+                    status, posting = posted.status(), posted.posting_status()
+                    self.assertIsNone(status["error"], (code, mode))
+                    self.assertTrue(posting["finished"], (code, mode))
+                    # Every planned move was checked against the posted text.
+                    self.assertEqual(posting["checked_motions"], status["available"], (code, mode))
+                    for index in range(status["available"]):
+                        proof = posted.posted_motion(index)
+                        self.assertTrue(proof["stock_committed"])
+                    nc, start = [], 1
+                    while page := posted.nc_lines(start, limit=256):
+                        nc.extend(line["text"] for line in page)
+                        start = page[-1]["number"] + 1
+                blocks = [line for line in cycle_lines(nc) if line.startswith(code)]
+                self.assertEqual(len(blocks), len(HOLES), (code, mode, nc))
+                # The same program whatever the lowering (no arcs to lower).
+                if expected is None:
+                    expected = nc
+                self.assertEqual(nc, expected, (code, mode))
+
     def test_return_amount_must_match_the_controller(self):
         j = job(peck_mm=1.5, reentry_clearance_mm=0.5)
         with self.assertRaisesRegex(Exception, "reentry_clearance_mm 0.5 mm differs .* set reentry_clearance_mm=0.254"):

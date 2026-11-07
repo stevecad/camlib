@@ -41,7 +41,6 @@ No open correctness issues.
 
 Smaller, independent items first, then the 3D stock and what needs it.
 
-- [ ] #11 Deburr finishing (edge breaking along sharp edges)
 - [ ] #12 Geodesic finishing
 - [ ] #7 Probing: work offset, feature and tool-setting cycles (3-axis; tilted planes come with #5)
 - [ ] #1 3D stock model (tri-dexel) for undercuts and multi-axis machining
@@ -128,3 +127,4 @@ These can run in parallel with any phase.
 - [x] #10 Left-hand tapping
 - [x] #9 Trochoidal slots along curved paths
 - [x] #13 Haas NGC post: dwell and canned drilling cycles
+- [x] #11 Deburr finishing (edge breaking along sharp edges)
