@@ -466,6 +466,14 @@ no-gouge height; `stock_to_leave_mm` leaves material. In a direct comparison
 with OpenCamLib's drop-cutter on the same mesh, camlib's tip stayed between
 +0.0046 and +0.0099 mm above the exact no-gouge height.
 
+Depth: when the remaining stock stands no higher above `floor_z_mm` than the
+cutting length, every pass is within the flutes. Where it stands higher (a
+part taller than the flutes, after roughing), each feed move is checked
+instead: the neck, shank and holder sections stay above the committed stock
+under them, so only a pass that really cuts deeper than the flutes is refused
+(the message names where). `steep_and_shallow` can then take the part's
+lowest point as its floor.
+
 Flat and bull-nose end mills work too (raster and the spiral, radial and
 project patterns). Their contact with each triangle is exact (facet, edge and
 vertex), and every move between computed points is proven not to gouge: per
