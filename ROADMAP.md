@@ -35,7 +35,7 @@ is ordered by real dependency, not by size:
 
 ## Phase 1: Correctness
 
-No open correctness issues.
+- [ ] #116 Machine crash detection: check the posted program against a declared machine model (safety)
 
 ## Phase 2: Complete milling
 
