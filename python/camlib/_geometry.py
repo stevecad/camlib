@@ -10,7 +10,7 @@ import json
 def _slots(manifest):
     for op in manifest.get('operations', ()):
         key = 'target' if op.get('kind') == 'roughing' else 'surface'
-        if op.get('kind') in ('roughing', 'parallel', 'waterline', 'flat') and key in op:
+        if op.get('kind') in ('roughing', 'parallel', 'waterline', 'flat', 'deburr') and key in op:
             yield op, key
     config = manifest.get('verification') or {}
     for check in config.get('material', ()):

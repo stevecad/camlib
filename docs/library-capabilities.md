@@ -39,6 +39,7 @@ See [Operations](operations.md) for parameters. Summary:
 | Thread milling | Internal/external helical threads; hole or boss proven in the stock first |
 | Tapping | Rigid right- and left-hand tapping cycles (G33.1 under M3/M4, or G84/G74 and G80 where declared); drilled hole proven first |
 | Chamfer | Top edges, depth from the chamfer tool's angle and tip; stepped widths, leads |
+| Deburr | Horizontal edges of a finished part (every upward-facing face's boundary), chamfer mill; the rest of the part proven untouched (whole tool assembly); unreachable and concave stretches reported |
 | Trace / engrave | Open or closed line/arc paths at depth, no radius offset |
 | Feeds and speeds | `cutting_data`: rpm and feed from surface speed and feed per tooth, chip thinning, ball effective diameter |
 | Plasma and laser cutting | Sheet parts with holes: kerf compensation (computed or G41/G42 wear), arc/line leads from the scrap, overcut or negative overburn, pierce clearance (center pierce in small holes), inner features and nested parts first, small-hole feed and THC off, micro-joints, fixed or programmed pierce/cut heights; every lead, kerf path and pierce proven clear of the parts; sheet simulated cut through |

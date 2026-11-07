@@ -419,6 +419,43 @@ cone from the tool's tip (radially), so the flank cuts, not the point. `lead_in_
 leads. A tool that does not cut at its center needs its entry proven cleared
 in the stock first.
 
+## Deburr: `Deburr`
+
+Required: `surface` (the finished part as a `SurfaceMesh`), `levels`,
+`width_mm`, `clearance_z_mm`, and a chamfer mill (`ChamferMill`). Breaks the
+horizontal edges of a finished part: every boundary of every upward-facing
+planar face. `camlib.cadquery.deburr_levels(solid)` makes the levels (the
+faces at each height, exported exactly):
+
+```python
+from camlib import Deburr
+from camlib.cadquery import deburr_levels, export_surface_mesh
+
+op = Deburr("deburr", c90, export_surface_mesh(part), deburr_levels(part), 0.5, 30,
+            feed_mm_min=600, plunge_mm_min=200, spindle_rpm=10000,
+            tool_number=2, length_register=2, coolant="flood")
+```
+
+- The tool axis runs on the outward offset of each face boundary, so the cone
+  breaks the edge `width_mm` wide on the face and the chamfer depth down a
+  vertical wall (`wall_depth_mm` in the report: equal for 90 degrees),
+  whatever the edge's curvature. `tip_clearance_mm` (0.5) keeps the point out
+  of the cut.
+- Nothing else is touched, by an exact proof for the whole tool (cone,
+  neck, shank and holder) against the part above the face, below the break
+  and anything in the break's height band that is not the face or a vertical
+  wall under its boundary. The proof allows for the mesh's `surface_error_mm`
+  and two stock cell diagonals.
+- A stretch that cannot be proven is not cut. The tool retracts and
+  re-enters where cutting can be proven again (entries and exits are proven
+  too). Each stretch is reported in `skipped`: concave stretches, where a
+  wall rises from the face, in `concave_length_mm` (nothing to break); convex
+  edges the tool cannot reach in `unreachable_length_mm`.
+- The stock must already be machined to the part. A non-center-cutting
+  chamfer mill enters only where the stock is proven clear under its tip.
+- Not yet: ball-end deburring, and edges that are not horizontal (sloped
+  or vertical edges need tilting the tool, see the multi-axis issues).
+
 ## Parallel finishing: `Parallel`
 
 Required: `surface` (`SurfaceMesh`), `floor_z_mm`, `stepover_mm`,
