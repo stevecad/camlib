@@ -1035,27 +1035,7 @@ impl PreparedRegion {
         if !clipper.execute(ClipType::Union, FillRule::NonZero, &mut closed, None) {
             return Err("integer batch union backend failed".into());
         }
-        let mut filled = FilledHoles::default();
-        if fill_holes_below_mm2 > 0. {
-            // Exact integer shoelace sum (twice the signed area in grid
-            // units); a filled hole only adds area to the union.
-            closed.retain(|path| {
-                let twice: i128 = (0..path.len())
-                    .map(|i| {
-                        let (a, b) = (path[i], path[(i + 1) % path.len()]);
-                        a.x as i128 * b.y as i128 - b.x as i128 * a.y as i128
-                    })
-                    .sum();
-                let area = twice as f64 * 0.5 * grid * grid;
-                if area < 0. && -area < fill_holes_below_mm2 {
-                    filled.holes += 1;
-                    filled.area_mm2 += -area;
-                    false
-                } else {
-                    true
-                }
-            });
-        }
+        let filled = fill_small_holes(&mut closed, grid, fill_holes_below_mm2);
         let error = regions
             .iter()
             .map(|r| r.definition.boundary_error_mm)
@@ -1065,6 +1045,75 @@ impl PreparedRegion {
             .integer_result(closed, "clipper2_rust_1.2.0_linear_batch", error, 0., grid)
             .map(|r| (r.report, filled))
     }
+}
+
+impl PreparedRegion {
+    /// This linear region grown by `delta_mm` with square joins (each convex
+    /// corner cut square at `delta_mm` from it, tangent to the circle of
+    /// that radius; almost straight corners mitred; concave ones exact): it
+    /// contains the region grown by a disc of `delta_mm`, with straight edges
+    /// only. Holes smaller than `fill_holes_below_mm2` are filled. For
+    /// protection regions (it only grows).
+    pub(crate) fn inflate_square(
+        &self,
+        delta_mm: f64,
+        fill_holes_below_mm2: f64,
+    ) -> Result<(Construction, FilledHoles), String> {
+        if self.linear_components.is_none() {
+            return Err("square inflation needs a linear region".into());
+        }
+        if !delta_mm.is_finite() || !(0. ..=1e3).contains(&delta_mm) {
+            return Err("square inflation distance must be finite, 0..1000 mm".into());
+        }
+        let grid = (self.options.tolerance_mm / 128.).max(1e-8);
+        let paths = integer_paths(self, self.origin, grid, 0.)?;
+        // Integer rounding of the offset vertices: half a grid unit, covered
+        // by one more grid unit of distance.
+        let mut closed = clipper2_rust::inflate_paths_64(
+            &paths,
+            delta_mm / grid + 1.,
+            clipper2_rust::JoinType::Square,
+            clipper2_rust::EndType::Polygon,
+            2.,
+            0.,
+        );
+        let filled = fill_small_holes(&mut closed, grid, fill_holes_below_mm2);
+        let error = self.definition.boundary_error_mm + self.options.tolerance_mm;
+        self.integer_result(
+            closed,
+            "clipper2_rust_1.2.0_square_inflate",
+            error,
+            0.,
+            grid,
+        )
+        .map(|r| (r.report, filled))
+    }
+}
+
+/// Drop the holes (negative paths) smaller than `below_mm2`.
+fn fill_small_holes(closed: &mut Paths64, grid: f64, below_mm2: f64) -> FilledHoles {
+    let mut filled = FilledHoles::default();
+    if below_mm2 > 0. {
+        // Exact integer shoelace sum (twice the signed area in grid units);
+        // a filled hole only adds area.
+        closed.retain(|path| {
+            let twice: i128 = (0..path.len())
+                .map(|i| {
+                    let (a, b) = (path[i], path[(i + 1) % path.len()]);
+                    a.x as i128 * b.y as i128 - b.x as i128 * a.y as i128
+                })
+                .sum();
+            let area = twice as f64 * 0.5 * grid * grid;
+            if area < 0. && -area < below_mm2 {
+                filled.holes += 1;
+                filled.area_mm2 += -area;
+                false
+            } else {
+                true
+            }
+        });
+    }
+    filled
 }
 
 /// Holes a protective union filled (`PreparedRegion::union_linear_filling`).

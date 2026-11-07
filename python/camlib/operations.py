@@ -1168,6 +1168,11 @@ class Roughing:
     # See Pocket.retract_z_mm/feed_z_mm. Raster and offset clearing only.
     retract_z_mm: float | None = None
     feed_z_mm: float | None = None
+    # Each layer's protected shadow simplified within this and grown by it
+    # (still containing the exact shadow), so a fine mesh adds no moves.
+    # None: a quarter of radial_allowance_mm; 0: off. At most the allowance;
+    # leaves at most twice this more stock.
+    contour_tolerance_mm: float | None = None
 
     @classmethod
     def from_solid(cls, id, tool, solid, *, source=None, **parameters):
@@ -1178,6 +1183,8 @@ class Roughing:
     def to_dict(self):
         result = {key: getattr(self, key) for key in self.__dataclass_fields__}
         result.update(kind="roughing", tool=getattr(self.tool, "id", self.tool))
+        if self.contour_tolerance_mm is None:
+            result.pop('contour_tolerance_mm')
         if self.rest_tolerance_mm is None:
             result.pop('rest_tolerance_mm')
         if type(self.omit_empty_cuts) is not bool:

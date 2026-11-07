@@ -478,6 +478,68 @@
    }
   },
   {
+   "name": "roughing-fine-mesh",
+   "family": "mill",
+   "description": "3D offset roughing of a filleted boss from a fine mesh",
+   "operations": {
+    "rough": {
+     "toolpath": "Roughing",
+     "issue": 27,
+     "moves": 3295,
+     "cut_mm": 7879.228,
+     "rapid_mm": 200.239,
+     "air_cut_mm": 6462.375,
+     "plunges": 3,
+     "retracts": 3,
+     "removed_mm3": 5417.771,
+     "cycle_seconds_exact_stop": 554.341,
+     "cycle_seconds_tangent": 531.423,
+     "engine_seconds": 0.0751
+    }
+   },
+   "toolpath": {
+    "moves": 3295,
+    "cycle_seconds_exact_stop": 554.341,
+    "cycle_seconds_tangent": 531.423,
+    "posted_blocks": 4874,
+    "post_error": null,
+    "removed_mm3": [
+     5417.771,
+     5541.754
+    ],
+    "material": {
+     "leftover_mm3": [
+      816.3321077371903,
+      1385.292279599272
+     ],
+     "overcut_mm3": [
+      0.0,
+      0.43896955138724925
+     ],
+     "leftover_cells": [
+      16380,
+      4
+     ],
+     "overcut_cells": [
+      0,
+      4
+     ],
+     "max_residual_height_mm": 4.230905500365241,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.2895,
+    "first_move_seconds": 0.2075,
+    "post_seconds": 8.6391,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 512320.0,
+     "native": 502720.0
+    }
+   }
+  },
+  {
    "name": "contour",
    "family": "mill",
    "description": "Outer and inner walls of an annulus",

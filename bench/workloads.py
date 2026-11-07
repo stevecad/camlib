@@ -146,6 +146,18 @@ def _roughing_target():
     return ("solid", _support("roughing").part().val())
 
 
+def _boss_roughing():
+    # A fine mesh (0.03 mm; the frozen fixture stays small): roughing's moves
+    # and time must not follow its facets (issue #89).
+    return _options(_support("filleted_boss").roughing_job(0.03))
+
+
+def _boss_target():
+    # The roughed mesh itself (a default-error export would be a large
+    # fixture).
+    return ("surface", _boss_roughing()["operations"][0].target, 0)
+
+
 def _contour():
     return _options(_support("contour").contour_job())
 
@@ -533,6 +545,14 @@ WORKLOADS = (
         {"rough": ("Roughing", 27)},
         _roughing(adaptive=True),
         _roughing_target,
+    ),
+    Workload(
+        "roughing-fine-mesh",
+        "mill",
+        "3D offset roughing of a filleted boss from a fine mesh",
+        {"rough": ("Roughing", 27)},
+        _boss_roughing,
+        _boss_target,
     ),
     Workload(
         "contour",

@@ -37,6 +37,10 @@ pub struct ShadowReport {
     /// (protected): `PreparedRoughingTarget::shadow_for_cutter`.
     pub filled_holes: usize,
     pub filled_hole_area_mm2: f64,
+    /// The shadow simplified within a tolerance and grown by it (None: the
+    /// exact shadow).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub simplified: Option<SimplifiedShadow>,
     pub input_vertices: usize,
     pub output_vertices: usize,
     pub boolean_operations: usize,
@@ -128,6 +132,126 @@ fn count_vertices(region: &PlanarRegion) -> usize {
         .map(|b| b.vertices.len())
         .sum()
 }
+#[derive(Clone, Debug, Serialize)]
+pub struct SimplifiedShadow {
+    pub tolerance_mm: f64,
+    /// Boundary vertices of the exact shadow (the report's output_vertices
+    /// are the simplified region's).
+    pub exact_vertices: usize,
+    /// Why the exact shadow was kept: not at least twice as simple (a coarse
+    /// or planar shadow), or a simplified ring would cross itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Douglas-Peucker on a closed ring: every removed vertex lies within
+/// `tolerance` of the chord that replaces it (the chord's segment, not its
+/// line), so the whole removed chain lies in the segment's tolerance band.
+fn simplify_ring(ring: &[Point], tolerance: f64) -> Vec<Point> {
+    let n = ring.len();
+    if n <= 3 {
+        return ring.to_vec();
+    }
+    let distance = |p: Point, a: Point, b: Point| {
+        let d = [b[0] - a[0], b[1] - a[1]];
+        let l2 = d[0] * d[0] + d[1] * d[1];
+        let t = if l2 > 0. {
+            (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / l2).clamp(0., 1.)
+        } else {
+            0.
+        };
+        (p[0] - a[0] - t * d[0]).hypot(p[1] - a[1] - t * d[1])
+    };
+    // Split at the vertex farthest from the first: two open chains.
+    let far = (1..n)
+        .max_by(|&i, &j| {
+            let (a, b) = (ring[0], [ring[i], ring[j]]);
+            (b[0][0] - a[0])
+                .hypot(b[0][1] - a[1])
+                .total_cmp(&(b[1][0] - a[0]).hypot(b[1][1] - a[1]))
+        })
+        .unwrap();
+    let mut keep = vec![false; n];
+    keep[0] = true;
+    keep[far] = true;
+    let mut stack = vec![(0usize, far), (far, n)];
+    while let Some((a, b)) = stack.pop() {
+        let pb = ring[b % n];
+        let (mut worst, mut at) = (0., None);
+        for i in a + 1..b {
+            let d = distance(ring[i], ring[a], pb);
+            if d > worst {
+                (worst, at) = (d, Some(i));
+            }
+        }
+        if let Some(i) = at
+            && worst > tolerance
+        {
+            keep[i] = true;
+            stack.push((a, i));
+            stack.push((i, b));
+        }
+    }
+    (0..n).filter(|&i| keep[i]).map(|i| ring[i]).collect()
+}
+
+/// A region containing `region` whose rings are simplified within
+/// `tolerance` and grown by it: every point of the exact region is in the
+/// simplified one or within `tolerance` of a simplified edge (the removed
+/// chain lies in that edge's band), and the square-join growth contains the
+/// growth by a disc of that radius (`PreparedRegion::inflate_square`): the
+/// result contains the exact region, with straight edges only. Holes too
+/// small for the cutter are filled as for the exact shadow.
+fn simplify_shadow(
+    region: &PlanarRegion,
+    tolerance: f64,
+    construction: f64,
+    fill_below_mm2: f64,
+    options: ConstructionOptions,
+) -> Result<PlanarRegion, String> {
+    let ring = |b: &Boundary| -> Vec<Point> {
+        simplify_ring(
+            &b.vertices.iter().map(|v| [v[0], v[1]]).collect::<Vec<_>>(),
+            tolerance,
+        )
+    };
+    let boundary = |r: Vec<Point>| Boundary {
+        vertices: r.into_iter().map(|p| [p[0], p[1], 0.]).collect(),
+    };
+    let mut components = vec![];
+    for c in &region.components {
+        if c.outer
+            .vertices
+            .iter()
+            .chain(c.holes.iter().flat_map(|h| &h.vertices))
+            .any(|v| v[2] != 0.)
+        {
+            return Err("the shadow has arcs".into());
+        }
+        components.push(Component {
+            outer: boundary(ring(&c.outer)),
+            holes: c
+                .holes
+                .iter()
+                .map(&ring)
+                .filter(|h| h.len() >= 3)
+                .map(boundary)
+                .collect(),
+        });
+    }
+    let simplified = PlanarRegion {
+        version: 1,
+        units: "mm".into(),
+        name: "retained-column-shadow".into(),
+        components,
+        boundary_error_mm: region.boundary_error_mm,
+        source: serde_json::Value::Null,
+    }
+    .prepare_generated(options)?;
+    let (grown, _) = simplified.inflate_square(tolerance + 4. * construction, fill_below_mm2)?;
+    Ok(grown.region)
+}
+
 impl PreparedRoughingTarget {
     pub fn prepare(
         mesh: SurfaceMesh,
@@ -196,7 +320,32 @@ impl PreparedRoughingTarget {
         work: &mut usize,
         cancel: &impl CancelSignal,
     ) -> Result<RoughingShadow, String> {
+        self.shadow_simplified(
+            tip_z_mm,
+            axial_allowance_mm,
+            cutter_radius_mm,
+            0.,
+            work,
+            cancel,
+        )
+    }
+    /// `shadow_for_cutter`, then simplified within `simplify_mm` and grown by
+    /// it (`simplify_shadow`): a region containing the exact shadow whose
+    /// boundary has no more vertices than that distance needs, whatever the
+    /// mesh's facet size. 0: the exact shadow.
+    pub fn shadow_simplified(
+        &self,
+        tip_z_mm: f64,
+        axial_allowance_mm: f64,
+        cutter_radius_mm: f64,
+        simplify_mm: f64,
+        work: &mut usize,
+        cancel: &impl CancelSignal,
+    ) -> Result<RoughingShadow, String> {
         check(cancel)?;
+        if !simplify_mm.is_finite() || !(0. ..=1e3).contains(&simplify_mm) {
+            return Err("invalid roughing contour tolerance".into());
+        }
         if !tip_z_mm.is_finite()
             || tip_z_mm.abs() > 1e6
             || !axial_allowance_mm.is_finite()
@@ -300,6 +449,46 @@ impl PreparedRoughingTarget {
                 source: serde_json::Value::Null,
             }
         };
+        let exact_vertices = count_vertices(&region);
+        let mut simplified = None;
+        if simplify_mm > 0. && !region.components.is_empty() {
+            match simplify_shadow(
+                &region,
+                simplify_mm,
+                self.tolerance,
+                fill_below_mm2,
+                options,
+            )
+            .and_then(|r| {
+                // Only a much simpler region is worth its extra stock: a
+                // shadow whose facets are already coarse (a planar or coarse
+                // mesh) keeps its exact boundary and toolpath.
+                let n = count_vertices(&r);
+                if 2 * n <= exact_vertices {
+                    Ok(r)
+                } else {
+                    Err(format!(
+                        "not much simpler ({n} vertices against the exact {exact_vertices}; simplified only from half as many)"
+                    ))
+                }
+            }) {
+                Ok(r) => {
+                    simplified = Some(SimplifiedShadow {
+                        tolerance_mm: simplify_mm,
+                        exact_vertices,
+                        reason: None,
+                    });
+                    region = r;
+                }
+                Err(e) => {
+                    simplified = Some(SimplifiedShadow {
+                        tolerance_mm: simplify_mm,
+                        exact_vertices,
+                        reason: Some(format!("kept the exact shadow: {e}")),
+                    })
+                }
+            }
+        }
         region.source = serde_json::json!({"adapter":"flat_column_shadow_v1","target_source_sha256":self.source_sha256});
         check(cancel)?;
         let report = ShadowReport {
@@ -312,6 +501,7 @@ impl PreparedRoughingTarget {
             enclosed_degenerate_projections: degenerate,
             filled_holes: filled.holes,
             filled_hole_area_mm2: filled.area_mm2,
+            simplified,
             projection_enclosure_mm: if degenerate > 0 {
                 32. * self.tolerance * 2f64.sqrt()
             } else {
@@ -368,6 +558,12 @@ pub struct RoughingOperation<G = SurfaceMesh> {
     pub require_part_at_first_depth: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clearing_tolerance_mm: Option<f64>,
+    /// Each layer's protected shadow is simplified within this distance and
+    /// grown by it, so it still contains the exact shadow: the layer's moves
+    /// no longer follow every facet of a fine mesh. None: a quarter of the
+    /// radial allowance; 0: off. Adds at most twice this to the stock left.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contour_tolerance_mm: Option<f64>,
     pub id: String,
     pub tool: String,
     pub target: G,
@@ -410,6 +606,7 @@ impl<G> RoughingOperation<G> {
             omit_empty_cuts: self.omit_empty_cuts,
             require_part_at_first_depth: self.require_part_at_first_depth,
             clearing_tolerance_mm: self.clearing_tolerance_mm,
+            contour_tolerance_mm: self.contour_tolerance_mm,
             id: self.id,
             tool: self.tool,
             target: f(self.target)?,
@@ -651,6 +848,17 @@ impl RoughingPlan {
         spec.grid()?;
         let prepared_tool = tool.prepare()?;
         let r = prepared_tool.cutter().definition().diameter_mm / 2.;
+        // The shadow simplification: a quarter of the radial allowance unless
+        // stated, at most the allowance (it adds at most twice this).
+        let contour = op
+            .contour_tolerance_mm
+            .unwrap_or(op.radial_allowance_mm / 4.);
+        if !(contour.is_finite() && contour >= 0. && contour <= op.radial_allowance_mm.max(0.)) {
+            return Err(format!(
+                "roughing contour_tolerance_mm {contour} must be within 0..radial_allowance_mm ({})",
+                op.radial_allowance_mm
+            ));
+        }
         if op.rest_tolerance_mm.is_some()
             && matches!(op.clearing, RoughingClearing::Adaptive { .. })
         {
@@ -932,7 +1140,7 @@ impl RoughingPlan {
                 let z = depths[i];
                 let mut work = 0;
                 let shadow = target
-                    .shadow_for_cutter(z, op.bottom_allowance_mm, r, &mut work, &cancel)
+                    .shadow_simplified(z, op.bottom_allowance_mm, r, contour, &mut work, &cancel)
                     .map_err(|e| format!("roughing shadow at Z{z}: {e}"))?;
                 let region = expanded
                     .boolean(&shadow.region.prepare(options)?, Boolean::Difference)?
@@ -1255,6 +1463,56 @@ impl RoughingPlan {
             Ok(())
         } else {
             Err("roughing report requires all layers to finish".into())
+        }
+    }
+}
+
+#[cfg(test)]
+mod simplify_tests {
+    use super::*;
+    use crate::planar::{Boundary, Component, ConstructionOptions, PlanarRegion};
+
+    fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Boundary {
+        Boundary {
+            vertices: vec![[x0, y0, 0.], [x1, y0, 0.], [x1, y1, 0.], [x0, y1, 0.]],
+        }
+    }
+
+    #[test]
+    fn a_ring_simplification_would_collapse_is_refused_not_dropped() {
+        // A shadow island narrower than twice the tolerance collapses to a
+        // segment under Douglas-Peucker. Dropping it would lose protected
+        // area: the simplification is refused instead, so the layer keeps
+        // its exact shadow (and reports why).
+        let region = PlanarRegion {
+            version: 1,
+            units: "mm".into(),
+            name: "shadow".into(),
+            components: vec![
+                Component {
+                    outer: rect(0., 0., 10., 10.),
+                    holes: vec![],
+                },
+                Component {
+                    outer: rect(20., 0., 30., 0.05),
+                    holes: vec![],
+                },
+            ],
+            boundary_error_mm: 0.,
+            source: serde_json::Value::Null,
+        };
+        let options = ConstructionOptions { tolerance_mm: 1e-5 };
+        assert!(simplify_shadow(&region, 0.075, 1e-5, 0., options).is_err());
+        // Wide enough to keep its ring: simplified, and the island stays
+        // protected.
+        let mut wide = region.clone();
+        wide.components[1].outer = rect(20., 0., 30., 0.2);
+        let grown = simplify_shadow(&wide, 0.075, 1e-5, 0., options)
+            .unwrap()
+            .prepare(options)
+            .unwrap();
+        for p in [[20., 0.], [30., 0.2], [25., 0.1], [0., 0.], [10., 10.]] {
+            assert!(grown.query(p).unwrap().signed_clearance_mm.unwrap() > 0.07);
         }
     }
 }
