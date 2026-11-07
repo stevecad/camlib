@@ -522,7 +522,13 @@ class FineBore:
 
 @dataclass(frozen=True)
 class Tapping:
-    """Rigid tapping (right hand) of drilled holes with a ``camlib.tools.Tap``.
+    """Rigid tapping of drilled holes with a ``camlib.tools.Tap``.
+
+    ``hand``: ``"right"`` (default: a thread is right-hand unless designated
+    LH, ISO 965-1 / ASME B1.1) turns the spindle clockwise (M3) into the hole;
+    ``"left"`` counterclockwise (M4). The controller reverses it for the
+    return. A machine without a left-hand cycle (G33.1, or a declared
+    ``tap_cycle_left`` such as G74) refuses a left-hand tap at posting.
 
     Each hole is tapped from the R plane (``feed_z_mm``, default the retract
     height) to ``depth_z_mm`` and back at the synchronized feed
@@ -547,13 +553,18 @@ class Tapping:
     coolant: str = field(kw_only=True)
     retract_z_mm: float | None = None
     feed_z_mm: float | None = None
+    hand: str = field(default="right", kw_only=True)
 
     def __post_init__(self):
         object.__setattr__(self, "centers_mm", _freeze_hole_centers(self.centers_mm))
+        if self.hand not in ("right", "left"):
+            raise ValueError(f"Tapping hand must be 'right' or 'left', not {self.hand!r}")
 
     def to_dict(self):
         result = {field: getattr(self, field) for field in self.__dataclass_fields__}
         result.update(kind="tapping", tool=getattr(self.tool, "id", self.tool))
+        if result["hand"] == "right":
+            result.pop("hand")
         for key in ("retract_z_mm", "feed_z_mm", "bottom_clearance_mm"):
             if result[key] is None:
                 result.pop(key)

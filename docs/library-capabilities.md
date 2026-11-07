@@ -37,14 +37,14 @@ See [Operations](operations.md) for parameters. Summary:
 | Bore milling | Helical full-hole clearing |
 | Trochoidal slot | Straight slots, width between 1x and 2x tool diameter |
 | Thread milling | Internal/external helical threads; hole or boss proven in the stock first |
-| Tapping | Rigid right-hand tapping cycles (G33.1, or G84/G80 where declared); drilled hole proven first |
+| Tapping | Rigid right- and left-hand tapping cycles (G33.1 under M3/M4, or G84/G74 and G80 where declared); drilled hole proven first |
 | Chamfer | Top edges, depth from the chamfer tool's angle and tip; stepped widths, leads |
 | Trace / engrave | Open or closed line/arc paths at depth, no radius offset |
 | Feeds and speeds | `cutting_data`: rpm and feed from surface speed and feed per tooth, chip thinning, ball effective diameter |
 | Plasma and laser cutting | Sheet parts with holes: kerf compensation (computed or G41/G42 wear), arc/line leads from the scrap, overcut or negative overburn, pierce clearance (center pierce in small holes), inner features and nested parts first, small-hole feed and THC off, micro-joints, fixed or programmed pierce/cut heights; every lead, kerf path and pierce proven clear of the parts; sheet simulated cut through |
 | Turning (lathe) | Facing, outside roughing (axial passes, every diameter left at its allowance), finishing, external, internal and face grooving, parting off, external and internal single-point threading, drilling on the axis (pecks), inside roughing and finishing (boring bars) of a turned profile and bore with insert/holder/bar geometry; every move checked against the part, its bore, the stock and the chuck; axisymmetric stock with outer and inner bounds; constant surface speed (G96 with its G50/D limit) and feed per revolution (G95/G99); G18 output, radius or diameter X, T0101 words; a lathe setup is an ordinary `Setup` streamed like every run (per-move stock, playback with partial moves, cancellation, posted replay on the stock) with a material check (leftover material against the part) after each operation |
 
-Not supported: trochoidal curved slots, left-hand tapping, undercuts,
+Not supported: trochoidal curved slots, undercuts,
 4th/5th axis. Unsupported tool/operation
 combinations and impossible dimensions are rejected before any motion.
 
@@ -155,7 +155,7 @@ controller parameters, real offsets) is outside what camlib can check.
 | Arcs and helices | G2/G3 where the controller declares them and the rounded words stay within tolerance (spiral mismatch included); otherwise checked line segments |
 | Dwell | G4 with the controller's unit and resolution, never shorter |
 | Drilling and boring cycles | G81/G82/G83/G73, G85/G89/G86, G76 (with G98, G80); decoded back into moves and checked |
-| Rigid tapping | G33.1, or G84 with feed or lead word |
+| Rigid tapping | G33.1 (M3 right, M4 left), or G84 / G74 with feed or lead word |
 | Lathe threading | G33 K<lead> or G32 F<lead> (spindle-synchronized), decoded back |
 | Lathe spindle and feed modes | G96 S (with G50 S or D limit) / G97, G95 or G99 F per revolution / G94 or G98, decoded back; per-move feed bounds checked |
 | Cutter compensation | G41/G42 with the tool's D register (wear), G40: on their own line (LinuxCNC, Centroid) or in the lead move's block (FANUC, Haas) |

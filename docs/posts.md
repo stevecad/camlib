@@ -90,6 +90,7 @@ Key settings:
 | `dwell_word`, `dwell_resolution_s`, `dwell_max_s` | Dwell word, step and range |
 | `cycle_dwell_unit`, `peck_reentry_mm`, `chip_break_lift_mm` | Canned-cycle dwell unit and the controller's peck return amounts |
 | `tap_pitch_word` | Lead word of a rigid tapping cycle (Centroid Q), or feed |
+| `tap_cycle`, `tap_cycle_left` | Canned rigid tapping, right hand (`G84`) and left hand (`G74`), declared with `with_commands`. The spindle turns in the cycle's direction beforehand (M3 for G84, M4 for G74, FANUC 0i-MB §13.1.2); the decoder refuses a cycle under the other direction. Without `tap_cycle_left` (and without `tap_synchronized` G33.1) a left-hand tap is refused |
 | `compensation_word` | D register word of G41/G42 |
 | `compensation_with_move` | G41/G42/G40 written in the block of the move that turns compensation on or off (FANUC, Haas), not alone |
 | `oriented_edge_deg` | Where the boring bar's edge points after the oriented spindle stop |

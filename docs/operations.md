@@ -284,16 +284,26 @@ Centroid example writes `M19` and explicit moves (`oriented_edge_deg=`).
 ## Tapping: `Tapping`
 
 Required: `centers_mm`, `pitch_mm`, `depth_z_mm`, `clearance_z_mm`. Rigid
-tapping of drilled holes (right hand) with a `camlib.tools.Tap(id,
+tapping of drilled holes with a `camlib.tools.Tap(id,
 drill_diameter=, thread_length=, overall_length=, shank_diameter=)`. Each hole
 is tapped from the R plane (`feed_z_mm`, default the retract height) to
 `depth_z_mm` and back at the synchronized feed `pitch_mm` × `spindle_rpm`.
 
+- `hand="right"` (default; a thread is right-hand unless designated LH, ISO
+  965-1 / ASME B1.1) turns the spindle clockwise (M3) into the hole;
+  `hand="left"` turns it counterclockwise (M4). The controller reverses the
+  spindle for the return.
 - The post writes one controller cycle per hole and its decoder reads it back
   for checking: `G33.1 Z… K<pitch>` with the default dialect (LinuxCNC),
   or `G84 X… Y… Z… R… F…` followed by `G80` on machines that declare
   `tap_cycle` (the Haas example with `rigid_tapping=True`). Machines that
   declare neither refuse tapping.
+- Left-hand taps: `G33.1` under `M4` (LinuxCNC reverses whatever direction
+  is running), or `G74 X… Y… Z… R… F…` and `G80` on machines that declare
+  `tap_cycle_left` (the FANUC 0i-MB example with `rigid_tapping=True`).
+  Machines with neither refuse a left-hand tap. The decoder reads the hand
+  back: `G84` needs the spindle clockwise, `G74` counterclockwise, and the
+  decoded spindle direction must match the plan.
 - Each hole must already be drilled below the tap depth plus
   `bottom_clearance_mm` (default one pitch: synchronized taps such as G33.1
   overrun while the spindle reverses) in the stock.
@@ -805,6 +815,6 @@ gives the `effective_diameter_mm` it used. camlib does not pick cutting data.
 
 ## Not supported
 
-Trochoidal curved slots, left-hand tapping, undercuts (other than thread
+Trochoidal curved slots, undercuts (other than thread
 grooves and the stopped boring bar's shift) and 4/5-axis motion. Surfaces must
 be reachable from above (a part seen as a height map).
