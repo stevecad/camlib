@@ -483,7 +483,16 @@ def _lathe_face_groove():
     import camlib
     from test_turning import cnmg, tool
 
-    blade = tool("fg", camlib.FaceGrooveInsert(2, 8), nose_radius_mm=0.2, width_mm=2, length_mm=40)
+    # Curved for 8..14 mm grooves (its maker's range): it follows this
+    # 8..14 mm groove off the centre plane (#103).
+    blade = tool(
+        "fg",
+        camlib.FaceGrooveInsert(2, 8),
+        nose_radius_mm=0.2,
+        width_mm=2,
+        length_mm=40,
+        curved_for_diameter_mm=(8, 14),
+    )
     return _lathe(
         stock=camlib.TurnStockSpec(-60, 1, 13),
         profile=((0, 0, 0), (12, 0, 0), (12, -40, 0)),
