@@ -202,8 +202,10 @@ class DwellTest(unittest.TestCase):
             flood=True,
             rapid_mm_min=6000,
         )
-        with self.assertRaisesRegex(Exception, "does not declare dwell"):
-            posted_text(j, h, haas.HaasNGCPost, haas.HaasNGCDecoder)
+        # Haas G04: P in seconds with a decimal point (96-8210 Rev N, G04
+        # note), millisecond resolution: the planned 0.333 s exactly.
+        nc = posted_text(j, h, haas.HaasNGCPost, haas.HaasNGCDecoder)
+        self.assertEqual([line for line in nc if line.startswith("G4 ")], ["G4 P0.333"] * 2)
 
 
 if __name__ == "__main__":
