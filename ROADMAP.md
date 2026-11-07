@@ -35,7 +35,10 @@ is ordered by real dependency, not by size:
 
 ## Phase 1: Correctness
 
-No open correctness issues.
+- [ ] #103 Turning: tools need an insert thickness and out-of-plane holder bodies (unsafe: a body into the bore wall without a finding)
+- [ ] #100 Turning: a thread plans and simulates but Job.post stops after the first pass
+- [ ] #101 Turning: a face groove as wide as the face-grooving blade fails with 'line must have nonzero length'
+- [ ] #102 Turning: an inside groove after facing fails with 'needs an open hole in front of it'
 
 ## Phase 2: Complete milling
 
@@ -53,6 +56,7 @@ Smaller, independent items first, then the 3D stock and what needs it.
 ## Phase 3: Complete turning
 
 - [ ] #14 Turning: post profile arcs as native G2/G3 instead of chords
+- [ ] #110 Tool and holder bodies from supplied models (mesh in the engine; STEP via the CadQuery adapter)
 
 ## Phase 4: Complete plasma/laser
 
@@ -93,7 +97,6 @@ use: 2D, holes, 3D), turning and thermal.
 - [ ] #32 Optimize Tapping
 - [ ] #33 Optimize ThreadMilling
 - [ ] #27 Optimize 3D Roughing and RestRoughing
-- [ ] #89 Roughing runtime and program length scale with mesh facets, not the allowance
 - [ ] #38 Optimize Flat-area finishing
 - [ ] #39 Optimize Parallel finishing (and rest finishing)
 - [ ] #46 Optimize Waterline finishing (and ramp mode)
@@ -141,3 +144,4 @@ These can run in parallel with any phase.
 - [x] #88 steep_and_shallow: Waterline and Parallel floor rules conflict for parts taller than the cutting length
 - [x] #72 Material check stays uncertain on a correctly machined prismatic part (wall cells, through-hole interiors)
 - [x] #106 Material check: per-move gouge proof for prismatic targets
+- [x] #89 Roughing runtime and program length scale with mesh facets, not the allowance
