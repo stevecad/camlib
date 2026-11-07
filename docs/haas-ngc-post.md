@@ -44,9 +44,11 @@ reference's classes and use bounded line lowering by default. Machine options
 include `curve_policy="exact_ijk"`, units, precision/budget, travel, feed/RPM
 limits, six stored offsets, program number and optional-stop enablement.
 `rigid_tapping=True` declares the installed rigid tapping option: each tapping
-pair is written as `G84 X Y Z R F` (F = pitch × S in G94, R = the current Z,
-so G98/G99 return to the same plane) and cancelled with `G80`; without it,
-tapping is refused.
+pair is written as `G84 X Y Z R F` (right hand) or, for `Tapping(hand="left")`,
+`G74 X Y Z R F` (reverse tap; 96-8210 Rev N §5.8.2, p. 351), with F = pitch × S
+in G94 and R = the current Z, so G98/G99 return to the same plane, and cancelled
+with `G80`; without it, tapping is refused. The spindle is commanded in the
+cycle's direction beforehand (M3 for G84, M4 for G74) and the decoder checks it.
 
 Cutter compensation (`Contour(compensation="wear")`) needs
 `cutter_compensation=True`: `G1 G41 D… X… Y… F…` on the lead-in move and

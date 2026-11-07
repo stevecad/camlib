@@ -293,6 +293,43 @@ class LeftHandTappingTest(unittest.TestCase):
                     self.assertEqual(nc[i + 1], "G80")
                     self.assertIn(spindle, spindle_before(nc, i).split())
 
+    def test_haas_g74_reverse_tap(self):
+        from camlib.motion import WorkFrame
+
+        haas = example("haas_ngc_post")
+        j = job(lambda tap: tapping(tap, hand="left"))
+        header = j.compile().setup("top").program_header()
+        tools = tuple(
+            ToolSetting.for_tool(t, number=i, length_register=i, position_after_mm=header.initial_position_mm)
+            for i, t in enumerate(header.tools, 1)
+        )
+        m = haas.define_machine(
+            "Haas",
+            tools,
+            traverse_feed_mm_min=5000,
+            coordinate_system="fanuc",
+            h_t_agreement=True,
+            g92_shift_mm=(0, 0, 0),
+            rotation_scaling=False,
+            work_to_machine=WorkFrame(),
+            decimals=3,
+            tool_change_position_mode="preserve_tip",
+            rigid_tapping=True,
+            output_units="mm",
+            max_feed_mm_min=10000,
+            max_spindle_rpm=30000,
+            max_sweep_rad=6.283185307179586,
+            tool_changes=True,
+            flood=True,
+            rapid_mm_min=6000,
+        )
+        nc = posted_text(j, m, haas.HaasNGCPost, haas.HaasNGCDecoder)
+        cycles = [i for i, line in enumerate(nc) if line.startswith(("G74", "G84"))]
+        self.assertEqual([nc[i] for i in cycles], ["G74 X8. Y8. Z4. R11. F600.", "G74 X20. Y8. Z4. R11. F600."])
+        for i in cycles:
+            self.assertEqual(nc[i + 1], "G80")
+            self.assertIn("M4", spindle_before(nc, i).split())
+
     def test_dialects_without_left_hand_tapping_refuse(self):
         fanuc = example("fanuc_0imb_post")
         j = job(lambda tap: tapping(tap, hand="left"), tool_change=CHANGE)

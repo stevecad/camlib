@@ -51,8 +51,10 @@ class ReferenceMachine(Machine):
     optional_stop_enabled: bool = False
     mirror_settings_xyz: tuple = (False, False, False)
     curve_policy: str = 'linear'
-    # Installed rigid tapping option: G84 X Y Z R F (F = pitch x S, G94),
-    # cancelled by G80. Without it tapping is refused.
+    # Installed rigid tapping option: G84 X Y Z R F (right hand) and G74
+    # X Y Z R F (reverse tap, left hand), F = pitch x S (G94), cancelled by
+    # G80 (96-8210 Rev N: 5.8.2 p. 209, G74 p. 351, G84 p. 361, feed formula
+    # p. 304). Without it tapping is refused.
     rigid_tapping: bool = False
     # Cutter compensation (wear): G01 G41/G42 D X Y on the lead-in move and
     # G40 G01 X Y on the lead-out (Haas: no start or cancel on an arc). The D
@@ -100,7 +102,7 @@ class ReferenceMachine(Machine):
         d = self.dialect
         expected = dict(
             _EXPECTED,
-            **({'tap_cycle': 'G84'} if self.rigid_tapping is True else {}),
+            **({'tap_cycle': 'G84', 'tap_cycle_left': 'G74'} if self.rigid_tapping is True else {}),
             **({'radius_left': 'G41', 'radius_right': 'G42'} if self.cutter_compensation is True else {}),
         )
         if type(self.rigid_tapping) is not bool or type(self.cutter_compensation) is not bool:
@@ -163,6 +165,7 @@ def define_machine(
         end='M30',
         tap_synchronized=None,
         tap_cycle='G84' if rigid is True else None,
+        tap_cycle_left='G74' if rigid is True else None,
         dwell=None,
         radius_left='G41' if comp is True else None,
         radius_right='G42' if comp is True else None,
