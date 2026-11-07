@@ -557,7 +557,10 @@ cut = camlib.ThermalCut("plasma", torch, parts, feed_mm_min=2500, cut_height_mm=
 - **Leads**: `Lead(length_mm, radius_mm)`: a straight part and a tangent arc,
   both in the scrap. `overcut_mm` cuts past the start; a negative value starts
   the lead-out that far before the loop closes (negative overburn, the
-  Hypertherm recommendation for holes with an arc lead-in).
+  Hypertherm recommendation for holes with an arc lead-in). A loop starts at
+  its first vertex; where the leads there would leave the scrap (a corner of a
+  straight-edged hole), they move to the middle of the longest edge whose
+  leads are clear (reported).
 - **Pierce**: each pierce point keeps `pierce_clearance_mm` (default one kerf)
   beyond half a kerf from every part. In a hole too small for the leads, the
   pierce moves to the hole center (reported).

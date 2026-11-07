@@ -436,5 +436,132 @@ class ThermalCutTest(unittest.TestCase):
         self.assertEqual({w for line in moves for w in line.split() if w[0] == "Z"}, {"Z7"})
 
 
+def polygon(center, radius, n, start_deg=0):
+    import math
+
+    return tuple(
+        (
+            center[0] + radius * math.cos(math.radians(start_deg) + 2 * math.pi * k / n),
+            center[1] + radius * math.sin(math.radians(start_deg) + 2 * math.pi * k / n),
+        )
+        for k in range(n)
+    )
+
+
+def inside_polygon(p, vertices):
+    inside = False
+    for (x0, y0), (x1, y1) in zip(vertices, vertices[1:] + vertices[:1]):
+        if (y0 > p[1]) != (y1 > p[1]) and p[0] < x0 + (p[1] - y0) * (x1 - x0) / (y1 - y0):
+            inside = not inside
+    return inside
+
+
+class StraightEdgedHolesTest(unittest.TestCase):
+    """Holes with straight edges get their leads and pierce in the hole
+    (issue #78): rectangles, a slot, polygons, small holes near the lead size
+    and arcs, all in one plate."""
+
+    def test_every_hole_is_pierced_inside_and_the_post_decodes(self):
+        import math
+
+        rect = ((10, 10), (50, 10), (50, 30), (10, 30))
+        square = ((42, 62), (49, 62), (49, 69), (42, 69))  # 7 mm: near the leads
+        triangle = ((80, 60), (100, 60), (90, 80))
+        hexagon = polygon((20, 70), 4.5, 6)  # 9 mm across corners
+        gon64 = polygon((130, 30), 10, 64)
+        holes = {
+            "rect": (Boundary.polygon(rect), lambda p: inside_polygon(p, rect)),
+            "slot": (
+                Boundary(((70, 14, 0), (100, 14, 1), (100, 26, 0), (70, 26, 1))),
+                lambda p: (
+                    70 <= p[0] <= 100 and 14 < p[1] < 26 or min(math.dist(p, (70, 20)), math.dist(p, (100, 20))) < 6
+                ),
+            ),
+            "square": (Boundary.polygon(square), lambda p: inside_polygon(p, square)),
+            "triangle": (Boundary.polygon(triangle), lambda p: inside_polygon(p, triangle)),
+            "hexagon": (Boundary.polygon(hexagon), lambda p: inside_polygon(p, hexagon)),
+            "64-gon": (Boundary.polygon(gon64), lambda p: inside_polygon(p, gon64)),
+            "circle": (circle((130, 70), 8), lambda p: math.dist(p, (130, 70)) < 8),
+        }
+        names = list(holes)
+        plate = Component(Boundary.polygon(((0, 0), (160, 0), (160, 100), (0, 100))), tuple(holes[n][0] for n in names))
+        torch = camlib.Torch("torch", kerf_width=1.5)
+        op = camlib.ThermalCut(
+            "plasma",
+            torch,
+            PlanarRegion("parts", (plate,), 0),
+            2500,
+            1.5,
+            lead_in=camlib.Lead(2, 3),
+            lead_out=camlib.Lead(1, 2),
+            pierce_delay_s=0,
+            power_percent=100,
+            tool_number=1,
+            length_register=1,
+        )
+        setup = camlib.Setup(
+            "sheet",
+            stock=camlib.StockSpec((-20, -20, 0), (180, 120, 3), 0.5),
+            tools=(torch,),
+            operations=(op,),
+            initial_position_mm=(0, 0, 40),
+            verification=camlib.StreamChecks(stock_contact=camlib.StockContactOptions()),
+        )
+        j = camlib.Job("holes", "1", (setup,))
+        starts, report, statuses, previous = [], None, set(), None
+        with j.regenerate() as run:
+            for u in run:
+                v = u.update
+                if isinstance(v, VerificationUpdate):
+                    statuses.add(v.status)
+                elif isinstance(v, OperationUpdate):
+                    if v.stage == "end":
+                        report = v.report
+                else:
+                    # A loop's pierce: where its first cutting move (a lead)
+                    # starts after the rapids that brought the torch there.
+                    m = v.motion
+                    if m["kind"] != "rapid" and previous == "rapid":
+                        starts.append(tuple(m["curve"]["start"][:2]))
+                    previous = m["kind"]
+        self.assertEqual(statuses, {"clear"})
+        self.assertEqual(len(starts), len(report["order"]))
+        for (part, hole), point in zip(report["order"], starts):
+            if hole is not None:
+                name = names[hole]
+                self.assertTrue(holes[name][1](point), (name, point))
+        # The post decodes every block back to the plan.
+        machine = Machine(
+            "plasma",
+            table_for(j),
+            dialect=GCodeDialect(beam_s_max=1),
+            tool_change_position_mode="preserve_tip",
+            output_units="mm",
+            decimals=3,
+            max_feed_mm_min=10000,
+            max_spindle_rpm=30000,
+            planes=("xy", "xz", "yz"),
+            arcs=True,
+            helices=True,
+            max_sweep_rad=6.283185307179586,
+            max_tool_number=99999,
+            max_length_register=99999,
+            tool_changes=True,
+            flood=True,
+            mist=True,
+            rapid_mm_min=6000,
+        )
+        program = j.post_nc("sheet", machine=machine, lowering=camlib.LoweringOptions(native_arcs=True))
+        self.assertEqual(program.text.count("M3 S1"), len(holes) + 1)
+
+
+def table_for(j):
+    header = j.compile().setup("sheet").program_header()
+    return tuple(
+        ToolSetting.for_tool(t, number=1, length_register=1, position_after_mm=header.initial_position_mm)
+        for t in header.tools
+    )
+
+
 if __name__ == "__main__":
     unittest.main()

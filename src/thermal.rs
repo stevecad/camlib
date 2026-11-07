@@ -660,7 +660,112 @@ impl ThermalCutPlan {
                 let n = rot_left(t);
                 [side * n[0], side * n[1]]
             };
-            let s0 = lp.strokes[0];
+            // Where the loop starts: its own start, unless the leads (or the
+            // pierce) there are not clear of the parts. Then the middle of
+            // its longest straight stroke whose leads are: a loop starting at a
+            // corner (a straight-edged hole) sends the tangent lead back
+            // past the corner, out of the scrap.
+            let mut strokes = lp.strokes.clone();
+            let clear_at = |strokes: &[Stroke]| -> Result<(), String> {
+                let (start, t) = (strokes[0].a, strokes[0].tangent(false));
+                let n = scrap(t);
+                let center = add(start, n, lin.radius_mm);
+                let a = add(center, t, -lin.radius_mm);
+                let pierce = add(a, n, lin.length_mm);
+                let low = |p: [f64; 2]| at_z(p, z_check);
+                probe(
+                    &crater_probe,
+                    line(at_z(pierce, top + 1.), low(pierce)),
+                    "pierce point",
+                )?;
+                if lin.length_mm > 0. {
+                    probe(&kerf_probe, line(low(pierce), low(a)), "lead")?;
+                }
+                if lin.radius_mm > 0. {
+                    let arc = Curve::Arc {
+                        start: low(a),
+                        end: low(start),
+                        center: low(center),
+                        plane: Plane::Xy,
+                        sweep_rad: side * FRAC_PI_2,
+                    };
+                    probe(&kerf_probe, arc, "lead")?;
+                }
+                // The lead-out from the loop's close (without overcut).
+                let last = strokes[strokes.len() - 1];
+                let te = last.tangent(true);
+                let ne = scrap(te);
+                let c_out = add(start, ne, lout.radius_mm);
+                let b = add(c_out, te, lout.radius_mm);
+                if lout.radius_mm > 0. {
+                    let arc = Curve::Arc {
+                        start: low(start),
+                        end: low(b),
+                        center: low(c_out),
+                        plane: Plane::Xy,
+                        sweep_rad: side * FRAC_PI_2,
+                    };
+                    probe(&kerf_probe, arc, "lead")?;
+                }
+                if lout.length_mm > 0. {
+                    probe(
+                        &kerf_probe,
+                        line(low(b), low(add(b, ne, lout.length_mm))),
+                        "lead",
+                    )?;
+                }
+                Ok(())
+            };
+            if clear_at(&strokes).is_err() {
+                // Straight strokes only: a hole bounded by arcs keeps the
+                // center pierce below (small round holes).
+                let mut by_length: Vec<usize> = (0..strokes.len())
+                    .filter(|&k| strokes[k].arc.is_none())
+                    .collect();
+                by_length.sort_by(|&i, &j| {
+                    crate::profiles::stroke_length(&strokes[j])
+                        .total_cmp(&crate::profiles::stroke_length(&strokes[i]))
+                        .then(i.cmp(&j))
+                });
+                let rotated = |k: usize| {
+                    let s = strokes[k];
+                    let mid = crate::profiles::stroke_point(&s, 0.5);
+                    let half = |sweep: f64| sweep / 2.;
+                    let mut r = vec![Stroke {
+                        a: mid,
+                        b: s.b,
+                        arc: s.arc.map(|(c, w)| (c, half(w))),
+                    }];
+                    r.extend_from_slice(&strokes[k + 1..]);
+                    r.extend_from_slice(&strokes[..k]);
+                    r.push(Stroke {
+                        a: s.a,
+                        b: mid,
+                        arc: s.arc.map(|(c, w)| (c, half(w))),
+                    });
+                    r
+                };
+                let found = by_length
+                    .iter()
+                    .take(16)
+                    .map(|&k| rotated(k))
+                    .find(|r| clear_at(r).is_ok());
+                let fallback = (found.is_none() && lp.hole.is_some())
+                    .then(|| by_length.first().map(|&k| rotated(k)))
+                    .flatten();
+                if let Some(r) = found {
+                    strokes = r;
+                    diagnostics.push(format!(
+                        "part {} hole {:?}: leads moved from the loop's start to the middle of an edge, where they are clear of the parts",
+                        lp.part, lp.hole
+                    ));
+                } else if let Some(r) = fallback {
+                    // No edge middle clears the leads: pierce at the hole's
+                    // center below, from the middle of its longest edge.
+                    strokes = r;
+                }
+            }
+            let s0 = strokes[0];
             let start = s0.a;
             let t = s0.tangent(false);
             let n = scrap(t);
@@ -774,9 +879,9 @@ impl ThermalCutPlan {
             // A negative overcut stops that far before the loop closes.
             let mut short = (-op.overcut_mm).clamp(0., 0.5 * lp.length);
             let mut end = (start, t);
-            let mut kept = lp.strokes.len();
+            let mut kept = strokes.len();
             while short > guard && kept > 0 {
-                let s = &lp.strokes[kept - 1];
+                let s = &strokes[kept - 1];
                 let length = crate::profiles::stroke_length(s);
                 if length > short + guard {
                     break;
@@ -784,7 +889,7 @@ impl ThermalCutPlan {
                 short -= length;
                 kept -= 1;
             }
-            for (k, s) in lp.strokes[..kept].iter().enumerate() {
+            for (k, s) in strokes[..kept].iter().enumerate() {
                 if k + 1 == kept && short > guard {
                     let length = crate::profiles::stroke_length(s);
                     let f = 1. - short / length;
@@ -809,7 +914,7 @@ impl ThermalCutPlan {
             }
             // Overcut: on around the loop from its start.
             let mut left = op.overcut_mm.clamp(0., lp.length);
-            for s in &lp.strokes {
+            for s in &strokes {
                 if left <= guard {
                     break;
                 }
