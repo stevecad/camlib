@@ -1621,7 +1621,14 @@ impl ParallelPlan {
         }
     }
     fn emit(&mut self, end: Vec3, kind: MoveKind) -> Result<Option<Motion>, String> {
-        if end == self.position {
+        // Shorter than a motion line can be (1e-9 mm): already there. Two
+        // passes whose end and start coincide but for rounding (Project
+        // paths, flow rows) link without a move.
+        let d = (0..3)
+            .map(|k| (end[k] - self.position[k]).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        if end == self.position || d < 1e-9 {
             return Ok(None);
         }
         if self.next_id == u64::MAX {
