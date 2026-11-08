@@ -1572,6 +1572,12 @@ impl ParallelPlan {
         let mut end = first.b;
         let mut compacted = 0;
         let mut prepared = None;
+        // The vertices a merge drops: each must lie on the merged chord in
+        // XY (within the tolerance), so merging removes only collinear
+        // points (subdivision midpoints, straight runs) and never moves the
+        // planned path sideways. The height certificate below bounds only
+        // the vertical error, so on a flat face it would accept any chord.
+        let mut dropped: Vec<Vec3> = vec![];
         // Greedy bounded lookahead removes subdivision artifacts only after
         // proving the replacement against the original protected solid and
         // original contact graph. No endpoint-only path simplification.
@@ -1596,6 +1602,13 @@ impl ParallelPlan {
             stack = candidate;
             cursor = candidate_cursor;
             if next_error.is_none() {
+                break;
+            }
+            dropped.push(end);
+            if dropped
+                .iter()
+                .any(|q| xy_off_chord(*q, first.a, next.b) > self.op.tolerance_mm)
+            {
                 break;
             }
             let (_, bound) = self.mid_excess(first.a, next.b, &mut work, cancel)?;
@@ -1910,4 +1923,16 @@ impl ParallelPlan {
             }
         }
     }
+}
+
+/// The XY distance of `q` from the chord `a`-`b`.
+fn xy_off_chord(q: Vec3, a: Vec3, b: Vec3) -> f64 {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let ll = dx * dx + dy * dy;
+    let t = if ll > 0. {
+        (((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / ll).clamp(0., 1.)
+    } else {
+        0.
+    };
+    (q[0] - a[0] - t * dx).hypot(q[1] - a[1] - t * dy)
 }

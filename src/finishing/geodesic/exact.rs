@@ -1464,6 +1464,64 @@ impl<'a> Field<'a> {
     }
 }
 
+/// The triangle `cell` clipped to the half-planes n . p >= c - slack of
+/// region `r` (Sutherland and Hodgman 1974): a convex polygon of at most
+/// six vertices, and their number (0: they miss each other).
+fn clip_cell(cell: &[[f64; 2]; 3], r: &[Option<([f64; 2], f64)>; 3], slack: f64) -> ([[f64; 2]; 6], usize) {
+    let mut poly = [[0.; 2]; 6];
+    poly[..3].copy_from_slice(cell);
+    let mut n = 3usize;
+    for &(nv, c) in r.iter().flatten() {
+        if n == 0 {
+            break;
+        }
+        let mut next = [[0.; 2]; 6];
+        let mut m = 0usize;
+        let side = |p: [f64; 2]| nv[0] * p[0] + nv[1] * p[1] - (c - slack);
+        let mut prev = poly[n - 1];
+        let mut dp = side(prev);
+        for &cur in &poly[..n] {
+            let dc = side(cur);
+            if (dp >= 0.) != (dc >= 0.) && m < 6 {
+                let t = dp / (dp - dc);
+                next[m] = [prev[0] + t * (cur[0] - prev[0]), prev[1] + t * (cur[1] - prev[1])];
+                m += 1;
+            }
+            if dc >= 0. && m < 6 {
+                next[m] = cur;
+                m += 1;
+            }
+            (prev, dp) = (cur, dc);
+        }
+        poly = next;
+        n = m;
+    }
+    (poly, n)
+}
+
+/// The distance from `c` to a convex polygon (zero inside it).
+fn dist_to_polygon(c: [f64; 2], poly: &[[f64; 2]]) -> f64 {
+    let n = poly.len();
+    if n == 1 {
+        return (c[0] - poly[0][0]).hypot(c[1] - poly[0][1]);
+    }
+    // Inside: on the same side of every edge (either orientation).
+    let cross = |a: [f64; 2], b: [f64; 2]| (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    let signs: Vec<f64> = (0..n).map(|i| cross(poly[i], poly[(i + 1) % n])).collect();
+    if n >= 3 && (signs.iter().all(|&x| x >= 0.) || signs.iter().all(|&x| x <= 0.)) {
+        return 0.;
+    }
+    (0..n)
+        .map(|i| {
+            let (a, b) = (poly[i], poly[(i + 1) % n]);
+            let ab = [b[0] - a[0], b[1] - a[1]];
+            let ll = ab[0] * ab[0] + ab[1] * ab[1];
+            let t = if ll > 0. { (((c[0] - a[0]) * ab[0] + (c[1] - a[1]) * ab[1]) / ll).clamp(0., 1.) } else { 0. };
+            (c[0] - a[0] - t * ab[0]).hypot(c[1] - a[1] - t * ab[1])
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
 /// The distance from `p` to a source piece.
 fn piece_dist(piece: &Piece, p: Vec3) -> f64 {
     match *piece {
@@ -1485,7 +1543,8 @@ fn piece_dist(piece: &Piece, p: Vec3) -> f64 {
 pub(super) struct FaceEval<'f> {
     field: &'f Field<'f>,
     f: u32,
-    edges: Vec<(u32, Vec<u32>)>,
+    /// Each edge's live windows in order along it (disjoint).
+    along: Vec<(u32, Vec<u32>)>,
     o: Vec3,
     ex: Vec3,
     ey: Vec3,
@@ -1498,11 +1557,11 @@ pub(super) struct FaceEval<'f> {
 
 impl<'f> FaceEval<'f> {
     fn new(field: &'f Field<'f>, f: u32) -> Self {
-        let edges = field.topo.tri_edges[f as usize]
+        let along = field.topo.tri_edges[f as usize]
             .iter()
             .map(|&e| {
                 let mut ids: Vec<u32> = field.on_edge[e as usize].iter().copied().filter(|&i| field.wins[i as usize].alive).collect();
-                ids.sort_by(|&a, &b| field.wins[a as usize].low.total_cmp(&field.wins[b as usize].low));
+                ids.sort_by(|&a, &b| field.wins[a as usize].b0.total_cmp(&field.wins[b as usize].b0));
                 (e, ids)
             })
             .collect();
@@ -1532,37 +1591,7 @@ impl<'f> FaceEval<'f> {
                 }
             }
         }
-        FaceEval { field, f, edges, o, ex, ey, lo, h, n, cells, pieces }
-    }
-
-    /// The least over this field's path lengths of their largest value at
-    /// the corners `pts` (an upper bound of the distance over the
-    /// triangle they span; see `Distance::upper`).
-    fn upper(&self, pts: &[Vec3; 3]) -> f64 {
-        let field = self.field;
-        let mut best = f64::INFINITY;
-        for &k in &field.t[self.f as usize] {
-            let (q, d) = (field.v[k as usize], field.vertex[k as usize]);
-            best = best.min(pts.iter().map(|p| norm(sub(*p, q)) + d).fold(0., f64::max));
-        }
-        for (e, ids) in &self.edges {
-            let xy = pts.map(|p| {
-                let (x, y) = field.coords(*e, self.f, p);
-                (x, y.max(0.))
-            });
-            for &id in ids {
-                let w = &field.wins[id as usize];
-                if w.low >= best {
-                    break;
-                }
-                best = best.min(xy.iter().map(|&(x, y)| w.eval(x, y)).fold(0., f64::max));
-            }
-        }
-        // A piece's largest corner value is at least its value at the
-        // first corner: only pieces nearer than the best to it matter.
-        let p0 = pts[0];
-        self.near(p0, &mut best, |piece| pts.iter().map(|p| piece_dist(piece, *p)).fold(0., f64::max));
-        best
+        FaceEval { field, f, along, o, ex, ey, lo, h, n, cells, pieces }
     }
 
     /// Lower `best` by `value(piece)` over the pieces whose distance to `p`
@@ -1577,30 +1606,44 @@ impl<'f> FaceEval<'f> {
             .map(|k| (self.lo[k] - q[k]).max(q[k] - (self.lo[k] + self.n[k] as f64 * self.h)).max(0.))
             .iter()
             .fold(0., |a: f64, b| a.max(*b));
-        let mut seen = std::collections::HashSet::new();
-        let reach = self.n[0].max(self.n[1]) as i64;
+        let (nx, ny) = (self.n[0] as i64, self.n[1] as i64);
+        let reach = nx.max(ny);
+        let visit = |x: i64, y: i64, best: &mut f64| {
+            for &i in &self.cells[y as usize * self.n[0] + x as usize] {
+                // A piece in several cells may be valued twice: harmless.
+                *best = best.min(value(&self.pieces[i as usize]));
+            }
+        };
         for ring in 0..=reach {
             // Cells at ring k are at least (k - 1) h away (plus the point's
             // distance outside the grid's box).
             if (ring as f64 - 1.).max(0.) * self.h + outside >= *best {
                 break;
             }
-            for y in c[1] - ring..=c[1] + ring {
-                for x in c[0] - ring..=c[0] + ring {
-                    if ((y - c[1]).abs() != ring && (x - c[0]).abs() != ring)
-                        || x < 0
-                        || y < 0
-                        || x >= self.n[0] as i64
-                        || y >= self.n[1] as i64
-                    {
-                        continue;
+            // The ring's cells that exist: its top and bottom rows whole,
+            // its two side columns between.
+            let (x0, x1) = ((c[0] - ring).max(0), (c[0] + ring).min(nx - 1));
+            for y in [c[1] - ring, c[1] + ring] {
+                if (0..ny).contains(&y) {
+                    for x in x0..=x1 {
+                        visit(x, y, best);
                     }
-                    for &i in &self.cells[y as usize * self.n[0] + x as usize] {
-                        if seen.insert(i) {
-                            *best = best.min(value(&self.pieces[i as usize]));
+                }
+                if ring == 0 {
+                    break;
+                }
+            }
+            if ring > 0 {
+                for y in (c[1] - ring + 1).max(0)..=(c[1] + ring - 1).min(ny - 1) {
+                    for x in [c[0] - ring, c[0] + ring] {
+                        if (0..nx).contains(&x) {
+                            visit(x, y, best);
                         }
                     }
                 }
+            }
+            if c[0] - ring <= 0 && c[0] + ring >= nx - 1 && c[1] - ring <= 0 && c[1] + ring >= ny - 1 {
+                break;
             }
         }
     }
@@ -1611,18 +1654,37 @@ impl<'f> FaceEval<'f> {
         for &k in &field.t[self.f as usize] {
             d = d.min(norm(sub(p, field.v[k as usize])) + field.vertex[k as usize]);
         }
-        for (e, ids) in &self.edges {
+        // The sources in the face first: usually the nearest, they bound
+        // the windows' scan sooner.
+        self.near(p, &mut d, |piece| piece_dist(piece, p));
+        // A window gives at least the point's distance to its interval plus
+        // its least value: outward from the point's place along the edge,
+        // until the gap alone is no nearer.
+        for (e, ids) in &self.along {
             let (x, y) = field.coords(*e, self.f, p);
             let y = y.max(0.);
-            for &id in ids {
+            let i = ids.partition_point(|&id| field.wins[id as usize].b0 <= x);
+            for &id in ids[..i].iter().rev() {
                 let w = &field.wins[id as usize];
-                if y + w.low >= d {
+                let gap = (x - w.b1).max(0.).hypot(y);
+                if gap >= d {
                     break;
                 }
-                d = d.min(w.eval(x, y));
+                if gap + w.low < d {
+                    d = d.min(w.eval(x, y));
+                }
+            }
+            for &id in &ids[i..] {
+                let w = &field.wins[id as usize];
+                let gap = (w.b0 - x).max(0.).hypot(y);
+                if gap >= d {
+                    break;
+                }
+                if gap + w.low < d {
+                    d = d.min(w.eval(x, y));
+                }
             }
         }
-        self.near(p, &mut d, |piece| piece_dist(piece, p));
         d
     }
 }
@@ -1637,16 +1699,10 @@ pub(super) trait Distance {
     fn vertex_at(&self, k: u32) -> f64;
     /// The distance at a point `p` of face `f`.
     fn at(&self, f: u32, p: Vec3) -> f64;
-    /// `at` and `upper` over face `f`, indexed for many points (the same
-    /// values).
+    /// `at` over face `f`, indexed for many points (the same values).
     fn face_eval(&self, f: u32) -> Vec<FaceEval<'_>>;
     /// The distance at parameter x along edge `e`.
     fn edge_at(&self, e: u32, x: f64) -> f64;
-    /// An upper bound of the distance over the triangle `pts` of face `f`:
-    /// each path length the distance is the least of (to a source in f,
-    /// through a window, from a vertex) is convex and valid everywhere,
-    /// so at most its largest value at the corners; the least of those.
-    fn upper(&self, f: u32, pts: &[Vec3; 3]) -> f64;
     /// The windows on edge `e`: (function, range).
     fn edge_windows(&self, e: u32) -> Vec<(Src, f64, f64)>;
     /// The distance at x along edge `e` and the convex piece realizing it
@@ -1736,7 +1792,7 @@ pub(super) trait Distance {
             lb = lb.max(self.edge_max(e));
         }
         let r = |i: usize| (0..3).map(|j| norm(sub(tri[i], tri[j]))).fold(0., f64::max);
-        let ub = (0..3).map(|i| vals[i] + r(i)).fold(f64::INFINITY, f64::min).min(self.upper(f, &tri));
+        let ub = (0..3).map(|i| vals[i] + r(i)).fold(f64::INFINITY, f64::min);
         let tol = 1e-9 * (1. + lb.abs());
         let lb = lb.max(above);
         if !(ub > lb + tol) {
@@ -1780,61 +1836,42 @@ pub(super) trait Distance {
         // points in the cell are solved.
         let evals = self.face_eval(f);
         let at_ = |p: Vec3| evals.iter().map(|e| e.at(p)).fold(f64::INFINITY, f64::min);
-        let upper_ = |pts: &[Vec3; 3]| evals.iter().map(|e| e.upper(pts)).fold(f64::INFINITY, f64::min);
         let mut out: Vec<(Vec3, f64)> = vec![];
         // Each cell carries the functions still possible in its parent (a
         // function is never needed in a cell whose parent ruled it out).
         let all: Vec<usize> = (0..with.len()).collect();
         let mut stack = vec![(tri.map(to2), vals, all)];
         let size = (0..3).map(|i| r(i)).fold(0., f64::max);
-        let (mut n_cells, mut n_leaf, mut n_trip, mut n_scan, mut n_at) = (0usize, 0usize, 0usize, 0usize, 0usize);
-        let mut t_trip = std::time::Duration::ZERO;
-        let mut t_upper = std::time::Duration::ZERO;
-        let t_face = std::time::Instant::now();
         while let Some((cell, d, parent)) = stack.pop() {
-            n_cells += 1;
-            n_scan += parent.len();
             let cr = |i: usize| {
                 (0..3)
                     .map(|j| ((cell[i][0] - cell[j][0]).powi(2) + (cell[i][1] - cell[j][1]).powi(2)).sqrt())
                     .fold(0., f64::max)
             };
-            let mut ub = (0..3).map(|i| d[i] + cr(i)).fold(f64::INFINITY, f64::min);
+            let ub = (0..3).map(|i| d[i] + cr(i)).fold(f64::INFINITY, f64::min);
             if !(ub > lb + tol) {
                 continue;
             }
-            let cell3 = cell.map(to3);
-            // The path-length bound walks every source of the face: worth it
-            // while the cell is large (it prunes most of a big face at
-            // once), not once the Lipschitz bound is close.
-            if std::env::var("GEO_NOUPPER").is_err() && (0..3).map(cr).fold(0., f64::max) > size / 20. {
-                let tu = std::time::Instant::now();
-                ub = ub.min(upper_(&cell3));
-                t_upper += tu.elapsed();
-                if !(ub > lb + tol) {
-                    continue;
-                }
-            }
-            let low = |func: &F2| match *func {
-                F2::Circle(c, s) => {
-                    // Its centre's distance to the cell, in the face's plane.
-                    let c3 = [c[0], c[1], 0.];
-                    let t3 = cell.map(|q| [q[0], q[1], 0.]);
-                    norm(sub(closest_on_triangle(c3, t3[0], t3[1], t3[2]), c3)) + s
-                }
-                F2::Line(u, k) => cell
-                    .iter()
-                    .map(|p| k + u[0] * p[0] + u[1] * p[1])
-                    .fold(f64::INFINITY, f64::min),
-            };
-            // Only functions realized somewhere in the cell (a half-plane of
-            // their region not wholly missing it) whose least value over it
-            // is within its bound.
+            // A function matters in the cell only where it is realized: its
+            // least value over the cell clipped to each of its regions (a
+            // region missing the cell contributes nothing).
             let slack = 1e-9 * size;
-            let meets = |rs: &[R2]| {
-                rs.iter().any(|r| r.iter().flatten().all(|(n, c)| cell.iter().any(|p| n[0] * p[0] + n[1] * p[1] >= c - slack)))
+            let least = |func: &F2, rs: &[R2]| -> f64 {
+                let mut best = f64::INFINITY;
+                for r in rs {
+                    let (poly, m) = clip_cell(&cell, r, slack);
+                    if m == 0 {
+                        continue;
+                    }
+                    let poly = &poly[..m];
+                    best = best.min(match *func {
+                        F2::Circle(c, s) => dist_to_polygon(c, poly) + s,
+                        F2::Line(u, k) => poly.iter().map(|p| k + u[0] * p[0] + u[1] * p[1]).fold(f64::INFINITY, f64::min),
+                    });
+                }
+                best
             };
-            let picked: Vec<usize> = parent.into_iter().filter(|&i| low(&with[i].0) <= ub && meets(&with[i].1)).collect();
+            let picked: Vec<usize> = parent.into_iter().filter(|&i| least(&with[i].0, &with[i].1) <= ub).collect();
             let active: Vec<F2> = picked.iter().map(|&i| with[i].0).collect();
             let holds = |i: usize, p: [f64; 2]| {
                 with[picked[i]].1.iter().any(|r| r.iter().flatten().all(|(n, c)| n[0] * p[0] + n[1] * p[1] >= c - slack))
@@ -1851,14 +1888,10 @@ pub(super) trait Distance {
                 let (k1, k2) = ((k + 1) % 3, (k + 2) % 3);
                 let m = [(cell[k][0] + cell[k1][0]) / 2., (cell[k][1] + cell[k1][1]) / 2.];
                 let dm = at_(to3(m));
-                n_at += 1;
                 stack.push(([cell[k], m, cell[k2]], [d[k], dm, d[k2]], picked.clone()));
                 stack.push(([m, cell[k1], cell[k2]], [dm, d[k1], d[k2]], picked));
                 continue;
             }
-            n_leaf += 1;
-            let tt = std::time::Instant::now();
-            n_trip += active.len() * active.len().saturating_sub(1) * active.len().saturating_sub(2) / 6;
             let area = ((cell[1][0] - cell[0][0]) * (cell[2][1] - cell[0][1])
                 - (cell[2][0] - cell[0][0]) * (cell[1][1] - cell[0][1]))
                 .abs();
@@ -1886,10 +1919,6 @@ pub(super) trait Distance {
                     }
                 }
             }
-            t_trip += tt.elapsed();
-        }
-        if std::env::var("GEO_TIME").is_ok() && t_face.elapsed().as_millis() > 150 {
-            eprintln!("     face {f}: cells {n_cells} leaves {n_leaf} triples {n_trip} scanned {n_scan} at {n_at} functions {} in {:?} (triples {t_trip:?} upper {t_upper:?})", with.len(), t_face.elapsed());
         }
         out
     }
@@ -1923,39 +1952,6 @@ pub(super) trait Distance {
 impl Distance for Field<'_> {
     fn mesh(&self) -> (&[Vec3], &[[u32; 3]], &Topology) {
         (self.v, self.t, self.topo)
-    }
-    fn upper(&self, f: u32, pts: &[Vec3; 3]) -> f64 {
-        let mut best = f64::INFINITY;
-        for &k in &self.t[f as usize] {
-            let (q, d) = (self.v[k as usize], self.vertex[k as usize]);
-            best = best.min(pts.iter().map(|p| norm(sub(*p, q)) + d).fold(0., f64::max));
-        }
-        for &e in &self.topo.tri_edges[f as usize] {
-            let xy = pts.map(|p| {
-                let (x, y) = self.coords(e, f, p);
-                (x, y.max(0.))
-            });
-            for &id in &self.on_edge[e as usize] {
-                let w = &self.wins[id as usize];
-                if w.alive && w.low < best {
-                    best = best.min(xy.iter().map(|&(x, y)| w.eval(x, y)).fold(0., f64::max));
-                }
-            }
-        }
-        if let Some(pieces) = self.in_face.get(&f) {
-            for piece in pieces {
-                let d = |p: &Vec3| match *piece {
-                    Piece::Point(_, q) => norm(sub(*p, q)),
-                    Piece::Segment(_, a, b) => {
-                        let ab = sub(b, a);
-                        let s = (dot(sub(*p, a), ab) / dot(ab, ab).max(1e-300)).clamp(0., 1.);
-                        norm(sub(*p, axpy(a, s, ab)))
-                    }
-                };
-                best = best.min(pts.iter().map(d).fold(0., f64::max));
-            }
-        }
-        best
     }
     fn vertex_at(&self, k: u32) -> f64 {
         self.vertex[k as usize]
@@ -2034,9 +2030,6 @@ pub(super) struct Coverage<'a> {
 impl Distance for Coverage<'_> {
     fn mesh(&self) -> (&[Vec3], &[[u32; 3]], &Topology) {
         self.fields[0].mesh()
-    }
-    fn upper(&self, f: u32, pts: &[Vec3; 3]) -> f64 {
-        self.fields.iter().map(|g| g.upper(f, pts)).fold(f64::INFINITY, f64::min)
     }
     fn vertex_at(&self, k: u32) -> f64 {
         self.fields.iter().map(|g| g.vertex[k as usize]).fold(f64::INFINITY, f64::min)
@@ -2319,40 +2312,6 @@ pub(super) fn walk(
         (g, p, entry) = (next, x, e);
     }
     None
-}
-
-/// The point of triangle (a, b, c) closest to p (Ericson, Real-Time
-/// Collision Detection, 5.1.5).
-pub(super) fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
-    let (ab, ac, ap) = (sub(b, a), sub(c, a), sub(p, a));
-    let (d1, d2) = (dot(ab, ap), dot(ac, ap));
-    if d1 <= 0. && d2 <= 0. {
-        return a;
-    }
-    let bp = sub(p, b);
-    let (d3, d4) = (dot(ab, bp), dot(ac, bp));
-    if d3 >= 0. && d4 <= d3 {
-        return b;
-    }
-    let vc = d1 * d4 - d3 * d2;
-    if vc <= 0. && d1 >= 0. && d3 <= 0. {
-        return axpy(a, d1 / (d1 - d3), ab);
-    }
-    let cp = sub(p, c);
-    let (d5, d6) = (dot(ab, cp), dot(ac, cp));
-    if d6 >= 0. && d5 <= d6 {
-        return c;
-    }
-    let vb = d5 * d2 - d1 * d6;
-    if vb <= 0. && d2 >= 0. && d6 <= 0. {
-        return axpy(a, d2 / (d2 - d6), ac);
-    }
-    let va = d3 * d6 - d5 * d4;
-    if va <= 0. && d4 - d3 >= 0. && d5 - d6 >= 0. {
-        return axpy(b, (d4 - d3) / ((d4 - d3) + (d5 - d6)), sub(c, b));
-    }
-    let den = 1. / (va + vb + vc);
-    axpy(axpy(a, vb * den, ab), vc * den, ac)
 }
 
 fn face_normal(v: &[Vec3], t: &[[u32; 3]], f: u32) -> Vec3 {
