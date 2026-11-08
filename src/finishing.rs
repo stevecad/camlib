@@ -828,7 +828,7 @@ impl ParallelPlan {
         if surface.max_z() > spec.max_mm[2] + coordinate_guard {
             return Err("surface target exceeds initial stock top".into());
         }
-        let limits = slope_limits("parallel finishing", op.slope_from_deg, op.slope_to_deg)?;
+        let mut limits = slope_limits("parallel finishing", op.slope_from_deg, op.slope_to_deg)?;
         let (mut passes, spoke_pitch) = Self::passes(&op, spec, radius)?;
         let axis = if op.axis == TraverseAxis::X { 0 } else { 1 };
         let cross = 1 - axis;
@@ -897,6 +897,8 @@ impl ParallelPlan {
         }
         let mut geodesic_report = None;
         if let FinishPattern::Geodesic { seed, tool_centre } = &op.pattern {
+            // Geodesic plans inside its slope range (the drive surface is
+            // the faces within it): its passes are not cut afterwards.
             let (found, report) = geodesic::passes(
                 mesh,
                 &surface,
@@ -906,6 +908,7 @@ impl ParallelPlan {
                 op.path_error_mm,
                 seed,
                 *tool_centre,
+                limits.take(),
                 &mut slope_work,
                 cancel,
             )?;

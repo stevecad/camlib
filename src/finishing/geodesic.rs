@@ -42,7 +42,7 @@ use crate::{
     stock::CancelSignal,
     surface::{PreparedSurface, SurfaceMesh, SurfaceWork},
 };
-use exact::{Coverage, Distance, Field, NONE, Piece, Topology, walk};
+use exact::{Coverage, Distance, FaceQuery, Field, NONE, Piece, Topology, walk};
 use serde::Serialize;
 use std::{
     cmp::Ordering,
@@ -164,6 +164,8 @@ struct Drive {
     /// facets' widths across it (the circle whose chords sag by e).
     corner_normals: Vec<[Vec3; 3]>,
     surface_error: f64,
+    /// The weld tolerance: points this close are one point of the surface.
+    weld: f64,
     vt: Vec<Vec<u32>>,
     /// Vertices on the drive surface's boundary.
     boundary: Vec<bool>,
@@ -176,14 +178,17 @@ struct Drive {
 
 impl Drive {
     fn build(mesh: &SurfaceMesh, cancel: &impl CancelSignal) -> Result<Self, String> {
-        // Weld: vertices within a binary64-scale tolerance are one.
+        // Weld: vertices within a binary64-scale tolerance are one, or
+        // within a thousandth of the mesh's declared surface error (points
+        // that close are one point of the surface it samples; a
+        // tessellator's pole can leave a micrometre seam of slivers).
         let scale = mesh
             .triangles
             .iter()
             .flatten()
             .flatten()
             .fold(1f64, |m, v| m.max(v.abs()));
-        let tol = 1e-9 * scale;
+        let tol = (1e-9 * scale).max(1e-3 * mesh.surface_error_mm);
         let key = |p: Vec3| [0, 1, 2].map(|k| (p[k] / tol).round() as i64);
         let mut index: HashMap<[i64; 3], u32> = HashMap::new();
         let mut v: Vec<Vec3> = vec![];
@@ -206,6 +211,8 @@ impl Drive {
             i
         };
         let mut t: Vec<[u32; 3]> = vec![];
+        let mut degenerate: Vec<Vec3> = vec![];
+        let mut seen = std::collections::HashSet::new();
         for (k, tri) in mesh.triangles.iter().enumerate() {
             if k % 65536 == 0 && cancel.is_cancelled() {
                 return Err("geodesic planning cancelled".into());
@@ -214,14 +221,39 @@ impl Drive {
             if ids[0] == ids[1] || ids[1] == ids[2] || ids[0] == ids[2] {
                 continue;
             }
+            // A repeated triangle (a tessellator's fan at a pole) adds
+            // nothing. (Slivers stay: removing one whose vertex lies on its
+            // opposite edge would crack the mesh there.)
+            let mut key = ids;
+            key.sort();
+            if !seen.insert(key) {
+                continue;
+            }
             // Upward-facing: reachable by a three-axis ball from above.
-            if cross(sub(tri[1], tri[0]), sub(tri[2], tri[0]))[2] > 0. {
+            let n = cross(sub(tri[1], tri[0]), sub(tri[2], tri[0]));
+            let longest = (0..3).map(|i| norm(sub(tri[(i + 1) % 3], tri[i]))).fold(0., f64::max);
+            if norm(n) <= tol * longest {
+                // Thinner than the weld tolerance: detail below the mesh's
+                // own accuracy, with no orientation of its own (its
+                // normal's sign is rounding). Geodesic distances across such
+                // slivers are not reliable: refused below.
+                degenerate.push(tri[0]);
+            } else if n[2] > 0. {
                 t.push(ids);
             }
         }
         if t.is_empty() {
             return Err("geodesic finishing: the target has no upward-facing surface".into());
         }
+        if let Some(p) = degenerate.first() {
+            return Err(format!(
+                "geodesic finishing: the surface mesh has {} degenerate triangles (thinner than {:.1e} mm, a thousandth of its surface error), the first at {:?}: a tessellator's fan at a sphere's pole, say; repair or re-export the mesh",
+                degenerate.len(),
+                tol,
+                p.map(|x| (x * 1e4).round() / 1e4)
+            ));
+        }
+
         // Boundary: drive edges with one drive triangle (open, or against a
         // wall or downward face).
         let mut drive_edges: HashMap<(u32, u32), u32> = HashMap::new();
@@ -244,6 +276,7 @@ impl Drive {
             n: vec![],
             corner_normals: vec![],
             surface_error: mesh.surface_error_mm,
+            weld: tol,
             vt: vec![],
             boundary,
             cell: 1.,
@@ -352,15 +385,9 @@ impl Drive {
                 bend <= 4. * e * (1. / width(f) + 1. / width(g))
             })
             .collect();
-        let angle_at = |f: u32, v: u32| {
-            let tri = self.t[f as usize];
-            let k = (0..3).find(|&k| tri[k] == v).unwrap();
-            let p = self.v[v as usize];
-            let (x, y) = (
-                sub(self.v[tri[(k + 1) % 3] as usize], p),
-                sub(self.v[tri[(k + 2) % 3] as usize], p),
-            );
-            norm(cross(x, y)).atan2(dot(x, y))
+        let area_of = |f: u32| {
+            let [a, b, c] = self.t[f as usize].map(|k| self.v[k as usize]);
+            norm(cross(sub(b, a), sub(c, a)))
         };
         (0..self.t.len() as u32)
             .map(|f| {
@@ -393,9 +420,13 @@ impl Drive {
                     if seen.iter().any(on_boundary) {
                         seen.retain(on_boundary);
                     }
+                    // Weighted by area: a needle or cap triangle (a
+                    // tessellator's fan at a pole) has an angle near 180
+                    // degrees at one corner, which would dominate an
+                    // angle-weighted normal there, but next to no area.
                     let mut m = [0.; 3];
                     for &g in &seen {
-                        let w = angle_at(g, v);
+                        let w = area_of(g);
                         for j in 0..3 {
                             m[j] += w * self.n[g as usize][j];
                         }
@@ -618,7 +649,7 @@ struct Iso<'a> {
     links: Vec<(u32, u32, u32, Vec<Vec3>)>,
 }
 
-impl Iso<'_> {
+impl<'a> Iso<'a> {
     fn edge(&mut self, e: u32) -> Side {
         if let Some(c) = self.edges.get(&e) {
             return c.clone();
@@ -652,7 +683,8 @@ impl Iso<'_> {
                 c.iter().rev().map(|&(s, n)| (1. - s, n)).collect()
             }
         });
-        self.region(f, p, vals, signs, sides, 0);
+        let q = FaceQuery::new(self.field, f);
+        self.region(&q, f, p, vals, signs, sides, 0);
     }
 
     /// The contour inside a triangle of face `f` (corner distances `vals`,
@@ -660,8 +692,10 @@ impl Iso<'_> {
     /// more, or none with an island inside (an exact maximum above the
     /// level, or a source with the level around it), are resolved by
     /// splitting it into four with exact crossings on the new sides.
+    #[allow(clippy::too_many_arguments)]
     fn region(
         &mut self,
+        q: &FaceQuery<'a>,
         f: u32,
         p: [Vec3; 3],
         vals: [f64; 3],
@@ -688,7 +722,7 @@ impl Iso<'_> {
                         false
                     };
                 if island {
-                    self.split(f, p, vals, signs, sides, depth);
+                    self.split(q, f, p, vals, signs, sides, depth);
                 }
             }
             2 => {
@@ -699,14 +733,14 @@ impl Iso<'_> {
                 // where any chord across it is within the tolerance.
                 let (a, b) = (self.nodes[ring[0] as usize], self.nodes[ring[1] as usize]);
                 let mut mid = vec![];
-                if self.chord(f, a, b, self.tol, 0, &mut mid) || diameter(p) <= self.tol {
+                if self.chord(q, f, a, b, self.tol, 0, &mut mid) || diameter(p) <= self.tol {
                     self.links.push((ring[0], ring[1], f, mid));
                 } else {
-                    self.split(f, p, vals, signs, sides, depth);
+                    self.split(q, f, p, vals, signs, sides, depth);
                 }
             }
             _ if depth < MAX_DEPTH || diameter(p) > self.tol => {
-                self.split(f, p, vals, signs, sides, depth)
+                self.split(q, f, p, vals, signs, sides, depth)
             }
             _ => {
                 // Below a micrometre: join each crossing to the next where
@@ -722,8 +756,10 @@ impl Iso<'_> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn split(
         &mut self,
+        q: &FaceQuery<'a>,
         f: u32,
         p: [Vec3; 3],
         vals: [f64; 3],
@@ -732,7 +768,7 @@ impl Iso<'_> {
         depth: usize,
     ) {
         let m = [0, 1, 2].map(|k| lerp(p[k], p[(k + 1) % 3], 0.5));
-        let dm = m.map(|q| self.field.at(f, q));
+        let dm = m.map(|x| q.at(x));
         let halves = |side: &Side| -> (Side, Side, bool) {
             let a: Side = side
                 .iter()
@@ -753,8 +789,7 @@ impl Iso<'_> {
         // The sign at each midpoint follows from its side's crossings.
         let sm = [signs[0] ^ o0, signs[1] ^ o1, signs[2] ^ o2];
         let mut inner = |a: usize, b: usize| -> Side {
-            self.field
-                .crossings_on(f, m[a], m[b], self.level, sm[a], sm[b])
+            q.crossings_on(m[a], m[b], self.level, sm[a], sm[b])
                 .into_iter()
                 .map(|s| {
                     self.nodes.push(lerp(m[a], m[b], s));
@@ -766,6 +801,7 @@ impl Iso<'_> {
         let rev = |s: &Side| -> Side { s.iter().rev().map(|&(t, n)| (1. - t, n)).collect() };
         let d = depth + 1;
         self.region(
+            q,
             f,
             [p[0], m[0], m[2]],
             [vals[0], dm[0], dm[2]],
@@ -774,6 +810,7 @@ impl Iso<'_> {
             d,
         );
         self.region(
+            q,
             f,
             [m[0], p[1], m[1]],
             [dm[0], vals[1], dm[1]],
@@ -782,6 +819,7 @@ impl Iso<'_> {
             d,
         );
         self.region(
+            q,
             f,
             [m[2], m[1], p[2]],
             [dm[2], dm[1], vals[2]],
@@ -789,14 +827,15 @@ impl Iso<'_> {
             [rev(&i12), h1b, h2a],
             d,
         );
-        self.region(f, m, dm, sm, [i01, i12, rev(&i02)], d);
+        self.region(q, f, m, dm, sm, [i01, i12, rev(&i02)], d);
     }
 
     /// Points of the curve between two of its points in face `f`: the
     /// chord's midpoint is moved onto the curve (the exact crossing on the
     /// chord's normal) until it is within `tol` of it. False if some
     /// chord's normal does not reach the curve inside the face.
-    fn chord(&self, f: u32, a: Vec3, b: Vec3, tol: f64, depth: usize, out: &mut Vec<Vec3>) -> bool {
+    #[allow(clippy::too_many_arguments)]
+    fn chord(&self, q: &FaceQuery<'a>, f: u32, a: Vec3, b: Vec3, tol: f64, depth: usize, out: &mut Vec<Vec3>) -> bool {
         let d = sub(b, a);
         let l = norm(d);
         if l <= tol {
@@ -811,13 +850,9 @@ impl Iso<'_> {
             return false;
         };
         let (q0, q1) = (axpy(m, s0, u), axpy(m, s1, u));
-        let (g0, g1) = (
-            self.field.at(f, q0) >= self.level,
-            self.field.at(f, q1) >= self.level,
-        );
-        let Some(z) = self
-            .field
-            .crossings_on(f, q0, q1, self.level, g0, g1)
+        let (g0, g1) = (q.at(q0) >= self.level, q.at(q1) >= self.level);
+        let Some(z) = q
+            .crossings_on(q0, q1, self.level, g0, g1)
             .into_iter()
             .map(|t| s0 + t * (s1 - s0))
             .min_by(|x, y| x.abs().total_cmp(&y.abs()))
@@ -827,10 +862,10 @@ impl Iso<'_> {
         if z.abs() <= tol {
             return true;
         }
-        let q = axpy(m, z, u);
-        let ok = self.chord(f, a, q, tol, depth + 1, out);
-        out.push(q);
-        ok && self.chord(f, q, b, tol, depth + 1, out)
+        let mq = axpy(m, z, u);
+        let ok = self.chord(q, f, a, mq, tol, depth + 1, out);
+        out.push(mq);
+        ok && self.chord(q, f, mq, b, tol, depth + 1, out)
     }
 
     /// The links chained into contact paths: open chains (from a node with
@@ -912,19 +947,24 @@ fn contour(
         field,
         peaks,
         level,
-        tol: 0.9 * tol,
+        tol: 0.225 * tol,
         nodes: vec![],
         edges: HashMap::new(),
         links: vec![],
     };
+    let started = std::time::Instant::now();
     for &f in faces {
         iso.face(f);
     }
-    // The tolerance shared: chords within 0.9 tol of the curve, then the
-    // polyline simplified within 0.1 tol of itself (where the curve grazes
-    // a long sliver's side within rounding, the exact crossings come
-    // micrometres apart; their wiggles are below any tolerance).
-    iso.paths().into_iter().map(|path| simplify(&path, 0.1 * tol)).collect()
+    trace::line(|| format!("contour {level:.3}: {} faces, {} links, {} nodes in {:?}", faces.len(), iso.links.len(), iso.nodes.len(), started.elapsed()));
+    // Each pass within half the path error of its level (so neighbouring
+    // passes are within the path error of the stepover apart): a quarter for
+    // the contour, a quarter for the cutter path's smoothing. Chords within
+    // 0.225 of it of the curve, then the polyline simplified within 0.025
+    // of it of itself (where the curve grazes a long sliver's side within
+    // rounding, the exact crossings come micrometres apart; their wiggles
+    // are below any tolerance).
+    iso.paths().into_iter().map(|path| simplify(&path, 0.025 * tol)).collect()
 }
 
 /// A polyline simplified (Douglas and Peucker 1973): a subset of its points
@@ -1493,6 +1533,15 @@ fn seeds(
             let (ti, _, p) = drive.top_at(*xy_mm).ok_or_else(|| {
                 format!("geodesic seed point {xy_mm:?} is not over the drive surface")
             })?;
+            // A seed within the weld tolerance of a vertex is that vertex
+            // (the source of every face round it: a point a hair off a
+            // vertex inside one sliver of a fan would reach the fan's other
+            // faces only at grazing angles).
+            let p = drive.t[ti as usize]
+                .iter()
+                .map(|&k| drive.v[k as usize])
+                .find(|&q| norm(sub(q, p)) <= drive.weld)
+                .unwrap_or(p);
             ("point", vec![Piece::Point(ti, p)], 0.5, 0)
         }
         GeodesicSeed::Curve { points_mm } => {
@@ -1690,9 +1739,38 @@ pub(crate) fn passes(
     path_error: f64,
     seed: &GeodesicSeed,
     tool_centre: bool,
+    slopes: Option<(f64, f64)>,
     work: &mut SurfaceWork,
     cancel: &impl CancelSignal,
 ) -> Result<Planned, String> {
+    // The drive surface: the faces within the slope range (radians from
+    // the horizontal), when one is given; steeper faces are left to a
+    // waterline or steep-and-shallow pass.
+    let limited;
+    let mesh = match slopes {
+        None => mesh,
+        Some((lo, hi)) => {
+            let guard = 1e-9;
+            let kept: Vec<[Vec3; 3]> = mesh
+                .triangles
+                .iter()
+                .filter(|t| {
+                    let n = cross(sub(t[1], t[0]), sub(t[2], t[0]));
+                    let l = norm(n);
+                    l > 0. && {
+                        let slope = (n[2] / l).clamp(-1., 1.).acos();
+                        slope >= lo - guard && slope <= hi + guard
+                    }
+                })
+                .copied()
+                .collect();
+            if kept.is_empty() {
+                return Err("geodesic finishing: no face of the target lies within slope_from_deg..slope_to_deg".into());
+            }
+            limited = SurfaceMesh { triangles: std::sync::Arc::new(kept), ..mesh.clone() };
+            &limited
+        }
+    };
     let drive = Drive::build(mesh, cancel)?;
     if tool_centre {
         return centre_mode(&drive, mesh, surface, stepover, contact_radius, tool_radius, path_error, seed, work, cancel);
@@ -1745,11 +1823,11 @@ pub(crate) fn passes(
         },
         |_| Ok(()),
     )?;
-    // The cutter path smoothed within half the path error (the contours'
-    // chords take the other half).
+    // The cutter path smoothed within a quarter of the path error (the contour
+    // takes another quarter).
     let smoothed = |out: Vec<([f64; 2], Fit)>| -> Vec<([f64; 2], Fit)> {
         let xy: Vec<[f64; 2]> = out.iter().map(|p| p.0).collect();
-        smooth(&xy, path_error / 2.).into_iter().zip(out).map(|(q, (_, fit))| (q, fit)).collect()
+        smooth(&xy, path_error / 4.).into_iter().zip(out).map(|(q, (_, fit))| (q, fit)).collect()
     };
     // Every vertex as solved (verified, its unreachable ones counted), and
     // the paths cut (unreachable runs bridged or cut off).
@@ -2454,7 +2532,22 @@ fn link(
         return Ok((out, down));
     };
     out.push(orient(pool.remove(first).1, None, None));
+    let mut trimmed = false;
     while !pool.is_empty() {
+        // Once only fill and centre passes remain (every level pass is cut,
+        // with its links): each is cut only where nothing already cut runs
+        // within a tenth of a stepover of it. A link along a ridge (corner
+        // to corner of rings from a boundary) has cut that stretch already;
+        // cutting it again would only rub the finished surface.
+        if !trimmed && pool.iter().all(|p| p.0 == usize::MAX) {
+            trimmed = true;
+            let pieces = uncut(&out, &pool, stepover);
+            trace::line(|| format!("fills: {} trimmed to {} pieces not already cut", pool.len(), pieces.len()));
+            pool = pieces.into_iter().map(|p| (usize::MAX, p)).collect();
+            if pool.is_empty() {
+                break;
+            }
+        }
         let last = out.last().unwrap().clone();
         let at = last[last.len() - 1];
         let tail: Option<Vec<[f64; 2]>> = closed_tail(&last).map(<[_]>::to_vec);
@@ -2554,7 +2647,107 @@ fn link(
             out.push(next);
         }
     }
+    // No move shorter than the placement tolerance (a corner arc's last
+    // position against the next pass's first, say): a block that short is
+    // noise to the controller. Each path keeps its ends.
+    let tiny = stepover * 1e-3;
+    for path in &mut out {
+        let n = path.len();
+        let mut kept: Vec<[f64; 2]> = Vec::with_capacity(n);
+        for (i, &p) in path.iter().enumerate() {
+            match kept.last() {
+                Some(&q) if (p[0] - q[0]).hypot(p[1] - q[1]) < tiny => {
+                    if i + 1 == n {
+                        *kept.last_mut().unwrap() = p;
+                    }
+                }
+                _ => kept.push(p),
+            }
+        }
+        *path = kept;
+    }
     Ok((out, down))
+}
+
+/// The parts of `extras` not already cut: each sampled an eighth of a
+/// stepover apart, and kept in runs of samples farther than a tenth of a
+/// stepover from every path in `done` (runs shorter than a quarter
+/// stepover are dropped: the cut around them already covers them).
+fn uncut(done: &[Vec<[f64; 2]>], extras: &[(usize, Vec<[f64; 2]>)], stepover: f64) -> Vec<Vec<[f64; 2]>> {
+    let near = stepover / 10.;
+    let cell = stepover;
+    let key = |p: [f64; 2]| ((p[0] / cell).floor() as i64, (p[1] / cell).floor() as i64);
+    let mut grid: HashMap<(i64, i64), Vec<([f64; 2], [f64; 2])>> = HashMap::new();
+    for path in done {
+        for w in path.windows(2) {
+            let (a, b) = (key([w[0][0].min(w[1][0]), w[0][1].min(w[1][1])]), key([w[0][0].max(w[1][0]), w[0][1].max(w[1][1])]));
+            for x in a.0..=b.0 {
+                for y in a.1..=b.1 {
+                    grid.entry((x, y)).or_default().push((w[0], w[1]));
+                }
+            }
+        }
+    }
+    let covered = |p: [f64; 2]| {
+        let k = key(p);
+        (k.0 - 1..=k.0 + 1).any(|x| {
+            (k.1 - 1..=k.1 + 1).any(|y| {
+                grid.get(&(x, y)).is_some_and(|segs| {
+                    segs.iter().any(|&(a, b)| {
+                        let (u, v) = ([b[0] - a[0], b[1] - a[1]], [p[0] - a[0], p[1] - a[1]]);
+                        let uu = u[0] * u[0] + u[1] * u[1];
+                        let t = if uu > 0. { ((u[0] * v[0] + u[1] * v[1]) / uu).clamp(0., 1.) } else { 0. };
+                        (v[0] - t * u[0]).hypot(v[1] - t * u[1]) <= near
+                    })
+                })
+            })
+        })
+    };
+    let mut out = vec![];
+    for (_, path) in extras {
+        // A run follows the path's own vertices, from the first sample not
+        // covered to the last (its ends at sample resolution).
+        let mut run: Vec<[f64; 2]> = vec![];
+        let mut last: Option<[f64; 2]> = None;
+        let mut flush = |run: &mut Vec<[f64; 2]>, last: &mut Option<[f64; 2]>| {
+            if let (Some(l), Some(&e)) = (*last, run.last())
+                && l != e
+            {
+                run.push(l);
+            }
+            *last = None;
+            let len: f64 = run.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum();
+            if run.len() >= 2 && len >= stepover / 4. {
+                out.push(std::mem::take(run));
+            } else {
+                run.clear();
+            }
+        };
+        for (i, &q) in path.iter().enumerate() {
+            let mut samples = vec![];
+            if i > 0 {
+                let p = path[i - 1];
+                let n = ((q[0] - p[0]).hypot(q[1] - p[1]) / (stepover / 8.)).ceil() as usize;
+                for j in 1..n {
+                    let t = j as f64 / n as f64;
+                    samples.push(([p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])], false));
+                }
+            }
+            samples.push((q, true));
+            for (x, vertex) in samples {
+                if covered(x) {
+                    flush(&mut run, &mut last);
+                } else {
+                    if run.is_empty() || vertex {
+                        run.push(x);
+                    }
+                    last = Some(x);
+                }
+            }
+        }
+        flush(&mut run, &mut last);
+    }
+    out
 }
 
 /// A cutter path relaxed towards least curvature, every point within `tol`
@@ -2754,6 +2947,7 @@ impl Solver<'_> {
             // tangent plane (a concave crease folds instead; trim).
             if angle > step && angle < std::f64::consts::PI - 1e-9 && dot(na, sub(path[b].0, cc)) < 0. {
                 let k = (angle / step).ceil() as usize;
+                trace::line(|| format!("corner arc at {cc:.4?}: {:.2} deg in {k} steps", angle.to_degrees()));
                 let mut out = Vec::with_capacity(k + 1);
                 for j in 0..=k {
                     // The normals' great-circle arc (slerp).
@@ -3029,6 +3223,9 @@ impl Checked<'_> {
                         let sv = set.iter()
                                 .map(|&(f, q)| field.at(f, q))
                                 .fold(f64::INFINITY, f64::min);
+                        if trace::on() && sv > 1.003 * stepover && sv <= 2. * stepover {
+                            trace::line(|| format!("wide level {level} spacing {sv:.4} at {:?}", set[0].1));
+                        }
                         if trace::on() && sv < 0.97 * stepover {
                             let q = set[0].1;
                             let near = sources.iter().map(|pc| match *pc {
@@ -3416,10 +3613,12 @@ mod tests {
             let v: Vec<f64> = std::env::var(k).unwrap().split(',').map(|x| x.parse().unwrap()).collect();
             [v[0], v[1], v[2]]
         };
-        let drive = Drive::build(&mesh(tris), &never).unwrap();
+        let mut m = mesh(tris);
+        m.surface_error_mm = std::env::var("GEO_ERR").map_or(0., |e| e.parse().unwrap());
+        let drive = Drive::build(&m, &never).unwrap();
         let (src, at) = (v3("GEO_SRC"), v3("GEO_AT"));
-        let (f, _) = drive.locate(src, 1e-6).unwrap();
-        let (g, _) = drive.locate(at, 1e-6).unwrap();
+        let (f, _, src) = drive.top_at([src[0], src[1]]).unwrap();
+        let (g, _, at) = drive.top_at([at[0], at[1]]).unwrap();
         let field = Field::compute(&drive.v, &drive.t, &drive.topo, &[Piece::Point(f, src)], 5., &never).unwrap();
         eprintln!("source face {f}, at face {g}: field {:.4}, straight {:.4}", field.at(g, at), norm(sub(at, src)));
         for &h in &drive.within(src, 1e-7) {
@@ -3442,8 +3641,19 @@ mod tests {
             }
         };
         let t0 = std::time::Instant::now();
-        let drive = Drive::build(&mesh(tris), &never).unwrap();
+        let mut m = mesh(tris);
+        m.surface_error_mm = std::env::var("GEO_ERR").map_or(0., |e| e.parse().unwrap());
+        let drive = Drive::build(&m, &never).unwrap();
         eprintln!("drive {} triangles in {:?}", drive.t.len(), t0.elapsed());
+        let open: Vec<usize> = (0..drive.topo.edges.len()).filter(|&e| drive.topo.faces[e][1] == NONE).collect();
+        if let GeodesicSeed::Point { xy_mm } = &seed {
+            let near = open.iter().filter(|&&e| {
+                let [a, b] = drive.topo.edges[e];
+                let m = lerp(drive.v[a as usize], drive.v[b as usize], 0.5);
+                (m[0] - xy_mm[0]).hypot(m[1] - xy_mm[1]) < 3.
+            }).count();
+            eprintln!("open edges {} ({} within 3 mm of the seed)", open.len(), near);
+        }
         let planned = plan(&drive, &seed, 1.5, 0.005, &never).unwrap();
         eprintln!("plan: {} passes, {} fills, coverage {:.4} in {:?}", planned.passes.len(), planned.caps, planned.coverage, t0.elapsed());
         for y in [12.0, 15.0, 17.0] {
@@ -3455,6 +3665,12 @@ mod tests {
                 }
             }).collect();
             eprintln!("y={y}: {}", row.join(" "));
+        }
+        if let GeodesicSeed::Point { xy_mm } = seed {
+            for (k, _, level, path) in planned.passes.iter().filter(|p| p.0 == 0) {
+                let d: Vec<f64> = path.iter().map(|(q, _)| (q[0] - xy_mm[0]).hypot(q[1] - xy_mm[1])).collect();
+                eprintln!("ring k={k} level {level}: {} points, plan distance from seed {:.4}..{:.4}", d.len(), d.iter().copied().fold(f64::INFINITY, f64::min), d.iter().copied().fold(0., f64::max));
+            }
         }
         for (k, cap, level, path) in planned.passes.iter() {
             let longest = path.windows(2).map(|w| norm(sub(w[1].0, w[0].0))).fold(0., f64::max);

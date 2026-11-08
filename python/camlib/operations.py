@@ -268,7 +268,11 @@ class Geodesic:
     surface) or ``"tool_centre"`` (measured along the surface the ball's
     centre moves on: smooth through internal corners and wall tops, but the
     contact spacing then varies with the curvature; both spacings are
-    measured and reported)."""
+    measured and reported).
+
+    ``slope_to_deg`` defaults to 80 here: steeper faces (where the ball would
+    touch near its equator and chatter along a wall) are left to Waterline.
+    The passes are planned within the slope range."""
 
     id: str
     tool: object
@@ -290,7 +294,7 @@ class Geodesic:
     length_register: int = field(kw_only=True)
     coolant: str = field(kw_only=True)
     slope_from_deg: float = 0
-    slope_to_deg: float = 90
+    slope_to_deg: float = 80
     rest_threshold_mm: float | None = None
     retract_z_mm: float | None = None
     feed_z_mm: float | None = None

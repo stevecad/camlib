@@ -575,7 +575,10 @@ How it is computed:
   the air is never used.
 - **The passes** are the exact iso-curves at `(k + 1/2) x stepover` from a
   point seed (`k x stepover` from a boundary or curve seed), as polylines
-  within 0.9 of `path_error_mm` of the curve. Where an iso-curve turns back
+  within a quarter of `path_error_mm` of the curve (the cutter path's
+  smoothing takes another quarter: each pass within half the path error of
+  its level, so neighbouring passes are the stepover apart within the path
+  error). Where an iso-curve turns back
   inside one triangle (it rounds a corner where the nearest source changes)
   the triangle is split until each piece is a simple arc.
 - **Coverage** is certified, not estimated: every point of the drive surface
@@ -622,8 +625,24 @@ Verification, independent of the distance field, in the operation report
   concave areas less, and creases are not modelled. The material check is
   authoritative for residual stock.
 
-Nothing is rescaled to fit. Walls and steep areas the ball cannot touch from
-above need `Waterline`.
+Nothing is rescaled to fit. Limits, so that what it cuts is clean:
+
+- **Slope.** The drive surface is the faces within `slope_from_deg` ..
+  `slope_to_deg`, and for `Geodesic` `slope_to_deg` defaults to 80 (not 90):
+  where the ball touches near its equator (the foot of a fillet into a
+  wall), a hair of sideways movement moves it far up or down, and the cutter
+  would chatter along the wall. Steeper areas and walls belong to
+  `Waterline` (or steep-and-shallow). The passes are planned inside the
+  range, not cut afterwards.
+- **Mesh.** The surface mesh must be a clean tessellation: triangles thinner
+  than a thousandth of its surface error (a tessellator's fan of slivers at a
+  sphere's pole, say) are refused with their location, since no distance
+  across them is reliable. Re-export or repair the mesh (for a sphere, put
+  its pole off the surface).
+- **Concave creases** narrower than the ball (a sharp internal corner) cannot
+  be reached in contact mode: the passes are trimmed there and bridged
+  straight (reported as `unreachable_samples` and `bridged_spans`). For such
+  parts use `mode="tool_centre"`, which runs smoothly over them.
 
 `mode="tool_centre"` (explicit; the default is `"contact"`) measures the
 stepover along the surface the ball's centre moves on instead of the part's

@@ -158,6 +158,44 @@ class GeodesicCadTest(unittest.TestCase):
         self.assertEqual(report["rows_completed"], report["rows"])
         self.assertEqual(material["gouge"]["definite_cells"], 0)
 
+    def test_degenerate_tessellation_is_refused(self):
+        # A sphere tessellated with its pole on the surface: the tessellator
+        # fans slivers there far thinner than the mesh's own accuracy, across
+        # which no distance is reliable. Geodesic refuses it, naming the
+        # problem, instead of planning on it.
+        from camlib.cadquery import export_surface_mesh
+        from camlib.simulation import SimulationError
+
+        block = cq.Workplane("XY").box(44, 44, 12, centered=False)
+        polar = block.cut(cq.Workplane("XY").sphere(25).translate((22, 22, 28)))
+        surface = export_surface_mesh(polar, max_error_mm=0.05)
+        op = camlib.Geodesic(
+            "geodesic",
+            BALL,
+            surface,
+            0,
+            STEPOVER,
+            32,
+            ("point", (22, 22)),
+            feed_mm_min=1200,
+            plunge_mm_min=300,
+            spindle_rpm=12000,
+            tool_number=1,
+            length_register=1,
+            coolant="flood",
+        )
+        config = dict(
+            stock=camlib.StockSpec((0, 0, 0), (44, 44, 13), 0.5),
+            tools=(BALL,),
+            operations=(op,),
+            revision="1",
+            initial_position_mm=(0, 0, 40),
+        )
+        with self.assertRaisesRegex(SimulationError, "degenerate triangles"):
+            with Simulation(**config) as sim:
+                for _ in sim.run_operations():
+                    pass
+
     def test_step_fixtures_match_the_parts(self):
         # fixtures/geodesic/*.step are exports of the CadQuery parts (for
         # use without CadQuery); each must still be the same solid.

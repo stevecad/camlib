@@ -489,9 +489,14 @@ impl<'a> Field<'a> {
                 field.propagate(w);
             }
         }
-        if trace::on() && sources.len() > 1000 {
-            trace::line(|| format!("propagation: steps {steps} in {:?}", t_prop.elapsed()));
-        }
+        trace::line(|| format!(
+            "field: {} sources, {} windows over {} edges ({:.1} per edge), {steps} steps in {:?}",
+            sources.len(),
+            field.wins.len(),
+            topo.edges.len(),
+            field.wins.len() as f64 / topo.edges.len().max(1) as f64,
+            t_prop.elapsed()
+        ));
         // Every vertex at the least of its edges' windows there.
         for e in 0..topo.edges.len() {
             let [a, b] = topo.edges[e];
@@ -1303,23 +1308,6 @@ impl<'a> Field<'a> {
         })
     }
 
-    /// The circles and lines whose minimum the distance is over face `f`.
-    /// A shortest path to a point of f is straight in f and enters it
-    /// across an edge (a window propagating into f: its unfolded
-    /// pseudosource or wave), through a vertex where paths may bend (a
-    /// saddle or boundary vertex: its cone), or starts at a source in f
-    /// (MMP 1987). Window ends and windows leaving f give upper bounds only
-    /// (no shortest path bends at a point inside an edge or reflects off
-    /// it), so they are not among them. Each is valid only where its own
-    /// window or source reaches; the exact value at a point is `at`.
-    fn functions(&self, f: u32) -> Vec<Func> {
-        let mut out: Vec<Func> = self.regions(f).into_iter().map(|(func, _)| func).collect();
-        // Pieces of one window split by trimming share its function.
-        let mut seen = std::collections::HashSet::new();
-        out.retain(|func| seen.insert(func_key(func)));
-        out
-    }
-
     /// `functions`, each with the region of the face where it is realized
     /// (up to three half-planes n . p >= c; none: everywhere). A window's
     /// function holds only where its rays cross its own interval of the
@@ -1423,16 +1411,66 @@ impl<'a> Field<'a> {
         out
     }
 
-    /// The crossings of `level` on the segment p0 -> p1 inside face `f`
-    /// (signs at its ends given), as parameters in [0, 1], exact: roots of
-    /// the circles and lines whose minimum the distance is, kept where they
-    /// are the minimum and the sign changes.
-    pub fn crossings_on(&self, f: u32, p0: Vec3, p1: Vec3, level: f64, s0: bool, s1: bool) -> Vec<f64> {
+    /// The sources' points in face `f` (where the distance is zero: the
+    /// only local minima).
+    pub fn valleys(&self, f: u32) -> Vec<Vec3> {
+        self.in_face.get(&f).map_or(vec![], |pieces| {
+            pieces
+                .iter()
+                .flat_map(|piece| match *piece {
+                    Piece::Point(_, q) => vec![q],
+                    Piece::Segment(_, a, b) => vec![a, b, scale(axpy(a, 1., b), 0.5)],
+                })
+                .collect()
+        })
+    }
+}
+
+/// One face's distance, prepared once for many queries (contour tracing
+/// asks for thousands of crossings and values on the same face): its
+/// functions with their regions, and its indexed evaluator. The same values
+/// as `Field::at` and `Field::crossings_on`.
+pub(super) struct FaceQuery<'f> {
+    funcs: Vec<(Func, Region)>,
+    eval: FaceEval<'f>,
+}
+
+impl<'f> FaceQuery<'f> {
+    pub(super) fn new(field: &'f Field<'f>, f: u32) -> Self {
+        // Pieces of one window split by trimming share its function; keep
+        // each function once, with the union of its regions (any of them).
+        FaceQuery { funcs: field.regions(f), eval: FaceEval::new(field, f) }
+    }
+
+    pub(super) fn at(&self, p: Vec3) -> f64 {
+        self.eval.at(p)
+    }
+
+    /// `Field::crossings_on`: only the functions realized somewhere on the
+    /// segment (its part inside the function's region) can cross the
+    /// level there.
+    pub(super) fn crossings_on(&self, p0: Vec3, p1: Vec3, level: f64, s0: bool, s1: bool) -> Vec<f64> {
         let d = sub(p1, p0);
         let dd = dot(d, d);
+        let slack = 1e-9 * (1. + dd.sqrt());
         let mut c = vec![];
-        for func in self.functions(f) {
-            match func {
+        for (func, region) in &self.funcs {
+            // The segment's parameters inside the region n . p >= c.
+            let (mut t0, mut t1) = (0f64, 1f64);
+            for &(n, k) in region.iter().flatten() {
+                let (a, b) = (dot(n, p0) - k + slack, dot(n, d));
+                if b > 0. {
+                    t0 = t0.max(-a / b);
+                } else if b < 0. {
+                    t1 = t1.min(-a / b);
+                } else if a < 0. {
+                    t1 = -1.;
+                }
+            }
+            if t0 > t1 {
+                continue;
+            }
+            match *func {
                 Func::Circle(center, sigma) => {
                     if level >= sigma {
                         let w = sub(p0, center);
@@ -1447,21 +1485,7 @@ impl<'a> Field<'a> {
                 }
             }
         }
-        crossings(c, s0, s1, |t| self.at(f, axpy(p0, t, d)) >= level)
-    }
-
-    /// The sources' points in face `f` (where the distance is zero: the
-    /// only local minima).
-    pub fn valleys(&self, f: u32) -> Vec<Vec3> {
-        self.in_face.get(&f).map_or(vec![], |pieces| {
-            pieces
-                .iter()
-                .flat_map(|piece| match *piece {
-                    Piece::Point(_, q) => vec![q],
-                    Piece::Segment(_, a, b) => vec![a, b, scale(axpy(a, 1., b), 0.5)],
-                })
-                .collect()
-        })
+        crossings(c, s0, s1, |t| self.eval.at(axpy(p0, t, d)) >= level)
     }
 }
 
@@ -2613,7 +2637,7 @@ mod tests {
             let [a, b, c] = t[g as usize].map(|k| v[k as usize]);
             let m = scale(axpy(b, 1., c), 0.5);
             let (sa, sm) = (field.at(g, a) >= level, field.at(g, m) >= level);
-            for s in field.crossings_on(g, a, m, level, sa, sm) {
+            for s in FaceQuery::new(&field, g).crossings_on(a, m, level, sa, sm) {
                 let q = axpy(a, s, sub(m, a));
                 assert!((field.at(g, q) - level).abs() < 1e-9);
             }
