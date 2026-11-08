@@ -547,6 +547,67 @@ distance is computed over the ball-center surface on a sample grid (8
 neighbours, so within about 8% of the true surface distance); each offset is
 cut as a pass with every chord lifted and checked like `Parallel`.
 
+### Geodesic: `Geodesic`
+
+`Geodesic(id, tool, surface, floor_z_mm, stepover_mm, clearance_z_mm, seed)`
+cuts passes whose contact paths are `stepover_mm` apart measured along the
+part's surface (contact mode, as Cimatron and ModuleWorks define geodesic
+contact paths), so the stepover, and with it the scallop, stays even on
+steep and shallow areas alike. `seed`:
+
+- `"boundary"`: passes work inward from the drive surface's boundary;
+- `("point", (x, y))`: rings around the surface point there, the first half
+  a stepover out;
+- `("curve", ((x, y), ...))`: the curve's surface points are the first pass,
+  the others follow it along the surface.
+
+How it is computed:
+
+- **The drive surface** is the target mesh's upward-facing triangles: the
+  faces a three-axis ball can touch. Its triangles are welded into one
+  connected mesh. Its boundary (open edges, and edges against walls or
+  downward faces) is explicit: passes end there, never rolling over an edge.
+  The mesh is refined by conforming longest-edge bisection until every edge
+  is at most a quarter of the stepover (measured to give the same spacing as
+  an eighth; half drifts).
+- **The distance** is the intrinsic geodesic distance on that mesh from the
+  seed, by fast marching. Each vertex is reached across a triangle by the
+  exact minimum over the opposite edge (the planar wavefront through it), so
+  creases are crossed along the surface. A straight chord through the air is
+  never used.
+- **The passes** are iso-curves of that distance (plus a cap pass halfway
+  up wherever the distance peaks between two levels, so no point lies
+  farther than half a stepover from a pass). Each contact point becomes a
+  cutter position, ball centre = contact + R x normal, lifted onto the
+  surface with the certified ball contact; every chord is checked like
+  `Parallel`.
+
+Verification, independent of the distance field, in the operation report
+(`geodesic`):
+
+- `spacing_mm` [min, mean, max]: the intrinsic spacing between neighbouring
+  passes' achieved contact paths. Contacts are computed afresh at the lifted
+  cutter positions, and fast marching runs from each pass to the next.
+- `unreachable_samples`: pass vertices whose intended contact the ball
+  cannot touch (the certified drop lifts it above that contact by more than
+  the mesh's surface error): a concave crease narrower than the ball, a wall
+  top. No stepover is owed where no position touches, so they are left out
+  of the spacing and counted, not hidden.
+- `off_drive_samples`: achieved contacts on a wall or the base.
+- `over_stepover_samples` and `flat_scallop_estimate_mm`, a flat-surface
+  estimate of the scallop at the largest spacing. Convex areas leave more,
+  concave areas less, and creases are not modelled. The material check is
+  authoritative for residual stock.
+
+Nothing is rescaled to fit. The achieved spacing follows the mesh's own
+resolution: on a faceted mesh the ball's contact moves between facets,
+edges and vertices. In the tests the mean is within 0.5% of the stepover,
+and every sample within 5% on 0.5 mm facets (within 1.2% on a dome). A
+CAD export at its default tolerance is far finer. Walls and steep areas the
+ball cannot touch from above need `Waterline`. A tool-centre mode (spacing
+measured on the surface offset by the cutter radius) has different spacing
+semantics and is not provided.
+
 ### Pencil: `Pencil`
 
 `Pencil(id, tool, surface, floor_z_mm, clearance_z_mm, min_angle_deg=20,
@@ -561,7 +622,7 @@ checked). Creases shorter than the tool radius are skipped.
 
 ### Rest finishing
 
-`Parallel`, `Spiral`, `Radial`, `Project`, `Pencil` and `Scallop` take
+`Parallel`, `Spiral`, `Radial`, `Project`, `Pencil`, `Scallop` and `Geodesic` take
 `rest_threshold_mm` (off by default). With it, passes are kept only where the
 ball would reach more than that far into stock that certainly remains above
 the target (plus stock to leave) after the preceding operations: rest

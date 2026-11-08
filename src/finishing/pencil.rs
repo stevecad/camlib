@@ -183,11 +183,29 @@ pub(super) fn link(
     nx: usize,
     ny: usize,
 ) -> Vec<Vec<[f64; 2]>> {
-    // Marching squares: link the crossings of each cell.
+    // Marching squares: link the crossings of each cell. Only cells
+    // touching a crossing can link any, visited in ascending order (the
+    // same order as a scan of every cell, so the same chains).
     let mut links: HashMap<(usize, bool), Vec<(usize, bool)>> = HashMap::new();
-    for j in 0..ny - 1 {
-        for i in 0..nx - 1 {
-            let k = j * nx + i;
+    let mut cells: Vec<usize> = crossings
+        .keys()
+        .flat_map(|&(k, horizontal)| {
+            // A horizontal edge k..k+1 borders cells k and k - nx; a
+            // vertical edge k..k+nx borders cells k and k - 1.
+            let other = if horizontal {
+                k.checked_sub(nx)
+            } else {
+                (k % nx > 0).then(|| k - 1)
+            };
+            [Some(k), other]
+        })
+        .flatten()
+        .filter(|&c| c % nx < nx - 1 && c / nx < ny - 1)
+        .collect();
+    cells.sort_unstable();
+    cells.dedup();
+    for k in cells {
+        {
             let edges = [(k, true), (k + nx, true), (k, false), (k + 1, false)];
             let present: Vec<_> = edges
                 .into_iter()

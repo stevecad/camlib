@@ -116,6 +116,8 @@ comparable only on the same machine; CI runs the same benchmark on every push.
 | TurnBore | [#56](https://github.com/stevecad/camlib/issues/56) | `lathe-bore` (bore_finish) | 8 | 29 | 3 (10%) | 88 | 1 | 3 | 332 | 19.4 / 19.4 | 0.003 |
 | TurnBore | [#56](https://github.com/stevecad/camlib/issues/56) | `lathe-bore` (bore_rough) | 9 | 53 | 1 (3%) | 92 | 0 | 4 | 4009 | 22.8 / 22.8 | 0.003 |
 | TurnFaceGroove | [#57](https://github.com/stevecad/camlib/issues/57) | `lathe-face-groove` (fg) | 29 | 22 | 22 (100%) | 98 | 12 | 13 | 308 | 75.0 / 75.0 | 0.004 |
+| Geodesic | [#118](https://github.com/stevecad/camlib/issues/118) | `geodesic` (geodesic) | 946 | 793 | 0 (0%) | 683 | 35 | 35 | 1505 | 168.1 / 168.1 | 0.156 |
+| Geodesic | [#118](https://github.com/stevecad/camlib/issues/118) | `geodesic-boundary` (geodesic) | 861 | 634 | 0 (0%) | 164 | 11 | 11 | 1505 | 95.7 / 90.4 | 0.200 |
 
 ## Per workload
 
@@ -146,6 +148,8 @@ comparable only on the same machine; CI runs the same benchmark on every push.
 | `project` | Project curves onto a roof | 36 | 10.4 / 10.4 | 59 | 1052.6 / 1297.2 | 0.0 / 8.2 | 0.010 | 0.004 | 0.004 | 382 |
 | `morph` | Morph between two edges of a roof | 441 | 142.8 / 141.2 | 464 | 194.2 / 420.2 | 0.0 / 52.7 | 0.085 | 0.005 | 0.028 | 385 |
 | `scallop` | Scallop finishing of a roof | 2704 | 201.3 / 183.8 | 2727 | 0.0 / 151.3 | 0.0 / 80.2 | 0.162 | 0.051 | 0.159 | 389 |
+| `geodesic` | Geodesic finishing of a roof, rings from a point | 946 | 168.1 / 168.1 | 969 | 0.0 / 149.8 | 0.0 / 79.4 | 0.555 | 0.400 | 0.059 | 388 |
+| `geodesic-boundary` | Geodesic finishing of a roof, inward from its boundary | 861 | 95.7 / 90.4 | 884 | 0.0 / 149.2 | 0.0 / 78.9 | 0.647 | 0.444 | 0.055 | 387 |
 | `pencil` | Pencil the inside corner of a stepped part | 47 | 8.5 / 8.5 | 70 | 648.7 / 884.3 | 0.0 / 27.4 | 0.024 | 0.020 | 0.005 | 384 |
 | `waterline` | Waterline finishing of a tapered island | 112 | 33.0 / 33.0 | 135 | 369.9 / 809.3 | 0.0 / 89.3 | 0.120 | 0.116 | 0.008 | 388 |
 | `steep-and-shallow` | Steep-and-shallow finishing of a roof | 1744 | 342.8 / 333.7 | 1775 | 0.0 / 149.8 | 0.0 / 100.3 | 0.473 | 0.381 | 0.107 | 388 |

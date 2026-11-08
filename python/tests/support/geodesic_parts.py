@@ -1,0 +1,50 @@
+"""Synthetic CAD parts for geodesic finishing (#12), the source of truth for
+the STEP files in fixtures/geodesic/ (regenerate those with `export_steps`).
+
+- rounded_block: a 40 x 30 x 10 mm block, its top edges filleted 4 mm: flat,
+  cylindrical and spherical faces meeting tangentially.
+- bowl: a 44 x 44 x 12 mm block with a spherical bowl (radius 25 mm, 9 mm
+  deep) cut into its top: concave and wider than a 6 mm ball.
+- plate_with_hole: a 40 x 30 x 6 mm plate with a 10 x 8 mm through-hole:
+  geodesics bend around the hole, and the boundary has two loops.
+"""
+
+from pathlib import Path
+
+STEP_DIR = Path(__file__).resolve().parents[3] / "fixtures" / "geodesic"
+
+
+def rounded_block():
+    import cadquery as cq
+
+    return cq.Workplane("XY").box(40, 30, 10, centered=False).edges(">Z").fillet(4)
+
+
+def bowl():
+    import cadquery as cq
+
+    block = cq.Workplane("XY").box(44, 44, 12, centered=False)
+    return block.cut(cq.Workplane("XY").sphere(25).translate((22, 22, 12 + 25 - 9)))
+
+
+def plate_with_hole():
+    import cadquery as cq
+
+    plate = cq.Workplane("XY").box(40, 30, 6, centered=False)
+    return plate.cut(cq.Workplane("XY").center(22, 14).rect(10, 8).extrude(6))
+
+
+PARTS = {"rounded_block": rounded_block, "bowl": bowl, "plate_with_hole": plate_with_hole}
+
+
+def export_steps(directory=STEP_DIR):
+    """Write each part to <directory>/<name>.step."""
+    import cadquery as cq
+
+    directory.mkdir(parents=True, exist_ok=True)
+    for name, make in PARTS.items():
+        cq.exporters.export(make(), str(directory / f"{name}.step"))
+
+
+if __name__ == "__main__":
+    export_steps()

@@ -9,10 +9,11 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
+mod geodesic;
 mod patterns;
 mod pencil;
 mod scallop;
-pub use patterns::FinishPattern;
+pub use patterns::{FinishPattern, GeodesicSeed};
 /// One XY polyline of a scan pattern.
 type Pass = Vec<[f64; 2]>;
 
@@ -389,6 +390,9 @@ pub struct ParallelReport {
     pub work: SurfaceWork,
     pub clearance_proof: &'static str,
     pub surface_completion: &'static str,
+    /// Geodesic passes: the measured spacing and scallop (#12).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub geodesic: Option<geodesic::GeodesicReport>,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -670,9 +674,11 @@ impl ParallelPlan {
                             && op.rest_threshold_mm.is_none()
                             && !matches!(
                                 op.pattern,
-                                FinishPattern::Pencil { .. } | FinishPattern::Scallop
+                                FinishPattern::Pencil { .. }
+                                    | FinishPattern::Scallop
+                                    | FinishPattern::Geodesic { .. }
                             )),
-                    "slope limits, rest finishing, pencil and scallop passes need a ball end mill (a flat end mill has no single contact normal)".into(),
+                    "slope limits, rest finishing, pencil, scallop and geodesic passes need a ball end mill (a flat end mill has no single contact normal)".into(),
                 ),
                 (
                     values.iter().all(|x| x.is_finite()),
@@ -727,6 +733,7 @@ impl ParallelPlan {
                     FinishPattern::Raster
                         | FinishPattern::Spiral { .. }
                         | FinishPattern::Scallop
+                        | FinishPattern::Geodesic { .. }
                         | FinishPattern::Morph { .. }
                 ) {
                     (
@@ -840,7 +847,9 @@ impl ParallelPlan {
             FinishPattern::Radial { .. } => (passes.len(), spoke_pitch),
             FinishPattern::Project { .. } | FinishPattern::Pencil { .. } => (passes.len(), 0.),
             FinishPattern::Morph { .. } => (passes.len(), op.stepover_mm),
-            FinishPattern::Scallop => (passes.len(), op.stepover_mm),
+            FinishPattern::Scallop | FinishPattern::Geodesic { .. } => {
+                (passes.len(), op.stepover_mm)
+            }
         };
         let inflated =
             radius + op.stock_to_leave_mm + op.surface.surface_error_mm + op.safety_margin_mm;
@@ -885,6 +894,22 @@ impl ParallelPlan {
                 &mut slope_work,
                 cancel,
             )?;
+        }
+        let mut geodesic_report = None;
+        if let FinishPattern::Geodesic { seed } = &op.pattern {
+            let (found, report) = geodesic::passes(
+                mesh,
+                &surface,
+                op.stepover_mm,
+                inflated,
+                radius + op.stock_to_leave_mm,
+                op.path_error_mm,
+                seed,
+                &mut slope_work,
+                cancel,
+            )?;
+            passes = found;
+            geodesic_report = Some(report);
         }
         if let FinishPattern::Pencil {
             min_angle_deg,
@@ -1017,7 +1042,7 @@ impl ParallelPlan {
             passes.len()
         } else if matches!(
             op.pattern,
-            FinishPattern::Pencil { .. } | FinishPattern::Scallop
+            FinishPattern::Pencil { .. } | FinishPattern::Scallop | FinishPattern::Geodesic { .. }
         ) {
             if passes.is_empty() {
                 return Err(match op.pattern {
@@ -1080,6 +1105,7 @@ impl ParallelPlan {
             work: slope_work,
             clearance_proof: "continuous segment distance to downward-extruded triangles and base; inflated analytic ball contact; shank/holder above initial stock",
             surface_completion: "not_certified; path excess is bounded, whole-target scallop/unreachable regions require independent stock checks",
+            geodesic: geodesic_report,
         };
         let heights = crate::heights::Heights::resolve(
             op.clearance_z_mm,
@@ -1201,7 +1227,10 @@ impl ParallelPlan {
         let mut spoke_pitch = 0.;
         let passes = match &op.pattern {
             // Pencil passes need the prepared surface: found in prepare.
-            FinishPattern::Raster | FinishPattern::Pencil { .. } | FinishPattern::Scallop => vec![],
+            FinishPattern::Raster
+            | FinishPattern::Pencil { .. }
+            | FinishPattern::Scallop
+            | FinishPattern::Geodesic { .. } => vec![],
             &FinishPattern::Spiral {
                 center_mm,
                 inner_radius_mm,

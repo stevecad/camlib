@@ -1583,6 +1583,130 @@
    }
   },
   {
+   "name": "geodesic",
+   "family": "mill",
+   "description": "Geodesic finishing of a roof, rings from a point",
+   "operations": {
+    "geodesic": {
+     "toolpath": "Geodesic",
+     "issue": 118,
+     "moves": 946,
+     "cut_mm": 792.744,
+     "rapid_mm": 683.343,
+     "air_cut_mm": 0.081,
+     "plunges": 35,
+     "retracts": 35,
+     "removed_mm3": 1504.707,
+     "cycle_seconds_exact_stop": 168.108,
+     "cycle_seconds_tangent": 168.108,
+     "engine_seconds": 0.1558
+    }
+   },
+   "toolpath": {
+    "moves": 946,
+    "cycle_seconds_exact_stop": 168.108,
+    "cycle_seconds_tangent": 168.108,
+    "posted_blocks": 969,
+    "post_error": null,
+    "removed_mm3": [
+     1504.707,
+     1575.921
+    ],
+    "material": {
+     "leftover_mm3": [
+      0.0,
+      149.79966833442975
+     ],
+     "overcut_mm3": [
+      0.0,
+      79.42683922469143
+     ],
+     "leftover_cells": [
+      0,
+      6144
+     ],
+     "overcut_cells": [
+      0,
+      6144
+     ],
+     "max_residual_height_mm": 8.007206758105147,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.5548,
+    "first_move_seconds": 0.4001,
+    "post_seconds": 0.0587,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 403944.0,
+     "native": 397160.0
+    }
+   }
+  },
+  {
+   "name": "geodesic-boundary",
+   "family": "mill",
+   "description": "Geodesic finishing of a roof, inward from its boundary",
+   "operations": {
+    "geodesic": {
+     "toolpath": "Geodesic",
+     "issue": 118,
+     "moves": 861,
+     "cut_mm": 634.495,
+     "rapid_mm": 163.531,
+     "air_cut_mm": 0.304,
+     "plunges": 11,
+     "retracts": 11,
+     "removed_mm3": 1505.278,
+     "cycle_seconds_exact_stop": 95.676,
+     "cycle_seconds_tangent": 90.366,
+     "engine_seconds": 0.2004
+    }
+   },
+   "toolpath": {
+    "moves": 861,
+    "cycle_seconds_exact_stop": 95.676,
+    "cycle_seconds_tangent": 90.366,
+    "posted_blocks": 884,
+    "post_error": null,
+    "removed_mm3": [
+     1505.278,
+     1575.436
+    ],
+    "material": {
+     "leftover_mm3": [
+      0.0,
+      149.2277388535709
+     ],
+     "overcut_mm3": [
+      0.0,
+      78.94237582400228
+     ],
+     "leftover_cells": [
+      0,
+      6144
+     ],
+     "overcut_cells": [
+      0,
+      6144
+     ],
+     "max_residual_height_mm": 8.041187910009594,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 0.647,
+    "first_move_seconds": 0.4442,
+    "post_seconds": 0.0548,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 402332.0,
+     "native": 396188.0
+    }
+   }
+  },
+  {
    "name": "pencil",
    "family": "mill",
    "description": "Pencil the inside corner of a stepped part",

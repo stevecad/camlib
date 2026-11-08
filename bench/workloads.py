@@ -318,6 +318,18 @@ def _parallel():
     return _options(_roof())
 
 
+def _geodesic(seed):
+    def build():
+        import camlib
+
+        config = _options(_roof())
+        tool, surface = config["tools"][0], config["operations"][0].surface
+        op = camlib.Geodesic("geodesic", tool, surface, 0, 0.75, 12, seed, **CUT, tool_number=1, length_register=1)
+        return dict(config, operations=(op,))
+
+    return build
+
+
 def _morph():
     import camlib
 
@@ -633,6 +645,22 @@ WORKLOADS = (
         "Scallop finishing of a roof",
         {"scallop": ("Scallop", 44)},
         _pattern("scallop"),
+        _roof_target,
+    ),
+    Workload(
+        "geodesic",
+        "mill",
+        "Geodesic finishing of a roof, rings from a point",
+        {"geodesic": ("Geodesic", 118)},
+        _geodesic(("point", (12, 8))),
+        _roof_target,
+    ),
+    Workload(
+        "geodesic-boundary",
+        "mill",
+        "Geodesic finishing of a roof, inward from its boundary",
+        {"geodesic": ("Geodesic", 118)},
+        _geodesic("boundary"),
         _roof_target,
     ),
     Workload(

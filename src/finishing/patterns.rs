@@ -58,6 +58,10 @@ pub enum FinishPattern {
     /// Constant stepover: offsets of the stock outline (grown by the tool
     /// radius) measured along the surface, `stepover_mm` apart.
     Scallop,
+    /// Constant stepover measured along the part's surface from a seed:
+    /// iso-lines of the geodesic distance, `stepover_mm` apart, the spacing
+    /// measured and the scallop reported (#12).
+    Geodesic { seed: GeodesicSeed },
     Pencil {
         #[serde(default = "pencil_angle")]
         min_angle_deg: f64,
@@ -65,6 +69,20 @@ pub enum FinishPattern {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sample_mm: Option<f64>,
     },
+}
+/// Where geodesic passes start: the distance along the surface is measured
+/// from here.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum GeodesicSeed {
+    /// The region's boundary (the stock outline grown by the tool radius):
+    /// passes work inward.
+    Boundary,
+    /// A point (XY): rings around it, the first half a stepover out.
+    Point { xy_mm: [f64; 2] },
+    /// A curve (XY polyline), itself the first pass: passes parallel to it
+    /// along the surface.
+    Curve { points_mm: Vec<[f64; 2]> },
 }
 fn pencil_angle() -> f64 {
     20.
@@ -85,6 +103,7 @@ impl FinishPattern {
             Self::Morph { .. } => "morph",
             Self::Pencil { .. } => "pencil",
             Self::Scallop => "scallop",
+            Self::Geodesic { .. } => "geodesic",
         }
     }
 }

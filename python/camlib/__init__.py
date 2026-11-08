@@ -61,6 +61,7 @@ _EXPORTS = {
             "Flat",
             "Pencil",
             "Scallop",
+            "Geodesic",
             "steep_and_shallow",
         ),
         "operations",
