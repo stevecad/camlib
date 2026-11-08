@@ -31,8 +31,8 @@
 //!   roots of the circles and lines that make it up, kept where they are
 //!   the minimum and where the sign of D - level changes. That is how
 //!   passes are placed exactly on the iso-curves.
-use super::{Vec3, cross, dot, norm, sub};
 use super::trace;
+use super::{Vec3, cross, dot, norm, sub};
 use crate::stock::CancelSignal;
 use std::{
     cmp::Ordering,
@@ -415,8 +415,16 @@ impl<'a> Field<'a> {
                 let l = norm(d);
                 if l > 0. {
                     let d = scale(d, 1. / l);
-                    field.behind.entry((f, a.map(f64::to_bits))).or_default().push(d);
-                    field.behind.entry((f, b.map(f64::to_bits))).or_default().push(scale(d, -1.));
+                    field
+                        .behind
+                        .entry((f, a.map(f64::to_bits)))
+                        .or_default()
+                        .push(d);
+                    field
+                        .behind
+                        .entry((f, b.map(f64::to_bits)))
+                        .or_default()
+                        .push(scale(d, -1.));
                 }
             }
         }
@@ -425,7 +433,14 @@ impl<'a> Field<'a> {
         let t_ins = std::time::Instant::now();
         for (n, &piece) in sources.iter().enumerate() {
             if trace::on() && n % 2000 == 0 && sources.len() > 1000 {
-                trace::line(|| format!("  inserting {n}/{}: windows {} at {:?}", sources.len(), field.wins.len(), t_ins.elapsed()));
+                trace::line(|| {
+                    format!(
+                        "  inserting {n}/{}: windows {} at {:?}",
+                        sources.len(),
+                        field.wins.len(),
+                        t_ins.elapsed()
+                    )
+                });
             }
             let before = field.wins.len();
             let t_one = std::time::Instant::now();
@@ -444,15 +459,33 @@ impl<'a> Field<'a> {
                     field.source_segment(f, a, b);
                 }
             }
-            if trace::on() && (field.wins.len() - before > 2000 || t_one.elapsed().as_millis() > 5) {
-                let (kind, f, a) = match piece { Piece::Point(f, a) => ("point", f, a), Piece::Segment(f, a, _) => ("segment", f, a) };
-                trace::line(|| format!("  piece {n} {kind} face {f} at {a:?}: +{} windows in {:?}, carriers {}", field.wins.len() - before, t_one.elapsed(), field.carrier(f, a).len()));
+            if trace::on() && (field.wins.len() - before > 2000 || t_one.elapsed().as_millis() > 5)
+            {
+                let (kind, f, a) = match piece {
+                    Piece::Point(f, a) => ("point", f, a),
+                    Piece::Segment(f, a, _) => ("segment", f, a),
+                };
+                trace::line(|| {
+                    format!(
+                        "  piece {n} {kind} face {f} at {a:?}: +{} windows in {:?}, carriers {}",
+                        field.wins.len() - before,
+                        t_one.elapsed(),
+                        field.carrier(f, a).len()
+                    )
+                });
             }
         }
         if trace::on() && sources.len() > 1000 {
             let alive = field.wins.iter().filter(|w| w.alive).count();
             let worst = field.on_edge.iter().map(Vec::len).max().unwrap_or(0);
-            trace::line(|| format!("sources inserted: {} pieces, windows {} alive {alive}, most on one edge {worst}, queue {}", sources.len(), field.wins.len(), field.queue.len()));
+            trace::line(|| {
+                format!(
+                    "sources inserted: {} pieces, windows {} alive {alive}, most on one edge {worst}, queue {}",
+                    sources.len(),
+                    field.wins.len(),
+                    field.queue.len()
+                )
+            });
         }
         let t_prop = std::time::Instant::now();
         let mut steps = 0usize;
@@ -461,7 +494,14 @@ impl<'a> Field<'a> {
             if steps.is_multiple_of(16384) {
                 if trace::on() && steps.is_multiple_of(1 << 20) {
                     let alive = field.wins.iter().filter(|w| w.alive).count();
-                    trace::line(|| format!("field steps {steps} windows {} alive {alive} queue {} key {key:.6} sources {}", field.wins.len(), field.queue.len(), sources.len()));
+                    trace::line(|| {
+                        format!(
+                            "field steps {steps} windows {} alive {alive} queue {} key {key:.6} sources {}",
+                            field.wins.len(),
+                            field.queue.len(),
+                            sources.len()
+                        )
+                    });
                 }
                 if cancel.is_cancelled() {
                     return Err("geodesic planning cancelled".into());
@@ -489,14 +529,16 @@ impl<'a> Field<'a> {
                 field.propagate(w);
             }
         }
-        trace::line(|| format!(
-            "field: {} sources, {} windows over {} edges ({:.1} per edge), {steps} steps in {:?}",
-            sources.len(),
-            field.wins.len(),
-            topo.edges.len(),
-            field.wins.len() as f64 / topo.edges.len().max(1) as f64,
-            t_prop.elapsed()
-        ));
+        trace::line(|| {
+            format!(
+                "field: {} sources, {} windows over {} edges ({:.1} per edge), {steps} steps in {:?}",
+                sources.len(),
+                field.wins.len(),
+                topo.edges.len(),
+                field.wins.len() as f64 / topo.edges.len().max(1) as f64,
+                t_prop.elapsed()
+            )
+        });
         // Every vertex at the least of its edges' windows there.
         for e in 0..topo.edges.len() {
             let [a, b] = topo.edges[e];
@@ -579,14 +621,24 @@ impl<'a> Field<'a> {
             match carriers.len() {
                 1 => own,
                 2 => {
-                    let h = if carriers[0] == g { carriers[1] } else { carriers[0] };
-                    let Some(&e) = self.topo.tri_edges[g as usize].iter().find(|&&e| self.topo.faces[e as usize].contains(&h)) else {
+                    let h = if carriers[0] == g {
+                        carriers[1]
+                    } else {
+                        carriers[0]
+                    };
+                    let Some(&e) = self.topo.tri_edges[g as usize]
+                        .iter()
+                        .find(|&&e| self.topo.faces[e as usize].contains(&h))
+                    else {
                         return vec![];
                     };
                     let xh = self.topo.xhat[e as usize];
                     let (ig, ih) = (self.topo.local(g, e), self.topo.local(h, e));
                     // Into g / into h, perpendicular to the edge in each plane.
-                    let (yg, yh) = (self.topo.yhat[g as usize][ig], self.topo.yhat[h as usize][ih]);
+                    let (yg, yh) = (
+                        self.topo.yhat[g as usize][ig],
+                        self.topo.yhat[h as usize][ih],
+                    );
                     let mut out = own;
                     for d in self.behind.get(&(h, key)).cloned().unwrap_or_default() {
                         // Across the edge: into h becomes out of g.
@@ -616,7 +668,11 @@ impl<'a> Field<'a> {
                     into: if on { NONE } else { self.topo.other(e, g) },
                     b0,
                     b1,
-                    src: Src::Point { x, y: (-y).min(0.), s: 0. },
+                    src: Src::Point {
+                        x,
+                        y: (-y).min(0.),
+                        s: 0.,
+                    },
                     alive: true,
                     low: 0.,
                     queued: !on,
@@ -684,7 +740,11 @@ impl<'a> Field<'a> {
         let q = self.v[vx as usize];
         let fan_faces = &topo.vertex_faces[vx as usize];
         let at_vx = |g: u32| -> Vec<u32> {
-            topo.tri_edges[g as usize].iter().copied().filter(|&e| topo.edges[e as usize].contains(&vx)).collect()
+            topo.tri_edges[g as usize]
+                .iter()
+                .copied()
+                .filter(|&e| topo.edges[e as usize].contains(&vx))
+                .collect()
         };
         let far_end = |e: u32| -> u32 {
             let [a, b] = topo.edges[e as usize];
@@ -697,7 +757,12 @@ impl<'a> Field<'a> {
         // The fan in order: from a boundary edge where there is one.
         let (mut g, mut e_in) = fan_faces
             .iter()
-            .find_map(|&g| at_vx(g).into_iter().find(|&e| topo.faces[e as usize][1] == NONE).map(|e| (g, e)))
+            .find_map(|&g| {
+                at_vx(g)
+                    .into_iter()
+                    .find(|&e| topo.faces[e as usize][1] == NONE)
+                    .map(|e| (g, e))
+            })
             .or_else(|| fan_faces.first().map(|&g| (g, at_vx(g)[0])))?;
         let start = g;
         let mut fan: Vec<(u32, u32, u32, f64, f64)> = vec![]; // face, in, out, from, angle
@@ -760,7 +825,11 @@ impl<'a> Field<'a> {
         }
         cuts.sort_by(f64::total_cmp);
         cuts.dedup();
-        let spans: Vec<(f64, f64)> = cuts.windows(2).filter(|w| allowed((w[0] + w[1]) / 2.)).map(|w| (w[0], w[1])).collect();
+        let spans: Vec<(f64, f64)> = cuts
+            .windows(2)
+            .filter(|w| allowed((w[0] + w[1]) / 2.))
+            .map(|w| (w[0], w[1]))
+            .collect();
         let mut out = vec![];
         for &(g, e_in, e_out, from, th) in &fan {
             // Edges through the vertex: their whole length, where their
@@ -772,7 +841,10 @@ impl<'a> Field<'a> {
                 out.push((g, e_out, 0., topo.len[e_out as usize]));
             }
             // The opposite edge: the rays bounding each allowed span.
-            let Some(&e_opp) = topo.tri_edges[g as usize].iter().find(|&&e| e != e_in && e != e_out) else {
+            let Some(&e_opp) = topo.tri_edges[g as usize]
+                .iter()
+                .find(|&&e| e != e_in && e != e_out)
+            else {
                 continue;
             };
             let (ia, ib) = (far_end(e_in), far_end(e_out));
@@ -789,8 +861,16 @@ impl<'a> Field<'a> {
                 let (c, sn) = ((phi - from).cos(), (phi - from).sin());
                 let (ex, ey) = (b2[0] - a2[0], b2[1] - a2[1]);
                 let den = c * ey - sn * ex;
-                let sp = if den.abs() > 0. { ((a2[1] * c - a2[0] * sn) / -den).clamp(0., 1.) } else { 0. };
-                if topo.edges[e_opp as usize][0] == ia { sp * l } else { (1. - sp) * l }
+                let sp = if den.abs() > 0. {
+                    ((a2[1] * c - a2[0] * sn) / -den).clamp(0., 1.)
+                } else {
+                    0.
+                };
+                if topo.edges[e_opp as usize][0] == ia {
+                    sp * l
+                } else {
+                    (1. - sp) * l
+                }
             };
             for &(s0, s1) in &spans {
                 let (lo, hi) = (s0.max(from), s1.min(from + th));
@@ -1176,7 +1256,11 @@ impl<'a> Field<'a> {
                     survivors.push(id);
                     for &(r0, r1) in rest {
                         let nid = self.wins.len() as u32;
-                        self.wins.push(Win { b0: r0, b1: r1, ..u });
+                        self.wins.push(Win {
+                            b0: r0,
+                            b1: r1,
+                            ..u
+                        });
                         survivors.push(nid);
                         if u.queued {
                             self.queue.push(Event(u.src.lowest(r0, r1), nid, false));
@@ -1191,7 +1275,11 @@ impl<'a> Field<'a> {
                 continue;
             }
             let id = self.wins.len() as u32;
-            let nw = Win { b0: k0, b1: k1, ..w };
+            let nw = Win {
+                b0: k0,
+                b1: k1,
+                ..w
+            };
             self.wins.push(nw);
             survivors.push(id);
             if nw.queued {
@@ -1323,7 +1411,10 @@ impl<'a> Field<'a> {
         let mut out = vec![];
         for &k in &self.t[f as usize] {
             if self.topo.pseudo[k as usize] && self.vertex[k as usize].is_finite() {
-                out.push((Func::Circle(self.v[k as usize], self.vertex[k as usize]), [None; 3]));
+                out.push((
+                    Func::Circle(self.v[k as usize], self.vertex[k as usize]),
+                    [None; 3],
+                ));
             }
         }
         for (i, &e) in self.topo.tri_edges[f as usize].iter().enumerate() {
@@ -1350,7 +1441,11 @@ impl<'a> Field<'a> {
                             let (a, b) = ([w.b0 - x, -y], [w.b1 - x, -y]);
                             let na = [a[1], -a[0]];
                             let nb = [-b[1], b[0]];
-                            [half(na, na[0] * x + na[1] * y), half(nb, nb[0] * x + nb[1] * y), None]
+                            [
+                                half(na, na[0] * x + na[1] * y),
+                                half(nb, nb[0] * x + nb[1] * y),
+                                None,
+                            ]
                         } else {
                             [None; 3]
                         };
@@ -1396,7 +1491,10 @@ impl<'a> Field<'a> {
                             let (m, d) = (scale(m, 1. / lm), scale(ab, 1. / lab));
                             let foot = [Some((d, dot(d, a))), Some((scale(d, -1.), -dot(d, b)))];
                             for side in [m, scale(m, -1.)] {
-                                out.push((Func::Line(a, side, 0.), [foot[0], foot[1], Some((side, dot(side, a)))]));
+                                out.push((
+                                    Func::Line(a, side, 0.),
+                                    [foot[0], foot[1], Some((side, dot(side, a)))],
+                                ));
                             }
                         }
                     }
@@ -1405,7 +1503,8 @@ impl<'a> Field<'a> {
         }
         let mut seen = std::collections::HashSet::new();
         out.retain(|(func, region)| {
-            let r = region.map(|h| h.map_or([0u64; 4], |(n, c)| [n[0], n[1], n[2], c].map(f64::to_bits)));
+            let r = region
+                .map(|h| h.map_or([0u64; 4], |(n, c)| [n[0], n[1], n[2], c].map(f64::to_bits)));
             seen.insert((func_key(func), r))
         });
         out
@@ -1439,7 +1538,10 @@ impl<'f> FaceQuery<'f> {
     pub(super) fn new(field: &'f Field<'f>, f: u32) -> Self {
         // Pieces of one window split by trimming share its function; keep
         // each function once, with the union of its regions (any of them).
-        FaceQuery { funcs: field.regions(f), eval: FaceEval::new(field, f) }
+        FaceQuery {
+            funcs: field.regions(f),
+            eval: FaceEval::new(field, f),
+        }
     }
 
     pub(super) fn at(&self, p: Vec3) -> f64 {
@@ -1449,7 +1551,14 @@ impl<'f> FaceQuery<'f> {
     /// `Field::crossings_on`: only the functions realized somewhere on the
     /// segment (its part inside the function's region) can cross the
     /// level there.
-    pub(super) fn crossings_on(&self, p0: Vec3, p1: Vec3, level: f64, s0: bool, s1: bool) -> Vec<f64> {
+    pub(super) fn crossings_on(
+        &self,
+        p0: Vec3,
+        p1: Vec3,
+        level: f64,
+        s0: bool,
+        s1: bool,
+    ) -> Vec<f64> {
         let d = sub(p1, p0);
         let dd = dot(d, d);
         let slack = 1e-9 * (1. + dd.sqrt());
@@ -1474,7 +1583,12 @@ impl<'f> FaceQuery<'f> {
                 Func::Circle(center, sigma) => {
                     if level >= sigma {
                         let w = sub(p0, center);
-                        roots(dd, 2. * dot(d, w), dot(w, w) - (level - sigma).powi(2), &mut c);
+                        roots(
+                            dd,
+                            2. * dot(d, w),
+                            dot(w, w) - (level - sigma).powi(2),
+                            &mut c,
+                        );
                     }
                 }
                 Func::Line(origin, u, sigma) => {
@@ -1492,7 +1606,11 @@ impl<'f> FaceQuery<'f> {
 /// The triangle `cell` clipped to the half-planes n . p >= c - slack of
 /// region `r` (Sutherland and Hodgman 1974): a convex polygon of at most
 /// six vertices, and their number (0: they miss each other).
-fn clip_cell(cell: &[[f64; 2]; 3], r: &[Option<([f64; 2], f64)>; 3], slack: f64) -> ([[f64; 2]; 6], usize) {
+fn clip_cell(
+    cell: &[[f64; 2]; 3],
+    r: &[Option<([f64; 2], f64)>; 3],
+    slack: f64,
+) -> ([[f64; 2]; 6], usize) {
     let mut poly = [[0.; 2]; 6];
     poly[..3].copy_from_slice(cell);
     let mut n = 3usize;
@@ -1509,7 +1627,10 @@ fn clip_cell(cell: &[[f64; 2]; 3], r: &[Option<([f64; 2], f64)>; 3], slack: f64)
             let dc = side(cur);
             if (dp >= 0.) != (dc >= 0.) && m < 6 {
                 let t = dp / (dp - dc);
-                next[m] = [prev[0] + t * (cur[0] - prev[0]), prev[1] + t * (cur[1] - prev[1])];
+                next[m] = [
+                    prev[0] + t * (cur[0] - prev[0]),
+                    prev[1] + t * (cur[1] - prev[1]),
+                ];
                 m += 1;
             }
             if dc >= 0. && m < 6 {
@@ -1531,7 +1652,8 @@ fn dist_to_polygon(c: [f64; 2], poly: &[[f64; 2]]) -> f64 {
         return (c[0] - poly[0][0]).hypot(c[1] - poly[0][1]);
     }
     // Inside: on the same side of every edge (either orientation).
-    let cross = |a: [f64; 2], b: [f64; 2]| (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    let cross =
+        |a: [f64; 2], b: [f64; 2]| (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
     let signs: Vec<f64> = (0..n).map(|i| cross(poly[i], poly[(i + 1) % n])).collect();
     if n >= 3 && (signs.iter().all(|&x| x >= 0.) || signs.iter().all(|&x| x <= 0.)) {
         return 0.;
@@ -1541,7 +1663,11 @@ fn dist_to_polygon(c: [f64; 2], poly: &[[f64; 2]]) -> f64 {
             let (a, b) = (poly[i], poly[(i + 1) % n]);
             let ab = [b[0] - a[0], b[1] - a[1]];
             let ll = ab[0] * ab[0] + ab[1] * ab[1];
-            let t = if ll > 0. { (((c[0] - a[0]) * ab[0] + (c[1] - a[1]) * ab[1]) / ll).clamp(0., 1.) } else { 0. };
+            let t = if ll > 0. {
+                (((c[0] - a[0]) * ab[0] + (c[1] - a[1]) * ab[1]) / ll).clamp(0., 1.)
+            } else {
+                0.
+            };
             (c[0] - a[0] - t * ab[0]).hypot(c[1] - a[1] - t * ab[1])
         })
         .fold(f64::INFINITY, f64::min)
@@ -1585,8 +1711,16 @@ impl<'f> FaceEval<'f> {
         let along = field.topo.tri_edges[f as usize]
             .iter()
             .map(|&e| {
-                let mut ids: Vec<u32> = field.on_edge[e as usize].iter().copied().filter(|&i| field.wins[i as usize].alive).collect();
-                ids.sort_by(|&a, &b| field.wins[a as usize].b0.total_cmp(&field.wins[b as usize].b0));
+                let mut ids: Vec<u32> = field.on_edge[e as usize]
+                    .iter()
+                    .copied()
+                    .filter(|&i| field.wins[i as usize].alive)
+                    .collect();
+                ids.sort_by(|&a, &b| {
+                    field.wins[a as usize]
+                        .b0
+                        .total_cmp(&field.wins[b as usize].b0)
+                });
                 (e, ids)
             })
             .collect();
@@ -1598,25 +1732,52 @@ impl<'f> FaceEval<'f> {
         let pieces: Vec<Piece> = field.in_face.get(&f).cloned().unwrap_or_default();
         let corners = tri.map(to2);
         let lo = [0, 1].map(|k| corners.iter().map(|c| c[k]).fold(f64::INFINITY, f64::min));
-        let hi = [0, 1].map(|k| corners.iter().map(|c| c[k]).fold(f64::NEG_INFINITY, f64::max));
+        let hi = [0, 1].map(|k| {
+            corners
+                .iter()
+                .map(|c| c[k])
+                .fold(f64::NEG_INFINITY, f64::max)
+        });
         let (w, ht) = ((hi[0] - lo[0]).max(1e-12), (hi[1] - lo[1]).max(1e-12));
-        let h = ((w * ht) / pieces.len().max(1) as f64).sqrt().max(w.max(ht) / 4096.);
-        let n = [((w / h).ceil() as usize).max(1), ((ht / h).ceil() as usize).max(1)];
+        let h = ((w * ht) / pieces.len().max(1) as f64)
+            .sqrt()
+            .max(w.max(ht) / 4096.);
+        let n = [
+            ((w / h).ceil() as usize).max(1),
+            ((ht / h).ceil() as usize).max(1),
+        ];
         let mut cells = vec![vec![]; n[0] * n[1]];
-        let cell = |q: [f64; 2]| [0, 1].map(|k| (((q[k] - lo[k]) / h).floor().max(0.) as usize).min(n[k] - 1));
+        let cell = |q: [f64; 2]| {
+            [0, 1].map(|k| (((q[k] - lo[k]) / h).floor().max(0.) as usize).min(n[k] - 1))
+        };
         for (i, piece) in pieces.iter().enumerate() {
             let (a, b) = match *piece {
                 Piece::Point(_, q) => (to2(q), to2(q)),
                 Piece::Segment(_, a, b) => (to2(a), to2(b)),
             };
-            let (c0, c1) = (cell([a[0].min(b[0]), a[1].min(b[1])]), cell([a[0].max(b[0]), a[1].max(b[1])]));
+            let (c0, c1) = (
+                cell([a[0].min(b[0]), a[1].min(b[1])]),
+                cell([a[0].max(b[0]), a[1].max(b[1])]),
+            );
             for x in c0[0]..=c1[0] {
                 for y in c0[1]..=c1[1] {
                     cells[y * n[0] + x].push(i as u32);
                 }
             }
         }
-        FaceEval { field, f, along, o, ex, ey, lo, h, n, cells, pieces }
+        FaceEval {
+            field,
+            f,
+            along,
+            o,
+            ex,
+            ey,
+            lo,
+            h,
+            n,
+            cells,
+            pieces,
+        }
     }
 
     /// Lower `best` by `value(piece)` over the pieces whose distance to `p`
@@ -1626,9 +1787,15 @@ impl<'f> FaceEval<'f> {
             return;
         }
         let q = [dot(sub(p, self.o), self.ex), dot(sub(p, self.o), self.ey)];
-        let c = [0, 1].map(|k| (((q[k] - self.lo[k]) / self.h).floor() as i64).clamp(0, self.n[k] as i64 - 1));
+        let c = [0, 1].map(|k| {
+            (((q[k] - self.lo[k]) / self.h).floor() as i64).clamp(0, self.n[k] as i64 - 1)
+        });
         let outside = [0, 1]
-            .map(|k| (self.lo[k] - q[k]).max(q[k] - (self.lo[k] + self.n[k] as f64 * self.h)).max(0.))
+            .map(|k| {
+                (self.lo[k] - q[k])
+                    .max(q[k] - (self.lo[k] + self.n[k] as f64 * self.h))
+                    .max(0.)
+            })
             .iter()
             .fold(0., |a: f64, b| a.max(*b));
         let (nx, ny) = (self.n[0] as i64, self.n[1] as i64);
@@ -1667,7 +1834,11 @@ impl<'f> FaceEval<'f> {
                     }
                 }
             }
-            if c[0] - ring <= 0 && c[0] + ring >= nx - 1 && c[1] - ring <= 0 && c[1] + ring >= ny - 1 {
+            if c[0] - ring <= 0
+                && c[0] + ring >= nx - 1
+                && c[1] - ring <= 0
+                && c[1] + ring >= ny - 1
+            {
                 break;
             }
         }
@@ -1758,7 +1929,9 @@ pub(super) trait Distance {
         xs.sort_by(f64::total_cmp);
         xs.dedup();
         let same = |p: &Src, q: &Src| match (*p, *q) {
-            (Src::Point { x: a, y: b, s: c }, Src::Point { x: d, y: f, s: g }) => a == d && b == f && c == g,
+            (Src::Point { x: a, y: b, s: c }, Src::Point { x: d, y: f, s: g }) => {
+                a == d && b == f && c == g
+            }
             (Src::Line { ux: a, c: b, .. }, Src::Line { ux: d, c: f, .. }) => a == d && b == f,
             _ => false,
         };
@@ -1781,7 +1954,10 @@ pub(super) trait Distance {
             }
             let mut cuts = vec![];
             ties(&pa, &pb, &mut cuts);
-            for x in cuts.into_iter().filter(|x| x.is_finite() && *x > a && *x < b) {
+            for x in cuts
+                .into_iter()
+                .filter(|x| x.is_finite() && *x > a && *x < b)
+            {
                 take(self.edge_at(e, x), x, &mut m);
                 stack.push((a, x, depth + 1));
                 stack.push((x, b, depth + 1));
@@ -1820,7 +1996,7 @@ pub(super) trait Distance {
         let ub = (0..3).map(|i| vals[i] + r(i)).fold(f64::INFINITY, f64::min);
         let tol = 1e-9 * (1. + lb.abs());
         let lb = lb.max(above);
-        if !(ub > lb + tol) {
+        if ub.partial_cmp(&(lb + tol)) != Some(std::cmp::Ordering::Greater) {
             return vec![];
         }
         // The face's plane frame.
@@ -1866,15 +2042,18 @@ pub(super) trait Distance {
         // function is never needed in a cell whose parent ruled it out).
         let all: Vec<usize> = (0..with.len()).collect();
         let mut stack = vec![(tri.map(to2), vals, all)];
-        let size = (0..3).map(|i| r(i)).fold(0., f64::max);
+        let size = (0..3).map(r).fold(0., f64::max);
         while let Some((cell, d, parent)) = stack.pop() {
             let cr = |i: usize| {
                 (0..3)
-                    .map(|j| ((cell[i][0] - cell[j][0]).powi(2) + (cell[i][1] - cell[j][1]).powi(2)).sqrt())
+                    .map(|j| {
+                        ((cell[i][0] - cell[j][0]).powi(2) + (cell[i][1] - cell[j][1]).powi(2))
+                            .sqrt()
+                    })
                     .fold(0., f64::max)
             };
             let ub = (0..3).map(|i| d[i] + cr(i)).fold(f64::INFINITY, f64::min);
-            if !(ub > lb + tol) {
+            if ub.partial_cmp(&(lb + tol)) != Some(std::cmp::Ordering::Greater) {
                 continue;
             }
             // A function matters in the cell only where it is realized: its
@@ -1891,15 +2070,25 @@ pub(super) trait Distance {
                     let poly = &poly[..m];
                     best = best.min(match *func {
                         F2::Circle(c, s) => dist_to_polygon(c, poly) + s,
-                        F2::Line(u, k) => poly.iter().map(|p| k + u[0] * p[0] + u[1] * p[1]).fold(f64::INFINITY, f64::min),
+                        F2::Line(u, k) => poly
+                            .iter()
+                            .map(|p| k + u[0] * p[0] + u[1] * p[1])
+                            .fold(f64::INFINITY, f64::min),
                     });
                 }
                 best
             };
-            let picked: Vec<usize> = parent.into_iter().filter(|&i| least(&with[i].0, &with[i].1) <= ub).collect();
+            let picked: Vec<usize> = parent
+                .into_iter()
+                .filter(|&i| least(&with[i].0, &with[i].1) <= ub)
+                .collect();
             let active: Vec<F2> = picked.iter().map(|&i| with[i].0).collect();
             let holds = |i: usize, p: [f64; 2]| {
-                with[picked[i]].1.iter().any(|r| r.iter().flatten().all(|(n, c)| n[0] * p[0] + n[1] * p[1] >= c - slack))
+                with[picked[i]].1.iter().any(|r| {
+                    r.iter()
+                        .flatten()
+                        .all(|(n, c)| n[0] * p[0] + n[1] * p[1] >= c - slack)
+                })
             };
             let diameter = (0..3).map(cr).fold(0., f64::max);
             if active.len() > 12 && diameter > 1e-3 * size {
@@ -1911,7 +2100,10 @@ pub(super) trait Distance {
                 };
                 let k = (0..3).max_by(|&i, &j| len2(i).total_cmp(&len2(j))).unwrap();
                 let (k1, k2) = ((k + 1) % 3, (k + 2) % 3);
-                let m = [(cell[k][0] + cell[k1][0]) / 2., (cell[k][1] + cell[k1][1]) / 2.];
+                let m = [
+                    (cell[k][0] + cell[k1][0]) / 2.,
+                    (cell[k][1] + cell[k1][1]) / 2.,
+                ];
                 let dm = at_(to3(m));
                 stack.push(([cell[k], m, cell[k2]], [d[k], dm, d[k2]], picked.clone()));
                 stack.push(([m, cell[k1], cell[k2]], [dm, d[k1], d[k2]], picked));
@@ -1921,7 +2113,9 @@ pub(super) trait Distance {
                 - (cell[2][0] - cell[0][0]) * (cell[1][1] - cell[0][1]))
                 .abs();
             let inside = |p: [f64; 2]| {
-                let c = |a: [f64; 2], b: [f64; 2]| (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+                let c = |a: [f64; 2], b: [f64; 2]| {
+                    (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
+                };
                 let e = -1e-12 * area.max(1e-300);
                 c(cell[0], cell[1]) >= e && c(cell[1], cell[2]) >= e && c(cell[2], cell[0]) >= e
             };
@@ -1930,13 +2124,20 @@ pub(super) trait Distance {
                     for k in j + 1..active.len() {
                         for (p, v) in triple(&active[i], &active[j], &active[k]) {
                             // A peak is where three functions realized there tie.
-                            if v <= lb + tol || !inside(p) || !holds(i, p) || !holds(j, p) || !holds(k, p) {
+                            if v <= lb + tol
+                                || !inside(p)
+                                || !holds(i, p)
+                                || !holds(j, p)
+                                || !holds(k, p)
+                            {
                                 continue;
                             }
                             let p3 = to3(p);
                             let dv = at_(p3);
                             if (dv - v).abs() <= 1e-9 * (1. + v)
-                                && !out.iter().any(|(q, _)| norm(sub(*q, p3)) <= 1e-9 * (1. + v))
+                                && !out
+                                    .iter()
+                                    .any(|(q, _)| norm(sub(*q, p3)) <= 1e-9 * (1. + v))
                             {
                                 out.push((p3, dv));
                             }
@@ -2057,19 +2258,31 @@ impl Distance for Coverage<'_> {
         self.fields[0].mesh()
     }
     fn vertex_at(&self, k: u32) -> f64 {
-        self.fields.iter().map(|g| g.vertex[k as usize]).fold(f64::INFINITY, f64::min)
+        self.fields
+            .iter()
+            .map(|g| g.vertex[k as usize])
+            .fold(f64::INFINITY, f64::min)
     }
     fn at(&self, f: u32, p: Vec3) -> f64 {
-        self.fields.iter().map(|g| g.at(f, p)).fold(f64::INFINITY, f64::min)
+        self.fields
+            .iter()
+            .map(|g| g.at(f, p))
+            .fold(f64::INFINITY, f64::min)
     }
     fn face_eval(&self, f: u32) -> Vec<FaceEval<'_>> {
         self.fields.iter().map(|g| FaceEval::new(g, f)).collect()
     }
     fn edge_at(&self, e: u32, x: f64) -> f64 {
-        self.fields.iter().map(|g| g.edge_at(e, x)).fold(f64::INFINITY, f64::min)
+        self.fields
+            .iter()
+            .map(|g| g.edge_at(e, x))
+            .fold(f64::INFINITY, f64::min)
     }
     fn edge_windows(&self, e: u32) -> Vec<(Src, f64, f64)> {
-        self.fields.iter().flat_map(|g| Distance::edge_windows(g, e)).collect()
+        self.fields
+            .iter()
+            .flat_map(|g| Distance::edge_windows(g, e))
+            .collect()
     }
     fn regions(&self, f: u32) -> Vec<(Func, Region)> {
         self.fields.iter().flat_map(|g| g.regions(f)).collect()
@@ -2144,9 +2357,14 @@ fn triple(a: &F2, b: &F2, c: &F2) -> Vec<([f64; 2], f64)> {
     let mut out = vec![];
     if circles.is_empty() {
         // Three lines: a 3 x 3 system.
-        let m = [[rows[0][0], rows[0][1], rows[0][2]], [rows[1][0], rows[1][1], rows[1][2]], [rows[2][0], rows[2][1], rows[2][2]]];
+        let m = [
+            [rows[0][0], rows[0][1], rows[0][2]],
+            [rows[1][0], rows[1][1], rows[1][2]],
+            [rows[2][0], rows[2][1], rows[2][2]],
+        ];
         let det = |m: [[f64; 3]; 3]| {
-            m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+                - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
                 + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
         };
         let d = det(m);
@@ -2170,7 +2388,12 @@ fn triple(a: &F2, b: &F2, c: &F2) -> Vec<([f64; 2], f64)> {
     if det.abs() <= 1e-14 * scale.max(1e-300) {
         return out;
     }
-    let solve = |b0: f64, b1: f64| [(b0 * r1[1] - r0[1] * b1) / det, (r0[0] * b1 - b0 * r1[0]) / det];
+    let solve = |b0: f64, b1: f64| {
+        [
+            (b0 * r1[1] - r0[1] * b1) / det,
+            (r0[0] * b1 - b0 * r1[0]) / det,
+        ]
+    };
     let p = solve(r0[3], r1[3]);
     let q = solve(-r0[2], -r1[2]);
     let (c1, s1) = circles[0];
@@ -2262,7 +2485,10 @@ pub(super) fn walk(
                         .fold(f64::INFINITY, f64::min)
                 })
                 .fold(f64::INFINITY, f64::min);
-            let ahead = [q[0] + 1e-7 * reach * d[0] / dl, q[1] + 1e-7 * reach * d[1] / dl];
+            let ahead = [
+                q[0] + 1e-7 * reach * d[0] / dl,
+                q[1] + 1e-7 * reach * d[1] / dl,
+            ];
             // The face that holds the point just ahead best (along an edge
             // it lies on that edge: rounding must not lose it).
             let inside = |h: u32| {
@@ -2403,7 +2629,10 @@ mod tests {
             let l2 = ((b[0] - a[0]) * (p[1] - a[1]) - (p[0] - a[0]) * (b[1] - a[1])) / det;
             let l0 = 1. - l1 - l2;
             if l0 >= -1e-12 && l1 >= -1e-12 && l2 >= -1e-12 {
-                return (k as u32, [0, 1, 2].map(|i| l0 * a[i] + l1 * b[i] + l2 * c[i]));
+                return (
+                    k as u32,
+                    [0, 1, 2].map(|i| l0 * a[i] + l1 * b[i] + l2 * c[i]),
+                );
             }
         }
         panic!("{p:?} off the mesh");
@@ -2414,11 +2643,20 @@ mod tests {
         let never = AtomicBool::new(false);
         let (v, t) = grid(7, 20., |_, _| 1.);
         let (v, t, topo) = build(v, t);
-        for seed in [[7.3, 11.1], [0., 0.], [20. / 7. * 3., 20. / 7. * 2.], [5., 0.]] {
+        for seed in [
+            [7.3, 11.1],
+            [0., 0.],
+            [20. / 7. * 3., 20. / 7. * 2.],
+            [5., 0.],
+        ] {
             let (f, p) = locate(&v, &t, seed);
-            let field = Field::compute(&v, &t, &topo, &[Piece::Point(f, p)], f64::INFINITY, &never).unwrap();
+            let field = Field::compute(&v, &t, &topo, &[Piece::Point(f, p)], f64::INFINITY, &never)
+                .unwrap();
             for k in 0..400 {
-                let q = [0.05 * (k % 20) as f64 * 19.9 + 0.01, 0.05 * (k / 20) as f64 * 19.9 + 0.02];
+                let q = [
+                    0.05 * (k % 20) as f64 * 19.9 + 0.01,
+                    0.05 * (k / 20) as f64 * 19.9 + 0.02,
+                ];
                 let (g, q3) = locate(&v, &t, q);
                 let d = field.at(g, q3);
                 assert!((d - norm(sub(q3, p))).abs() < 1e-9, "{seed:?} {q:?}: {d}");
@@ -2444,7 +2682,10 @@ mod tests {
             norm(sub(q, axpy(a, s, ab)))
         };
         for k in 0..400 {
-            let q = [0.03 * (k % 20) as f64 * 19.9 + 0.01, 0.03 * (k / 20) as f64 * 19.9 + 0.02];
+            let q = [
+                0.03 * (k % 20) as f64 * 19.9 + 0.01,
+                0.03 * (k / 20) as f64 * 19.9 + 0.02,
+            ];
             let (g, q3) = locate(&v, &t, q);
             let d = field.at(g, q3);
             assert!((d - seg(q3)).abs() < 1e-9, "{q:?}: {d} {}", seg(q3));
@@ -2457,7 +2698,11 @@ mod tests {
         let (v, t, topo) = build(v, t);
         // Along a grid line and along diagonals: through vertex after
         // vertex, ending where it should and covering the whole segment.
-        for (a, b) in [([0.5, 4.], [11.5, 4.]), ([0.3, 0.3], [11.7, 11.7]), ([11.9, 0.1], [0.1, 11.9])] {
+        for (a, b) in [
+            ([0.5, 4.], [11.5, 4.]),
+            ([0.3, 0.3], [11.7, 11.7]),
+            ([11.9, 0.1], [0.1, 11.9]),
+        ] {
             let (f, p) = locate(&v, &t, a);
             let mut pieces = vec![];
             let (_, q) = walk(&v, &t, &topo, f, p, b, &mut pieces).expect("reaches the end");
@@ -2469,7 +2714,10 @@ mod tests {
                     Piece::Point(..) => 0.,
                 })
                 .sum();
-            assert!((length - (b[0] - a[0]).hypot(b[1] - a[1])).abs() < 1e-9, "{a:?} {b:?}: {length}");
+            assert!(
+                (length - (b[0] - a[0]).hypot(b[1] - a[1])).abs() < 1e-9,
+                "{a:?} {b:?}: {length}"
+            );
         }
     }
 
@@ -2486,7 +2734,11 @@ mod tests {
         for j in 0..=n {
             for i in 0..=n {
                 let (x, y) = (20. + 0.5 * i as f64, 13. + 0.5 * j as f64);
-                v.push([x, y, (900. - (x - 20f64).powi(2) - (y - 20f64).powi(2)).sqrt() - 12.]);
+                v.push([
+                    x,
+                    y,
+                    (900. - (x - 20f64).powi(2) - (y - 20f64).powi(2)).sqrt() - 12.,
+                ]);
             }
         }
         let id = |i: usize, j: usize| (j * (n + 1) + i) as u32;
@@ -2500,8 +2752,18 @@ mod tests {
         let (v, t, topo) = build(v, t);
         let (_, a) = locate(&v, &t, [23.87721836215997, 16.5]);
         let (f, b) = locate(&v, &t, [23.69322980305756, 16.306770196942438]);
-        let field = Field::compute(&v, &t, &topo, &[Piece::Segment(f, a, b)], f64::INFINITY, &never).unwrap();
-        let dots: Vec<Piece> = (0..=400).map(|i| Piece::Point(f, axpy(a, i as f64 / 400., sub(b, a)))).collect();
+        let field = Field::compute(
+            &v,
+            &t,
+            &topo,
+            &[Piece::Segment(f, a, b)],
+            f64::INFINITY,
+            &never,
+        )
+        .unwrap();
+        let dots: Vec<Piece> = (0..=400)
+            .map(|i| Piece::Point(f, axpy(a, i as f64 / 400., sub(b, a))))
+            .collect();
         let points = Field::compute(&v, &t, &topo, &dots, f64::INFINITY, &never).unwrap();
         let seg = |q: Vec3| {
             let (g, q3) = locate(&v, &t, [q[0], q[1]]);
@@ -2509,7 +2771,10 @@ mod tests {
         };
         let mut worst = (0f64, [0.; 2]);
         for k in 0..2500 {
-            let q = [20.01 + 0.1196 * (k % 50) as f64, 13.01 + 0.1196 * (k / 50) as f64];
+            let q = [
+                20.01 + 0.1196 * (k % 50) as f64,
+                13.01 + 0.1196 * (k / 50) as f64,
+            ];
             let (g, q3) = locate(&v, &t, q);
             let e = field.at(g, q3) - seg(q3);
             if e > worst.0 {
@@ -2527,7 +2792,9 @@ mod tests {
         let never = AtomicBool::new(false);
         let v = vec![[0., 0., 1.], [13., 1., 1.], [4., 9., 1.]];
         let (v, t, topo) = build(v, vec![[0, 1, 2]]);
-        let sides: Vec<Piece> = (0..3).map(|k| Piece::Segment(0, v[k], v[(k + 1) % 3])).collect();
+        let sides: Vec<Piece> = (0..3)
+            .map(|k| Piece::Segment(0, v[k], v[(k + 1) % 3]))
+            .collect();
         let field = Field::compute(&v, &t, &topo, &sides, f64::INFINITY, &never).unwrap();
         let l = [0, 1, 2].map(|k| norm(sub(v[(k + 1) % 3], v[(k + 2) % 3])));
         let per = l[0] + l[1] + l[2];
@@ -2536,7 +2803,10 @@ mod tests {
         let inradius = 2. * area / per;
         let peaks = field.face_peaks(0);
         assert_eq!(peaks.len(), 1, "{peaks:?}");
-        assert!(norm(sub(peaks[0].0, centre)) < 1e-9 && (peaks[0].1 - inradius).abs() < 1e-9, "{peaks:?}");
+        assert!(
+            norm(sub(peaks[0].0, centre)) < 1e-9 && (peaks[0].1 - inradius).abs() < 1e-9,
+            "{peaks:?}"
+        );
         let (m, at) = field.face_max(0, &peaks);
         assert!((m - inradius).abs() < 1e-9 && norm(sub(at, centre)) < 1e-9);
     }
@@ -2559,11 +2829,16 @@ mod tests {
             .collect();
         let (v, t, topo) = build(v, t);
         let (f, p) = locate(&v, &t, [7.5, 1.]);
-        let field = Field::compute(&v, &t, &topo, &[Piece::Point(f, p)], f64::INFINITY, &never).unwrap();
+        let field =
+            Field::compute(&v, &t, &topo, &[Piece::Point(f, p)], f64::INFINITY, &never).unwrap();
         let corner = [4., 4., 0.];
         let (g, q) = locate(&v, &t, [1., 7.5]);
         let truth = norm(sub(p, corner)) + norm(sub(corner, q));
-        assert!((field.at(g, q) - truth).abs() < 1e-9, "{} {truth}", field.at(g, q));
+        assert!(
+            (field.at(g, q) - truth).abs() < 1e-9,
+            "{} {truth}",
+            field.at(g, q)
+        );
         // Where the straight line stays on the plane, it is the distance.
         let (g, q) = locate(&v, &t, [1., 3.]);
         assert!((field.at(g, q) - norm(sub(p, q))).abs() < 1e-9);
@@ -2576,12 +2851,17 @@ mod tests {
         let (v, t) = grid(10, 10., |x, _| 5. - (x - 5.).abs());
         let (v, t, topo) = build(v, t);
         let (f, p) = locate(&v, &t, [1., 5.]);
-        let field = Field::compute(&v, &t, &topo, &[Piece::Point(f, p)], f64::INFINITY, &never).unwrap();
+        let field =
+            Field::compute(&v, &t, &topo, &[Piece::Point(f, p)], f64::INFINITY, &never).unwrap();
         for y in [5., 7.3, 9.] {
             let (g, q) = locate(&v, &t, [9., y]);
             // Unfolded: 8 sqrt 2 across, (y - 5) along the ridge.
             let truth = (128f64 + (y - 5.).powi(2)).sqrt();
-            assert!((field.at(g, q) - truth).abs() < 1e-9, "{y}: {}", field.at(g, q));
+            assert!(
+                (field.at(g, q) - truth).abs() < 1e-9,
+                "{y}: {}",
+                field.at(g, q)
+            );
         }
     }
 
@@ -2610,9 +2890,14 @@ mod tests {
         // Points halfway along the spokes 0 and 4 (opposite).
         let p = scale(v[1], 0.5);
         let q = scale(v[5], 0.5);
-        let field = Field::compute(&v, &t, &topo, &[Piece::Point(0, p)], f64::INFINITY, &never).unwrap();
+        let field =
+            Field::compute(&v, &t, &topo, &[Piece::Point(0, p)], f64::INFINITY, &never).unwrap();
         let truth = norm(p) + norm(q);
-        assert!((field.at(4, q) - truth).abs() < 1e-9, "{} {truth}", field.at(4, q));
+        assert!(
+            (field.at(4, q) - truth).abs() < 1e-9,
+            "{} {truth}",
+            field.at(4, q)
+        );
     }
 
     #[test]
@@ -2621,7 +2906,8 @@ mod tests {
         let (v, t) = grid(5, 10., |x, y| 0.1 * x * y / 10.);
         let (v, t, topo) = build(v, t);
         let (f, p) = locate(&v, &t, [3.3, 4.1]);
-        let field = Field::compute(&v, &t, &topo, &[Piece::Point(f, p)], f64::INFINITY, &never).unwrap();
+        let field =
+            Field::compute(&v, &t, &topo, &[Piece::Point(f, p)], f64::INFINITY, &never).unwrap();
         let level = 3.7;
         let mut found = 0;
         for e in 0..topo.edges.len() as u32 {

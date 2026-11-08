@@ -44,10 +44,7 @@ use crate::{
 };
 use exact::{Coverage, Distance, FaceQuery, Field, NONE, Piece, Topology, walk};
 use serde::Serialize;
-use std::{
-    cmp::Ordering,
-    collections::HashMap,
-};
+use std::{cmp::Ordering, collections::HashMap};
 
 type Vec3 = [f64; 3];
 
@@ -137,6 +134,16 @@ fn lerp(a: Vec3, b: Vec3, t: f64) -> Vec3 {
 type ContactPath = Vec<(Vec3, Vec3)>;
 /// The passes (XY of the ball centre) and the report.
 type Planned = (Vec<Vec<[f64; 2]>>, GeodesicReport);
+/// A pass's cutter positions: (band, fill?, XY with how each landed).
+type Fitted = (usize, bool, Vec<([f64; 2], Fit)>);
+/// A cutter position with its contact.
+type Placed = (Vec3, ([f64; 2], Fit));
+/// A pass cut into pieces, and the number of bridged runs.
+type Pieces = (Vec<Vec<([f64; 2], Fit)>>, usize);
+/// Linked cutter paths, and the number of links kept down.
+type Linked = (Vec<Vec<[f64; 2]>>, usize);
+/// Segments filed by grid cell.
+type SegmentGrid = HashMap<(i64, i64), Vec<([f64; 2], [f64; 2])>>;
 /// Crossings along a side of a triangle: (parameter, node).
 type Side = Vec<(f64, u32)>;
 
@@ -231,7 +238,9 @@ impl Drive {
             }
             // Upward-facing: reachable by a three-axis ball from above.
             let n = cross(sub(tri[1], tri[0]), sub(tri[2], tri[0]));
-            let longest = (0..3).map(|i| norm(sub(tri[(i + 1) % 3], tri[i]))).fold(0., f64::max);
+            let longest = (0..3)
+                .map(|i| norm(sub(tri[(i + 1) % 3], tri[i])))
+                .fold(0., f64::max);
             if norm(n) <= tol * longest {
                 // Thinner than the weld tolerance: detail below the mesh's
                 // own accuracy, with no orientation of its own (its
@@ -413,9 +422,9 @@ impl Drive {
                     // boundary: there the faces along the boundary at v
                     // give its normal (as for a boundary pass).
                     let on_boundary = |g: &u32| {
-                        topo.tri_edges[*g as usize]
-                            .iter()
-                            .any(|&k| topo.faces[k as usize][1] == NONE && topo.edges[k as usize].contains(&v))
+                        topo.tri_edges[*g as usize].iter().any(|&k| {
+                            topo.faces[k as usize][1] == NONE && topo.edges[k as usize].contains(&v)
+                        })
                     };
                     if seen.iter().any(on_boundary) {
                         seen.retain(on_boundary);
@@ -427,9 +436,7 @@ impl Drive {
                     let mut m = [0.; 3];
                     for &g in &seen {
                         let w = area_of(g);
-                        for j in 0..3 {
-                            m[j] += w * self.n[g as usize][j];
-                        }
+                        m = axpy(m, w, self.n[g as usize]);
                     }
                     scale(m, 1. / norm(m).max(1e-300))
                 })
@@ -484,7 +491,10 @@ impl Drive {
         // Every cell the tolerance reaches: a triangle within `tol` may be
         // filed only in a neighbouring cell (its plan box ends at the cell
         // border, or at the mesh's edge with `p` just outside by rounding).
-        let (lo, hi) = (self.key(p[0] - tol, p[1] - tol), self.key(p[0] + tol, p[1] + tol));
+        let (lo, hi) = (
+            self.key(p[0] - tol, p[1] - tol),
+            self.key(p[0] + tol, p[1] + tol),
+        );
         let cells = (lo.0..=hi.0).flat_map(|x| (lo.1..=hi.1).map(move |y| (x, y)));
         for &ti in cells.flat_map(|k| self.buckets.get(&k).map_or(&[][..], Vec::as_slice)) {
             let [a, b, c] = self.t[ti as usize].map(|k| self.v[k as usize]);
@@ -497,13 +507,22 @@ impl Drive {
         best.map(|(_, ti, q)| {
             let [a, b, c] = self.t[ti as usize].map(|k| self.v[k as usize]);
             let (v0, v1, v2) = (sub(b, a), sub(c, a), sub(q, a));
-            let (d00, d01, d11, d20, d21) = (dot(v0, v0), dot(v0, v1), dot(v1, v1), dot(v2, v0), dot(v2, v1));
+            let (d00, d01, d11, d20, d21) = (
+                dot(v0, v0),
+                dot(v0, v1),
+                dot(v1, v1),
+                dot(v2, v0),
+                dot(v2, v1),
+            );
             let den = d00 * d11 - d01 * d01;
-            let (l1, l2) = if den > 0. { ((d11 * d20 - d01 * d21) / den, (d00 * d21 - d01 * d20) / den) } else { (0., 0.) };
+            let (l1, l2) = if den > 0. {
+                ((d11 * d20 - d01 * d21) / den, (d00 * d21 - d01 * d20) / den)
+            } else {
+                (0., 0.)
+            };
             (ti, [1. - l1 - l2, l1, l2])
         })
     }
-
 
     /// The triangles within distance `r` of `c`, sorted.
     fn within(&self, c: Vec3, r: f64) -> Vec<u32> {
@@ -616,7 +635,9 @@ fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
 
 /// The longest side of a triangle.
 fn diameter(p: [Vec3; 3]) -> f64 {
-    (0..3).map(|k| norm(sub(p[(k + 1) % 3], p[k]))).fold(0., f64::max)
+    (0..3)
+        .map(|k| norm(sub(p[(k + 1) % 3], p[k])))
+        .fold(0., f64::max)
 }
 
 /// Whether `q` (in the plane of the triangle `p`, normal `n`) lies in it.
@@ -749,7 +770,8 @@ impl<'a> Iso<'a> {
                 for i in 0..ring.len() {
                     s = !s;
                     if !s {
-                        self.links.push((ring[i], ring[(i + 1) % ring.len()], f, vec![]));
+                        self.links
+                            .push((ring[i], ring[(i + 1) % ring.len()], f, vec![]));
                     }
                 }
             }
@@ -835,7 +857,16 @@ impl<'a> Iso<'a> {
     /// chord's normal) until it is within `tol` of it. False if some
     /// chord's normal does not reach the curve inside the face.
     #[allow(clippy::too_many_arguments)]
-    fn chord(&self, q: &FaceQuery<'a>, f: u32, a: Vec3, b: Vec3, tol: f64, depth: usize, out: &mut Vec<Vec3>) -> bool {
+    fn chord(
+        &self,
+        q: &FaceQuery<'a>,
+        f: u32,
+        a: Vec3,
+        b: Vec3,
+        tol: f64,
+        depth: usize,
+        out: &mut Vec<Vec3>,
+    ) -> bool {
         let d = sub(b, a);
         let l = norm(d);
         if l <= tol {
@@ -956,7 +987,15 @@ fn contour(
     for &f in faces {
         iso.face(f);
     }
-    trace::line(|| format!("contour {level:.3}: {} faces, {} links, {} nodes in {:?}", faces.len(), iso.links.len(), iso.nodes.len(), started.elapsed()));
+    trace::line(|| {
+        format!(
+            "contour {level:.3}: {} faces, {} links, {} nodes in {:?}",
+            faces.len(),
+            iso.links.len(),
+            iso.nodes.len(),
+            started.elapsed()
+        )
+    });
     // Each pass within half the path error of its level (so neighbouring
     // passes are within the path error of the stepover apart): a quarter for
     // the contour, a quarter for the cutter path's smoothing. Chords within
@@ -964,7 +1003,10 @@ fn contour(
     // of it of itself (where the curve grazes a long sliver's side within
     // rounding, the exact crossings come micrometres apart; their wiggles
     // are below any tolerance).
-    iso.paths().into_iter().map(|path| simplify(&path, 0.025 * tol)).collect()
+    iso.paths()
+        .into_iter()
+        .map(|path| simplify(&path, 0.025 * tol))
+        .collect()
 }
 
 /// A polyline simplified (Douglas and Peucker 1973): a subset of its points
@@ -988,7 +1030,11 @@ fn simplify(path: &ContactPath, eps: f64) -> ContactPath {
         let ll = dot(ab, ab);
         let (mut far, mut at) = (0f64, i);
         for (k, q) in path.iter().enumerate().take(j).skip(i + 1) {
-            let t = if ll > 0. { (dot(sub(q.0, a), ab) / ll).clamp(0., 1.) } else { 0. };
+            let t = if ll > 0. {
+                (dot(sub(q.0, a), ab) / ll).clamp(0., 1.)
+            } else {
+                0.
+            };
             let d = norm(sub(axpy(a, t, ab), q.0));
             if d > far {
                 (far, at) = (d, k);
@@ -1000,7 +1046,11 @@ fn simplify(path: &ContactPath, eps: f64) -> ContactPath {
             stack.push((at, j));
         }
     }
-    path.iter().zip(keep).filter(|(_, k)| *k).map(|(q, _)| *q).collect()
+    path.iter()
+        .zip(keep)
+        .filter(|(_, k)| *k)
+        .map(|(q, _)| *q)
+        .collect()
 }
 
 /// Each face's interior peaks that matter for the levels (offset + k) x
@@ -1062,10 +1112,24 @@ fn paths_field<'a>(
             match (prev, here) {
                 (Some((f, a)), Some(_)) => {
                     let t = std::time::Instant::now();
-                    let r = walk(&drive.v, &drive.t, &drive.topo, f, a, [q[0], q[1]], &mut sources);
+                    let r = walk(
+                        &drive.v,
+                        &drive.t,
+                        &drive.topo,
+                        f,
+                        a,
+                        [q[0], q[1]],
+                        &mut sources,
+                    );
                     if t.elapsed().as_millis() > 20 && trace::on() && slow < 5 {
                         slow += 1;
-                        trace::line(|| format!("slow walk {:?} from face {f} {a:?} to {q:?} ok {}", t.elapsed(), r.is_some()));
+                        trace::line(|| {
+                            format!(
+                                "slow walk {:?} from face {f} {a:?} to {q:?} ok {}",
+                                t.elapsed(),
+                                r.is_some()
+                            )
+                        });
                     }
                 }
                 (None, Some((f, a))) => sources.push(Piece::Point(f, a)),
@@ -1075,7 +1139,14 @@ fn paths_field<'a>(
         }
     }
     if trace::on() {
-        trace::line(|| format!("paths_field: walked {} paths into {} pieces in {:?}", paths.len(), sources.len(), t_walk.elapsed()));
+        trace::line(|| {
+            format!(
+                "paths_field: walked {} paths into {} pieces in {:?}",
+                paths.len(),
+                sources.len(),
+                t_walk.elapsed()
+            )
+        });
     }
     Field::compute(&drive.v, &drive.t, &drive.topo, &sources, limit, cancel)
 }
@@ -1089,6 +1160,7 @@ fn paths_field<'a>(
 /// seed field's level F(c)/2 below c instead (c is that far from it along
 /// the surface). Repeated until covered; returns the passes added and the
 /// certified coverage. Not converging is refused.
+#[allow(clippy::too_many_arguments)]
 fn fill(
     drive: &Drive,
     field: &Field,
@@ -1114,7 +1186,13 @@ fn fill(
         fields: vec![paths_field(drive, &paths, limit, cancel)?],
     };
     if trace::on() {
-        trace::line(|| format!("fill: field of {} passes in {:?}", paths.len(), t_first.elapsed()));
+        trace::line(|| {
+            format!(
+                "fill: field of {} passes in {:?}",
+                paths.len(),
+                t_first.elapsed()
+            )
+        });
     }
     // Per face: its maximum and where (exact where above the target, else
     // at most the target). Passes only lower the distance, so a face once
@@ -1140,7 +1218,14 @@ fn fill(
                     let m = near.face_max(f as u32, &peaks);
                     if timing && tf.elapsed().as_millis() > 200 {
                         let tri = drive.t[f].map(|k| drive.v[k as usize]);
-                        trace::line(|| format!("   slow face {f}: {:?} functions {} max {:.4} tri {tri:?}", tf.elapsed(), near.regions(f as u32).len(), m.0));
+                        trace::line(|| {
+                            format!(
+                                "   slow face {f}: {:?} functions {} max {:.4} tri {tri:?}",
+                                tf.elapsed(),
+                                near.regions(f as u32).len(),
+                                m.0
+                            )
+                        });
                     }
                     out.push((m, peaks));
                 }
@@ -1155,17 +1240,33 @@ fn fill(
         let mut candidates: Vec<Vec<(f64, Vec3)>> = vec![vec![]; nf];
         for (&f, (m, peaks)) in open.iter().zip(found.into_iter().flatten()) {
             maxima[f] = m;
-            candidates[f] = std::iter::once(m).chain(peaks.into_iter().map(|(p, d)| (d, p))).filter(|x| x.0 > target).collect();
+            candidates[f] = std::iter::once(m)
+                .chain(peaks.into_iter().map(|(p, d)| (d, p)))
+                .filter(|x| x.0 > target)
+                .collect();
         }
         let searched = open.len();
         open.retain(|&f| maxima[f].0 > target);
         if timing {
-            trace::line(|| format!("round {round}: searched {searched} faces in {:?}, open {}, passes {}, fields {}", t0.elapsed(), open.len(), passes.len(), near.fields.len()));
+            trace::line(|| {
+                format!(
+                    "round {round}: searched {searched} faces in {:?}, open {}, passes {}, fields {}",
+                    t0.elapsed(),
+                    open.len(),
+                    passes.len(),
+                    near.fields.len()
+                )
+            });
             if open.len() <= 4 {
                 for &f in &open {
                     let (m, c) = maxima[f];
                     let tri = drive.t[f].map(|k| drive.v[k as usize]);
-                    trace::line(|| format!("   open face {f}: max {m:.4} at {c:?} at() {:.4} tri {tri:?}", near.at(f as u32, c)));
+                    trace::line(|| {
+                        format!(
+                            "   open face {f}: max {m:.4} at {c:?} at() {:.4} tri {tri:?}",
+                            near.at(f as u32, c)
+                        )
+                    });
                 }
             }
         }
@@ -1206,7 +1307,11 @@ fn fill(
             // within reach of one chosen this round.
             let mut order: Vec<(usize, f64, Vec3)> = comp
                 .iter()
-                .flat_map(|&f| candidates[f].iter().map(move |&(far, c)| (f, far.min(limit), c)))
+                .flat_map(|&f| {
+                    candidates[f]
+                        .iter()
+                        .map(move |&(far, c)| (f, far.min(limit), c))
+                })
                 .collect();
             order.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
             // A point within the target of a fill already chosen this round
@@ -1250,7 +1355,17 @@ fn fill(
                     && let Some((g, _)) = drive.locate(q, 1e-6)
                 {
                     let mut pieces = vec![];
-                    if walk(&drive.v, &drive.t, &drive.topo, g, q, [c[0], c[1]], &mut pieces).is_some() {
+                    if walk(
+                        &drive.v,
+                        &drive.t,
+                        &drive.topo,
+                        g,
+                        q,
+                        [c[0], c[1]],
+                        &mut pieces,
+                    )
+                    .is_some()
+                    {
                         let mut path: ContactPath = vec![];
                         for piece in &pieces {
                             if let Piece::Segment(h, a, b) = *piece {
@@ -1267,7 +1382,14 @@ fn fill(
                     }
                 }
                 if timing {
-                    trace::line(|| format!("   fill c {c:?} far {far:.4} nearest {:?} spur {:?}", nearest, spur.as_ref().map(|p| p.iter().map(|q| q.0).collect::<Vec<_>>())));
+                    trace::line(|| {
+                        format!(
+                            "   fill c {c:?} far {far:.4} nearest {:?} spur {:?}",
+                            nearest,
+                            spur.as_ref()
+                                .map(|p| p.iter().map(|q| q.0).collect::<Vec<_>>())
+                        )
+                    });
                 }
                 if let Some(path) = spur {
                     chosen.push(path.clone());
@@ -1301,7 +1423,13 @@ fn fill(
         let t1 = std::time::Instant::now();
         near.fields.push(paths_field(drive, &new, limit, cancel)?);
         if timing {
-            trace::line(|| format!("  {} new passes, their field in {:?}", new.len(), t1.elapsed()));
+            trace::line(|| {
+                format!(
+                    "  {} new passes, their field in {:?}",
+                    new.len(),
+                    t1.elapsed()
+                )
+            });
         }
         added += fresh.len();
         passes.extend(fresh);
@@ -1376,7 +1504,11 @@ fn centre_passes(
     let mut next: HashMap<usize, usize> = HashMap::new();
     let mut has_prev: Vec<usize> = vec![];
     let mut seen: Vec<usize> = vec![];
-    let mut ends: Vec<usize> = spurs.iter().copied().filter(|i| links.get(i).is_some_and(|l| l.len() == 1)).collect();
+    let mut ends: Vec<usize> = spurs
+        .iter()
+        .copied()
+        .filter(|i| links.get(i).is_some_and(|l| l.len() == 1))
+        .collect();
     ends.sort_by_key(|&i| (passes[i].0, i));
     for &e in &ends {
         if seen.contains(&e) {
@@ -1407,7 +1539,17 @@ fn centre_passes(
                 break;
             };
             let mut pieces = vec![];
-            if walk(&drive.v, &drive.t, &drive.topo, f, a, [b[0], b[1]], &mut pieces).is_none() {
+            if walk(
+                &drive.v,
+                &drive.t,
+                &drive.topo,
+                f,
+                a,
+                [b[0], b[1]],
+                &mut pieces,
+            )
+            .is_none()
+            {
                 break;
             }
             for piece in &pieces {
@@ -1504,7 +1646,16 @@ fn mark(t: &mut std::time::Instant, what: &str) {
 fn seeds(
     drive: &Drive,
     seed: &GeodesicSeed,
-) -> Result<(&'static str, Vec<Piece>, f64, usize, Vec<(usize, bool, f64, ContactPath)>), String> {
+) -> Result<
+    (
+        &'static str,
+        Vec<Piece>,
+        f64,
+        usize,
+        Vec<(usize, bool, f64, ContactPath)>,
+    ),
+    String,
+> {
     let mut contact_passes: Vec<(usize, bool, f64, ContactPath)> = vec![];
     let (name, sources, offset, first) = match seed {
         GeodesicSeed::Boundary => {
@@ -1557,10 +1708,9 @@ fn seeds(
             // The curve projected onto the surface, split per face.
             let mut pieces = vec![];
             for q in &points_mm[1..] {
-                (f, p) = walk(&drive.v, &drive.t, &drive.topo, f, p, *q, &mut pieces)
-                    .ok_or_else(|| {
-                        format!("geodesic seed curve leaves the drive surface before {q:?}")
-                    })?;
+                (f, p) = walk(&drive.v, &drive.t, &drive.topo, f, p, *q, &mut pieces).ok_or_else(
+                    || format!("geodesic seed curve leaves the drive surface before {q:?}"),
+                )?;
             }
             let mut path: ContactPath = vec![];
             for piece in &pieces {
@@ -1621,7 +1771,9 @@ fn plan<'a>(
             drive.t[f].map(|k| field.vertex[k as usize]),
         );
         let r = |i: usize| (0..3).map(|j| norm(sub(p[i], p[j]))).fold(0., f64::max);
-        lo_f[f] = (0..3).map(|i| d[i] - r(i)).fold(f64::NEG_INFINITY, f64::max);
+        lo_f[f] = (0..3)
+            .map(|i| d[i] - r(i))
+            .fold(f64::NEG_INFINITY, f64::max);
         hi_f[f] = (0..3).map(|i| d[i] + r(i)).fold(f64::INFINITY, f64::min);
         for &e in &topo.tri_edges[f] {
             gmax = gmax.max(emax[e as usize]);
@@ -1649,7 +1801,11 @@ fn plan<'a>(
         if k1 < 0. {
             continue;
         }
-        for bucket in buckets.iter_mut().take((k1 as usize + 1).min(levels)).skip(k0) {
+        for bucket in buckets
+            .iter_mut()
+            .take((k1 as usize + 1).min(levels))
+            .skip(k0)
+        {
             bucket.push(f as u32);
         }
     }
@@ -1659,7 +1815,14 @@ fn plan<'a>(
         cancel,
         |i, _| {
             let k = first + i;
-            Ok(contour(drive, &field, &peaks, value_of(k), &buckets[k], path_error / 2.))
+            Ok(contour(
+                drive,
+                &field,
+                &peaks,
+                value_of(k),
+                &buckets[k],
+                path_error / 2.,
+            ))
         },
         |_| Ok(()),
     )?;
@@ -1767,13 +1930,27 @@ pub(crate) fn passes(
             if kept.is_empty() {
                 return Err("geodesic finishing: no face of the target lies within slope_from_deg..slope_to_deg".into());
             }
-            limited = SurfaceMesh { triangles: std::sync::Arc::new(kept), ..mesh.clone() };
+            limited = SurfaceMesh {
+                triangles: std::sync::Arc::new(kept),
+                ..mesh.clone()
+            };
             &limited
         }
     };
     let drive = Drive::build(mesh, cancel)?;
     if tool_centre {
-        return centre_mode(&drive, mesh, surface, stepover, contact_radius, tool_radius, path_error, seed, work, cancel);
+        return centre_mode(
+            &drive,
+            mesh,
+            surface,
+            stepover,
+            contact_radius,
+            tool_radius,
+            path_error,
+            seed,
+            work,
+            cancel,
+        );
     }
     let Plan {
         name,
@@ -1827,12 +2004,16 @@ pub(crate) fn passes(
     // takes another quarter).
     let smoothed = |out: Vec<([f64; 2], Fit)>| -> Vec<([f64; 2], Fit)> {
         let xy: Vec<[f64; 2]> = out.iter().map(|p| p.0).collect();
-        smooth(&xy, path_error / 4.).into_iter().zip(out).map(|(q, (_, fit))| (q, fit)).collect()
+        smooth(&xy, path_error / 4.)
+            .into_iter()
+            .zip(out)
+            .map(|(q, (_, fit))| (q, fit))
+            .collect()
     };
     // Every vertex as solved (verified, its unreachable ones counted), and
     // the paths cut (unreachable runs bridged or cut off).
-    let mut fits: Vec<(usize, bool, Vec<([f64; 2], Fit)>)> = vec![];
-    let mut cuts: Vec<(usize, bool, Vec<([f64; 2], Fit)>)> = vec![];
+    let mut fits: Vec<Fitted> = vec![];
+    let mut cuts: Vec<Fitted> = vec![];
     let mut bridged_spans = 0;
     let mut centre: Vec<Vec<[f64; 2]>> = vec![];
     // The drive surface's boundary passes: links may follow them.
@@ -1843,9 +2024,22 @@ pub(crate) fn passes(
         work.distance_tests += w.distance_tests;
         bridged_spans += bridged;
         if trace::on() {
-            let un: Vec<[f64; 2]> = out.iter().filter(|p| p.1 == Fit::Unreachable).map(|p| p.0).collect();
+            let un: Vec<[f64; 2]> = out
+                .iter()
+                .filter(|p| p.1 == Fit::Unreachable)
+                .map(|p| p.0)
+                .collect();
             if !un.is_empty() {
-                trace::line(|| format!("pass k={k} cap={cap} level={level} unreachable {} of {} bridged {bridged} pieces {} first {:?} last {:?}", un.len(), out.len(), cut.len(), un[0], un[un.len() - 1]));
+                trace::line(|| {
+                    format!(
+                        "pass k={k} cap={cap} level={level} unreachable {} of {} bridged {bridged} pieces {} first {:?} last {:?}",
+                        un.len(),
+                        out.len(),
+                        cut.len(),
+                        un[0],
+                        un[un.len() - 1]
+                    )
+                });
             }
         }
         // Verified along the cutter path as cut, not only at its vertices:
@@ -1869,7 +2063,10 @@ pub(crate) fn passes(
                     let n = ((q[0] - p[0]).hypot(q[1] - p[1]) / (stepover / 4.)).ceil() as usize;
                     for j in 1..n {
                         let t = j as f64 / n as f64;
-                        dense.push(([p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])], Fit::Placed));
+                        dense.push((
+                            [p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])],
+                            Fit::Placed,
+                        ));
                     }
                 }
             }
@@ -1901,7 +2098,14 @@ pub(crate) fn passes(
         for (i, (k, cap, c)) in cuts.iter().enumerate() {
             for w in c.windows(2) {
                 if (w[1].0[0] - w[0].0[0]).hypot(w[1].0[1] - w[0].0[1]) > 10. {
-                    trace::line(|| format!("cut {i} k={k} cap={cap} n={} long {:?} -> {:?}", c.len(), w[0].0, w[1].0));
+                    trace::line(|| {
+                        format!(
+                            "cut {i} k={k} cap={cap} n={} long {:?} -> {:?}",
+                            c.len(),
+                            w[0].0,
+                            w[1].0
+                        )
+                    });
                 }
             }
         }
@@ -1909,12 +2113,24 @@ pub(crate) fn passes(
             trace::line(|| format!("rim {i} n={} {:?}", c.len(), c));
         }
     }
-    let (linked, stay_down) = link(&drive, surface, contact_radius, stepover, &cuts, centre, &rims, work, cancel)?;
+    let (linked, stay_down) = link(
+        &drive,
+        surface,
+        contact_radius,
+        stepover,
+        &cuts,
+        centre,
+        &rims,
+        work,
+        cancel,
+    )?;
     if trace::on() {
         for (i, c) in linked.iter().enumerate() {
             for w in c.windows(2) {
                 if (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]) > 10. {
-                    trace::line(|| format!("linked {i} n={} long {:?} -> {:?}", c.len(), w[0], w[1]));
+                    trace::line(|| {
+                        format!("linked {i} n={} long {:?} -> {:?}", c.len(), w[0], w[1])
+                    });
                 }
             }
         }
@@ -1923,7 +2139,6 @@ pub(crate) fn passes(
     report.retract_links = linked.len().saturating_sub(1);
     Ok((linked, report))
 }
-
 
 /// Tool-centre mode (#119; Cimatron's "tool center", ModuleWorks'
 /// geodesic tool-centre paths): passes a stepover apart along the surface
@@ -1958,7 +2173,10 @@ fn centre_mode(
             hi[k] = hi[k].max(p[k] + r);
         }
     }
-    let (nx, ny) = (((hi[0] - lo[0]) / h).ceil() as usize + 1, ((hi[1] - lo[1]) / h).ceil() as usize + 1);
+    let (nx, ny) = (
+        ((hi[0] - lo[0]) / h).ceil() as usize + 1,
+        ((hi[1] - lo[1]) / h).ceil() as usize + 1,
+    );
     let workers = std::thread::available_parallelism().map_or(1, usize::from);
     // The drive surface's boundary vertices.
     let topo = &drive.topo;
@@ -1989,12 +2207,16 @@ fn centre_mode(
     // (rolling over the edges between its faces), and on the boundary only
     // square onto the boundary face (never rolling off the surface, as
     // contact mode's passes never do).
-    let centre_at = |xy: [f64; 2], w: &mut SurfaceWork, stop: &dyn Fn() -> bool| -> Result<Option<Vec3>, String> {
+    let centre_at = |xy: [f64; 2],
+                     w: &mut SurfaceWork,
+                     stop: &dyn Fn() -> bool|
+     -> Result<Option<Vec3>, String> {
         let c = surface.contact(xy, r, w, &stop)?;
         let centre = [xy[0], xy[1], c.center_z];
         let on = !c.on_base()
             && drive.touching(centre, r, TOUCH).iter().any(|&(f, q)| {
-                !on_rim(f, q) || dot(scale(sub(centre, q), 1. / r), drive.n[f as usize]) >= 1. - 1e-9
+                !on_rim(f, q)
+                    || dot(scale(sub(centre, q), 1. / r), drive.n[f as usize]) >= 1. - 1e-9
             });
         Ok(on.then_some(centre))
     };
@@ -2008,7 +2230,11 @@ fn centre_mode(
             let mut w = SurfaceWork::default();
             let mut row = Vec::with_capacity(nx);
             for i in 0..nx {
-                row.push(centre_at([lo[0] + i as f64 * h, lo[1] + j as f64 * h], &mut w, &stop)?);
+                row.push(centre_at(
+                    [lo[0] + i as f64 * h, lo[1] + j as f64 * h],
+                    &mut w,
+                    &stop,
+                )?);
             }
             Ok((row, w))
         },
@@ -2059,11 +2285,18 @@ fn centre_mode(
                     }
                     if p.is_some() != q.is_some() {
                         // From the corner in the region towards the other.
-                        let (inside, outside, mut best) = if let Some(p) = p { (pa, pb, p) } else { (pb, pa, q.unwrap()) };
+                        let (inside, outside, mut best) = if let Some(p) = p {
+                            (pa, pb, p)
+                        } else {
+                            (pb, pa, q.unwrap())
+                        };
                         let (mut t0, mut t1) = (0., 1.);
                         while (t1 - t0) * h > 0.1 * path_error {
                             let t = (t0 + t1) / 2.;
-                            let at = [inside[0] + t * (outside[0] - inside[0]), inside[1] + t * (outside[1] - inside[1])];
+                            let at = [
+                                inside[0] + t * (outside[0] - inside[0]),
+                                inside[1] + t * (outside[1] - inside[1]),
+                            ];
                             match centre_at(at, &mut w, &stop)? {
                                 Some(c) => (t0, best) = (t, c),
                                 None => t1 = t,
@@ -2092,7 +2325,9 @@ fn centre_mode(
         tris.extend(t);
     }
     if tris.is_empty() {
-        return Err("geodesic tool-centre mode: the ball rests on the drive surface nowhere".into());
+        return Err(
+            "geodesic tool-centre mode: the ball rests on the drive surface nowhere".into(),
+        );
     }
     let centres = SurfaceMesh {
         version: 1,
@@ -2102,7 +2337,13 @@ fn centre_mode(
         source: serde_json::json!({}),
     };
     let cdrive = Drive::build(&centres, cancel)?;
-    trace::line(|| format!("tool-centre surface: {nx} x {ny} grid, {} triangles sampled, {} in the drive", centres.triangles.len(), cdrive.t.len()));
+    trace::line(|| {
+        format!(
+            "tool-centre surface: {nx} x {ny} grid, {} triangles sampled, {} in the drive",
+            centres.triangles.len(),
+            cdrive.t.len()
+        )
+    });
     let Plan {
         name,
         passes: planned,
@@ -2113,12 +2354,15 @@ fn centre_mode(
     } = plan(&cdrive, seed, stepover, path_error, cancel)?;
     // The passes are the cutter path (XY of the ball centre); verified like
     // contact mode's, along the path at most a quarter stepover apart.
-    let mut fits: Vec<(usize, bool, Vec<([f64; 2], Fit)>)> = vec![];
+    let mut fits: Vec<Fitted> = vec![];
     let mut cuts = vec![];
     let mut centre = vec![];
     let mut rims = vec![];
     for (k, cap, level, path) in &planned {
-        let xy: Vec<([f64; 2], Fit)> = path.iter().map(|(p, _)| ([p[0], p[1]], Fit::Placed)).collect();
+        let xy: Vec<([f64; 2], Fit)> = path
+            .iter()
+            .map(|(p, _)| ([p[0], p[1]], Fit::Placed))
+            .collect();
         let mut dense = Vec::with_capacity(xy.len());
         for (i, &(q, f)) in xy.iter().enumerate() {
             if i > 0 {
@@ -2126,7 +2370,10 @@ fn centre_mode(
                 let n = ((q[0] - p[0]).hypot(q[1] - p[1]) / (stepover / 4.)).ceil() as usize;
                 for m in 1..n {
                     let t = m as f64 / n as f64;
-                    dense.push(([p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])], Fit::Placed));
+                    dense.push((
+                        [p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])],
+                        Fit::Placed,
+                    ));
                 }
             }
             dense.push((q, f));
@@ -2144,7 +2391,14 @@ fn centre_mode(
     // The contact sets are ordered inner to outer by the seed's distance
     // on the part.
     let (_, sources, ..) = seeds(drive, seed)?;
-    let order = Field::compute(&drive.v, &drive.t, &drive.topo, &sources, f64::INFINITY, cancel)?;
+    let order = Field::compute(
+        &drive.v,
+        &drive.t,
+        &drive.topo,
+        &sources,
+        f64::INFINITY,
+        cancel,
+    )?;
     let checked = Checked {
         drive,
         planned: &order,
@@ -2157,7 +2411,9 @@ fn centre_mode(
     report.mode = "tool_centre";
     report.drive_triangles = cdrive.t.len();
     report.centre_spacing_mm = Some(centre_spacing(&cdrive, &planned, stepover, cancel)?);
-    let (linked, stay_down) = link(drive, surface, r, stepover, &cuts, centre, &rims, work, cancel)?;
+    let (linked, stay_down) = link(
+        drive, surface, r, stepover, &cuts, centre, &rims, work, cancel,
+    )?;
     report.stay_down_links = stay_down;
     report.retract_links = linked.len().saturating_sub(1);
     Ok((linked, report))
@@ -2172,21 +2428,41 @@ fn centre_spacing(
     stepover: f64,
     cancel: &impl CancelSignal,
 ) -> Result<[f64; 3], String> {
-    let top = passes.iter().filter(|p| !p.1).map(|p| p.0).max().unwrap_or(0);
+    let top = passes
+        .iter()
+        .filter(|p| !p.1)
+        .map(|p| p.0)
+        .max()
+        .unwrap_or(0);
     let (mut lo, mut sum, mut hi, mut n) = (f64::INFINITY, 0., 0f64, 0usize);
     for level in 1..=top {
         let mut sources = vec![];
         for (_, _, _, path) in passes.iter().filter(|p| !p.1 && p.0 == level - 1) {
             for w in path.windows(2) {
                 if let Some((f, _)) = drive.locate(w[0].0, 1e-6) {
-                    walk(&drive.v, &drive.t, &drive.topo, f, w[0].0, [w[1].0[0], w[1].0[1]], &mut sources);
+                    walk(
+                        &drive.v,
+                        &drive.t,
+                        &drive.topo,
+                        f,
+                        w[0].0,
+                        [w[1].0[0], w[1].0[1]],
+                        &mut sources,
+                    );
                 }
             }
         }
         if sources.is_empty() {
             continue;
         }
-        let field = Field::compute(&drive.v, &drive.t, &drive.topo, &sources, 2. * stepover, cancel)?;
+        let field = Field::compute(
+            &drive.v,
+            &drive.t,
+            &drive.topo,
+            &sources,
+            2. * stepover,
+            cancel,
+        )?;
         for (_, _, _, path) in passes.iter().filter(|p| !p.1 && p.0 == level) {
             for &(q, _) in path {
                 if let Some((f, _)) = drive.locate(q, 1e-6) {
@@ -2198,7 +2474,11 @@ fn centre_spacing(
             }
         }
     }
-    Ok(if n == 0 { [0.; 3] } else { [lo, sum / n as f64, hi] })
+    Ok(if n == 0 {
+        [0.; 3]
+    } else {
+        [lo, sum / n as f64, hi]
+    })
 }
 
 /// The solved passes as cut, linked on the surface wherever that is
@@ -2227,35 +2507,43 @@ fn link(
     surface: &PreparedSurface,
     r: f64,
     stepover: f64,
-    fits: &[(usize, bool, Vec<([f64; 2], Fit)>)],
+    fits: &[Fitted],
     centre: Vec<Vec<[f64; 2]>>,
     rims: &[Vec<[f64; 2]>],
     work: &mut SurfaceWork,
     cancel: &impl CancelSignal,
-) -> Result<(Vec<Vec<[f64; 2]>>, usize), String> {
+) -> Result<Linked, String> {
     // A link stays down where the resting ball touches the drive surface
     // (exact closest points within `TOUCH`, as verification decides) at
     // every sample (a quarter stepover apart) along it; links longer than
     // two stepovers retract.
-    let stays_on = |path: &[[f64; 2]], limit: bool, work: &mut SurfaceWork| -> Result<bool, String> {
-        let (a, b) = (path[0], path[path.len() - 1]);
-        if limit && (b[0] - a[0]).hypot(b[1] - a[1]) > 2. * stepover {
-            return Ok(false);
-        }
-        for w in path.windows(2) {
-            let len = (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]);
-            let n = (len / (stepover / 4.)).ceil().max(1.) as usize;
-            for i in 0..=n {
-                let t = i as f64 / n as f64;
-                let xy = [w[0][0] + t * (w[1][0] - w[0][0]), w[0][1] + t * (w[1][1] - w[0][1])];
-                let c = surface.contact(xy, r, work, cancel)?;
-                if c.on_base() || drive.touching([xy[0], xy[1], c.center_z], r, TOUCH).is_empty() {
-                    return Ok(false);
+    let stays_on =
+        |path: &[[f64; 2]], limit: bool, work: &mut SurfaceWork| -> Result<bool, String> {
+            let (a, b) = (path[0], path[path.len() - 1]);
+            if limit && (b[0] - a[0]).hypot(b[1] - a[1]) > 2. * stepover {
+                return Ok(false);
+            }
+            for w in path.windows(2) {
+                let len = (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]);
+                let n = (len / (stepover / 4.)).ceil().max(1.) as usize;
+                for i in 0..=n {
+                    let t = i as f64 / n as f64;
+                    let xy = [
+                        w[0][0] + t * (w[1][0] - w[0][0]),
+                        w[0][1] + t * (w[1][1] - w[0][1]),
+                    ];
+                    let c = surface.contact(xy, r, work, cancel)?;
+                    if c.on_base()
+                        || drive
+                            .touching([xy[0], xy[1], c.center_z], r, TOUCH)
+                            .is_empty()
+                    {
+                        return Ok(false);
+                    }
                 }
             }
-        }
-        Ok(true)
-    };
+            Ok(true)
+        };
     let stays = |path: &[[f64; 2]], work: &mut SurfaceWork| stays_on(path, true, work);
     let down_link = |a: [f64; 2], b: [f64; 2], work: &mut SurfaceWork| stays(&[a, b], work);
     // Points on a boundary pass (within an eighth of a stepover): its rim,
@@ -2274,9 +2562,16 @@ fn link(
         let mut best: Option<(f64, usize, f64)> = None;
         for (ri, rim) in rims.iter().enumerate() {
             for (j, w) in rim.windows(2).enumerate() {
-                let (u, v) = ([w[1][0] - w[0][0], w[1][1] - w[0][1]], [q[0] - w[0][0], q[1] - w[0][1]]);
+                let (u, v) = (
+                    [w[1][0] - w[0][0], w[1][1] - w[0][1]],
+                    [q[0] - w[0][0], q[1] - w[0][1]],
+                );
                 let uu = u[0] * u[0] + u[1] * u[1];
-                let t = if uu > 0. { ((u[0] * v[0] + u[1] * v[1]) / uu).clamp(0., 1.) } else { 0. };
+                let t = if uu > 0. {
+                    ((u[0] * v[0] + u[1] * v[1]) / uu).clamp(0., 1.)
+                } else {
+                    0.
+                };
                 let d = (v[0] - t * u[0]).hypot(v[1] - t * u[1]);
                 if best.is_none_or(|b| d < b.0) {
                     best = Some((d, ri, lengths[ri][j] + t * uu.sqrt()));
@@ -2290,21 +2585,45 @@ fn link(
     let along = |ri: usize, s0: f64, s1: f64| -> (f64, Vec<[f64; 2]>) {
         let (rim, acc) = (&rims[ri], &lengths[ri]);
         let total = acc[acc.len() - 1];
-        let closed = rim.len() > 2 && (rim[0][0] - rim[rim.len() - 1][0]).hypot(rim[0][1] - rim[rim.len() - 1][1]) < 1e-9;
+        let closed = rim.len() > 2
+            && (rim[0][0] - rim[rim.len() - 1][0]).hypot(rim[0][1] - rim[rim.len() - 1][1]) < 1e-9;
         let at = |x: f64| -> [f64; 2] {
             let j = acc.partition_point(|&a| a <= x).clamp(1, acc.len() - 1);
             let t = ((x - acc[j - 1]) / (acc[j] - acc[j - 1]).max(1e-300)).clamp(0., 1.);
-            [rim[j - 1][0] + t * (rim[j][0] - rim[j - 1][0]), rim[j - 1][1] + t * (rim[j][1] - rim[j - 1][1])]
+            [
+                rim[j - 1][0] + t * (rim[j][0] - rim[j - 1][0]),
+                rim[j - 1][1] + t * (rim[j][1] - rim[j - 1][1]),
+            ]
         };
-        let forward = if s1 >= s0 { s1 - s0 } else if closed { total - s0 + s1 } else { f64::INFINITY };
-        let backward = if s1 <= s0 { s0 - s1 } else if closed { s0 + total - s1 } else { f64::INFINITY };
-        let (len, dir) = if forward <= backward { (forward, 1.) } else { (backward, -1.) };
+        let forward = if s1 >= s0 {
+            s1 - s0
+        } else if closed {
+            total - s0 + s1
+        } else {
+            f64::INFINITY
+        };
+        let backward = if s1 <= s0 {
+            s0 - s1
+        } else if closed {
+            s0 + total - s1
+        } else {
+            f64::INFINITY
+        };
+        let (len, dir) = if forward <= backward {
+            (forward, 1.)
+        } else {
+            (backward, -1.)
+        };
         let n = (len / (stepover / 8.)).ceil().max(1.) as usize;
         let pts = (0..=n)
             .map(|i| {
                 let mut x = s0 + dir * len * i as f64 / n as f64;
-                if x < 0. { x += total; }
-                if x > total { x -= total; }
+                if x < 0. {
+                    x += total;
+                }
+                if x > total {
+                    x -= total;
+                }
                 at(x)
             })
             .collect();
@@ -2314,7 +2633,10 @@ fn link(
     // from the point a quarter stepover back.
     let heading = |path: &[[f64; 2]]| -> Option<[f64; 2]> {
         let e = path[path.len() - 1];
-        let f = path.iter().rev().find(|p| (e[0] - p[0]).hypot(e[1] - p[1]) >= stepover / 4.)?;
+        let f = path
+            .iter()
+            .rev()
+            .find(|p| (e[0] - p[0]).hypot(e[1] - p[1]) >= stepover / 4.)?;
         let (x, y) = (e[0] - f[0], e[1] - f[1]);
         let l = x.hypot(y);
         Some([x / l, y / l])
@@ -2357,7 +2679,11 @@ fn link(
         if f.len() < 2 {
             continue;
         }
-        if *cap { fills.push(xy(f)) } else { rings.push((*k, xy(f))) }
+        if *cap {
+            fills.push(xy(f))
+        } else {
+            rings.push((*k, xy(f)))
+        }
     }
     let mut down = 0;
     // Excursions per ring point: (ring, point index) -> fills, in order.
@@ -2410,7 +2736,10 @@ fn link(
     // anywhere, an open one at either end.
     let entry = |p: &[[f64; 2]], at: [f64; 2]| -> f64 {
         if is_closed(p) {
-            p.iter().map(|&q| d2(q, at)).fold(f64::INFINITY, f64::min).sqrt()
+            p.iter()
+                .map(|&q| d2(q, at))
+                .fold(f64::INFINITY, f64::min)
+                .sqrt()
         } else {
             d2(p[0], at).min(d2(p[p.len() - 1], at)).sqrt()
         }
@@ -2421,87 +2750,95 @@ fn link(
     // (along that direction) as that point is from `at`, so the link to it
     // is a lane change at a 1:2 slope rather than a step sideways; an open
     // pass from its nearer end.
-    let orient = |mut p: Vec<[f64; 2]>, at: Option<[f64; 2]>, head: Option<[f64; 2]>| -> Vec<[f64; 2]> {
-        if is_closed(&p) {
-            p.pop();
-            let area: f64 = (0..p.len())
-                .map(|i| {
-                    let (a, b) = (p[i], p[(i + 1) % p.len()]);
-                    a[0] * b[1] - b[0] * a[1]
-                })
-                .sum();
-            if area < 0. {
-                p.reverse();
-            }
-            // The ring started at point `q` of its side `j`.
-            let start_at = |p: &[[f64; 2]], j: usize, q: [f64; 2]| -> Vec<[f64; 2]> {
-                let n = p.len();
-                let mut out = vec![q];
-                out.extend((1..=n).map(|k| p[(j + k) % n]));
-                if d2(out[out.len() - 1], q) > 1e-18 {
-                    out.push(q);
+    let orient =
+        |mut p: Vec<[f64; 2]>, at: Option<[f64; 2]>, head: Option<[f64; 2]>| -> Vec<[f64; 2]> {
+            if is_closed(&p) {
+                p.pop();
+                let area: f64 = (0..p.len())
+                    .map(|i| {
+                        let (a, b) = (p[i], p[(i + 1) % p.len()]);
+                        a[0] * b[1] - b[0] * a[1]
+                    })
+                    .sum();
+                if area < 0. {
+                    p.reverse();
                 }
-                out.retain({
-                    let mut prev: Option<[f64; 2]> = None;
-                    move |x| {
-                        let keep = prev.is_none_or(|y| d2(*x, y) > 1e-18);
-                        prev = Some(*x);
-                        keep
+                // The ring started at point `q` of its side `j`.
+                let start_at = |p: &[[f64; 2]], j: usize, q: [f64; 2]| -> Vec<[f64; 2]> {
+                    let n = p.len();
+                    let mut out = vec![q];
+                    out.extend((1..=n).map(|k| p[(j + k) % n]));
+                    if d2(out[out.len() - 1], q) > 1e-18 {
+                        out.push(q);
                     }
-                });
-                out.pop();
-                out
-            };
-            if let Some(at) = at {
-                let n = p.len();
-                // The exact nearest point (on a side, not only a vertex).
-                let (mut bj, mut bq, mut bd) = (0, p[0], f64::INFINITY);
-                for j in 0..n {
-                    let (u, v) = (p[j], p[(j + 1) % n]);
-                    let w = [v[0] - u[0], v[1] - u[1]];
-                    let ww = w[0] * w[0] + w[1] * w[1];
-                    let t = if ww > 0. { (((at[0] - u[0]) * w[0] + (at[1] - u[1]) * w[1]) / ww).clamp(0., 1.) } else { 0. };
-                    let q = [u[0] + t * w[0], u[1] + t * w[1]];
-                    if d2(q, at) < bd {
-                        (bj, bq, bd) = (j, q, d2(q, at));
+                    out.retain({
+                        let mut prev: Option<[f64; 2]> = None;
+                        move |x| {
+                            let keep = prev.is_none_or(|y| d2(*x, y) > 1e-18);
+                            prev = Some(*x);
+                            keep
+                        }
+                    });
+                    out.pop();
+                    out
+                };
+                if let Some(at) = at {
+                    let n = p.len();
+                    // The exact nearest point (on a side, not only a vertex).
+                    let (mut bj, mut bq, mut bd) = (0, p[0], f64::INFINITY);
+                    for j in 0..n {
+                        let (u, v) = (p[j], p[(j + 1) % n]);
+                        let w = [v[0] - u[0], v[1] - u[1]];
+                        let ww = w[0] * w[0] + w[1] * w[1];
+                        let t = if ww > 0. {
+                            (((at[0] - u[0]) * w[0] + (at[1] - u[1]) * w[1]) / ww).clamp(0., 1.)
+                        } else {
+                            0.
+                        };
+                        let q = [u[0] + t * w[0], u[1] + t * w[1]];
+                        if d2(q, at) < bd {
+                            (bj, bq, bd) = (j, q, d2(q, at));
+                        }
                     }
-                }
-                p = start_at(&p, bj, bq);
-                // For a lane change: twice as far on along the ring as the
-                // nearest point is from `at` (a 1:2 slope), exactly.
-                if let Some(h) = head {
-                    let ahead = [p[1][0] - p[0][0], p[1][1] - p[0][1]];
-                    if h[0] * ahead[0] + h[1] * ahead[1] > 0. {
-                        let mut left = 2. * bd.sqrt();
-                        let m = p.len();
-                        for j in 0..m {
-                            let (u, v) = (p[j], p[(j + 1) % m]);
-                            let l = d2(u, v).sqrt();
-                            if l >= left {
-                                let t = left / l.max(1e-300);
-                                let q = [u[0] + t * (v[0] - u[0]), u[1] + t * (v[1] - u[1])];
-                                p = start_at(&p, j, q);
-                                break;
+                    p = start_at(&p, bj, bq);
+                    // For a lane change: twice as far on along the ring as the
+                    // nearest point is from `at` (a 1:2 slope), exactly.
+                    if let Some(h) = head {
+                        let ahead = [p[1][0] - p[0][0], p[1][1] - p[0][1]];
+                        if h[0] * ahead[0] + h[1] * ahead[1] > 0. {
+                            let mut left = 2. * bd.sqrt();
+                            let m = p.len();
+                            for j in 0..m {
+                                let (u, v) = (p[j], p[(j + 1) % m]);
+                                let l = d2(u, v).sqrt();
+                                if l >= left {
+                                    let t = left / l.max(1e-300);
+                                    let q = [u[0] + t * (v[0] - u[0]), u[1] + t * (v[1] - u[1])];
+                                    p = start_at(&p, j, q);
+                                    break;
+                                }
+                                left -= l;
                             }
-                            left -= l;
                         }
                     }
                 }
+                p.push(p[0]);
+            } else if let Some(at) = at
+                && d2(p[p.len() - 1], at) < d2(p[0], at)
+            {
+                p.reverse();
             }
-            p.push(p[0]);
-        } else if let Some(at) = at
-            && d2(p[p.len() - 1], at) < d2(p[0], at)
-        {
-            p.reverse();
-        }
-        p
-    };
+            p
+        };
     // The link from the end of `from` into pass `p` that stays down: a
     // lane change (into a closed pass two gaps past its nearest point),
     // else straight (into its nearest point), else none. Returns the
     // link's interior points and the pass as entered.
     #[allow(clippy::type_complexity)]
-    let join = |from: &[[f64; 2]], p: &[[f64; 2]], work: &mut SurfaceWork| -> Result<Option<(Vec<[f64; 2]>, Vec<[f64; 2]>)>, String> {
+    let join = |from: &[[f64; 2]],
+                p: &[[f64; 2]],
+                work: &mut SurfaceWork|
+     -> Result<Option<(Vec<[f64; 2]>, Vec<[f64; 2]>)>, String> {
         // Only from within two stepovers of the pass (candidates are chosen
         // by their distance from anywhere on the ring just cut, for a
         // re-trace; a direct link must be short itself).
@@ -2542,7 +2879,13 @@ fn link(
         if !trimmed && pool.iter().all(|p| p.0 == usize::MAX) {
             trimmed = true;
             let pieces = uncut(&out, &pool, stepover);
-            trace::line(|| format!("fills: {} trimmed to {} pieces not already cut", pool.len(), pieces.len()));
+            trace::line(|| {
+                format!(
+                    "fills: {} trimmed to {} pieces not already cut",
+                    pool.len(),
+                    pieces.len()
+                )
+            });
             pool = pieces.into_iter().map(|p| (usize::MAX, p)).collect();
             if pool.is_empty() {
                 break;
@@ -2557,9 +2900,18 @@ fn link(
         };
         // Level passes before centre and fill passes (cut after the passes
         // they complete); each kind nearest first.
-        let mut cands: Vec<(f64, usize)> = pool.iter().enumerate().map(|(i, p)| (reach(&p.1), i)).collect();
+        let mut cands: Vec<(f64, usize)> = pool
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (reach(&p.1), i))
+            .collect();
         let extra = |i: usize| pool[i].0 == usize::MAX;
-        cands.sort_by(|a, b| extra(a.1).cmp(&extra(b.1)).then(a.0.total_cmp(&b.0)).then(a.1.cmp(&b.1)));
+        cands.sort_by(|a, b| {
+            extra(a.1)
+                .cmp(&extra(b.1))
+                .then(a.0.total_cmp(&b.0))
+                .then(a.1.cmp(&b.1))
+        });
         // Along the part's edge: from a pass ending on a boundary pass, to
         // the open pass whose end is nearest along it (re-cutting the edge
         // between them).
@@ -2576,7 +2928,10 @@ fn link(
                         // Level passes first, as for every link.
                         let (len, pts) = along(ri, s0, s1);
                         let key = |j: usize, l: f64| (pool[j].0 == usize::MAX, l);
-                        if rim_best.as_ref().is_none_or(|b| key(i, len) < key(b.1, b.0)) {
+                        if rim_best
+                            .as_ref()
+                            .is_none_or(|b| key(i, len) < key(b.1, b.0))
+                        {
                             rim_best = Some((len, i, rev, pts));
                         }
                     }
@@ -2585,7 +2940,10 @@ fn link(
         }
         // The edge way's length (to a level pass: re-tracing is compared
         // with it).
-        let rim_len = rim_best.as_ref().filter(|b| pool[b.1].0 != usize::MAX).map_or(f64::INFINITY, |b| b.0);
+        let rim_len = rim_best
+            .as_ref()
+            .filter(|b| pool[b.1].0 != usize::MAX)
+            .map_or(f64::INFINITY, |b| b.0);
         let mut done = false;
         for &(d, i) in &cands {
             if d > 2. * stepover {
@@ -2605,7 +2963,10 @@ fn link(
                     .min_by(|&a, &b| entry(&pool[i].1, t[a]).total_cmp(&entry(&pool[i].1, t[b])))
                     .unwrap();
                 // Re-tracing farther than the way along the edge: take that.
-                let retrace: f64 = t[..=j].windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum();
+                let retrace: f64 = t[..=j]
+                    .windows(2)
+                    .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+                    .sum();
                 if retrace > rim_len {
                     continue;
                 }
@@ -2673,14 +3034,21 @@ fn link(
 /// stepover apart, and kept in runs of samples farther than a tenth of a
 /// stepover from every path in `done` (runs shorter than a quarter
 /// stepover are dropped: the cut around them already covers them).
-fn uncut(done: &[Vec<[f64; 2]>], extras: &[(usize, Vec<[f64; 2]>)], stepover: f64) -> Vec<Vec<[f64; 2]>> {
+fn uncut(
+    done: &[Vec<[f64; 2]>],
+    extras: &[(usize, Vec<[f64; 2]>)],
+    stepover: f64,
+) -> Vec<Vec<[f64; 2]>> {
     let near = stepover / 10.;
     let cell = stepover;
     let key = |p: [f64; 2]| ((p[0] / cell).floor() as i64, (p[1] / cell).floor() as i64);
-    let mut grid: HashMap<(i64, i64), Vec<([f64; 2], [f64; 2])>> = HashMap::new();
+    let mut grid: SegmentGrid = HashMap::new();
     for path in done {
         for w in path.windows(2) {
-            let (a, b) = (key([w[0][0].min(w[1][0]), w[0][1].min(w[1][1])]), key([w[0][0].max(w[1][0]), w[0][1].max(w[1][1])]));
+            let (a, b) = (
+                key([w[0][0].min(w[1][0]), w[0][1].min(w[1][1])]),
+                key([w[0][0].max(w[1][0]), w[0][1].max(w[1][1])]),
+            );
             for x in a.0..=b.0 {
                 for y in a.1..=b.1 {
                     grid.entry((x, y)).or_default().push((w[0], w[1]));
@@ -2696,7 +3064,11 @@ fn uncut(done: &[Vec<[f64; 2]>], extras: &[(usize, Vec<[f64; 2]>)], stepover: f6
                     segs.iter().any(|&(a, b)| {
                         let (u, v) = ([b[0] - a[0], b[1] - a[1]], [p[0] - a[0], p[1] - a[1]]);
                         let uu = u[0] * u[0] + u[1] * u[1];
-                        let t = if uu > 0. { ((u[0] * v[0] + u[1] * v[1]) / uu).clamp(0., 1.) } else { 0. };
+                        let t = if uu > 0. {
+                            ((u[0] * v[0] + u[1] * v[1]) / uu).clamp(0., 1.)
+                        } else {
+                            0.
+                        };
                         (v[0] - t * u[0]).hypot(v[1] - t * u[1]) <= near
                     })
                 })
@@ -2716,7 +3088,10 @@ fn uncut(done: &[Vec<[f64; 2]>], extras: &[(usize, Vec<[f64; 2]>)], stepover: f6
                 run.push(l);
             }
             *last = None;
-            let len: f64 = run.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum();
+            let len: f64 = run
+                .windows(2)
+                .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+                .sum();
             if run.len() >= 2 && len >= stepover / 4. {
                 out.push(std::mem::take(run));
             } else {
@@ -2777,7 +3152,10 @@ fn smooth(path: &[[f64; 2]], tol: f64) -> Vec<[f64; 2]> {
                 (prev[i - 1], prev[i + 1])
             };
             let p = prev[i];
-            let (la, lb) = ((p[0] - a[0]).hypot(p[1] - a[1]), (b[0] - p[0]).hypot(b[1] - p[1]));
+            let (la, lb) = (
+                (p[0] - a[0]).hypot(p[1] - a[1]),
+                (b[0] - p[0]).hypot(b[1] - p[1]),
+            );
             if la + lb <= 0. {
                 continue;
             }
@@ -2862,7 +3240,13 @@ impl Solver<'_> {
         let touching = cc[2] + (r * r - d2).max(0.).sqrt();
         if c.on_base() || c.center_z > touching + self.tol {
             if trace::on() {
-                trace::line(|| format!("unreach A cc={cc:?} n={n:?} base={} cz={} touching={touching}", c.on_base(), c.center_z));
+                trace::line(|| {
+                    format!(
+                        "unreach A cc={cc:?} n={n:?} base={} cz={} touching={touching}",
+                        c.on_base(),
+                        c.center_z
+                    )
+                });
             }
             return Ok((xy, Fit::Unreachable));
         }
@@ -2880,7 +3264,14 @@ impl Solver<'_> {
         } else {
             (self.field.at(g, p) - level).abs()
         };
-        Ok((xy, if miss <= self.eps { Fit::Placed } else { Fit::Off(miss) }))
+        Ok((
+            xy,
+            if miss <= self.eps {
+                Fit::Placed
+            } else {
+                Fit::Off(miss)
+            },
+        ))
     }
 
     /// The cutter positions at vertex `i` of a pass, each with its
@@ -2897,12 +3288,24 @@ impl Solver<'_> {
         level: f64,
         w: &mut SurfaceWork,
         stop: &impl CancelSignal,
-    ) -> Result<Vec<(Vec3, ([f64; 2], Fit))>, String> {
+    ) -> Result<Vec<Placed>, String> {
         let n = path.len();
         let cc = path[i].0;
         let closed = n > 2 && norm(sub(path[0].0, path[n - 1].0)) < 1e-9;
-        let prev = if i > 0 { Some(i - 1) } else if closed { Some(n - 2) } else { None };
-        let next = if i + 1 < n { Some(i + 1) } else if closed { Some(1) } else { None };
+        let prev = if i > 0 {
+            Some(i - 1)
+        } else if closed {
+            Some(n - 2)
+        } else {
+            None
+        };
+        let next = if i + 1 < n {
+            Some(i + 1)
+        } else if closed {
+            Some(1)
+        } else {
+            None
+        };
         // A segment's normal at the vertex: the faces it lies on, averaged
         // (one face; both faces of a crease the segment runs along, whose
         // normal cone it may use throughout).
@@ -2945,9 +3348,17 @@ impl Solver<'_> {
             let step = 2. * (1. - self.eps / self.r).clamp(-1., 1.).acos();
             // Convex: the next contact lies below the incoming face's
             // tangent plane (a concave crease folds instead; trim).
-            if angle > step && angle < std::f64::consts::PI - 1e-9 && dot(na, sub(path[b].0, cc)) < 0. {
+            if angle > step
+                && angle < std::f64::consts::PI - 1e-9
+                && dot(na, sub(path[b].0, cc)) < 0.
+            {
                 let k = (angle / step).ceil() as usize;
-                trace::line(|| format!("corner arc at {cc:.4?}: {:.2} deg in {k} steps", angle.to_degrees()));
+                trace::line(|| {
+                    format!(
+                        "corner arc at {cc:.4?}: {:.2} deg in {k} steps",
+                        angle.to_degrees()
+                    )
+                });
                 let mut out = Vec::with_capacity(k + 1);
                 for j in 0..=k {
                     // The normals' great-circle arc (slerp).
@@ -2962,7 +3373,10 @@ impl Solver<'_> {
                 // One normal before and after (on one face, or both
                 // segments along the same crease: its cone's bisector).
                 let m = axpy(na, 1., nb);
-                return Ok(vec![(cc, self.place(cc, scale(m, 1. / norm(m)), level, w, stop)?)]);
+                return Ok(vec![(
+                    cc,
+                    self.place(cc, scale(m, 1. / norm(m)), level, w, stop)?,
+                )]);
             }
         }
         Ok(vec![(cc, self.solve(cc, level, w, stop)?)])
@@ -2991,7 +3405,7 @@ impl Solver<'_> {
         level: f64,
         w: &mut SurfaceWork,
         stop: &impl CancelSignal,
-    ) -> Result<(Vec<Vec<([f64; 2], Fit)>>, usize), String> {
+    ) -> Result<Pieces, String> {
         let n = out.len();
         let reach = |i: usize| out[i].1 != Fit::Unreachable;
         if (0..n).all(reach) {
@@ -3048,7 +3462,11 @@ impl Solver<'_> {
             while e < order.len() && !reach(order[e]) {
                 e += 1;
             }
-            let before = if j > 0 { Some(edge(order[j - 1], i, w)?) } else { None };
+            let before = if j > 0 {
+                Some(edge(order[j - 1], i, w)?)
+            } else {
+                None
+            };
             if let Some(b) = before {
                 pieces.last_mut().unwrap().push(b);
             }
@@ -3098,9 +3516,10 @@ impl Checked<'_> {
     /// contact) to the previous level's chains. Vertices whose level no
     /// position touches (unreachable) and contacts off the drive surface
     /// are gaps, counted.
+    #[allow(clippy::too_many_arguments)]
     fn verify(
         &self,
-        fits: &[(usize, bool, Vec<([f64; 2], Fit)>)],
+        fits: &[Fitted],
         seed: &'static str,
         levels: usize,
         caps: usize,
@@ -3187,11 +3606,23 @@ impl Checked<'_> {
                         let mut prev: Option<(u32, Vec3)> = None;
                         for x in c {
                             let here = x.as_ref().map(|set| {
-                                if side == 0 { set[0] } else { set[set.len() - 1] }
+                                if side == 0 {
+                                    set[0]
+                                } else {
+                                    set[set.len() - 1]
+                                }
                             });
                             match (prev, here) {
                                 (Some((f, a)), Some((_, b))) => {
-                                    walk(&drive.v, &drive.t, &drive.topo, f, a, [b[0], b[1]], &mut sources);
+                                    walk(
+                                        &drive.v,
+                                        &drive.t,
+                                        &drive.topo,
+                                        f,
+                                        a,
+                                        [b[0], b[1]],
+                                        &mut sources,
+                                    );
                                 }
                                 (None, Some((f, a))) => sources.push(Piece::Point(f, a)),
                                 _ => {}
@@ -3220,23 +3651,35 @@ impl Checked<'_> {
                     .filter(|(p, _)| p.0 == level && !p.1)
                 {
                     for set in c.iter().flatten() {
-                        let sv = set.iter()
-                                .map(|&(f, q)| field.at(f, q))
-                                .fold(f64::INFINITY, f64::min);
+                        let sv = set
+                            .iter()
+                            .map(|&(f, q)| field.at(f, q))
+                            .fold(f64::INFINITY, f64::min);
                         if trace::on() && sv > 1.003 * stepover && sv <= 2. * stepover {
-                            trace::line(|| format!("wide level {level} spacing {sv:.4} at {:?}", set[0].1));
+                            trace::line(|| {
+                                format!("wide level {level} spacing {sv:.4} at {:?}", set[0].1)
+                            });
                         }
                         if trace::on() && sv < 0.97 * stepover {
                             let q = set[0].1;
-                            let near = sources.iter().map(|pc| match *pc {
-                                Piece::Point(_, a) => (norm(sub(a, q)), a, a),
-                                Piece::Segment(_, a, b) => {
-                                    let ab = sub(b, a);
-                                    let t = (dot(sub(q, a), ab) / dot(ab, ab).max(1e-300)).clamp(0., 1.);
-                                    (norm(sub(axpy(a, t, ab), q)), a, b)
-                                }
-                            }).min_by(|x, y| x.0.total_cmp(&y.0));
-                            trace::line(|| format!("narrow level {level} spacing {sv:.4} at {q:?} set {} nearest source {near:?}", set.len()));
+                            let near = sources
+                                .iter()
+                                .map(|pc| match *pc {
+                                    Piece::Point(_, a) => (norm(sub(a, q)), a, a),
+                                    Piece::Segment(_, a, b) => {
+                                        let ab = sub(b, a);
+                                        let t = (dot(sub(q, a), ab) / dot(ab, ab).max(1e-300))
+                                            .clamp(0., 1.);
+                                        (norm(sub(axpy(a, t, ab), q)), a, b)
+                                    }
+                                })
+                                .min_by(|x, y| x.0.total_cmp(&y.0));
+                            trace::line(|| {
+                                format!(
+                                    "narrow level {level} spacing {sv:.4} at {q:?} set {} nearest source {near:?}",
+                                    set.len()
+                                )
+                            });
                         }
                         out.push(sv);
                     }
@@ -3300,7 +3743,9 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     fn peaks_of(drive: &Drive, field: &Field) -> Vec<Vec<(Vec3, f64)>> {
-        (0..drive.t.len() as u32).map(|f| field.face_peaks(f)).collect()
+        (0..drive.t.len() as u32)
+            .map(|f| field.face_peaks(f))
+            .collect()
     }
 
     pub(super) fn mesh(tris: Vec<[Vec3; 3]>) -> SurfaceMesh {
@@ -3412,7 +3857,9 @@ mod tests {
             &never,
         )
         .unwrap();
-        let emax: Vec<f64> = (0..drive.topo.edges.len() as u32).map(|e| field.edge_max(e)).collect();
+        let emax: Vec<f64> = (0..drive.topo.edges.len() as u32)
+            .map(|e| field.edge_max(e))
+            .collect();
         let top = emax.iter().copied().fold(0., f64::max);
         let peaks = level_peaks(&drive, &field, &emax, 1.5, 0.5, top, &never).unwrap();
         let faces: Vec<u32> = (0..drive.t.len() as u32).collect();
@@ -3464,43 +3911,55 @@ mod tests {
             (height_field(0.5, saddle), (0..17).collect()),
             (height_field(0.25, saddle), vec![6, 7, 8]),
         ] {
-        let drive = Drive::build(&surface, &never).unwrap();
-        let (ti, _, p) = drive.top_at([20., 20.]).unwrap();
-        let field = Field::compute(
-            &drive.v,
-            &drive.t,
-            &drive.topo,
-            &[Piece::Point(ti, p)],
-            f64::INFINITY,
-            &never,
-        )
-        .unwrap();
-        let emax: Vec<f64> = (0..drive.topo.edges.len() as u32).map(|e| field.edge_max(e)).collect();
-        let top = emax.iter().copied().fold(0., f64::max);
-        let peaks = level_peaks(&drive, &field, &emax, 1.5, 0.5, top, &never).unwrap();
-        let faces: Vec<u32> = (0..drive.t.len() as u32).collect();
-        let tol = 0.005;
-        let locate = |q: Vec3| drive.locate(q, 1e-6).map(|(f, _)| f).unwrap();
-        for k in levels {
-            let (a, b) = ((0.5 + k as f64) * 1.5, (1.5 + k as f64) * 1.5);
-            let mut sources = vec![];
-            for path in contour(&drive, &field, &peaks, a, &faces, tol) {
-                for w in path.windows(2) {
-                    let (q0, q1) = (w[0].0, w[1].0);
-                    assert!(
-                        walk(&drive.v, &drive.t, &drive.topo, locate(q0), q0, [q1[0], q1[1]], &mut sources).is_some(),
-                        "walk {q0:?} -> {q1:?}"
-                    );
+            let drive = Drive::build(&surface, &never).unwrap();
+            let (ti, _, p) = drive.top_at([20., 20.]).unwrap();
+            let field = Field::compute(
+                &drive.v,
+                &drive.t,
+                &drive.topo,
+                &[Piece::Point(ti, p)],
+                f64::INFINITY,
+                &never,
+            )
+            .unwrap();
+            let emax: Vec<f64> = (0..drive.topo.edges.len() as u32)
+                .map(|e| field.edge_max(e))
+                .collect();
+            let top = emax.iter().copied().fold(0., f64::max);
+            let peaks = level_peaks(&drive, &field, &emax, 1.5, 0.5, top, &never).unwrap();
+            let faces: Vec<u32> = (0..drive.t.len() as u32).collect();
+            let tol = 0.005;
+            let locate = |q: Vec3| drive.locate(q, 1e-6).map(|(f, _)| f).unwrap();
+            for k in levels {
+                let (a, b) = ((0.5 + k as f64) * 1.5, (1.5 + k as f64) * 1.5);
+                let mut sources = vec![];
+                for path in contour(&drive, &field, &peaks, a, &faces, tol) {
+                    for w in path.windows(2) {
+                        let (q0, q1) = (w[0].0, w[1].0);
+                        assert!(
+                            walk(
+                                &drive.v,
+                                &drive.t,
+                                &drive.topo,
+                                locate(q0),
+                                q0,
+                                [q1[0], q1[1]],
+                                &mut sources
+                            )
+                            .is_some(),
+                            "walk {q0:?} -> {q1:?}"
+                        );
+                    }
+                }
+                let near =
+                    Field::compute(&drive.v, &drive.t, &drive.topo, &sources, 3., &never).unwrap();
+                for path in contour(&drive, &field, &peaks, b, &faces, tol) {
+                    for (q, _) in path {
+                        let s = near.at(locate(q), q);
+                        assert!((s - 1.5).abs() <= tol + 1e-6, "level {k}: {q:?} {s}");
+                    }
                 }
             }
-            let near = Field::compute(&drive.v, &drive.t, &drive.topo, &sources, 3., &never).unwrap();
-            for path in contour(&drive, &field, &peaks, b, &faces, tol) {
-                for (q, _) in path {
-                    let s = near.at(locate(q), q);
-                    assert!((s - 1.5).abs() <= tol + 1e-6, "level {k}: {q:?} {s}");
-                }
-            }
-        }
         }
     }
 
@@ -3531,8 +3990,16 @@ mod tests {
         let never = AtomicBool::new(false);
         let (stepover, tol) = (1.5, 0.005);
         let cases: Vec<(&str, SurfaceMesh, GeodesicSeed)> = vec![
-            ("square", planar(40, |u, v| [40. * u, 40. * v]), GeodesicSeed::Boundary),
-            ("rectangle", planar(40, |u, v| [40. * u, 30. * v]), GeodesicSeed::Boundary),
+            (
+                "square",
+                planar(40, |u, v| [40. * u, 40. * v]),
+                GeodesicSeed::Boundary,
+            ),
+            (
+                "rectangle",
+                planar(40, |u, v| [40. * u, 30. * v]),
+                GeodesicSeed::Boundary,
+            ),
             (
                 "trapezoid",
                 planar(40, |u, v| [40. * u, (v - 0.5) * (30. - 6. * u) + 20.]),
@@ -3549,7 +4016,7 @@ mod tests {
             let planned = plan(&drive, &seed, stepover, tol, &never).unwrap();
             // Pass segments, bucketed by stepover-sized cells.
             let cell = stepover;
-            let mut grid: HashMap<(i64, i64), Vec<([f64; 2], [f64; 2])>> = HashMap::new();
+            let mut grid: SegmentGrid = HashMap::new();
             for (_, _, _, path) in &planned.passes {
                 for w in path.windows(2) {
                     let (a, b) = ([w[0].0[0], w[0].0[1]], [w[1].0[0], w[1].0[1]]);
@@ -3596,9 +4063,20 @@ mod tests {
                 }
             }
             let target = stepover / 2. + tol;
-            assert!(worst <= target + 1e-9, "{name}: a point {worst} from every pass");
-            assert!(planned.coverage <= target + 1e-9, "{name}: certified {}", planned.coverage);
-            assert!(worst <= planned.coverage + 1e-9, "{name}: sampled {worst} above certified {}", planned.coverage);
+            assert!(
+                worst <= target + 1e-9,
+                "{name}: a point {worst} from every pass"
+            );
+            assert!(
+                planned.coverage <= target + 1e-9,
+                "{name}: certified {}",
+                planned.coverage
+            );
+            assert!(
+                worst <= planned.coverage + 1e-9,
+                "{name}: sampled {worst} above certified {}",
+                planned.coverage
+            );
         }
     }
 
@@ -3607,10 +4085,16 @@ mod tests {
     fn point_field_external_mesh() {
         // Local investigation: GEO_MESH, GEO_SRC=x,y,z GEO_AT=x,y,z
         let never = AtomicBool::new(false);
-        let tris: Vec<[Vec3; 3]> =
-            serde_json::from_str(&std::fs::read_to_string(std::env::var("GEO_MESH").unwrap()).unwrap()).unwrap();
+        let tris: Vec<[Vec3; 3]> = serde_json::from_str(
+            &std::fs::read_to_string(std::env::var("GEO_MESH").unwrap()).unwrap(),
+        )
+        .unwrap();
         let v3 = |k: &str| -> Vec3 {
-            let v: Vec<f64> = std::env::var(k).unwrap().split(',').map(|x| x.parse().unwrap()).collect();
+            let v: Vec<f64> = std::env::var(k)
+                .unwrap()
+                .split(',')
+                .map(|x| x.parse().unwrap())
+                .collect();
             [v[0], v[1], v[2]]
         };
         let mut m = mesh(tris);
@@ -3619,8 +4103,20 @@ mod tests {
         let (src, at) = (v3("GEO_SRC"), v3("GEO_AT"));
         let (f, _, src) = drive.top_at([src[0], src[1]]).unwrap();
         let (g, _, at) = drive.top_at([at[0], at[1]]).unwrap();
-        let field = Field::compute(&drive.v, &drive.t, &drive.topo, &[Piece::Point(f, src)], 5., &never).unwrap();
-        eprintln!("source face {f}, at face {g}: field {:.4}, straight {:.4}", field.at(g, at), norm(sub(at, src)));
+        let field = Field::compute(
+            &drive.v,
+            &drive.t,
+            &drive.topo,
+            &[Piece::Point(f, src)],
+            5.,
+            &never,
+        )
+        .unwrap();
+        eprintln!(
+            "source face {f}, at face {g}: field {:.4}, straight {:.4}",
+            field.at(g, at),
+            norm(sub(at, src))
+        );
         for &h in &drive.within(src, 1e-7) {
             eprintln!("  carrier {h}: n {:?}", drive.n[h as usize]);
         }
@@ -3631,13 +4127,17 @@ mod tests {
     fn plan_external_mesh() {
         // Local investigation: GEO_MESH=<json triangles> GEO_SEED=boundary|x,y
         let never = AtomicBool::new(false);
-        let tris: Vec<[Vec3; 3]> =
-            serde_json::from_str(&std::fs::read_to_string(std::env::var("GEO_MESH").unwrap()).unwrap()).unwrap();
+        let tris: Vec<[Vec3; 3]> = serde_json::from_str(
+            &std::fs::read_to_string(std::env::var("GEO_MESH").unwrap()).unwrap(),
+        )
+        .unwrap();
         let seed = match std::env::var("GEO_SEED").unwrap().as_str() {
             "boundary" => GeodesicSeed::Boundary,
             s => {
                 let v: Vec<f64> = s.split(',').map(|x| x.parse().unwrap()).collect();
-                GeodesicSeed::Point { xy_mm: [v[0], v[1]] }
+                GeodesicSeed::Point {
+                    xy_mm: [v[0], v[1]],
+                }
             }
         };
         let t0 = std::time::Instant::now();
@@ -3645,38 +4145,73 @@ mod tests {
         m.surface_error_mm = std::env::var("GEO_ERR").map_or(0., |e| e.parse().unwrap());
         let drive = Drive::build(&m, &never).unwrap();
         eprintln!("drive {} triangles in {:?}", drive.t.len(), t0.elapsed());
-        let open: Vec<usize> = (0..drive.topo.edges.len()).filter(|&e| drive.topo.faces[e][1] == NONE).collect();
+        let open: Vec<usize> = (0..drive.topo.edges.len())
+            .filter(|&e| drive.topo.faces[e][1] == NONE)
+            .collect();
         if let GeodesicSeed::Point { xy_mm } = &seed {
-            let near = open.iter().filter(|&&e| {
-                let [a, b] = drive.topo.edges[e];
-                let m = lerp(drive.v[a as usize], drive.v[b as usize], 0.5);
-                (m[0] - xy_mm[0]).hypot(m[1] - xy_mm[1]) < 3.
-            }).count();
-            eprintln!("open edges {} ({} within 3 mm of the seed)", open.len(), near);
+            let near = open
+                .iter()
+                .filter(|&&e| {
+                    let [a, b] = drive.topo.edges[e];
+                    let m = lerp(drive.v[a as usize], drive.v[b as usize], 0.5);
+                    (m[0] - xy_mm[0]).hypot(m[1] - xy_mm[1]) < 3.
+                })
+                .count();
+            eprintln!(
+                "open edges {} ({} within 3 mm of the seed)",
+                open.len(),
+                near
+            );
         }
         let planned = plan(&drive, &seed, 1.5, 0.005, &never).unwrap();
-        eprintln!("plan: {} passes, {} fills, coverage {:.4} in {:?}", planned.passes.len(), planned.caps, planned.coverage, t0.elapsed());
+        eprintln!(
+            "plan: {} passes, {} fills, coverage {:.4} in {:?}",
+            planned.passes.len(),
+            planned.caps,
+            planned.coverage,
+            t0.elapsed()
+        );
         for y in [12.0, 15.0, 17.0] {
-            let row: Vec<String> = (0..9).map(|i| {
-                let x = 10. + 2.5 * i as f64;
-                match drive.locate([x, y, 10.], 1e-3) {
-                    Some((f, _)) => format!("{x:.1}:f{f}={:.3}", planned.field.at(f, [x, y, 10.])),
-                    None => format!("{x:.1}:none"),
-                }
-            }).collect();
+            let row: Vec<String> = (0..9)
+                .map(|i| {
+                    let x = 10. + 2.5 * i as f64;
+                    match drive.locate([x, y, 10.], 1e-3) {
+                        Some((f, _)) => {
+                            format!("{x:.1}:f{f}={:.3}", planned.field.at(f, [x, y, 10.]))
+                        }
+                        None => format!("{x:.1}:none"),
+                    }
+                })
+                .collect();
             eprintln!("y={y}: {}", row.join(" "));
         }
         if let GeodesicSeed::Point { xy_mm } = seed {
             for (k, _, level, path) in planned.passes.iter().filter(|p| p.0 == 0) {
-                let d: Vec<f64> = path.iter().map(|(q, _)| (q[0] - xy_mm[0]).hypot(q[1] - xy_mm[1])).collect();
-                eprintln!("ring k={k} level {level}: {} points, plan distance from seed {:.4}..{:.4}", d.len(), d.iter().copied().fold(f64::INFINITY, f64::min), d.iter().copied().fold(0., f64::max));
+                let d: Vec<f64> = path
+                    .iter()
+                    .map(|(q, _)| (q[0] - xy_mm[0]).hypot(q[1] - xy_mm[1]))
+                    .collect();
+                eprintln!(
+                    "ring k={k} level {level}: {} points, plan distance from seed {:.4}..{:.4}",
+                    d.len(),
+                    d.iter().copied().fold(f64::INFINITY, f64::min),
+                    d.iter().copied().fold(0., f64::max)
+                );
             }
         }
         for (k, cap, level, path) in planned.passes.iter() {
-            let longest = path.windows(2).map(|w| norm(sub(w[1].0, w[0].0))).fold(0., f64::max);
+            let longest = path
+                .windows(2)
+                .map(|w| norm(sub(w[1].0, w[0].0)))
+                .fold(0., f64::max);
             let len: f64 = path.windows(2).map(|w| norm(sub(w[1].0, w[0].0))).sum();
             let (a, b) = (path[0].0, path[path.len() - 1].0);
-            eprintln!("pass k={k} cap={cap} level={level:.3} n={} len={len:.2} longest={longest:.3} {:.2?} -> {:.2?}", path.len(), a, b);
+            eprintln!(
+                "pass k={k} cap={cap} level={level:.3} n={} len={len:.2} longest={longest:.3} {:.2?} -> {:.2?}",
+                path.len(),
+                a,
+                b
+            );
         }
     }
 
@@ -3701,7 +4236,11 @@ mod tests {
             rings += 1;
             for w in path.windows(2) {
                 for p in [w[0].0, lerp(w[0].0, w[1].0, 0.5)] {
-                    assert!((exact(p) - level).abs() <= 0.005, "level {level}: {p:?} at {}", exact(p));
+                    assert!(
+                        (exact(p) - level).abs() <= 0.005,
+                        "level {level}: {p:?} at {}",
+                        exact(p)
+                    );
                 }
             }
         }
@@ -3726,21 +4265,24 @@ mod tests {
         // level is one closed ring.
         let never = AtomicBool::new(false);
         let saddle = |x: f64, y: f64| 10. + ((x - 20.).powi(2) - (y - 20.).powi(2)) / 60.;
-        for surface in [planar(80, |u, v| [40. * u, 40. * v]), height_field(0.5, saddle)] {
-        let drive = Drive::build(&surface, &never).unwrap();
-        let planned = plan(&drive, &GeodesicSeed::Boundary, 1.5, 0.005, &never).unwrap();
-        let mut rings: HashMap<usize, Vec<&ContactPath>> = HashMap::new();
-        for (k, cap, _, path) in &planned.passes {
-            if !cap {
-                rings.entry(*k).or_default().push(path);
+        for surface in [
+            planar(80, |u, v| [40. * u, 40. * v]),
+            height_field(0.5, saddle),
+        ] {
+            let drive = Drive::build(&surface, &never).unwrap();
+            let planned = plan(&drive, &GeodesicSeed::Boundary, 1.5, 0.005, &never).unwrap();
+            let mut rings: HashMap<usize, Vec<&ContactPath>> = HashMap::new();
+            for (k, cap, _, path) in &planned.passes {
+                if !cap {
+                    rings.entry(*k).or_default().push(path);
+                }
             }
-        }
-        assert!(rings.len() > 10);
-        for (k, paths) in &rings {
-            assert_eq!(paths.len(), 1, "level {k}: {} pieces", paths.len());
-            let p = paths[0];
-            assert!(norm(sub(p[0].0, p[p.len() - 1].0)) < 1e-9, "level {k} open");
-        }
+            assert!(rings.len() > 10);
+            for (k, paths) in &rings {
+                assert_eq!(paths.len(), 1, "level {k}: {} pieces", paths.len());
+                let p = paths[0];
+                assert!(norm(sub(p[0].0, p[p.len() - 1].0)) < 1e-9, "level {k} open");
+            }
         }
     }
 
