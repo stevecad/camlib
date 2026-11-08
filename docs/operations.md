@@ -564,49 +564,88 @@ steep and shallow areas alike. `seed`:
 How it is computed:
 
 - **The drive surface** is the target mesh's upward-facing triangles: the
-  faces a three-axis ball can touch. Its triangles are welded into one
-  connected mesh. Its boundary (open edges, and edges against walls or
-  downward faces) is explicit: passes end there, never rolling over an edge.
-  The mesh is refined by conforming longest-edge bisection until every edge
-  is at most a quarter of the stepover (measured to give the same spacing as
-  an eighth; half drifts).
-- **The distance** is the intrinsic geodesic distance on that mesh from the
-  seed, by fast marching. Each vertex is reached across a triangle by the
-  exact minimum over the opposite edge (the planar wavefront through it), so
-  creases are crossed along the surface. A straight chord through the air is
-  never used.
-- **The passes** are iso-curves of that distance (plus a cap pass halfway
-  up wherever the distance peaks between two levels, so no point lies
-  farther than half a stepover from a pass). Each contact point becomes a
-  cutter position, ball centre = contact + R x normal, lifted onto the
-  surface with the certified ball contact; every chord is checked like
-  `Parallel`.
+  faces a three-axis ball can touch, welded into one connected mesh. Its
+  boundary (open edges, and edges against walls or downward faces) is
+  explicit: passes end there, never rolling over an edge.
+- **The distance** is the exact geodesic distance on that mesh (window
+  propagation: Mitchell, Mount and Papadimitriou 1987; Surazhsky et al.
+  2005), from polygonal sources (Bommes and Kobbelt 2007). Within a face it
+  is the minimum of point-source and line-source distances, each valid in
+  its own region, so iso-curves are found exactly; a straight chord through
+  the air is never used.
+- **The passes** are the exact iso-curves at `(k + 1/2) x stepover` from a
+  point seed (`k x stepover` from a boundary or curve seed), as polylines
+  within 0.9 of `path_error_mm` of the curve. Where an iso-curve turns back
+  inside one triangle (it rounds a corner where the nearest source changes)
+  the triangle is split until each piece is a simple arc.
+- **Coverage** is certified, not estimated: every point of the drive surface
+  is proven to lie within half a stepover (plus the path error) of a pass by
+  the exact distance from the passes themselves (branch and bound over each
+  face's distance functions). Where the levels leave a point farther than
+  that (a peak between levels, the sharp corners of offsets from a
+  boundary, a ridge), a fill pass is added there, and fills along one ridge
+  are chained into a single pass along it (the medial axis of a pocket-like
+  region: corner bisectors and a centre line).
+- **Cutter positions**: ball centre = contact + R x the surface normal (the
+  vertex normals interpolated, so a faceted mesh does not shake the path).
+  Where the normal jumps (a convex crease or corner) the ball rolls round the
+  point: its centre sweeps the arc between the two normals. Along a crease
+  the pass runs on, the normal cone's bisector is used; along the drive
+  surface's boundary, the boundary face's own normal. Positions are lifted
+  onto the part with the certified ball contact; where the ball cannot touch
+  a stretch of a pass (a concave crease narrower than the ball) the pass is
+  trimmed exactly there and bridged straight only across a gap no wider than
+  the ball, otherwise split.
+- **Linking** stays down wherever the dropped ball touches the drive surface
+  all along the link: a tangent lane change to the next ring (entered two
+  gaps on, a 1:2 slope), else a straight link of at most two stepovers, else
+  along the boundary pass or back along the ring just cut; only otherwise a
+  retract.
 
 Verification, independent of the distance field, in the operation report
 (`geodesic`):
 
-- `spacing_mm` [min, mean, max]: the intrinsic spacing between neighbouring
-  passes' achieved contact paths. Contacts are computed afresh at the lifted
-  cutter positions, and fast marching runs from each pass to the next.
+- `spacing_mm` [min, mean, max]: the geodesic spacing between neighbouring
+  passes' achieved contacts, computed afresh by dropping the ball along the
+  cutter path as cut (at most a quarter stepover apart, not only at its
+  vertices), from each pass's contact chains to the next.
+- `planned_coverage_mm`: the certified bound above.
 - `unreachable_samples`: pass vertices whose intended contact the ball
   cannot touch (the certified drop lifts it above that contact by more than
-  the mesh's surface error): a concave crease narrower than the ball, a wall
-  top. No stepover is owed where no position touches, so they are left out
-  of the spacing and counted, not hidden.
+  the mesh's surface error): a concave crease narrower than the ball. No
+  stepover is owed where no position touches, so they are left out of the
+  spacing and counted, not hidden; `bridged_spans` counts the trimmed gaps
+  bridged.
 - `off_drive_samples`: achieved contacts on a wall or the base.
 - `over_stepover_samples` and `flat_scallop_estimate_mm`, a flat-surface
   estimate of the scallop at the largest spacing. Convex areas leave more,
   concave areas less, and creases are not modelled. The material check is
   authoritative for residual stock.
 
-Nothing is rescaled to fit. The achieved spacing follows the mesh's own
-resolution: on a faceted mesh the ball's contact moves between facets,
-edges and vertices. In the tests the mean is within 0.5% of the stepover,
-and every sample within 5% on 0.5 mm facets (within 1.2% on a dome). A
-CAD export at its default tolerance is far finer. Walls and steep areas the
-ball cannot touch from above need `Waterline`. A tool-centre mode (spacing
-measured on the surface offset by the cutter radius) has different spacing
-semantics and is not provided.
+Nothing is rescaled to fit. Walls and steep areas the ball cannot touch from
+above need `Waterline`.
+
+`mode="tool_centre"` (explicit; the default is `"contact"`) measures the
+stepover along the surface the ball's centre moves on instead of the part's
+surface (Cimatron's "tool center", ModuleWorks' geodesic tool-centre paths).
+That surface is the certified drop's ball-centre height, sampled a quarter
+stepover apart wherever the resting ball touches the drive surface as
+contact mode lets it (rolling over the edges between its faces, never off
+its boundary), its edge found exactly by bisection, and triangulated; the
+same exact distance, certified coverage, fills and links run on it, and the
+passes are the cutter path itself. It runs smoothly over internal corners
+the ball cannot reach into (a concave crease narrower than the ball), where
+contact mode leaves a band. Equal centre spacing is not equal contact
+spacing: it differs by (rho +- R) / rho with the curvature (closer contacts
+on convex areas, merging in a crease, jumping across it). The report gives
+`mode`, `centre_spacing_mm` (measured on that surface, from each level's
+passes to the next) and `spacing_mm` (the contact spacing it produces).
+
+To see how a plan was built, set `CAMLIB_GEODESIC_TRACE` to a file path (or
+`-` for standard error): it records the planning phases and their times,
+each coverage round and the fills it adds, positions that cannot touch their
+contact and why, links that retract, and verification samples narrower than
+the stepover. It is off by default and costs nothing then.
 
 ### Pencil: `Pencil`
 

@@ -253,17 +253,22 @@ class Geodesic:
     """Ball-end geodesic finishing (#12): passes at a constant stepover
     measured along the part's surface from ``seed``, so the scallop stays
     even on steep and shallow areas. ``seed``: ``"boundary"`` (passes work
-    inward from the stock outline), ``("point", (x, y))`` (rings around a
-    point, the first half a stepover out) or ``("curve", ((x, y), ...))``
-    (the curve itself is the first pass; the others follow it along the
-    surface).
+    inward from the drive surface's boundary), ``("point", (x, y))`` (rings
+    around a point, the first half a stepover out) or
+    ``("curve", ((x, y), ...))`` (the curve itself is the first pass; the
+    others follow it along the surface).
 
-    The distance is solved over the ball's contact points on the part; the
-    spacing between neighbouring passes is then measured from fresh contact
-    points and kept at or under ``stepover_mm`` (the passes are replanned if
-    not), and the scallop is computed from the measured spacing and the
-    local curvature. Both are in the operation report (``geodesic``). Every
-    chord is lifted onto the surface and checked like Parallel."""
+    The passes are exact iso-curves of the geodesic distance, every point is
+    certified within half a stepover (plus the path error) of a pass, and
+    the spacing between neighbouring passes is measured independently from
+    fresh ball contacts; all in the operation report (``geodesic``). Every
+    chord is lifted onto the surface and checked like Parallel.
+
+    ``mode``: ``"contact"`` (default: the stepover measured along the part's
+    surface) or ``"tool_centre"`` (measured along the surface the ball's
+    centre moves on: smooth through internal corners and wall tops, but the
+    contact spacing then varies with the curvature; both spacings are
+    measured and reported)."""
 
     id: str
     tool: object
@@ -289,14 +294,20 @@ class Geodesic:
     rest_threshold_mm: float | None = None
     retract_z_mm: float | None = None
     feed_z_mm: float | None = None
+    mode: str = "contact"
 
     def __post_init__(self):
         _geodesic_seed(self.seed)
+        if self.mode not in ("contact", "tool_centre"):
+            raise ValueError('Geodesic mode must be "contact" or "tool_centre"')
 
     def to_dict(self):
         result = _pattern_dict(self, "geodesic", ())
         result.pop("seed")
+        result.pop("mode")
         result["pattern"]["seed"] = _geodesic_seed(self.seed)
+        if self.mode == "tool_centre":
+            result["pattern"]["tool_centre"] = True
         return result
 
 

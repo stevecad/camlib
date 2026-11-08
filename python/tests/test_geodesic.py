@@ -67,7 +67,7 @@ def saddle(x, y):
     return 10 + ((x - 20) ** 2 - (y - 20) ** 2) / 60
 
 
-def run(surface_z, seed, stepover=1.5, sag=0.01):
+def run(surface_z, seed, stepover=1.5, sag=0.01, mode="contact"):
     # Chords of a 0.5 mm grid sag at most about 0.25/(8 x 30) mm on the dome
     # (curvature radius 30) and less on the saddle: declared as 0.01 mm.
     surface = SurfaceMesh(height_field(surface_z), surface_error_mm=sag)
@@ -85,6 +85,7 @@ def run(surface_z, seed, stepover=1.5, sag=0.01):
         tool_number=1,
         length_register=1,
         coolant="flood",
+        mode=mode,
     )
     target = SurfaceTarget("part", "1", surface, 0)
     config = dict(
@@ -195,6 +196,42 @@ class GeodesicTest(unittest.TestCase):
     def test_saddle_both_ways_from_a_curve(self):
         g = self.check(saddle, ("curve", ((6.0, 33.0), (20.0, 21.0), (34.0, 8.0))))
         self.assertEqual(g["seed"], "curve")
+
+    def test_dome_tool_centre(self):
+        # Tool-centre mode (#119): the passes a stepover apart along the
+        # surface the ball's centre moves on (measured), smooth over the
+        # concave crease at the dome's foot; the contact spacing it gives is
+        # reported alongside (closer on the convex dome), and nothing gouges.
+        report, _, _, material = run(dome, ("point", (20, 20)), mode="tool_centre")
+        g = report["geodesic"]
+        self.assertEqual(g["mode"], "tool_centre")
+        lo, mean, hi = g["centre_spacing_mm"]
+        self.assertGreaterEqual(lo, 1.5 - PATH_ERROR)
+        self.assertLessEqual(hi, 1.5 + PATH_ERROR)
+        self.assertEqual(g["unreachable_samples"], 0)
+        self.assertLess(g["spacing_mm"][1], 1.5)
+        self.assertLessEqual(g["planned_coverage_mm"], 1.5 / 2 + PATH_ERROR + 1e-9)
+        self.assertEqual(report["rows_completed"], report["rows"])
+        self.assertEqual(material["gouge"]["definite_cells"], 0)
+
+    def test_mode_values(self):
+        with self.assertRaisesRegex(ValueError, "Geodesic mode"):
+            camlib.Geodesic(
+                "g",
+                BALL,
+                SurfaceMesh(height_field(saddle, 10)),
+                0,
+                1.5,
+                30,
+                "boundary",
+                feed_mm_min=1,
+                plunge_mm_min=1,
+                spindle_rpm=1,
+                tool_number=1,
+                length_register=1,
+                coolant="flood",
+                mode="centre",
+            )
 
     def test_seed_values(self):
         with self.assertRaisesRegex(ValueError, "Geodesic seed"):

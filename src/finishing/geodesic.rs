@@ -35,6 +35,7 @@
 //!   flat-surface estimate from the spacing (labelled as such); the
 //!   material check, not this estimate, decides residual stock.
 mod exact;
+mod trace;
 
 use super::patterns::GeodesicSeed;
 use crate::{
@@ -53,6 +54,9 @@ type Vec3 = [f64; 3];
 #[derive(Clone, Debug, Serialize)]
 pub struct GeodesicReport {
     pub seed: &'static str,
+    /// "contact" (the stepover measured along the part's surface) or
+    /// "tool_centre" (along the surface the ball's centre moves on).
+    pub mode: &'static str,
     pub stepover_mm: f64,
     pub drive_triangles: usize,
     pub levels: usize,
@@ -103,6 +107,10 @@ pub struct GeodesicReport {
     /// spacing (convex areas leave more, concave less); the material check
     /// is authoritative.
     pub flat_scallop_estimate_mm: f64,
+    /// Tool-centre mode: the spacing between neighbouring passes along the
+    /// ball-centre surface they were planned on, [min, mean, max] mm
+    /// (`spacing_mm` is then the contact spacing it produces).
+    pub centre_spacing_mm: Option<[f64; 3]>,
 }
 
 fn sub(a: Vec3, b: Vec3) -> Vec3 {
@@ -1015,9 +1023,9 @@ fn paths_field<'a>(
                 (Some((f, a)), Some(_)) => {
                     let t = std::time::Instant::now();
                     let r = walk(&drive.v, &drive.t, &drive.topo, f, a, [q[0], q[1]], &mut sources);
-                    if t.elapsed().as_millis() > 20 && std::env::var("GEO_TIME").is_ok() && slow < 5 {
+                    if t.elapsed().as_millis() > 20 && trace::on() && slow < 5 {
                         slow += 1;
-                        eprintln!("slow walk {:?} from face {f} {a:?} to {q:?} ok {}", t.elapsed(), r.is_some());
+                        trace::line(|| format!("slow walk {:?} from face {f} {a:?} to {q:?} ok {}", t.elapsed(), r.is_some()));
                     }
                 }
                 (None, Some((f, a))) => sources.push(Piece::Point(f, a)),
@@ -1026,8 +1034,8 @@ fn paths_field<'a>(
             prev = here;
         }
     }
-    if std::env::var("GEO_TIME").is_ok() {
-        eprintln!("paths_field: walked {} paths into {} pieces in {:?}", paths.len(), sources.len(), t_walk.elapsed());
+    if trace::on() {
+        trace::line(|| format!("paths_field: walked {} paths into {} pieces in {:?}", paths.len(), sources.len(), t_walk.elapsed()));
     }
     Field::compute(&drive.v, &drive.t, &drive.topo, &sources, limit, cancel)
 }
@@ -1065,15 +1073,15 @@ fn fill(
     let mut near = Coverage {
         fields: vec![paths_field(drive, &paths, limit, cancel)?],
     };
-    if std::env::var("GEO_TIME").is_ok() {
-        eprintln!("fill: field of {} passes in {:?}", paths.len(), t_first.elapsed());
+    if trace::on() {
+        trace::line(|| format!("fill: field of {} passes in {:?}", paths.len(), t_first.elapsed()));
     }
     // Per face: its maximum and where (exact where above the target, else
     // at most the target). Passes only lower the distance, so a face once
     // within the target stays so: only faces still above are searched.
     let mut maxima: Vec<(f64, Vec3)> = vec![(f64::INFINITY, [0.; 3]); nf];
     let mut open: Vec<usize> = (0..nf).collect();
-    let timing = std::env::var("GEO_TIME").is_ok();
+    let timing = trace::on();
     for round in 0..256 {
         let t0 = std::time::Instant::now();
         let chunks = (open.len() / 64).clamp(1, 4 * workers);
@@ -1092,7 +1100,7 @@ fn fill(
                     let m = near.face_max(f as u32, &peaks);
                     if timing && tf.elapsed().as_millis() > 200 {
                         let tri = drive.t[f].map(|k| drive.v[k as usize]);
-                        eprintln!("   slow face {f}: {:?} functions {} max {:.4} tri {tri:?}", tf.elapsed(), near.regions(f as u32).len(), m.0);
+                        trace::line(|| format!("   slow face {f}: {:?} functions {} max {:.4} tri {tri:?}", tf.elapsed(), near.regions(f as u32).len(), m.0));
                     }
                     out.push((m, peaks));
                 }
@@ -1112,12 +1120,12 @@ fn fill(
         let searched = open.len();
         open.retain(|&f| maxima[f].0 > target);
         if timing {
-            eprintln!("round {round}: searched {searched} faces in {:?}, open {}, passes {}, fields {}", t0.elapsed(), open.len(), passes.len(), near.fields.len());
+            trace::line(|| format!("round {round}: searched {searched} faces in {:?}, open {}, passes {}, fields {}", t0.elapsed(), open.len(), passes.len(), near.fields.len()));
             if open.len() <= 4 {
                 for &f in &open {
                     let (m, c) = maxima[f];
                     let tri = drive.t[f].map(|k| drive.v[k as usize]);
-                    eprintln!("   open face {f}: max {m:.4} at {c:?} at() {:.4} tri {tri:?}", near.at(f as u32, c));
+                    trace::line(|| format!("   open face {f}: max {m:.4} at {c:?} at() {:.4} tri {tri:?}", near.at(f as u32, c)));
                 }
             }
         }
@@ -1219,7 +1227,7 @@ fn fill(
                     }
                 }
                 if timing {
-                    eprintln!("   fill c {c:?} far {far:.4} nearest {:?} spur {:?}", nearest, spur.as_ref().map(|p| p.iter().map(|q| q.0).collect::<Vec<_>>()));
+                    trace::line(|| format!("   fill c {c:?} far {far:.4} nearest {:?} spur {:?}", nearest, spur.as_ref().map(|p| p.iter().map(|q| q.0).collect::<Vec<_>>())));
                 }
                 if let Some(path) = spur {
                     chosen.push(path.clone());
@@ -1244,7 +1252,7 @@ fn fill(
             }
         }
         if timing {
-            eprintln!("  spurs built in {:?}", t_spurs.elapsed());
+            trace::line(|| format!("  spurs built in {:?}", t_spurs.elapsed()));
         }
         if fresh.is_empty() {
             break;
@@ -1253,7 +1261,7 @@ fn fill(
         let t1 = std::time::Instant::now();
         near.fields.push(paths_field(drive, &new, limit, cancel)?);
         if timing {
-            eprintln!("  {} new passes, their field in {:?}", new.len(), t1.elapsed());
+            trace::line(|| format!("  {} new passes, their field in {:?}", new.len(), t1.elapsed()));
         }
         added += fresh.len();
         passes.extend(fresh);
@@ -1442,30 +1450,21 @@ struct Plan<'a> {
     coverage: f64,
 }
 
-fn dbg_line(l: String) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/claude-1001/-home-robit-camlib/639b6210-c1a0-43bd-b6df-c26a13394617/scratchpad/geo_dbg.txt") {
-        let _ = writeln!(f, "{l}");
-    }
-}
 fn mark(t: &mut std::time::Instant, what: &str) {
-    if std::env::var("GEO_TIME").is_ok() {
-        eprintln!("phase {what}: {:?}", t.elapsed());
+    if trace::on() {
+        trace::line(|| format!("phase {what}: {:?}", t.elapsed()));
     }
     *t = std::time::Instant::now();
 }
 
-fn plan<'a>(
-    drive: &'a Drive,
+/// A seed on the drive surface: its name, its pieces (the distance's
+/// sources), the first level's offset in stepovers, the first level's
+/// index, and the passes it is itself (the boundary, a curve).
+#[allow(clippy::type_complexity)]
+fn seeds(
+    drive: &Drive,
     seed: &GeodesicSeed,
-    stepover: f64,
-    path_error: f64,
-    cancel: &impl CancelSignal,
-) -> Result<Plan<'a>, String> {
-    // Seeds on the drive surface. Rings from a point or the boundary start
-    // half a stepover out (the seed within half a stepover of the first
-    // pass); a curve seed is itself the first pass.
-    let mut clock = std::time::Instant::now();
+) -> Result<(&'static str, Vec<Piece>, f64, usize, Vec<(usize, bool, f64, ContactPath)>), String> {
     let mut contact_passes: Vec<(usize, bool, f64, ContactPath)> = vec![];
     let (name, sources, offset, first) = match seed {
         GeodesicSeed::Boundary => {
@@ -1528,6 +1527,21 @@ fn plan<'a>(
             ("curve", pieces, 0.0, 1)
         }
     };
+    Ok((name, sources, offset, first, contact_passes))
+}
+
+fn plan<'a>(
+    drive: &'a Drive,
+    seed: &GeodesicSeed,
+    stepover: f64,
+    path_error: f64,
+    cancel: &impl CancelSignal,
+) -> Result<Plan<'a>, String> {
+    // Seeds on the drive surface. Rings from a point or the boundary start
+    // half a stepover out (the seed within half a stepover of the first
+    // pass); a curve seed is itself the first pass.
+    let mut clock = std::time::Instant::now();
+    let (name, sources, offset, first, mut contact_passes) = seeds(drive, seed)?;
     let field = Field::compute(
         &drive.v,
         &drive.t,
@@ -1675,10 +1689,14 @@ pub(crate) fn passes(
     tool_radius: f64,
     path_error: f64,
     seed: &GeodesicSeed,
+    tool_centre: bool,
     work: &mut SurfaceWork,
     cancel: &impl CancelSignal,
 ) -> Result<Planned, String> {
     let drive = Drive::build(mesh, cancel)?;
+    if tool_centre {
+        return centre_mode(&drive, mesh, surface, stepover, contact_radius, tool_radius, path_error, seed, work, cancel);
+    }
     let Plan {
         name,
         field,
@@ -1746,10 +1764,10 @@ pub(crate) fn passes(
         work.contact_tests += w.contact_tests;
         work.distance_tests += w.distance_tests;
         bridged_spans += bridged;
-        if std::env::var("GEO_TIME").is_ok() {
+        if trace::on() {
             let un: Vec<[f64; 2]> = out.iter().filter(|p| p.1 == Fit::Unreachable).map(|p| p.0).collect();
             if !un.is_empty() {
-                dbg_line(format!("pass k={k} cap={cap} level={level} unreachable {} of {} bridged {bridged} pieces {} first {:?} last {:?}", un.len(), out.len(), cut.len(), un[0], un[un.len() - 1]));
+                trace::line(|| format!("pass k={k} cap={cap} level={level} unreachable {} of {} bridged {bridged} pieces {} first {:?} last {:?}", un.len(), out.len(), cut.len(), un[0], un[un.len() - 1]));
             }
         }
         // Verified along the cutter path as cut, not only at its vertices:
@@ -1801,24 +1819,24 @@ pub(crate) fn passes(
     };
     let mut report = checked.verify(&fits, name, levels, caps, coverage, work, cancel)?;
     report.bridged_spans = bridged_spans;
-    if std::env::var("GEO_TIME").is_ok() {
+    if trace::on() {
         for (i, (k, cap, c)) in cuts.iter().enumerate() {
             for w in c.windows(2) {
                 if (w[1].0[0] - w[0].0[0]).hypot(w[1].0[1] - w[0].0[1]) > 10. {
-                    dbg_line(format!("cut {i} k={k} cap={cap} n={} long {:?} -> {:?}", c.len(), w[0].0, w[1].0));
+                    trace::line(|| format!("cut {i} k={k} cap={cap} n={} long {:?} -> {:?}", c.len(), w[0].0, w[1].0));
                 }
             }
         }
         for (i, c) in rims.iter().enumerate() {
-            dbg_line(format!("rim {i} n={} {:?}", c.len(), c));
+            trace::line(|| format!("rim {i} n={} {:?}", c.len(), c));
         }
     }
     let (linked, stay_down) = link(&drive, surface, contact_radius, stepover, &cuts, centre, &rims, work, cancel)?;
-    if std::env::var("GEO_TIME").is_ok() {
+    if trace::on() {
         for (i, c) in linked.iter().enumerate() {
             for w in c.windows(2) {
                 if (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]) > 10. {
-                    dbg_line(format!("linked {i} n={} long {:?} -> {:?}", c.len(), w[0], w[1]));
+                    trace::line(|| format!("linked {i} n={} long {:?} -> {:?}", c.len(), w[0], w[1]));
                 }
             }
         }
@@ -1828,6 +1846,282 @@ pub(crate) fn passes(
     Ok((linked, report))
 }
 
+
+/// Tool-centre mode (#119; Cimatron's "tool center", ModuleWorks'
+/// geodesic tool-centre paths): passes a stepover apart along the surface
+/// the ball's centre moves on, instead of the part's surface. That surface
+/// is the certified drop's ball-centre height over the plane: continuous
+/// for a ball (Lipschitz in XY), smooth where the contact map jumps (an
+/// internal corner, a wall top), so walls take part as the ball meets
+/// them. It is sampled a quarter stepover apart wherever the ball rests on
+/// the drive surface, triangulated, and planned on exactly as contact mode
+/// plans on the part (exact distance, certified coverage, fills, links);
+/// the passes are the cutter path itself. Equal centre spacing is not equal
+/// contact spacing (it differs by (rho +- R) / rho with the curvature): both
+/// are measured and reported.
+#[allow(clippy::too_many_arguments)]
+fn centre_mode(
+    drive: &Drive,
+    mesh: &SurfaceMesh,
+    surface: &PreparedSurface,
+    stepover: f64,
+    r: f64,
+    tool_radius: f64,
+    path_error: f64,
+    seed: &GeodesicSeed,
+    work: &mut SurfaceWork,
+    cancel: &impl CancelSignal,
+) -> Result<Planned, String> {
+    let h = stepover / 4.;
+    let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    for p in &drive.v {
+        for k in 0..2 {
+            lo[k] = lo[k].min(p[k] - r);
+            hi[k] = hi[k].max(p[k] + r);
+        }
+    }
+    let (nx, ny) = (((hi[0] - lo[0]) / h).ceil() as usize + 1, ((hi[1] - lo[1]) / h).ceil() as usize + 1);
+    let workers = std::thread::available_parallelism().map_or(1, usize::from);
+    // The drive surface's boundary vertices.
+    let topo = &drive.topo;
+    let mut rim_vertex = vec![false; drive.v.len()];
+    for e in 0..topo.edges.len() {
+        if topo.faces[e][1] == NONE {
+            for k in topo.edges[e] {
+                rim_vertex[k as usize] = true;
+            }
+        }
+    }
+    // Whether contact point `q` of face `f` lies on the drive surface's
+    // boundary.
+    let on_rim = |f: u32, q: Vec3| -> bool {
+        let tri = drive.t[f as usize];
+        (0..3).any(|k| {
+            let (a, b) = (drive.v[tri[k] as usize], drive.v[tri[(k + 1) % 3] as usize]);
+            let d = sub(b, a);
+            let t = (dot(sub(q, a), d) / dot(d, d).max(1e-300)).clamp(0., 1.);
+            let near = norm(sub(axpy(a, t, d), q)) <= 1e-9 * (1. + norm(d));
+            near && (topo.faces[topo.tri_edges[f as usize][k] as usize][1] == NONE
+                || (t <= 0. && rim_vertex[tri[k] as usize])
+                || (t >= 1. && rim_vertex[tri[(k + 1) % 3] as usize]))
+        })
+    };
+    // The ball-centre point over `xy`, where the resting ball touches the
+    // drive surface as contact mode lets it: anywhere but its boundary
+    // (rolling over the edges between its faces), and on the boundary only
+    // square onto the boundary face (never rolling off the surface, as
+    // contact mode's passes never do).
+    let centre_at = |xy: [f64; 2], w: &mut SurfaceWork, stop: &dyn Fn() -> bool| -> Result<Option<Vec3>, String> {
+        let c = surface.contact(xy, r, w, &stop)?;
+        let centre = [xy[0], xy[1], c.center_z];
+        let on = !c.on_base()
+            && drive.touching(centre, r, TOUCH).iter().any(|&(f, q)| {
+                !on_rim(f, q) || dot(scale(sub(centre, q), 1. / r), drive.n[f as usize]) >= 1. - 1e-9
+            });
+        Ok(on.then_some(centre))
+    };
+    // Each grid row's ball-centre points.
+    let rows = crate::roughing::parallel::ordered(
+        ny,
+        workers,
+        cancel,
+        |j, signal| {
+            let stop = || signal.is_cancelled();
+            let mut w = SurfaceWork::default();
+            let mut row = Vec::with_capacity(nx);
+            for i in 0..nx {
+                row.push(centre_at([lo[0] + i as f64 * h, lo[1] + j as f64 * h], &mut w, &stop)?);
+            }
+            Ok((row, w))
+        },
+        |_| Ok(()),
+    )?;
+    let mut grid = Vec::with_capacity(ny);
+    for (row, w) in rows {
+        work.nodes += w.nodes;
+        work.contact_tests += w.contact_tests;
+        work.distance_tests += w.distance_tests;
+        grid.push(row);
+    }
+    // Each cell's part of the region (marching squares): its corners in
+    // it, and on each side running out of it the exact point where it ends
+    // (bisection to a tenth of the path error), fanned into triangles. The
+    // region's edge, and the passes along it, follow the boundary, not the
+    // grid.
+    let cells = crate::roughing::parallel::ordered(
+        ny.saturating_sub(1),
+        workers,
+        cancel,
+        |j, signal| {
+            let stop = || signal.is_cancelled();
+            let mut w = SurfaceWork::default();
+            let mut tris = vec![];
+            for i in 0..nx - 1 {
+                let ring = [(i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1)];
+                let pts = ring.map(|(x, y)| grid[y][x]);
+                if pts.iter().all(Option::is_none) {
+                    continue;
+                }
+                if let [Some(a), Some(b), Some(c), Some(d)] = pts {
+                    // Split along the shorter diagonal (in space).
+                    if norm(sub(c, a)) <= norm(sub(d, b)) {
+                        tris.extend([[a, b, c], [a, c, d]]);
+                    } else {
+                        tris.extend([[a, b, d], [b, c, d]]);
+                    }
+                    continue;
+                }
+                let mut poly = vec![];
+                for k in 0..4 {
+                    let (p, q) = (pts[k], pts[(k + 1) % 4]);
+                    let xy = |(x, y): (usize, usize)| [lo[0] + x as f64 * h, lo[1] + y as f64 * h];
+                    let (pa, pb) = (xy(ring[k]), xy(ring[(k + 1) % 4]));
+                    if let Some(p) = p {
+                        poly.push(p);
+                    }
+                    if p.is_some() != q.is_some() {
+                        // From the corner in the region towards the other.
+                        let (inside, outside, mut best) = if let Some(p) = p { (pa, pb, p) } else { (pb, pa, q.unwrap()) };
+                        let (mut t0, mut t1) = (0., 1.);
+                        while (t1 - t0) * h > 0.1 * path_error {
+                            let t = (t0 + t1) / 2.;
+                            let at = [inside[0] + t * (outside[0] - inside[0]), inside[1] + t * (outside[1] - inside[1])];
+                            match centre_at(at, &mut w, &stop)? {
+                                Some(c) => (t0, best) = (t, c),
+                                None => t1 = t,
+                            }
+                        }
+                        if poly.last().is_none_or(|&l| norm(sub(best, l)) > 1e-12) {
+                            poly.push(best);
+                        }
+                    }
+                }
+                for k in 1..poly.len().saturating_sub(1) {
+                    if norm(cross(sub(poly[k], poly[0]), sub(poly[k + 1], poly[0]))) > 1e-12 {
+                        tris.push([poly[0], poly[k], poly[k + 1]]);
+                    }
+                }
+            }
+            Ok((tris, w))
+        },
+        |_| Ok(()),
+    )?;
+    let mut tris = vec![];
+    for (t, w) in cells {
+        work.nodes += w.nodes;
+        work.contact_tests += w.contact_tests;
+        work.distance_tests += w.distance_tests;
+        tris.extend(t);
+    }
+    if tris.is_empty() {
+        return Err("geodesic tool-centre mode: the ball rests on the drive surface nowhere".into());
+    }
+    let centres = SurfaceMesh {
+        version: 1,
+        units: "mm".into(),
+        triangles: std::sync::Arc::new(tris),
+        surface_error_mm: mesh.surface_error_mm,
+        source: serde_json::json!({}),
+    };
+    let cdrive = Drive::build(&centres, cancel)?;
+    trace::line(|| format!("tool-centre surface: {nx} x {ny} grid, {} triangles sampled, {} in the drive", centres.triangles.len(), cdrive.t.len()));
+    let Plan {
+        name,
+        passes: planned,
+        levels,
+        caps,
+        coverage,
+        ..
+    } = plan(&cdrive, seed, stepover, path_error, cancel)?;
+    // The passes are the cutter path (XY of the ball centre); verified like
+    // contact mode's, along the path at most a quarter stepover apart.
+    let mut fits: Vec<(usize, bool, Vec<([f64; 2], Fit)>)> = vec![];
+    let mut cuts = vec![];
+    let mut centre = vec![];
+    let mut rims = vec![];
+    for (k, cap, level, path) in &planned {
+        let xy: Vec<([f64; 2], Fit)> = path.iter().map(|(p, _)| ([p[0], p[1]], Fit::Placed)).collect();
+        let mut dense = Vec::with_capacity(xy.len());
+        for (i, &(q, f)) in xy.iter().enumerate() {
+            if i > 0 {
+                let p = xy[i - 1].0;
+                let n = ((q[0] - p[0]).hypot(q[1] - p[1]) / (stepover / 4.)).ceil() as usize;
+                for m in 1..n {
+                    let t = m as f64 / n as f64;
+                    dense.push(([p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])], Fit::Placed));
+                }
+            }
+            dense.push((q, f));
+        }
+        fits.push((*k, *cap, dense));
+        if *level == f64::NEG_INFINITY || (name == "boundary" && *k == 0 && !*cap) {
+            rims.push(xy.iter().map(|p| p.0).collect());
+        }
+        if *level == f64::INFINITY {
+            centre.push(xy.iter().map(|p| p.0).collect());
+        } else {
+            cuts.push((*k, *cap, xy));
+        }
+    }
+    // The contact sets are ordered inner to outer by the seed's distance
+    // on the part.
+    let (_, sources, ..) = seeds(drive, seed)?;
+    let order = Field::compute(&drive.v, &drive.t, &drive.topo, &sources, f64::INFINITY, cancel)?;
+    let checked = Checked {
+        drive,
+        planned: &order,
+        surface,
+        stepover,
+        contact_radius: r,
+        tool_radius,
+    };
+    let mut report = checked.verify(&fits, name, levels, caps, coverage, work, cancel)?;
+    report.mode = "tool_centre";
+    report.drive_triangles = cdrive.t.len();
+    report.centre_spacing_mm = Some(centre_spacing(&cdrive, &planned, stepover, cancel)?);
+    let (linked, stay_down) = link(drive, surface, r, stepover, &cuts, centre, &rims, work, cancel)?;
+    report.stay_down_links = stay_down;
+    report.retract_links = linked.len().saturating_sub(1);
+    Ok((linked, report))
+}
+
+/// The spacing between neighbouring level passes along the surface they
+/// lie on (independent of the planned field): the exact distance from each
+/// level's passes, at the next level's points. [min, mean, max] mm.
+fn centre_spacing(
+    drive: &Drive,
+    passes: &[(usize, bool, f64, ContactPath)],
+    stepover: f64,
+    cancel: &impl CancelSignal,
+) -> Result<[f64; 3], String> {
+    let top = passes.iter().filter(|p| !p.1).map(|p| p.0).max().unwrap_or(0);
+    let (mut lo, mut sum, mut hi, mut n) = (f64::INFINITY, 0., 0f64, 0usize);
+    for level in 1..=top {
+        let mut sources = vec![];
+        for (_, _, _, path) in passes.iter().filter(|p| !p.1 && p.0 == level - 1) {
+            for w in path.windows(2) {
+                if let Some((f, _)) = drive.locate(w[0].0, 1e-6) {
+                    walk(&drive.v, &drive.t, &drive.topo, f, w[0].0, [w[1].0[0], w[1].0[1]], &mut sources);
+                }
+            }
+        }
+        if sources.is_empty() {
+            continue;
+        }
+        let field = Field::compute(&drive.v, &drive.t, &drive.topo, &sources, 2. * stepover, cancel)?;
+        for (_, _, _, path) in passes.iter().filter(|p| !p.1 && p.0 == level) {
+            for &(q, _) in path {
+                if let Some((f, _)) = drive.locate(q, 1e-6) {
+                    let d = field.at(f, q);
+                    if d.is_finite() && d <= 2. * stepover {
+                        (lo, hi, sum, n) = (lo.min(d), hi.max(d), sum + d, n + 1);
+                    }
+                }
+            }
+        }
+    }
+    Ok(if n == 0 { [0.; 3] } else { [lo, sum / n as f64, hi] })
+}
 
 /// The solved passes as cut, linked on the surface wherever that is
 /// proven. A link stays down when it is at most two stepovers long and the
@@ -2130,16 +2424,26 @@ fn link(
     // link's interior points and the pass as entered.
     #[allow(clippy::type_complexity)]
     let join = |from: &[[f64; 2]], p: &[[f64; 2]], work: &mut SurfaceWork| -> Result<Option<(Vec<[f64; 2]>, Vec<[f64; 2]>)>, String> {
-        // (Only tried for passes within two stepovers: no chord limit.)
+        // Only from within two stepovers of the pass (candidates are chosen
+        // by their distance from anywhere on the ring just cut, for a
+        // re-trace; a direct link must be short itself).
         let at = from[from.len() - 1];
+        let near = orient(p.to_vec(), Some(at), None);
+        if d2(at, near[0]).sqrt() > 2. * stepover {
+            return Ok(None);
+        }
         let lane = orient(p.to_vec(), Some(at), heading(from));
         if let Some(curve) = lane_change(from, &lane)
             && stays_on(&curve, false, work)?
         {
+            trace::line(|| format!("link: lane change {at:.3?} -> {:.3?}", lane[0]));
             return Ok(Some((curve[1..curve.len() - 1].to_vec(), lane)));
         }
-        let near = orient(p.to_vec(), Some(at), None);
-        Ok(down_link(at, near[0], work)?.then(|| (Vec::new(), near)))
+        let down = down_link(at, near[0], work)?;
+        if down {
+            trace::line(|| format!("link: straight {at:.3?} -> {:.3?}", near[0]));
+        }
+        Ok(down.then(|| (Vec::new(), near)))
     };
     // Cutting order, from the seed's first pass: the nearest remaining
     // pass that can be joined without lifting (directly, or after running
@@ -2245,7 +2549,9 @@ fn link(
         }
         if !done {
             let i = cands[0].1;
-            out.push(orient(pool.remove(i).1, Some(at), None));
+            let next = orient(pool.remove(i).1, Some(at), None);
+            trace::line(|| format!("link: retract {at:.3?} -> {:.3?}", next[0]));
+            out.push(next);
         }
     }
     Ok((out, down))
@@ -2362,16 +2668,16 @@ impl Solver<'_> {
         let d2 = (xy[0] - cc[0]).powi(2) + (xy[1] - cc[1]).powi(2);
         let touching = cc[2] + (r * r - d2).max(0.).sqrt();
         if c.on_base() || c.center_z > touching + self.tol {
-            if std::env::var("GEO_TIME").is_ok() {
-                dbg_line(format!("unreach A cc={cc:?} n={n:?} base={} cz={} touching={touching}", c.on_base(), c.center_z));
+            if trace::on() {
+                trace::line(|| format!("unreach A cc={cc:?} n={n:?} base={} cz={} touching={touching}", c.on_base(), c.center_z));
             }
             return Ok((xy, Fit::Unreachable));
         }
         let nn = c.contact_normal(xy, r);
         let p = [xy[0] - r * nn[0], xy[1] - r * nn[1], c.center_z - r * nn[2]];
         let Some((g, _)) = self.drive.locate(p, self.tol) else {
-            if std::env::var("GEO_TIME").is_ok() {
-                dbg_line(format!("unreach B cc={cc:?} n={n:?} p={p:?} nn={nn:?}"));
+            if trace::on() {
+                trace::line(|| format!("unreach B cc={cc:?} n={n:?} p={p:?} nn={nn:?}"));
             }
             return Ok((xy, Fit::Unreachable));
         };
@@ -2413,9 +2719,6 @@ impl Solver<'_> {
             // Along the drive surface's boundary the surface is that one
             // face: its own normal (a vertex normal there averages only
             // the faces on one side, tilting it off the boundary face).
-            if std::env::var("GEO_TIME").is_ok() && cc[0].hypot(cc[1]) < 0.1 {
-                dbg_line(format!("along at {cc:?} mid {mid:?} on {on:?} normals {:?}", on.iter().map(|&f| self.drive.n[f as usize]).collect::<Vec<_>>()));
-            }
             if let [f] = on[..] {
                 let topo = &self.drive.topo;
                 let [x, y, z] = self.drive.t[f as usize].map(|k| self.drive.v[k as usize]);
@@ -2633,10 +2936,6 @@ impl Checked<'_> {
                         continue;
                     }
                     let mut set = drive.touching([xy[0], xy[1], c.center_z], r, TOUCH);
-                    if std::env::var("GEO_TIME").is_ok() && fits[i].0 == 0 && !fits[i].1 && (xy[0] - 20.).abs() < 0.2 {
-                        let d: Vec<String> = set.iter().map(|&(f, q)| format!("f{f} {q:.4?} d={:.6} n={:.4?}", norm(sub(q, [xy[0], xy[1], c.center_z])) - r, drive.n[f as usize])).collect();
-                        dbg_line(format!("ring0 xy {xy:.4?} cz {:.4} r {r}: {}", c.center_z, d.join(" | ")));
-                    }
                     if set.is_empty() {
                         out.push((None, false));
                         continue;
@@ -2730,7 +3029,7 @@ impl Checked<'_> {
                         let sv = set.iter()
                                 .map(|&(f, q)| field.at(f, q))
                                 .fold(f64::INFINITY, f64::min);
-                        if std::env::var("GEO_TIME").is_ok() && sv < stepover - 0.05 {
+                        if trace::on() && sv < 0.97 * stepover {
                             let q = set[0].1;
                             let near = sources.iter().map(|pc| match *pc {
                                 Piece::Point(_, a) => (norm(sub(a, q)), a, a),
@@ -2740,7 +3039,7 @@ impl Checked<'_> {
                                     (norm(sub(axpy(a, t, ab), q)), a, b)
                                 }
                             }).min_by(|x, y| x.0.total_cmp(&y.0));
-                            dbg_line(format!("narrow level {level} spacing {sv:.4} at {q:?} set {} nearest source {near:?}", set.len()));
+                            trace::line(|| format!("narrow level {level} spacing {sv:.4} at {q:?} set {} nearest source {near:?}", set.len()));
                         }
                         out.push(sv);
                     }
@@ -2792,6 +3091,8 @@ impl Checked<'_> {
             flat_scallop_estimate_mm: flat,
             stay_down_links: 0,
             retract_links: 0,
+            mode: "contact",
+            centre_spacing_mm: None,
         })
     }
 }
@@ -3161,6 +3462,45 @@ mod tests {
             let (a, b) = (path[0].0, path[path.len() - 1].0);
             eprintln!("pass k={k} cap={cap} level={level:.3} n={} len={len:.2} longest={longest:.3} {:.2?} -> {:.2?}", path.len(), a, b);
         }
+    }
+
+    #[test]
+    fn contours_on_large_faces_follow_the_curve() {
+        // A 40 x 30 mm rectangle of two triangles, from its boundary: each
+        // level is a rectangle whose corners lie inside the faces (the
+        // diagonal misses them), where the curve turns back on itself
+        // between its two crossings on the diagonal. Every vertex and every
+        // chord midpoint lies on its level (within the tolerance): no chord
+        // cuts a corner.
+        let never = AtomicBool::new(false);
+        let (a, b, c, d) = ([0., 0., 0.], [40., 0., 0.], [40., 30., 0.], [0., 30., 0.]);
+        let drive = Drive::build(&mesh(vec![[a, b, c], [a, c, d]]), &never).unwrap();
+        let planned = plan(&drive, &GeodesicSeed::Boundary, 1.5, 0.005, &never).unwrap();
+        let exact = |p: Vec3| p[0].min(40. - p[0]).min(p[1]).min(30. - p[1]);
+        let mut rings = 0;
+        for (_, cap, level, path) in &planned.passes {
+            if *cap {
+                continue;
+            }
+            rings += 1;
+            for w in path.windows(2) {
+                for p in [w[0].0, lerp(w[0].0, w[1].0, 0.5)] {
+                    assert!((exact(p) - level).abs() <= 0.005, "level {level}: {p:?} at {}", exact(p));
+                }
+            }
+        }
+        assert!(rings >= 9);
+    }
+
+    #[test]
+    fn locate_finds_a_point_just_outside_the_plan_box() {
+        // A point on the mesh's edge but outside its plan box by rounding
+        // lies within the tolerance of a triangle filed in another cell.
+        let never = AtomicBool::new(false);
+        let (a, b, c, d) = ([0., 0., 6.], [40., 0., 6.], [40., 30., 10.], [0., 30., 10.]);
+        let drive = Drive::build(&mesh(vec![[a, b, c], [a, c, d]]), &never).unwrap();
+        assert!(drive.locate([20., -8.9e-16, 6.], 1e-6).is_some());
+        assert!(drive.locate([-1e-9, 15., 8.], 1e-6).is_some());
     }
 
     #[test]

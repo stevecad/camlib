@@ -32,6 +32,7 @@
 //!   the minimum and where the sign of D - level changes. That is how
 //!   passes are placed exactly on the iso-curves.
 use super::{Vec3, cross, dot, norm, sub};
+use super::trace;
 use crate::stock::CancelSignal;
 use std::{
     cmp::Ordering,
@@ -423,8 +424,8 @@ impl<'a> Field<'a> {
         let mut points: std::collections::HashSet<[u64; 3]> = std::collections::HashSet::new();
         let t_ins = std::time::Instant::now();
         for (n, &piece) in sources.iter().enumerate() {
-            if std::env::var("GEO_TIME").is_ok() && n % 2000 == 0 && sources.len() > 1000 {
-                eprintln!("  inserting {n}/{}: windows {} at {:?}", sources.len(), field.wins.len(), t_ins.elapsed());
+            if trace::on() && n % 2000 == 0 && sources.len() > 1000 {
+                trace::line(|| format!("  inserting {n}/{}: windows {} at {:?}", sources.len(), field.wins.len(), t_ins.elapsed()));
             }
             let before = field.wins.len();
             let t_one = std::time::Instant::now();
@@ -443,24 +444,24 @@ impl<'a> Field<'a> {
                     field.source_segment(f, a, b);
                 }
             }
-            if std::env::var("GEO_TIME").is_ok() && (field.wins.len() - before > 2000 || t_one.elapsed().as_millis() > 5) {
+            if trace::on() && (field.wins.len() - before > 2000 || t_one.elapsed().as_millis() > 5) {
                 let (kind, f, a) = match piece { Piece::Point(f, a) => ("point", f, a), Piece::Segment(f, a, _) => ("segment", f, a) };
-                eprintln!("  piece {n} {kind} face {f} at {a:?}: +{} windows in {:?}, carriers {}", field.wins.len() - before, t_one.elapsed(), field.carrier(f, a).len());
+                trace::line(|| format!("  piece {n} {kind} face {f} at {a:?}: +{} windows in {:?}, carriers {}", field.wins.len() - before, t_one.elapsed(), field.carrier(f, a).len()));
             }
         }
-        if std::env::var("GEO_TIME").is_ok() && sources.len() > 1000 {
+        if trace::on() && sources.len() > 1000 {
             let alive = field.wins.iter().filter(|w| w.alive).count();
             let worst = field.on_edge.iter().map(Vec::len).max().unwrap_or(0);
-            eprintln!("sources inserted: {} pieces, windows {} alive {alive}, most on one edge {worst}, queue {}", sources.len(), field.wins.len(), field.queue.len());
+            trace::line(|| format!("sources inserted: {} pieces, windows {} alive {alive}, most on one edge {worst}, queue {}", sources.len(), field.wins.len(), field.queue.len()));
         }
         let t_prop = std::time::Instant::now();
         let mut steps = 0usize;
         while let Some(Event(key, id, vertex)) = field.queue.pop() {
             steps += 1;
             if steps.is_multiple_of(16384) {
-                if std::env::var("GEO_TIME").is_ok() && steps.is_multiple_of(1 << 20) {
+                if trace::on() && steps.is_multiple_of(1 << 20) {
                     let alive = field.wins.iter().filter(|w| w.alive).count();
-                    eprintln!("field steps {steps} windows {} alive {alive} queue {} key {key:.6} sources {}", field.wins.len(), field.queue.len(), sources.len());
+                    trace::line(|| format!("field steps {steps} windows {} alive {alive} queue {} key {key:.6} sources {}", field.wins.len(), field.queue.len(), sources.len()));
                 }
                 if cancel.is_cancelled() {
                     return Err("geodesic planning cancelled".into());
@@ -488,8 +489,8 @@ impl<'a> Field<'a> {
                 field.propagate(w);
             }
         }
-        if std::env::var("GEO_TIME").is_ok() && sources.len() > 1000 {
-            eprintln!("propagation: steps {steps} in {:?}", t_prop.elapsed());
+        if trace::on() && sources.len() > 1000 {
+            trace::line(|| format!("propagation: steps {steps} in {:?}", t_prop.elapsed()));
         }
         // Every vertex at the least of its edges' windows there.
         for e in 0..topo.edges.len() {

@@ -61,7 +61,13 @@ pub enum FinishPattern {
     /// Constant stepover measured along the part's surface from a seed:
     /// iso-lines of the geodesic distance, `stepover_mm` apart, the spacing
     /// measured and the scallop reported (#12).
-    Geodesic { seed: GeodesicSeed },
+    Geodesic {
+        seed: GeodesicSeed,
+        /// Tool-centre mode (#119): the stepover measured along the surface
+        /// the ball's centre moves on, not the part's surface.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        tool_centre: bool,
+    },
     Pencil {
         #[serde(default = "pencil_angle")]
         min_angle_deg: f64,

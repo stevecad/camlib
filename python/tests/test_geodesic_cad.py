@@ -19,7 +19,7 @@ from camlib.material import SurfaceTarget
 from camlib.simulation import OperationUpdate, Simulation
 from camlib.tools import BallEndMill, HolderSection, ToolAssembly
 
-from support.geodesic_parts import PARTS, STEP_DIR, bowl, plate_with_hole, rounded_block
+from support.geodesic_parts import PARTS, STEP_DIR, bowl, plate_with_hole, rounded_block, v_groove_block
 
 try:
     import cadquery as cq
@@ -63,7 +63,7 @@ def sharpest_bend(triangles):
     return worst
 
 
-def run(part, seed):
+def run(part, seed, mode="contact"):
     from camlib.cadquery import export_surface_mesh
 
     surface = export_surface_mesh(part, max_error_mm=0.005)
@@ -84,6 +84,7 @@ def run(part, seed):
         tool_number=1,
         length_register=1,
         coolant="flood",
+        mode=mode,
     )
     target = SurfaceTarget("part", "1", surface, 0)
     config = dict(
@@ -95,20 +96,24 @@ def run(part, seed):
         verification=camlib.StreamChecks(material=(camlib.MaterialCheck(target),)),
     )
     report = material = None
+    cuts = []
     with Simulation(**config) as sim:
         for update in sim.run_operations():
+            motion = getattr(update, "motion", None)
+            if isinstance(motion, dict) and motion["kind"] == "cut" and motion["curve"]["kind"] == "line":
+                cuts.append((motion["curve"]["start"], motion["curve"]["end"]))
             if isinstance(update, OperationUpdate) and update.stage == "end":
                 report = update.report
             check = getattr(update, "check", None)
             if isinstance(check, dict) and check.get("kind") == "material":
                 material = check["report"]
-    return surface, report, material
+    return surface, report, material, cuts
 
 
 @unittest.skipIf(cq is None, "CadQuery is not installed")
 class GeodesicCadTest(unittest.TestCase):
     def check(self, part, seed):
-        surface, report, material = run(part, seed)
+        surface, report, material, cuts = run(part, seed)
         g = report["geodesic"]
         lo, _, hi = g["spacing_mm"]
         miss = g["max_level_miss_mm"]
@@ -120,6 +125,7 @@ class GeodesicCadTest(unittest.TestCase):
         self.assertLessEqual(g["planned_coverage_mm"], STEPOVER / 2 + PATH_ERROR + 1e-9)
         self.assertEqual(report["rows_completed"], report["rows"])
         self.assertEqual(material["gouge"]["definite_cells"], 0)
+        self.cuts = cuts
         return g
 
     def test_rounded_block_from_its_boundary(self):
@@ -130,6 +136,27 @@ class GeodesicCadTest(unittest.TestCase):
 
     def test_bowl_from_its_bottom(self):
         self.check(bowl(), ("point", (22, 22)))
+
+    def test_v_groove_tool_centre(self):
+        # Tool-centre mode (#119) over a sharp internal corner: the ball
+        # cannot reach into the groove's crease, so in contact mode the
+        # passes leave a band there (unreachable contacts). On the surface
+        # its centre moves on the passes run smoothly over it a stepover
+        # apart (measured), every position touches, and the contact spacing
+        # (contacts merge in the crease, jump across it) is reported.
+        _, contact, _, _ = run(v_groove_block(), ("point", (20, 5)))
+        self.assertGreater(contact["geodesic"]["unreachable_samples"], 0)
+        _, report, material, _ = run(v_groove_block(), ("point", (20, 5)), mode="tool_centre")
+        g = report["geodesic"]
+        self.assertEqual(g["mode"], "tool_centre")
+        lo, mean, hi = g["centre_spacing_mm"]
+        self.assertGreaterEqual(lo, STEPOVER - PATH_ERROR)
+        self.assertLessEqual(hi, STEPOVER + PATH_ERROR)
+        self.assertEqual(g["unreachable_samples"], 0)
+        self.assertGreater(g["spacing_mm"][2], STEPOVER)
+        self.assertLessEqual(g["planned_coverage_mm"], STEPOVER / 2 + PATH_ERROR + 1e-9)
+        self.assertEqual(report["rows_completed"], report["rows"])
+        self.assertEqual(material["gouge"]["definite_cells"], 0)
 
     def test_step_fixtures_match_the_parts(self):
         # fixtures/geodesic/*.step are exports of the CadQuery parts (for
@@ -151,6 +178,18 @@ class GeodesicCadTest(unittest.TestCase):
 
     def test_plate_around_a_hole(self):
         self.check(plate_with_hole(), ("point", (6, 6)))
+        # On the flat top near the seed the passes are circles about it:
+        # each cut move stays within the path error of its circle (a move
+        # merged across a curve, checked only for height, would cut its
+        # chord across the circle).
+        near = 0
+        for a, b in self.cuts:
+            ra, rb = (math.hypot(p[0] - 6, p[1] - 6) for p in (a, b))
+            if a[2] > 5.99 and b[2] > 5.99 and 1 < min(ra, rb) and max(ra, rb) < 5 and abs(ra - rb) < 0.01:
+                mid = ((a[0] + b[0]) / 2 - 6, (a[1] + b[1]) / 2 - 6)
+                self.assertGreaterEqual(math.hypot(*mid), min(ra, rb) - PATH_ERROR - 1e-6, (a, b))
+                near += 1
+        self.assertGreater(near, 50)
         self.check(plate_with_hole(), "boundary")
 
 

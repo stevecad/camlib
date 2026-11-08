@@ -896,7 +896,7 @@ impl ParallelPlan {
             )?;
         }
         let mut geodesic_report = None;
-        if let FinishPattern::Geodesic { seed } = &op.pattern {
+        if let FinishPattern::Geodesic { seed, tool_centre } = &op.pattern {
             let (found, report) = geodesic::passes(
                 mesh,
                 &surface,
@@ -905,6 +905,7 @@ impl ParallelPlan {
                 radius + op.stock_to_leave_mm,
                 op.path_error_mm,
                 seed,
+                *tool_centre,
                 &mut slope_work,
                 cancel,
             )?;
