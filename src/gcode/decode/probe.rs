@@ -352,7 +352,7 @@ impl Decoder {
                         && matches!(p.as_bytes()[1], b'1'..=b'9')
                         && line.len() > "G10 L2 P1".len() =>
                 {
-                    let number = (p.as_bytes()[1] - b'0') as u8;
+                    let number = p.as_bytes()[1] - b'0';
                     let rest = &line["G10 L2 P1".len()..];
                     let unsupported = || "unsupported work offset correction".to_string();
                     let offset = self

@@ -772,9 +772,9 @@ impl DefaultPost {
             let leg = legs[i];
             if leg.kind == MoveKind::ProbePosition {
                 let mut words = vec!["G65 P9810".to_string()];
-                for k in 0..3 {
-                    if leg.end[k] != pos[k] {
-                        words.push(format!("{}{}", d.axes[k], self.macro_number(leg.end[k])?));
+                for (k, (&end, &at)) in leg.end.iter().zip(pos.iter()).enumerate() {
+                    if end != at {
+                        words.push(format!("{}{}", d.axes[k], self.macro_number(end)?));
                     }
                 }
                 let feed = leg.feed_mm_min.ok_or("a probing move needs its feed")?;
