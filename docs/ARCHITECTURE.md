@@ -173,6 +173,21 @@ whose old value doesn't match its own stock.
 
 ## Traps
 
+- A clear straight rapid does not prove a controller's dogleg rapid clear.
+  `tests/verification.rs` and `python/tests/test_machine_clearance_regressions.py`
+  include a clamp missed by the diagonal but hit by an axis-first route, and
+  a tall fixture hit by a short assembly's holder while its tip stays clear.
+  The CNC12 mill decoder rejects G0, and its post uses declared feed traverses
+  instead (see [the controller notes](centroid-post.md)). The generic motion
+  checker still checks the supplied curve; it does not infer a controller's
+  rapid route. A long tool clearing these fixtures proves only the declared
+  assembly clear, not the spindle nose or head. The declared machine checker
+  (#116, `src/machine`) checks those bodies, independent-axis rapid envelopes,
+  machine coordinates and complete caller-supplied tool-change/index sweeps
+  against actual decoded output and native stock replay. Export requires it,
+  or explicit `unchecked_machine` acceptance. See [machine coverage](machine.md)
+  for the exact physical-input contract and unsupported paths.
+
 - Some arcs cannot be written with equal start and end radii at 3 decimals; see
   `docs/posts.md` and issue #58.
 - Coarse stock cells inflate "possible" bounds. Compare certain values, or use a

@@ -2,17 +2,25 @@
 
 from dataclasses import dataclass
 import itertools
+import math
 
 from ._resources import bounded_tuple
 
 
 @dataclass(frozen=True)
 class SurfaceMesh:
+    """Triangle target with a finite asserted error in the inclusive range 0–0.1 mm."""
+
     triangles: object
     surface_error_mm: float = 0
     source: object = None
 
     def __post_init__(self):
+        if not math.isfinite(self.surface_error_mm) or not 0 <= self.surface_error_mm <= 0.1:
+            raise ValueError(
+                f"surface_error_mm {self.surface_error_mm} must be finite and in 0..=0.1 mm; "
+                "supply a mesh within that error limit"
+            )
         # Any finite iterable; refused before it outgrows memory (~512 B/triangle).
         triangles = bounded_tuple(self.triangles, 512, "surface mesh triangles")
         if not triangles:

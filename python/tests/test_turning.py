@@ -150,7 +150,7 @@ def lathe(plan, dialect=None):
 
 
 def text(plan, machine):
-    return plan.job.post_nc("lathe", machine=machine).text.splitlines()
+    return plan.job.post_nc("lathe", machine=machine, accept={"unchecked_machine"}).text.splitlines()
 
 
 class TurningTest(unittest.TestCase):
@@ -274,16 +274,16 @@ class TurningTest(unittest.TestCase):
             self.assertLess(worst, 2e-3)
             self.assertAlmostEqual(posted["remaining_upper_mm3"], plan.stock["remaining_upper_mm3"], delta=5)
             with tempfile.TemporaryDirectory() as directory:
-                written = run.export(f"{directory}/shaft.nc")
+                written = run.export(f"{directory}/shaft.nc", accept={"unchecked_machine"})
                 text = Path(written["path"]).read_text()
             self.assertIn("G18", text)
-            self.assertEqual(text, plan.job.post_nc("lathe", machine=machine).text)
+            self.assertEqual(text, plan.job.post_nc("lathe", machine=machine, accept={"unchecked_machine"}).text)
 
     def test_material_check_compares_the_stock_with_the_part(self):
         plan = job().plan()
         machine = lathe(plan)
-        finished = plan.job.post_nc("lathe", machine=machine)
-        self.assertEqual(finished.unchecked, ())
+        finished = plan.job.post_nc("lathe", machine=machine, accept={"unchecked_machine"})
+        self.assertEqual(finished.unchecked, ("machine",))
         report = finished.material
         self.assertEqual(report["gouge"]["assessment"], "within_tolerance")
         self.assertIn("proof", report["gouge"])
@@ -300,7 +300,7 @@ class TurningTest(unittest.TestCase):
         self.assertGreater(reports["rough"]["residual"]["definite_cells"], 0)
         self.assertLess(reports["finish"]["residual"]["definite_cells"], reports["rough"]["residual"]["definite_cells"])
         rough_only = job(operations=(camlib.TurnRough("rough", "cnmg", feed_mm_rev=0.25, rpm=1000),)).plan()
-        material = rough_only.job.post_nc("lathe", machine=lathe(rough_only)).material
+        material = rough_only.job.post_nc("lathe", machine=lathe(rough_only), accept={"unchecked_machine"}).material
         self.assertEqual(material["residual"]["assessment"], "definite_excess")
         sides = {f["side"] for f in material["findings"]}
         self.assertIn("outer", sides)
@@ -308,8 +308,8 @@ class TurningTest(unittest.TestCase):
         import tempfile
 
         with plan.job.post("lathe", machine=machine) as run, tempfile.TemporaryDirectory() as directory:
-            written = run.export(f"{directory}/shaft.nc")
-        self.assertEqual(written["unchecked"], ())
+            written = run.export(f"{directory}/shaft.nc", accept={"unchecked_machine"})
+        self.assertEqual(written["unchecked"], ("machine",))
         self.assertEqual(written["material"]["gouge"]["assessment"], "within_tolerance")
         self.assertEqual(written["material"]["residual"]["definite_cells"], len(corner))
 
@@ -617,8 +617,12 @@ class TurningTest(unittest.TestCase):
                 camlib.TurnFinish("finish", "cnmg", feed_mm_rev=0.1016, **{'rpm': 1200, **css}),
             ),
         ).plan()
-        nc = text(inch, machine(linuxcnc, output_units="inch", decimals=4))
-        self.assertIn("G96 D3000 S656.168 M3", nc)
+        # Actual posted-stock replay now refuses this coarse output: a rounded
+        # finishing path reaches the part beyond its declared tolerance.
+        with self.assertRaisesRegex(camlib.SimulationError, "insert would cut"):
+            text(inch, machine(linuxcnc, output_units="inch", decimals=4))
+        nc = text(inch, machine(linuxcnc, output_units="inch", decimals=5))
+        self.assertIn("G96 D3000 S656.16798 M3", nc)
         self.assertIn("G95 F0.01", nc)
         self.assertIn("G95 F0.004", nc)
         # Without the codes the post refuses.

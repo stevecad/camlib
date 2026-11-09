@@ -7,21 +7,30 @@ use serde_json::Value;
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::atomic::AtomicBool,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> Self {
-        let p = std::env::temp_dir().join(format!(
-            "cam-regeneration-test-{}-{}",
-            std::process::id(),
+        Self::at_time(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+        )
+    }
+    fn at_time(timestamp: u128) -> Self {
+        // Clock ticks can repeat across parallel tests; they are not unique IDs.
+        // https://doc.rust-lang.org/std/time/struct.SystemTime.html#platform-specific-behavior
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let p = std::env::temp_dir().join(format!(
+            "cam-regeneration-test-{}-{timestamp}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
         ));
-        std::fs::create_dir_all(&p).unwrap();
+        // Fail rather than sharing ownership of an existing directory.
+        std::fs::create_dir(&p).unwrap();
         Self(p)
     }
     fn options(&self) -> CacheOptions {
@@ -38,6 +47,18 @@ impl Drop for Directory {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+#[test]
+fn directory_cleanup_preserves_other_instances_at_the_same_clock_tick() {
+    let first = Directory::at_time(0);
+    let second = Directory::at_time(0);
+    let first_path = first.0.clone();
+    let marker = second.0.join("owned-by-second");
+    std::fs::write(&marker, b"keep").unwrap();
+    drop(first);
+    assert_eq!(std::fs::read(marker).unwrap(), b"keep");
+    assert_ne!(first_path, second.0);
+}
+
 fn manifest() -> StreamManifest {
     let mut m: StreamManifest =
         serde_json::from_str(include_str!("../fixtures/operations/facing.json")).unwrap();

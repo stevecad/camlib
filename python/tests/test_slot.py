@@ -209,7 +209,9 @@ class CurvedSlotTest(unittest.TestCase):
             tool_change_position_mode="preserve_tip",
             rapid_mm_min=6000,
         )
-        text = job.post_nc("top", machine=machine, lowering=LoweringOptions(native_arcs=True)).text
+        text = job.post_nc(
+            "top", machine=machine, lowering=LoweringOptions(native_arcs=True), accept={"unchecked_machine"}
+        ).text
         # Orbits and the links along the arcs are circular blocks.
         self.assertGreater(sum(line.startswith(("G2", "G3")) for line in text.splitlines()), 10)
 

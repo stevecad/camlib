@@ -126,7 +126,12 @@ configured is listed as not checked: the overall status is always
 while the run continues; exporting the machine-ready program (`job.post_nc`,
 `run.export`) refuses it while any violation or uncertain result remains,
 unless that kind is accepted on purpose (`accept={"uncertain"}`), and lists
-the checks that were not configured. Lathe setups run every check always:
+the checks that were not configured. Machine checking is required by default;
+missing coverage needs explicit `accept={"unchecked_machine"}`. A
+[declared machine model](machine.md) checks head/table kinematics, convex
+mesh fixtures, lathe equipment, machine-axis travel, rapid envelopes and
+complete declared indexing routes against actual decoded output. Lathe
+part/stock checks always run:
 each move against the part, bore, chuck and stock as it is planned or
 replayed, and the stock against the part (material) after each operation.
 

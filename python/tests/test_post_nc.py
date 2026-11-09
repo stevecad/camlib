@@ -26,16 +26,16 @@ class PostNcTest(unittest.TestCase):
                 nc.extend(line["text"] for line in page)
                 start = page[-1]["number"] + 1
             motions = posted.status()["posting"]["checked_motions"]
-        program = job.post_nc("top", machine=machine)
+        program = job.post_nc("top", machine=machine, accept={"unchecked_machine"})
         self.assertEqual(program.text, "".join(line + "\n" for line in nc))
         self.assertEqual((program.lines, program.motions, program.findings), (len(nc), motions, ()))
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "job.nc"
-            written = job.post_nc("top", machine=machine, path=target)
+            written = job.post_nc("top", machine=machine, path=target, accept={"unchecked_machine"})
             self.assertEqual(target.read_text(), program.text)
             self.assertEqual((written.text, written.path, written.lines), ("", str(target), program.lines))
 
-    def test_material_checks_need_the_posted_stock(self):
+    def test_material_checks_use_the_posted_stock(self):
         ex = example()
         job = ex.build_job()
         setup = job.setups[0]
@@ -46,8 +46,8 @@ class PostNcTest(unittest.TestCase):
         op = getattr(setup.operations[-1], "operation", setup.operations[-1])
         checks = StreamChecks(material=(MaterialCheck(Target("floor", "1", op.region, 3)),))
         checked = replace(job, setups=(replace(setup, verification=checks),))
-        with self.assertRaisesRegex(ValueError, "material checks need the posted stock"):
-            checked.post_nc("top", machine=ex.machine_for(job))
+        with self.assertRaisesRegex(ValueError, "material gouge definite_excess on target floor"):
+            checked.post_nc("top", machine=ex.machine_for(job), accept={"unchecked_machine"})
 
 
 if __name__ == "__main__":

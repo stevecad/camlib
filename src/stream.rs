@@ -648,6 +648,15 @@ impl StreamProducer {
     pub fn stock(&self) -> Result<&Stock, String> {
         self.state.stock.height()
     }
+    /// Prepare the native evolving-stock hierarchy for an independent
+    /// decoded-program machine check, without configuring a second tracker.
+    pub fn enable_contact_queries(&mut self, cancel: &impl CancelSignal) -> Result<(), String> {
+        self.state
+            .stock
+            .height_mut()?
+            .enable_contact_queries(cancel)
+            .map(|_| ())
+    }
     pub fn run_stock(&self) -> &RunStock {
         &self.state.stock
     }

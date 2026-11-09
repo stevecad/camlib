@@ -9,7 +9,7 @@ results into a refusal unless the caller accepts that kind explicitly.
 
 from __future__ import annotations
 
-ACCEPTABLE = frozenset(("uncertain", "violation"))
+ACCEPTABLE = frozenset(("uncertain", "violation", "unchecked_machine"))
 
 
 class ExportRefused(ValueError):
@@ -42,6 +42,8 @@ def describe(result):
         return f"{result.get('status', 'unclear')} result without a localized finding"
     if "gouge" in detail and "residual" in detail:
         return _material(detail)
+    if "bodies" in detail:
+        return f"{detail.get('kind', 'machine check')} {' / '.join(detail['bodies'])}: {detail.get('detail', '')}"
     detail = detail.get("finding", detail)
     return f"{detail.get('kind', 'finding')} {detail.get('object_id', '(no object)')}"
 

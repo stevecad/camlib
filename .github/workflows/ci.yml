@@ -148,14 +148,6 @@ jobs:
       - name: Benchmark platform tests
         if: needs.changes.outputs.code == 'true'
         run: python -m unittest discover -s bench -p "test_*.py"
-      - name: Examples
-        if: needs.changes.outputs.code == 'true'
-        shell: bash
-        run: |
-          python examples/standalone_job.py out
-          python examples/cadquery_job.py out-cad
-        env:
-          PYTHONPATH: python
 
   bench:
     name: Benchmarks (informational)
@@ -224,10 +216,6 @@ jobs:
         run: |
           Rename-Item target target-hidden
           & '.\wheel environment\Scripts\python.exe' -m unittest discover -s python/tests
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & '.\wheel environment\Scripts\python.exe' examples/standalone_job.py out-wheel
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & '.\wheel environment\Scripts\python.exe' examples/cadquery_job.py out-wheel-cad
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:

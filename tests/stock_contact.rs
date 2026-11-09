@@ -372,6 +372,27 @@ fn index_tracks_commits_undo_clones_and_rejects_failed_mutations() {
     rebuilt
         .enable_contact_queries(&AtomicBool::new(false))
         .unwrap();
+    // History probes must not steal the cell reads needed to decide a clear
+    // path. This shifted path cannot use an exact repeated-path certificate.
+    let shifted = line([2., 10.25, 5.], [18., 10.25, 5.], MoveKind::Rapid);
+    let reference = check(&rebuilt, &narrow, &shifted);
+    assert_eq!(reference.status, Status::Clear);
+    let bounded = stock_contact::check(
+        &s,
+        &narrow.prepare().unwrap(),
+        &shifted,
+        Options {
+            max_cell_reads: reference.stats.cell_reads,
+            ..Options::default()
+        },
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(
+        bounded.status,
+        Status::Clear,
+        "history exhausted an otherwise sufficient cell budget"
+    );
     assert_eq!(
         serde_json::to_value(check(&s, &narrow, &rapid)).unwrap(),
         serde_json::to_value(check(&rebuilt, &narrow, &rapid)).unwrap()
@@ -386,6 +407,52 @@ fn index_tracks_commits_undo_clones_and_rejects_failed_mutations() {
         .enable_contact_queries(&AtomicBool::new(false))
         .unwrap();
     assert_eq!(check(&restored, &narrow, &rapid).status, Status::Violation);
+}
+
+#[test]
+fn repeated_native_cut_proves_a_buried_shank_but_snapshot_and_budget_do_not() {
+    let mut s = prepared();
+    let mut cutter = tool(CutterShape::Flat);
+    cutter.cutter.cutting_length_mm = 12.;
+    cutter.stickout_mm = 15.;
+    cutter.holders[0].z_min_mm = 15.;
+    let cut = line([2., 10., 3.], [18., 10., 3.], MoveKind::Cut);
+    let delta = s
+        .preview_sweep(
+            &cutter.prepare().unwrap(),
+            &cut,
+            1.,
+            SweepOptions::default(),
+            &|| false,
+        )
+        .unwrap();
+    s.apply_delta(&delta).unwrap();
+    let mut following = tool(CutterShape::Flat);
+    following.cutter.cutting_length_mm = 2.;
+    following.cutter.shank_diameter_mm = 2.;
+    let motion = line([2., 10., 4.], [18., 10., 4.], MoveKind::Cut);
+    let native = check(&s, &following, &motion);
+    assert_eq!(native.status, Status::Clear);
+    assert!(native.stats.removal_certificates > 0);
+    let mut rebuilt = Stock::from_snapshot(s.snapshot()).unwrap();
+    rebuilt.enable_contact_queries(&|| false).unwrap();
+    assert_eq!(
+        check(&rebuilt, &following, &motion).status,
+        Status::Uncertain
+    );
+    let capped = stock_contact::check(
+        &s,
+        &following.prepare().unwrap(),
+        &motion,
+        Options {
+            max_nodes: 1,
+            ..Options::default()
+        },
+        &|| false,
+    )
+    .unwrap();
+    assert_eq!(capped.status, Status::Uncertain);
+    assert!(!capped.fully_examined);
 }
 
 #[test]

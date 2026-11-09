@@ -191,6 +191,73 @@ fn fixture(adaptive: bool) -> StreamManifest {
     })
     .unwrap()
 }
+
+#[test]
+fn deep_roughing_checks_layer_depth_and_preserves_shank_and_holder_clearance() {
+    let cancel = AtomicBool::new(false);
+    let base: StreamManifest = serde_json::from_str(include_str!(
+        "../fixtures/operations/roughing-layer-depth.json"
+    ))
+    .unwrap();
+    for (holder_bottom, shank_radius, should_run) in
+        [(80., 6., true), (76., 6., false), (80., 9., false)]
+    {
+        let mut m = base.clone();
+        m.tools[0].holders[0].z_min_mm = holder_bottom;
+        m.tools[0].stickout_mm = holder_bottom;
+        m.tools[0].cutter.shank_diameter_mm = 2. * shank_radius;
+        let prepared = m.tools[0].prepare().unwrap();
+        let mut stock = Stock::new(m.stock.height().unwrap().clone()).unwrap();
+        let mut plan = OperationPlan::prepare_with_stock(
+            m.operations[0].clone(),
+            &m.tools[0],
+            &stock,
+            m.initial_position_mm,
+            1,
+            &cancel,
+        )
+        .expect("total depth must not be compared with flute length");
+        let mut minimum_z = 0_f64;
+        let outcome = (|| -> Result<(), String> {
+            while let Some(motion) = plan.next_motion_with_stock(&stock, &cancel)? {
+                minimum_z = minimum_z.min(motion.curve.end()[2]);
+                // Independent analytic solid: a 20 mm square boss from -78
+                // to 0, on a floor at -78. Enclose entire curve intervals,
+                // rather than sampling endpoints or reusing mesh shadows.
+                assert!(motion.curve.start()[2].min(motion.curve.end()[2]) >= -77.80001);
+                if motion.curve.start()[2].min(motion.curve.end()[2]) <= 0. {
+                    let mut spans = vec![(0., 1., 0)];
+                    while let Some((a, b, depth)) = spans.pop() {
+                        if box_distance(bounds(&motion.curve, a, b), [[30., 30.], [50., 50.]]) >= 6.
+                        {
+                            continue;
+                        }
+                        assert!(depth < 24, "unproven boss clearance: {:?}", motion.curve);
+                        let middle = (a + b) / 2.;
+                        spans.push((a, middle, depth + 1));
+                        spans.push((middle, b, depth + 1));
+                    }
+                }
+                let delta = stock.preview_sweep(&prepared, &motion, 1., m.sweep, &cancel)?;
+                stock.apply_delta(&delta)?;
+            }
+            Ok(())
+        })();
+        if should_run {
+            outcome.unwrap();
+            assert!(minimum_z < -77., "did not reach final layer: {minimum_z}");
+            assert!(stock.volume().removed_lower_mm3 > 400_000.);
+        } else {
+            let error = outcome.unwrap_err();
+            assert!(
+                error.contains("roughing layer") && error.contains("clearance"),
+                "{error}"
+            );
+            assert!(error.contains("tip Z must exceed"), "{error}");
+        }
+    }
+}
+
 fn circle(c: &Curve) -> Option<([f64; 3], f64)> {
     match *c {
         Curve::Arc {
@@ -968,7 +1035,9 @@ fn roughing_preflight_rejects_enclosed_outside_only_entry_reach_and_work_before_
             0 => op.entry = PocketEntry::StockEdge(HelicalEntry::default()),
             1 => op.stepdown_mm = 0.0002,
             2 => std::sync::Arc::make_mut(&mut op.target.triangles)[0][0][0] = 100.,
-            3 => m.tools[0].cutter.cutting_length_mm = 4.,
+            // Four-mm flutes can now cut this deeper part in two-mm layers
+            // (#122). One-mm flutes genuinely cannot span the first layer.
+            3 => m.tools[0].cutter.cutting_length_mm = 1.,
             _ => op.radial_allowance_mm = -1.,
         }
         // Mode 1 (50,000 layers) is refused by the memory guard under an

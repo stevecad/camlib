@@ -282,15 +282,39 @@ impl Undercut {
     }
     /// False: the cutting part spans the material top here (ordinary
     /// removal). True: undercut, top height unchanged.
-    fn classify(&self, committed: HeightBounds, tip: f64, near: f64) -> Result<bool, String> {
+    fn classify(
+        &self,
+        committed: HeightBounds,
+        tip: f64,
+        distance: f64,
+        cell_radius: f64,
+        path_error: f64,
+    ) -> Result<bool, String> {
         if committed.upper_mm <= tip + self.cutting - self.guard {
             return Ok(false);
         }
         if committed.upper_mm > tip + self.shoulder - self.guard {
             return Err(REACH.into());
         }
+        let near = (distance - cell_radius - path_error).max(0.);
         if near <= self.neck {
-            return Err("the tool neck may touch material beside an undercut (thread groove); use a narrower neck or a finer stock cell size to prove the clearance".into());
+            let center_clearance = distance - path_error - self.neck;
+            let margin = center_clearance - cell_radius;
+            let remedy = if center_clearance > 0. {
+                // The distance bound is 1-Lipschitz; a square cell has
+                // circumradius cell_size/sqrt(2). This is a LOCAL threshold
+                // at this cell centre, not a promise about a refined grid.
+                format!(
+                    "at this cell center, square cell_size_mm must be < {:.9} mm; rerun with finer stock and recheck all cells (new centers and stock bounds may differ)",
+                    center_clearance * std::f64::consts::SQRT_2
+                )
+            } else {
+                "no positive cell-size threshold at this cell center; recheck stock bounds, use a narrower neck, or clear more stock".into()
+            };
+            return Err(format!(
+                "the tool neck may touch material beside an undercut (thread groove): neck radius {:.9} mm, stock cell half-diagonal {:.9} mm, path error {:.9} mm, clearance lower bound {:.9} mm; {remedy}",
+                self.neck, cell_radius, path_error, margin
+            ));
         }
         Ok(true)
     }
@@ -611,6 +635,35 @@ impl Stock {
         cancel: &impl CancelSignal,
     ) -> Result<Vec<ClearedSweep>, String> {
         self.committed_columns.collect(tolerance_mm, cancel)
+    }
+    /// Native committed columns only: decoded deltas or undercut stock cannot
+    /// manufacture this proof. Stock only loses material after a certificate.
+    pub(crate) fn repeated_clearance(
+        &self,
+        motion: &Motion,
+        radius: f64,
+        height: f64,
+        work: &mut u64,
+        cancel: &impl CancelSignal,
+    ) -> Result<bool, String> {
+        if self.heightfield_unproven {
+            return Ok(false);
+        }
+        let bottom = motion.curve.start()[2].min(motion.curve.end()[2]) + height;
+        for i in (0..self.committed_columns.count).rev() {
+            cancelled(cancel)?;
+            if *work == 0 {
+                return Ok(false);
+            }
+            *work -= 1;
+            if let Some(ColumnNode::Leaf { column, .. }) =
+                self.committed_columns.leaf(i).map(AsRef::as_ref)
+                && column.sweep.repeats(&motion.curve, radius, bottom)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
     /// Sweeps committed since `cursor`, and whether the consumer must rebuild
     /// (`true`: the returned sweeps are the whole history, not an extension).
@@ -999,7 +1052,7 @@ impl Stock {
                     let reachable =
                         bounds.min[2] + tool.cutter().definition().cutting_length_mm - guard;
                     let mut buried = false;
-                    for y in rect.y0..=rect.y1 {
+                    'reach: for y in rect.y0..=rect.y1 {
                         cancelled(cancel)?;
                         for x in rect.x0..=rect.x1 {
                             if stats.reach_cell_visits.is_multiple_of(1024) {
@@ -1019,7 +1072,24 @@ impl Stock {
                                     Some(u) if upper <= bounds.min[2] + u.shoulder - guard => {
                                         buried = true
                                     }
-                                    _ => return Err("verified replay cutting length cannot span committed stock upper bound".into()),
+                                    _ => {
+                                        let mut work = options
+                                            .max_cell_visits
+                                            .saturating_sub(stats.reach_cell_visits);
+                                        let before = work;
+                                        let clear = self.repeated_clearance(
+                                            motion,
+                                            radius,
+                                            tool.cutter().definition().cutting_length_mm,
+                                            &mut work,
+                                            cancel,
+                                        )?;
+                                        stats.reach_cell_visits += before - work;
+                                        if clear {
+                                            break 'reach;
+                                        }
+                                        return Err("verified replay cutting length cannot span committed stock upper bound".into());
+                                    }
                                 }
                             }
                         }
@@ -1170,7 +1240,7 @@ impl Stock {
             // the affected rectangle. A previous operation may have removed
             // the original stock top; never infer that from tip samples/history.
             let reachable = bounds.min[2] + tool.cutter().definition().cutting_length_mm - guard;
-            for j in rect.y0..=rect.y1 {
+            'reach: for j in rect.y0..=rect.y1 {
                 cancelled(cancel)?;
                 for i in rect.x0..=rect.x1 {
                     if reach_cell_visits.is_multiple_of(1024) {
@@ -1190,7 +1260,23 @@ impl Stock {
                             Some(u) if upper <= bounds.min[2] + u.shoulder - guard => {
                                 buried |= !from_above
                             }
-                            _ => return Err(REACH.into()),
+                            _ => {
+                                let mut work =
+                                    options.max_cell_visits.saturating_sub(reach_cell_visits);
+                                let before = work;
+                                let clear = self.repeated_clearance(
+                                    motion,
+                                    radius,
+                                    tool.cutter().definition().cutting_length_mm,
+                                    &mut work,
+                                    cancel,
+                                )?;
+                                reach_cell_visits += before - work;
+                                if clear {
+                                    break 'reach;
+                                }
+                                return Err(REACH.into());
+                            }
                         }
                     }
                 }
@@ -1235,7 +1321,7 @@ impl Stock {
                     if buried {
                         let near = (distance - cell_radius - analytic_error).max(0.);
                         let u = undercut.as_ref().expect("buried needs a neck");
-                        under = u.classify(before, z, near)?;
+                        under = u.classify(before, z, distance, cell_radius, analytic_error)?;
                         if under && near <= radius {
                             stats.undercut_cells += 1;
                             if before.lower_mm >= z + u.cutting {
@@ -1319,9 +1405,13 @@ impl Stock {
                         let near = (d - cell_radius - s.error).max(0.);
                         let tip = s.a[2].min(s.b[2]) - s.error;
                         let under = match (&undercut, buried) {
-                            (Some(u), true) => {
-                                u.classify(self.cells[j * self.nx + i], tip, near)?
-                            }
+                            (Some(u), true) => u.classify(
+                                self.cells[j * self.nx + i],
+                                tip,
+                                d,
+                                cell_radius,
+                                s.error,
+                            )?,
                             _ => false,
                         };
                         if near > radius {
@@ -1722,9 +1812,108 @@ fn segments(
 }
 
 #[cfg(test)]
+mod undercut_diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn neck_diagnostic_distinguishes_grid_uncertainty_from_center_obstruction() {
+        let neck = Undercut {
+            cutting: 0.5,
+            shoulder: 10.,
+            neck: 1.,
+            guard: 1e-5,
+        };
+        let material = HeightBounds {
+            lower_mm: 5.,
+            upper_mm: 5.,
+        };
+        let radius = 0.26 / std::f64::consts::SQRT_2;
+        let error = neck.classify(material, 0., 1.1, radius, 0.002).unwrap_err();
+        assert!(
+            error.contains("clearance lower bound -0.085847763 mm"),
+            "{error}"
+        );
+        assert!(
+            error.contains("cell_size_mm must be < 0.138592929 mm"),
+            "{error}"
+        );
+        assert!(error.contains("new centers and stock bounds may differ"));
+        assert!(
+            neck.classify(material, 0., 1.1, 0.05 / std::f64::consts::SQRT_2, 0.002)
+                .unwrap()
+        );
+        for distance in [1., 0.9] {
+            let error = neck
+                .classify(material, 0., distance, radius, 0.)
+                .unwrap_err();
+            assert!(error.contains("no positive cell-size threshold"), "{error}");
+            assert!(!error.contains("cell_size_mm must"));
+        }
+        // Ordinary removal and material above the shoulder retain their rules.
+        assert!(!neck.classify(material, 5., 0., radius, 0.).unwrap());
+        assert_eq!(
+            neck.classify(material, -10., 5., radius, 0.).unwrap_err(),
+            REACH
+        );
+    }
+}
+
+#[cfg(test)]
 mod front_coverage_tests {
     use super::*;
     use crate::engagement::EngagementScene;
+
+    #[test]
+    fn repeated_path_reach_requires_native_history_and_exact_footprint_containment() {
+        let (mut stock, mut tool, motion) = native_fixture();
+        let options = SweepOptions::default();
+        let delta = stock
+            .preview_sweep(&tool.prepare().unwrap(), &motion, 1., options, &|| false)
+            .unwrap();
+        stock.apply_delta(&delta).unwrap();
+        tool.cutter.cutting_length_mm = 2.;
+        let mut deeper = motion.clone();
+        deeper.id += 1;
+        deeper.curve = Curve::Line {
+            start: [8., 13., 4.],
+            end: [18., 13., 4.],
+        };
+        let check = |s: &Stock, m: &Motion, r, h| {
+            s.repeated_clearance(m, r, h, &mut 1000, &|| false).unwrap()
+        };
+        assert!(check(&stock, &deeper, 2., 2.));
+        assert!(!check(&stock, &deeper, 2.001, 2.));
+        assert!(!check(&stock, &deeper, 2., 0.));
+        assert!(
+            !stock
+                .repeated_clearance(&deeper, 2., 2., &mut 0, &|| false)
+                .unwrap()
+        );
+        assert!(
+            stock
+                .repeated_clearance(&deeper, 2., 2., &mut 1000, &|| true)
+                .is_err()
+        );
+        let shifted = Motion {
+            curve: Curve::Line {
+                start: [8., 13.001, 4.],
+                end: [18., 13.001, 4.],
+            },
+            ..deeper.clone()
+        };
+        assert!(!check(&stock, &shifted, 2., 2.));
+        assert!(
+            stock
+                .preview_sweep(&tool.prepare().unwrap(), &deeper, 1., options, &|| false)
+                .is_ok()
+        );
+        // Wire transactions cannot create native empty-column authority.
+        let (mut decoded_stock, _, _) = native_fixture();
+        let decoded: StockDelta =
+            serde_json::from_slice(&serde_json::to_vec(&delta).unwrap()).unwrap();
+        decoded_stock.apply_delta(&decoded).unwrap();
+        assert!(!check(&decoded_stock, &deeper, 2., 2.));
+    }
 
     fn native_fixture() -> (Stock, crate::tool::ToolAssembly, Motion) {
         let manifest: crate::stream::StreamManifest =

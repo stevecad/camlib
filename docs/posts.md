@@ -10,6 +10,16 @@ compared with the planned motion before it is accepted. A post that writes the
 wrong coordinate, feed, plane or modal state makes the run fail. It cannot
 produce a quietly different program.
 
+## Machine crash check at export
+
+`Machine.crash_model` holds a required physical `camlib.machine.MachineModel`
+for release through `Job.post_nc` or `PostedRun.export`. Missing checking refuses
+by default; `accept={"unchecked_machine"}` is an explicit recorded override.
+Both APIs replay actual decoded output against stock before export. See
+[the full model contract and limits](machine.md), including mesh fixtures,
+head/table axes, lathe equipment, rapid envelopes and tool-change routes.
+Low-level `post_events` remains a stockless formatter, not a release gate.
+
 ## Machine
 
 ```python

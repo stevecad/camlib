@@ -181,6 +181,60 @@ fn check(s: Scene, m: &Motion) -> Report {
 }
 
 #[test]
+fn a_clear_diagonal_rapid_does_not_certify_the_controller_dogleg() {
+    let s = scene(vec![body("clamp", [4.8, -0.2, 5.2, 0.2], [-0.5, 2.])]);
+    let mut diagonal = line([0., 0., 0.], [10., 10., 0.]);
+    diagonal.kind = MoveKind::Rapid;
+    diagonal.feed_mm_min = None;
+    assert_eq!(check(s.clone(), &diagonal).status, Status::Clear);
+    let mut dogleg = diagonal;
+    dogleg.curve = Curve::Line {
+        start: [0., 0., 0.],
+        end: [10., 0., 0.],
+    };
+    let hit = check(s, &dogleg);
+    assert_eq!(hit.status, Status::Violation);
+    assert_eq!(hit.motion_id, 7);
+    assert!(
+        hit.findings
+            .iter()
+            .any(|f| f.object_id == "clamp" && f.part == Some(ToolPart::Cutter))
+    );
+}
+
+#[test]
+fn short_holder_hits_tall_fixture_even_when_cutter_clears() {
+    let s = scene(vec![body("tall-clamp", [-0.2, 2.3, 0.2, 2.7], [10., 12.])]);
+    let motion = line([-10., 0., 0.], [10., 0., 0.]);
+    let short = check(s.clone(), &motion);
+    assert_eq!(short.status, Status::Violation);
+    assert!(
+        short
+            .findings
+            .iter()
+            .any(|f| f.object_id == "tall-clamp" && f.part == Some(ToolPart::Holder))
+    );
+    assert!(
+        !short
+            .findings
+            .iter()
+            .any(|f| f.part == Some(ToolPart::Cutter))
+    );
+    let mut long = tool();
+    long.cutter.overall_length_mm = 30.;
+    long.stickout_mm = 25.;
+    long.gauge_length_mm = 40.;
+    long.holders[0].z_min_mm = 25.;
+    long.holders[0].z_max_mm = 40.;
+    let clear = s
+        .prepare(Options::default())
+        .unwrap()
+        .verify_motion(&long.prepare().unwrap(), &motion, &|| false)
+        .unwrap();
+    assert_eq!(clear.status, Status::Clear);
+}
+
+#[test]
 fn line_between_clear_endpoints_catches_fixture_and_protected_target_gouge() {
     let fixture = body("clamp", [-0.2, -0.2, 0.2, 0.2], [0.5, 1.5]);
     let m = line([-10., 0., 0.], [10., 0., 0.]);

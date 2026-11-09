@@ -128,7 +128,9 @@ class ThermalCutTest(unittest.TestCase):
             mist=True,
             rapid_mm_min=6000,
         )
-        nc = j.post_nc("sheet", machine=m, lowering=camlib.LoweringOptions(native_arcs=True)).text.splitlines()
+        nc = j.post_nc(
+            "sheet", machine=m, lowering=camlib.LoweringOptions(native_arcs=True), accept={"unchecked_machine"}
+        ).text.splitlines()
         self.assertEqual(nc.count("M3 S1"), 6)
         self.assertEqual(nc.count("M63 P2"), 5)
         self.assertEqual(nc.count("M62 P2"), 5)
@@ -160,6 +162,7 @@ class ThermalCutTest(unittest.TestCase):
                     rapid_mm_min=6000,
                 ),
                 lowering=camlib.LoweringOptions(native_arcs=True),
+                accept={"unchecked_machine"},
             )
 
     def test_qtplasmac_example(self):
@@ -216,6 +219,7 @@ class ThermalCutTest(unittest.TestCase):
             post=q.QtPlasmaCPost,
             decoder=q.QtPlasmaCDecoder,
             lowering=camlib.LoweringOptions(native_arcs=True),
+            accept={"unchecked_machine"},
         ).text.splitlines()
         for line in ("M52 P1", "G64 P0.005", "T0 M6", "G43 H0"):
             self.assertIn(line, nc)
@@ -264,6 +268,7 @@ class ThermalCutTest(unittest.TestCase):
             post=c.CentroidPlasmaPost,
             decoder=c.CentroidPlasmaDecoder,
             lowering=camlib.LoweringOptions(native_arcs=True),
+            accept={"unchecked_machine"},
         ).text.splitlines()
         self.assertEqual(nc.count("M65"), 1)
         self.assertEqual(nc.count("M61"), 6)
@@ -289,6 +294,7 @@ class ThermalCutTest(unittest.TestCase):
                 post=c.CentroidPlasmaPost,
                 decoder=c.CentroidPlasmaDecoder,
                 lowering=camlib.LoweringOptions(native_arcs=True),
+                accept={"unchecked_machine"},
             )
 
     def test_wincnc_plasma_example(self):
@@ -328,6 +334,7 @@ class ThermalCutTest(unittest.TestCase):
             post=w.WinCNCPlasmaPost,
             decoder=w.WinCNCPlasmaDecoder,
             lowering=camlib.LoweringOptions(native_arcs=True),
+            accept={"unchecked_machine"},
         ).text.splitlines()
         self.assertEqual(nc[:2], ["G90", "G22"])  # G21 would be centimetres on WinCNC
         self.assertEqual(nc.count("G92"), 1)  # once, before any motion
@@ -363,6 +370,7 @@ class ThermalCutTest(unittest.TestCase):
             post=w.WinCNCPlasmaPost,
             decoder=w.WinCNCPlasmaDecoder,
             lowering=camlib.LoweringOptions(native_arcs=True),
+            accept={"unchecked_machine"},
         ).text.splitlines()
         self.assertEqual(nc2.count("M71"), 6)
 
@@ -551,7 +559,9 @@ class StraightEdgedHolesTest(unittest.TestCase):
             mist=True,
             rapid_mm_min=6000,
         )
-        program = j.post_nc("sheet", machine=machine, lowering=camlib.LoweringOptions(native_arcs=True))
+        program = j.post_nc(
+            "sheet", machine=machine, lowering=camlib.LoweringOptions(native_arcs=True), accept={"unchecked_machine"}
+        )
         self.assertEqual(program.text.count("M3 S1"), len(holes) + 1)
 
 

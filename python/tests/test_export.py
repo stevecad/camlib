@@ -42,7 +42,7 @@ class ExportTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             target = Path(directory) / "part.nc"
             with self.assertRaises(ExportRefused) as refused:
-                job.post_nc("top", machine=machine, path=target)
+                job.post_nc("top", machine=machine, path=target, accept={"unchecked_machine"})
             self.assertFalse(target.exists())
             self.assertEqual(refused.exception.statuses, ("violation",))
             first = refused.exception.findings[0]["findings"][0]
@@ -50,22 +50,29 @@ class ExportTest(unittest.TestCase):
             self.assertIn("blocking-fixture", str(refused.exception))
             target.write_text("previous program\n")
             with self.assertRaises(ExportRefused):
-                job.post_nc("top", machine=machine, path=target)
+                job.post_nc("top", machine=machine, path=target, accept={"unchecked_machine"})
             self.assertEqual(target.read_text(), "previous program\n")
             self.assertFalse(list(Path(directory).glob("*.writing")))
         with self.assertRaises(ExportRefused):
-            job.post_nc("top", machine=machine)
+            job.post_nc("top", machine=machine, accept={"unchecked_machine"})
 
     def test_explicit_acceptance_releases_and_is_recorded(self):
         job = with_fixture(self.module.build_job())
         with TemporaryDirectory() as directory:
             target = Path(directory) / "part.nc"
-            result = job.post_nc("top", machine=self.module.machine_for(job), path=target, accept={"violation"})
+            result = job.post_nc(
+                "top",
+                machine=self.module.machine_for(job),
+                path=target,
+                accept={"violation", "unchecked_machine"},
+            )
             self.assertTrue(target.read_text().endswith("M2\n"))
-            self.assertEqual(result.accepted, ("violation",))
+            self.assertEqual(result.accepted, ("unchecked_machine", "violation"))
             self.assertTrue(all(f["status"] == "violation" for f in result.findings))
         with self.assertRaisesRegex(ValueError, "accept takes"):
-            job.post_nc("top", machine=self.module.machine_for(job), accept={"everything"})
+            job.post_nc(
+                "top", machine=self.module.machine_for(job), accept=(set({"everything"}) | {"unchecked_machine"})
+            )
 
     def test_uncertain_stock_checks_require_their_own_explicit_acceptance(self):
         job = self.module.build_job()
@@ -77,32 +84,32 @@ class ExportTest(unittest.TestCase):
             target.write_text("previous program\n")
             for accept in ((), {"violation"}):
                 with self.assertRaises(ExportRefused) as refused:
-                    job.post_nc("top", machine=machine, path=target, accept=accept)
+                    job.post_nc("top", machine=machine, path=target, accept=(set(accept) | {"unchecked_machine"}))
                 self.assertEqual(refused.exception.statuses, ("uncertain",))
                 self.assertEqual(target.read_text(), "previous program\n")
-            result = job.post_nc("top", machine=machine, accept={"uncertain"})
-            self.assertEqual(result.accepted, ("uncertain",))
+            result = job.post_nc("top", machine=machine, accept={"uncertain", "unchecked_machine"})
+            self.assertEqual(result.accepted, ("uncertain", "unchecked_machine"))
             self.assertTrue(result.findings)
             self.assertTrue(all(f["status"] == "uncertain" for f in result.findings))
             with job.post("top", machine=machine) as run:
                 with self.assertRaises(ExportRefused):
-                    run.export(target, accept={"violation"})
+                    run.export(target, accept={"violation", "unchecked_machine"})
                 self.assertEqual(target.read_text(), "previous program\n")
-                released = run.export(target, accept={"uncertain"})
-                self.assertEqual(released["accepted"], ("uncertain",))
+                released = run.export(target, accept={"uncertain", "unchecked_machine"})
+                self.assertEqual(released["accepted"], ("uncertain", "unchecked_machine"))
                 self.assertEqual(target.read_text(), result.text)
 
     def test_unconfigured_checks_are_not_misrepresented_as_clear(self):
         job = self.module.build_job()
         job = replace(job, setups=(replace(job.setups[0], verification=None),))
-        result = job.post_nc("top", machine=self.module.machine_for(job))
-        self.assertEqual(result.unchecked, ("scene", "stock_contact", "material"))
+        result = job.post_nc("top", machine=self.module.machine_for(job), accept={"unchecked_machine"})
+        self.assertEqual(result.unchecked, ("scene", "stock_contact", "material", "machine"))
 
     def test_clean_job_exports_and_names_unconfigured_checks(self):
         job = self.module.build_job()
-        result = job.post_nc("top", machine=self.module.machine_for(job))
-        self.assertEqual((result.findings, result.accepted), ((), ()))
-        self.assertEqual(result.unchecked, ("scene", "material"))
+        result = job.post_nc("top", machine=self.module.machine_for(job), accept={"unchecked_machine"})
+        self.assertEqual((result.findings, result.accepted), ((), ("unchecked_machine",)))
+        self.assertEqual(result.unchecked, ("scene", "material", "machine"))
         self.assertTrue(result.text.endswith("M2\n"))
 
     def test_posted_run_export_applies_the_same_rule(self):
@@ -110,17 +117,20 @@ class ExportTest(unittest.TestCase):
         bad = with_fixture(clean)
         with TemporaryDirectory() as directory:
             with clean.post("top", machine=self.module.machine_for(clean)) as run:
-                written = run.export(Path(directory) / "clean.nc")
+                written = run.export(Path(directory) / "clean.nc", accept={"unchecked_machine"})
                 text = Path(written["path"]).read_text()
                 self.assertEqual(text.count("\n"), written["lines"])
-                self.assertEqual(text, clean.post_nc("top", machine=self.module.machine_for(clean)).text)
+                self.assertEqual(
+                    text,
+                    clean.post_nc("top", machine=self.module.machine_for(clean), accept={"unchecked_machine"}).text,
+                )
             target = Path(directory) / "bad.nc"
             with bad.post("top", machine=self.module.machine_for(bad)) as run:
                 with self.assertRaises(ExportRefused):
-                    run.export(target)
+                    run.export(target, accept={"unchecked_machine"})
                 self.assertFalse(target.exists())
-                released = run.export(target, accept={"violation"})
-                self.assertEqual(released["accepted"], ("violation",))
+                released = run.export(target, accept={"violation", "unchecked_machine"})
+                self.assertEqual(released["accepted"], ("unchecked_machine", "violation"))
                 self.assertTrue(target.is_file())
 
     def test_refused_material_result_names_its_target_and_assessment(self):
@@ -135,7 +145,7 @@ class ExportTest(unittest.TestCase):
             target = Path(directory) / "gouged.nc"
             with job.post("top", machine=self.module.machine_for(job)) as run:
                 with self.assertRaises(ExportRefused) as refused:
-                    run.export(target)
+                    run.export(target, accept={"unchecked_machine"})
                 self.assertFalse(target.exists())
         message = str(refused.exception)
         self.assertEqual(refused.exception.statuses, ("violation",))

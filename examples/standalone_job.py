@@ -2,8 +2,8 @@
 
 Needs only camlib (no CAD package). Run:
 
-    python standalone_job.py output-dir          # one 4 mm end mill
-    python standalone_job.py output-dir --rest   # plus a 2 mm rest-machining pass
+    python standalone_job.py output-dir --accept-unchecked-machine  # inspection only
+    python standalone_job.py output-dir --rest --accept-unchecked-machine
 
 All lengths are millimetres. Z is absolute in the work coordinate system:
 the stock occupies Z 0..6, so its top face is Z 6.
@@ -178,6 +178,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("output", type=Path)
     parser.add_argument("--rest", action="store_true", help="run the two-tool rest job")
+    parser.add_argument(
+        "--accept-unchecked-machine",
+        action="store_true",
+        help="export this synthetic example for inspection without a physical machine model",
+    )
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     job = build_rest_job() if args.rest else build_job()
@@ -190,7 +195,10 @@ def main():
         player.seek(Cursor(posted.status()["available"]))
         # Written only if every check result is clear (or accepted on purpose);
         # otherwise camlib.export.ExportRefused names the findings.
-        exported = posted.export(args.output / "pocket.nc")
+        exported = posted.export(
+            args.output / "pocket.nc",
+            accept={"unchecked_machine"} if args.accept_unchecked_machine else (),
+        )
         print(
             json.dumps(
                 dict(

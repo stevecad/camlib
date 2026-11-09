@@ -425,6 +425,39 @@ pub struct PreparedSurface {
     convex_solid: std::sync::OnceLock<bool>,
 }
 impl SurfaceMesh {
+    fn validate_input(&self, floor: f64, tolerance: f64) -> Result<(), String> {
+        if self.version != 1 {
+            return Err(format!(
+                "surface mesh version {} is unsupported; expected 1",
+                self.version
+            ));
+        }
+        if self.units != "mm" {
+            return Err(format!(
+                "surface mesh units {:?} are unsupported; expected mm",
+                self.units
+            ));
+        }
+        if !self.surface_error_mm.is_finite() || !(0. ..=0.1).contains(&self.surface_error_mm) {
+            return Err(format!(
+                "surface_error_mm {} must be finite and in 0..=0.1 mm; supply a mesh within that error limit",
+                self.surface_error_mm
+            ));
+        }
+        if self.triangles.is_empty() {
+            return Err("surface mesh triangle count 0; supply at least one triangle".into());
+        }
+        if !floor.is_finite() {
+            return Err(format!("surface base plane {floor} must be finite"));
+        }
+        if !tolerance.is_finite() || tolerance <= 0. {
+            return Err(format!(
+                "surface tolerance {tolerance} must be finite and positive"
+            ));
+        }
+        Ok(())
+    }
+
     /// Clip facets at an explicit machining base. The existing infinite base
     /// plane dominates every discarded point at/below it, so ball contact and
     /// continuous clearance describe the union of retained prisms and that base.
@@ -435,17 +468,7 @@ impl SurfaceMesh {
         tolerance: f64,
         cancel: &impl CancelSignal,
     ) -> Result<Self, String> {
-        if self.version != 1
-            || self.units != "mm"
-            || self.triangles.is_empty()
-            || !floor.is_finite()
-            || !tolerance.is_finite()
-            || tolerance <= 0.
-            || !self.surface_error_mm.is_finite()
-            || !(0. ..=0.1).contains(&self.surface_error_mm)
-        {
-            return Err("invalid bounded surface floor clipping input".into());
-        }
+        self.validate_input(floor, tolerance)?;
         let mut triangles = Vec::new();
         for &triangle in self.triangles.iter() {
             if cancel.is_cancelled() {
@@ -517,17 +540,7 @@ impl SurfaceMesh {
         tolerance: f64,
         cancel: &impl CancelSignal,
     ) -> Result<PreparedSurface, String> {
-        if self.version != 1
-            || self.units != "mm"
-            || self.triangles.is_empty()
-            || !self.surface_error_mm.is_finite()
-            || !(0. ..=0.1).contains(&self.surface_error_mm)
-            || !floor.is_finite()
-            || !tolerance.is_finite()
-            || tolerance <= 0.
-        {
-            return Err("invalid surface mesh version/units/error/triangle count".into());
-        }
+        self.validate_input(floor, tolerance)?;
         let mut triangles = Vec::with_capacity(self.triangles.len());
         for &p in self.triangles.iter() {
             if cancel.is_cancelled() {

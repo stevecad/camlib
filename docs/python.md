@@ -7,13 +7,14 @@ level `Setup` is the job setup (`camlib.jobs.Setup`).
 
 | Module | What it holds |
 | --- | --- |
+| `camlib.machine` | Required physical `MachineModel`, `Axis`, `MachineBody`, `Box`, `ConvexMesh`, `ToolCalibration`, `ToolChangeRoute`, `AllowedContact`, `MachineCheckOptions`; [coverage and required inputs](machine.md) |
 | `camlib.jobs` | `Job(id, revision, setups)`, `Setup`, `PostedProgram` (result of `job.post_nc`: text, line/motion counts, findings, accepted kinds, unchecked checks, and a lathe setup's `material` check; a program with unaccepted violation/uncertain results raises `camlib.export.ExportRefused` instead, see `accept=`), `OperationNode(op, sources=, depends_on=, limits=)`, `RegenerationCache(directory, max_entry_bytes=, max_total_bytes=)`, `CadSource` (document id, revision, geometry hash and CadQuery/OCP versions of a CAD input) |
 | `camlib.operations` | Operations and entry/clearing strategies ([Operations](operations.md)), `Tabs`, `FineBore`, `ThermalCut`, `Lead`, `SmallHoles`, `MicroJoints`, `steep_and_shallow` |
 | `camlib.limits` | `Limits(contain=, avoid=)`, `AvoidArea(region, top_z_mm)` |
 | `camlib.cutting` | `cutting_data` → `CuttingData`: spindle speed and feed from surface speed and feed per tooth (chip thinning, ball effective diameter, rpm cap) |
 | `camlib.tools` | `EndMill`, `BallEndMill`, `BullEndMill`, `Drill`, `ChamferMill`, `ThreadMill`, `Tap`, `BoringBar`, `Torch`, `LaserHead`, `Neck`, `ToolAssembly`, `HolderSection` |
 | `camlib.planar` | `PlanarRegion` (`components`, reported `boundary_error_mm`), `Component`, `Boundary` (line/arc regions) |
-| `camlib.surface` | `SurfaceMesh` (triangle surfaces with their stated `surface_error_mm`) |
+| `camlib.surface` | `SurfaceMesh` (triangle surfaces with a finite stated `surface_error_mm` in the inclusive range 0–0.1 mm; checked at construction) |
 | `camlib.simulation` | `StockSpec(min, max, cell_size, max_cells=)`, `SweepOptions` (chord error, tip step and work budgets of the stock sweep), `Simulation`, `ToolChangePosition`, `ToolChangeTable`, `SimulationError`, `CamWarning`, low-level streaming |
 | `camlib.verification` | `StreamChecks(scene=, options=, material=, stock_contact=)`, `StockContactOptions` (resolution, work and finding limits), `Scene(id, revision, bodies, machine, work_to_machine)`, `Prism` (fixture or protected part; `z_error_mm`, `representation`), `MachineLimits` (tip travel, feed, acceleration, axis feeds), `MaterialCheck(target, after_operation=)` |
 | `camlib.playback` | `Player`, `Cursor` (operation, motion and `fraction` along it), `RecordedRun` (replay, seek, save) |
@@ -33,7 +34,8 @@ Typical flow, as in [Getting started](getting-started.md):
    to write the same checked program directly; or `job.regenerate(cache)` /
    `job.record(setup_id, rapid_mm_min=...)` to plan and simulate without posting
    (the rapid rate times G0 moves in playback; posting takes it from the `Machine`).
-4. `Player` to replay stock and read check results; `run.nc_lines()` for G-code;
+4. Supply `Machine.crash_model` before machine-ready export (missing coverage requires explicit `accept={"unchecked_machine"}`).
+5. `Player` to replay stock and read check results; `run.nc_lines()` for G-code;
    `run.export(path, accept=...)` to write the finished program once its checks allow it.
 
 `Setup(avoid=(AvoidArea(region, top_z_mm), ...), contain=region)` limits every

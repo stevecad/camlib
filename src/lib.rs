@@ -74,6 +74,7 @@ pub mod grbl;
 mod heights;
 pub mod holes;
 pub mod limits;
+pub mod machine;
 pub mod material;
 pub mod motion;
 pub mod operation;

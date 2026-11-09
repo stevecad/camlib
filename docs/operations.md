@@ -137,11 +137,26 @@ materials and high-speed toolpaths. `retract_z_mm`/`feed_z_mm` work as for
 - `path_strategy="stock_front"` selects a newer strategy still under
   qualification; it stops with an error where its coverage is unresolved.
 
+## Surface mesh inputs
+
+Every operation taking a `SurfaceMesh` (roughing, deburr, flat, parallel,
+waterline, steep-and-shallow and the other surface finishing strategies)
+requires version 1, millimetres, at least one nondegenerate triangle, and a
+finite `surface_error_mm` in **0–0.1 mm, inclusive**. This is the caller's
+asserted bound on the mesh's error from the intended surface; 0 means the
+facets themselves are authoritative. If the bound exceeds 0.1 mm, supply a
+finer mesh with a justified bound; do not reduce the stated error without
+improving the mesh. Python checks this range at construction, and the engine
+checks it for every mesh input. Preparation errors name the failed check.
+
 ## 3D roughing: `Roughing`, `RestRoughing`
 
 Required: `target` (a `SurfaceMesh` of the part, or use
 `Roughing.from_solid(...)` with CadQuery), `top_z_mm`, `floor_z_mm`,
 `stepdown_mm`, `clearance_z_mm`, `clearing`.
+
+The target follows the [surface mesh input limits](#surface-mesh-inputs),
+including the inclusive 0.1 mm `surface_error_mm` maximum.
 
 Clears stock in Z layers while staying above the part surface plus
 `radial_allowance_mm`/`bottom_allowance_mm`. Each layer protects the part's
@@ -175,6 +190,18 @@ cleared. Further options:
   part (face the stock first).
 - `clearing_tolerance_mm` sets the allowed construction error of each layer's
   clearing region; the operation fails if it cannot be kept.
+
+Total roughing depth may exceed the flute length: each deeper layer is
+prepared for its actual increment below the preceding layer, with a reserve
+for conservative stock bounds. Above the flutes, every emitted move must keep
+the declared shank and holder clear of committed stock. An exactly repeated
+path can reuse a native committed cutter footprint above its cleared floor,
+including a shank of the same radius. This proof requires exact path
+containment; it does not infer clearance from nearby paths, samples or decoded
+cell heights. Otherwise whole-cell bounds must prove clearance. An unresolved
+assembly check refuses the move, naming the layer, tool part and tip height
+needed to keep that part above the original stock. A wider shank or low holder
+can therefore still prevent reaching the requested floor.
 
 ## Contour: `Contour`
 
@@ -342,6 +369,14 @@ open down to the start depth (the hole drilled, or the space beside the
 boss cleared); otherwise the operation stops with an error. The neck must
 clear the thread crests. The stock model shows the swept tooth: below
 material that stays above it (the groove), the top height is unchanged.
+If the shared undercut-neck check refuses a move, its diagnostic gives the
+neck radius, stock cell half-diagonal, path error and conservative clearance
+lower bound at the failing cell. A positive cell-centre clearance also gives
+the strict square-cell size threshold at that centre. This is a local
+resolution hint, not the exact wall clearance or a guarantee for a new grid:
+rerun from the original stock at the finer resolution and check every move.
+If the current centre has no positive clearance bound, no local cell-size
+threshold is given. New stock bounds may still resolve that uncertain cell.
 `feed_mm_min` is the feed at the tool center; the cutting edge moves faster
 inside a hole (by diameter / (diameter − tool diameter)).
 

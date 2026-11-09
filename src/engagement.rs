@@ -56,6 +56,48 @@ fn radius_ok(r: f64) -> bool {
     r.is_finite() && (1e-6..=1e6).contains(&r)
 }
 impl ClearedSweep {
+    /// Exact reuse of a committed horizontal cutter footprint above its floor.
+    /// Identical XY geometry shares the same path uncertainty, so no sampled
+    /// or tolerance-based containment is inferred. Like an axial certificate,
+    /// this includes an equal-radius body following the same cleared path.
+    pub(crate) fn repeats(&self, curve: &Curve, radius: f64, bottom: f64) -> bool {
+        if radius > self.radius || bottom < self.floor + self.error {
+            return false;
+        }
+        let a = curve.start();
+        let b = curve.end();
+        let (a, b) = ([a[0], a[1]], [b[0], b[1]]);
+        match (&self.shape, curve) {
+            (Shape::Line { a: p, b: q, .. }, Curve::Line { .. }) => {
+                let on_segment = |r: Point| {
+                    robust::orient2d(
+                        robust::Coord { x: p[0], y: p[1] },
+                        robust::Coord { x: q[0], y: q[1] },
+                        robust::Coord { x: r[0], y: r[1] },
+                    ) == 0.
+                        && (0..2).all(|k| r[k] >= p[k].min(q[k]) && r[k] <= p[k].max(q[k]))
+                };
+                on_segment(a) && on_segment(b)
+            }
+            (
+                Shape::Arc {
+                    a: p,
+                    b: q,
+                    c,
+                    sweep,
+                    ..
+                },
+                Curve::Arc {
+                    center,
+                    plane: Plane::Xy,
+                    sweep_rad,
+                    ..
+                },
+            ) => a == *p && b == *q && [center[0], center[1]] == *c && sweep_rad == sweep,
+            _ => false,
+        }
+    }
+
     /// Stable geometry only; runtime identities and reissued motion IDs are
     /// not part of a clearance premise.
     pub(crate) fn fingerprint(&self) -> [u8; 32] {

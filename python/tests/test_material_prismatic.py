@@ -205,7 +205,7 @@ def run(cell, *, solid=None, face_z=20, outline=None, tolerance=None, export=Fal
 
             with tempfile.TemporaryDirectory() as directory:
                 try:
-                    posted.export(Path(directory) / "plate.nc")
+                    posted.export(Path(directory) / "plate.nc", accept={"unchecked_machine"})
                     material["exported"] = True
                 except ExportRefused:
                     material["exported"] = False

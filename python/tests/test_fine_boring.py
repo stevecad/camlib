@@ -251,6 +251,7 @@ class FineBoringTest(unittest.TestCase):
                     mist=True,
                     rapid_mm_min=6000,
                 ),
+                accept={"unchecked_machine"},
             )
         with self.assertRaisesRegex(Exception, "at most"):
             with job(fine_bore=camlib.FineBore(shift_mm=2.5, edge_angle_deg=0)).regenerate() as run:

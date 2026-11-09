@@ -545,6 +545,7 @@ impl<C: CancelSignal> Search<'_, C> {
             depth: 0,
         }];
         let mut uncertain = None;
+        let mut history_checked = false;
         while let Some(task) = stack.pop() {
             self.stats.max_stack_nodes = self.stats.max_stack_nodes.max(stack.len() + 1);
             if !self.charge()? {
@@ -630,6 +631,27 @@ impl<C: CancelSignal> Search<'_, C> {
                 b.rect[axis] = m;
                 stack.push(b);
                 stack.push(a);
+            } else if !history_checked && part.kind != ToolPart::Cutter {
+                // A whole-cell proof has priority. Only an unresolved leaf
+                // needs the additional native-history proof, charged to node
+                // work rather than stealing the height-cell read budget.
+                history_checked = true;
+                let radius = part.radius.at(part.min).max(part.radius.at(part.max));
+                let mut work = self.options.max_nodes.saturating_sub(self.stats.nodes);
+                let before = work;
+                let clear = self.stock.repeated_clearance(
+                    self.motion,
+                    radius,
+                    part.min,
+                    &mut work,
+                    self.cancel,
+                )?;
+                self.stats.nodes += before - work;
+                if clear {
+                    self.stats.removal_certificates += 1;
+                    return Ok(None);
+                }
+                stack.push(task);
             } else if task.depth >= 48
                 || self.path.length_mm() * (task.span[1] - task.span[0])
                     <= self.options.spatial_resolution_mm

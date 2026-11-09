@@ -2,10 +2,9 @@
 > ## ⚠️ EXPERIMENTAL SOFTWARE: NOT PRODUCTION READY ⚠️
 >
 > **camlib is experimental and under active development. Its toolpaths and
-> G-code have not been proven on real machines, and it does not yet check
-> programs against the machine itself (spindle head, table, fixtures,
-> tool-change and rapid paths: see
-> [#116](https://github.com/stevecad/camlib/issues/116)).**
+> G-code have not been proven on real machines. Its declared-machine crash
+> check covers nominal paths and caller-supplied physical geometry, not the
+> actual setup or controller execution. See [coverage and limits](docs/machine.md).**
 >
 > **Review and test ALL G-code THOROUGHLY before running it on any machine:**
 >
@@ -69,7 +68,12 @@ the tool holder and machine limits (lathe moves always are, against the part,
 bore, chuck and stock), and the stock against the target part; posted G-code
 is decoded again, compared with the plan and replayed on the stock. Exporting
 the program refuses it while a violation or uncertain check result has not
-been accepted on purpose.
+been accepted on purpose. A declared machine model is required at export;
+missing coverage requires explicit `accept={"unchecked_machine"}`. Head/table
+kinematics, convex mesh fixtures, independent-axis rapid envelopes, absolute
+travel limits and complete declared tool-change/indexing routes apply to actual
+decoded output. [Machine checking](docs/machine.md) explains conservative
+refusals, overhang/rotary limits (#1/#2), and external setup premises.
 
 Postprocessors: every machine is a `camlib.post.Machine` with a declared dialect
 (`GCodeDialect.linuxcnc()` for LinuxCNC). Documented Python controller posts:
@@ -87,7 +91,7 @@ Requires Python 3.12+ and a Rust toolchain (the package compiles the engine):
 
 ```sh
 python -m pip install .
-python examples/standalone_job.py out      # writes out/pocket.nc
+python examples/standalone_job.py out --accept-unchecked-machine  # synthetic inspection file
 ```
 
 For native Windows x64 installation, build tools and PowerShell commands, see

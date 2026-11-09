@@ -13,8 +13,11 @@ From the repository root in PowerShell:
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install .
-.\.venv\Scripts\python.exe examples/standalone_job.py out
+.\.venv\Scripts\python.exe examples/standalone_job.py out --accept-unchecked-machine
 ```
+
+These synthetic examples have no physical machine model. The flag exports files
+for inspection and records the missing machine check; see [machine coverage](machine.md).
 
 Replace `-3.12` with your installed Python version if necessary. Calling the
 virtual environment's Python directly avoids PowerShell activation-policy changes.
@@ -23,7 +26,7 @@ CadQuery is optional; install it in the same environment for CAD examples:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install cadquery
-.\.venv\Scripts\python.exe examples/cadquery_job.py out-cad
+.\.venv\Scripts\python.exe examples/cadquery_job.py out-cad --accept-unchecked-machine
 ```
 
 ## Development

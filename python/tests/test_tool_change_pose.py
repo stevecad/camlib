@@ -116,7 +116,7 @@ class ToolChangeTableTest(unittest.TestCase):
         nc = posted(j, m)
         self.assertEqual(sum("M6" in line.split() for line in nc), 2)
         # The same job without the posted replay agrees.
-        self.assertEqual(len(j.post_nc("top", machine=m).text.splitlines()), len(nc))
+        self.assertEqual(len(j.post_nc("top", machine=m, accept={"unchecked_machine"}).text.splitlines()), len(nc))
 
     def test_planner_starts_each_new_tool_at_its_table_pose(self):
         from camlib.simulation import OperationUpdate
@@ -145,7 +145,7 @@ class ToolChangeTableTest(unittest.TestCase):
 class PrePostCheckTest(unittest.TestCase):
     def test_table_machine_without_setup_pose_is_refused_naming_the_fix(self):
         with self.assertRaisesRegex(ValueError, r"tool drill3: .*\(0, 0, 40\).*\(0\.0, 0\.0, 45\.0\).*from_machine"):
-            job(None).post_nc("top", machine=machine(TABLE))
+            job(None).post_nc("top", machine=machine(TABLE), accept={"unchecked_machine"})
 
     def test_wrong_gauge_line_is_refused_before_posting(self):
         drill, spot = tools()
@@ -153,7 +153,7 @@ class PrePostCheckTest(unittest.TestCase):
         with self.assertRaisesRegex(
             ValueError, "tool drill3: the setup starts it at .*Setup.tool_change is ToolChangePosition"
         ):
-            job(ToolChangePosition(gauge_z_mm=90, xy_mm=(0, 0))).post_nc("top", machine=m)
+            job(ToolChangePosition(gauge_z_mm=90, xy_mm=(0, 0))).post_nc("top", machine=m, accept={"unchecked_machine"})
         # The replayed post is checked the same way, before anything runs.
         with self.assertRaisesRegex(ValueError, "tool drill3"):
             job(ToolChangePosition(gauge_z_mm=90, xy_mm=(0, 0))).post("top", machine=m)
@@ -161,7 +161,7 @@ class PrePostCheckTest(unittest.TestCase):
     def test_preserve_tip_machine_refuses_a_setup_pose(self):
         m = machine(dict.fromkeys(TABLE, (0.0, 0.0, 40.0)), mode="preserve_tip")
         with self.assertRaisesRegex(ValueError, "preserve_tip.*Setup\\(tool_change=None\\)"):
-            job(ToolChangeTable(TABLE)).post_nc("top", machine=m)
+            job(ToolChangeTable(TABLE)).post_nc("top", machine=m, accept={"unchecked_machine"})
 
     def test_z_home_machine_refuses_a_fixed_xy_and_a_table(self):
         m = machine(
@@ -172,9 +172,9 @@ class PrePostCheckTest(unittest.TestCase):
         )
         for change in (ToolChangePosition(gauge_z_mm=100, xy_mm=(0, 0)), ToolChangeTable(TABLE)):
             with self.assertRaisesRegex(ValueError, r"Z home.*ToolChangePosition\(gauge_z_mm=100"):
-                job(change).post_nc("top", machine=m)
+                job(change).post_nc("top", machine=m, accept={"unchecked_machine"})
         with self.assertRaisesRegex(ValueError, "tool drill3: .*Z home: gauge line at work Z 100"):
-            job(ToolChangePosition(gauge_z_mm=95)).post_nc("top", machine=m)
+            job(ToolChangePosition(gauge_z_mm=95)).post_nc("top", machine=m, accept={"unchecked_machine"})
 
 
 class TableValueTest(unittest.TestCase):

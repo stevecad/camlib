@@ -528,7 +528,7 @@ enum Spin {
     Css(f64, f64),
 }
 
-struct ToolGeom {
+pub(crate) struct ToolGeom {
     id: String,
     /// Convex pieces of the insert's outline on the centre plane, (u, v)
     /// relative to the nose center: a straight move sweeps each piece into
@@ -537,8 +537,8 @@ struct ToolGeom {
     /// The insert's and the holder's bodies off the centre plane (#103):
     /// convex 3D pieces (u, v, y), y across the plane; every check uses
     /// their images (projection or radial), the 2D outline only the cut.
-    insert_body: Vec<Vec<[f64; 3]>>,
-    holder_body: Vec<Vec<[f64; 3]>>,
+    pub(crate) insert_body: Vec<Vec<[f64; 3]>>,
+    pub(crate) holder_body: Vec<Vec<[f64; 3]>>,
     rn: f64,
     /// Grooving blade: the trailing corner's nose center this far along z
     /// (signed by hand) from the leading corner's; zero for one nose.
@@ -548,7 +548,7 @@ struct ToolGeom {
     /// Works inside the part's bore (a drill or a boring tool).
     inner: bool,
     /// The controlled point from the nose center, (u, v).
-    tip: [f64; 2],
+    pub(crate) tip: [f64; 2],
     /// A face grooving blade (pointing -z; `blade` is then the second
     /// corner's offset along r).
     axial: bool,
@@ -615,95 +615,98 @@ fn outside(bore: &Envelope, polygon: &[[f64; 2]], tol: f64) -> f64 {
         .max(bore.excess(&mirrored(polygon), tol))
 }
 
+pub(crate) fn tool_geometry(
+    t: &TurningTool,
+    controlled_point: ControlledPoint,
+) -> Result<ToolGeom, String> {
+    let shape = t.shape()?;
+    // Tool frame (r, z) to (u, v) = (z, r); a left-hand tool mirrors z,
+    // a boring tool (cutting outward, inside a bore) mirrors r.
+    let s = if t.hand == Hand::Left { -1. } else { 1. };
+    let boring = t.side == TurnSide::Inner;
+    let m = if boring { -1. } else { 1. };
+    // A face grooving blade: its depth along +z (u), its width along +r.
+    let axial = matches!(t.insert, super::tool::Insert::FaceGroove { .. });
+    let map = |p: &[f64; 2]| {
+        if axial {
+            [p[0], p[1]]
+        } else {
+            [s * p[1], m * p[0]]
+        }
+    };
+    let mapped = |polygon: &[[f64; 2]]| polygon.iter().map(map).collect::<Vec<_>>();
+    let (insert_body, holder_body) = super::body::body_pieces(t)?;
+    let mapped3 = |pieces: Vec<Vec<[f64; 3]>>| {
+        pieces
+            .into_iter()
+            .map(|piece| {
+                piece
+                    .into_iter()
+                    .map(|p| {
+                        let [u, v] = map(&[p[0], p[1]]);
+                        [u, v, p[2]]
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    let (insert_body, holder_body) = (mapped3(insert_body), mapped3(holder_body));
+    let is_drill = matches!(t.insert, super::tool::Insert::Drill { .. });
+    let rn = t.nose_radius_mm;
+    let tip = match (controlled_point, &t.insert) {
+        (ControlledPoint::NoseCenter, _) | (_, super::tool::Insert::Drill { .. }) => [0., 0.],
+        (_, super::tool::Insert::Thread { .. }) => [0., -m * rn],
+        // Touched off on the face and the groove's inner diameter.
+        (_, super::tool::Insert::FaceGroove { .. }) => [-rn, -rn],
+        (_, super::tool::Insert::Outline { .. }) => map(&shape
+            .programming_point
+            .ok_or("outline insert without a programming point")?),
+        _ => [-s * rn, -m * rn],
+    };
+    let back = shape.back.as_ref().map(|pieces| {
+        pieces
+            .iter()
+            .map(|(e, n)| ([map(&e[0]), map(&e[1])], map(n)))
+            .collect()
+    });
+    let edges = shape
+        .edges
+        .iter()
+        .map(|e| [map(&e[0]), map(&e[1])])
+        .collect();
+    Ok(ToolGeom {
+        id: t.id.clone(),
+        back,
+        edges,
+        insert: super::tool::convex_pieces(&mapped(&shape.insert)),
+        insert_body,
+        holder_body,
+        tip,
+        axial,
+        inner: boring || is_drill,
+        rn: t.nose_radius_mm,
+        blade: match t.insert {
+            super::tool::Insert::Groove { width_mm, .. } => s * (width_mm - 2. * t.nose_radius_mm),
+            super::tool::Insert::FaceGroove { width_mm, .. } => width_mm - 2. * t.nose_radius_mm,
+            _ => 0.,
+        },
+        drill: match t.insert {
+            super::tool::Insert::Drill {
+                diameter_mm,
+                point_angle_deg,
+                ..
+            } => Some((
+                diameter_mm / 2.,
+                diameter_mm / 2. / (point_angle_deg / 2.).to_radians().tan(),
+            )),
+            _ => None,
+        },
+    })
+}
+
 impl Planner<'_> {
     fn geometry(&self, t: &TurningTool) -> Result<ToolGeom, String> {
-        let shape = t.shape()?;
-        // Tool frame (r, z) to (u, v) = (z, r); a left-hand tool mirrors z,
-        // a boring tool (cutting outward, inside a bore) mirrors r.
-        let s = if t.hand == Hand::Left { -1. } else { 1. };
-        let boring = t.side == TurnSide::Inner;
-        let m = if boring { -1. } else { 1. };
-        // A face grooving blade: its depth along +z (u), its width along +r.
-        let axial = matches!(t.insert, super::tool::Insert::FaceGroove { .. });
-        let map = |p: &[f64; 2]| {
-            if axial {
-                [p[0], p[1]]
-            } else {
-                [s * p[1], m * p[0]]
-            }
-        };
-        let mapped = |polygon: &[[f64; 2]]| polygon.iter().map(map).collect::<Vec<_>>();
-        let (insert_body, holder_body) = super::body::body_pieces(t)?;
-        let mapped3 = |pieces: Vec<Vec<[f64; 3]>>| {
-            pieces
-                .into_iter()
-                .map(|piece| {
-                    piece
-                        .into_iter()
-                        .map(|p| {
-                            let [u, v] = map(&[p[0], p[1]]);
-                            [u, v, p[2]]
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .collect::<Vec<_>>()
-        };
-        let (insert_body, holder_body) = (mapped3(insert_body), mapped3(holder_body));
-        let is_drill = matches!(t.insert, super::tool::Insert::Drill { .. });
-        let rn = t.nose_radius_mm;
-        let tip = match (self.job.controlled_point, &t.insert) {
-            (ControlledPoint::NoseCenter, _) | (_, super::tool::Insert::Drill { .. }) => [0., 0.],
-            (_, super::tool::Insert::Thread { .. }) => [0., -m * rn],
-            // Touched off on the face and the groove's inner diameter.
-            (_, super::tool::Insert::FaceGroove { .. }) => [-rn, -rn],
-            (_, super::tool::Insert::Outline { .. }) => map(&shape
-                .programming_point
-                .ok_or("outline insert without a programming point")?),
-            _ => [-s * rn, -m * rn],
-        };
-        let back = shape.back.as_ref().map(|pieces| {
-            pieces
-                .iter()
-                .map(|(e, n)| ([map(&e[0]), map(&e[1])], map(n)))
-                .collect()
-        });
-        let edges = shape
-            .edges
-            .iter()
-            .map(|e| [map(&e[0]), map(&e[1])])
-            .collect();
-        Ok(ToolGeom {
-            id: t.id.clone(),
-            back,
-            edges,
-            insert: super::tool::convex_pieces(&mapped(&shape.insert)),
-            insert_body,
-            holder_body,
-            tip,
-            axial,
-            inner: boring || is_drill,
-            rn: t.nose_radius_mm,
-            blade: match t.insert {
-                super::tool::Insert::Groove { width_mm, .. } => {
-                    s * (width_mm - 2. * t.nose_radius_mm)
-                }
-                super::tool::Insert::FaceGroove { width_mm, .. } => {
-                    width_mm - 2. * t.nose_radius_mm
-                }
-                _ => 0.,
-            },
-            drill: match t.insert {
-                super::tool::Insert::Drill {
-                    diameter_mm,
-                    point_angle_deg,
-                    ..
-                } => Some((
-                    diameter_mm / 2.,
-                    diameter_mm / 2. / (point_angle_deg / 2.).to_radians().tan(),
-                )),
-                _ => None,
-            },
-        })
+        tool_geometry(t, self.job.controlled_point)
     }
 
     /// Check and emit one line (or XZ arc as chords) of the nose center.

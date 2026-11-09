@@ -56,7 +56,10 @@ decoded by a decoder that doesn't trust the post and compared with the plan.
 machine is not. **So:** exporting (`Job.post_nc`, `PostedRun.export`) refuses a
 program with unaccepted `violation` or `uncertain` results, and nothing is
 written. Accepting is explicit and per kind, and exports list the checks that
-were not configured.
+were not configured. A declared physical machine crash model is required
+at release (#116), with explicit `unchecked_machine` acceptance when absent.
+Both release APIs replay actual decoded output through native stock kernels;
+`Job.post_nc` cannot bypass posted-stock checks. See [machine coverage](machine.md).
 
 ## 8. Stock as certain and possible bounds
 

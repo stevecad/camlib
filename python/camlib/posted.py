@@ -311,6 +311,7 @@ class PostedRun(RecordedRun):
         decoder=NativeGCodeDecoder,
         lowering=None,
         cancel_source=None,
+        cancel=None,
         **options,
     ):
         if not isinstance(machine, Machine):
@@ -342,10 +343,12 @@ class PostedRun(RecordedRun):
             self._cancel_source = cancel_source if cancel_source is not None else getattr(owner, 'cancel', None)
             self._source_header = deepcopy(replace(program, events=()))
             run_id = options.pop('run_id', None) or uuid.uuid4().hex
-            self._post_cancel = Cancellation()
-            self._engine = PostEngine(deepcopy(machine), post, decoder=decoder, lowering=lowering)
+            self._post_cancel = cancel if cancel is not None else Cancellation()
+            self._engine = PostEngine(
+                deepcopy(machine), post or GCodePost, decoder=decoder or NativeGCodeDecoder, lowering=lowering
+            )
             self._output_tolerance_mm = machine.tolerance_mm
-            self._begin = self._engine.begin(self._source_header, run_id=run_id)
+            self._begin = self._engine.begin(self._source_header, run_id=run_id, cancel=self._post_cancel)
             begin = self._begin.data
             self._post_identity = deepcopy(begin['identity'])
             self._post_run_id = run_id
@@ -813,7 +816,48 @@ class PostedRun(RecordedRun):
             )
         return result
 
-    def export(self, path, *, accept=(), timeout=300):
+    def check_machine(self, *, timeout=300):
+        """Check every retained actual decoded event against the bound model.
+
+        Replays stock with the native kernel. This checks declared geometry
+        and controller routes, not the physical setup on a real machine.
+        """
+        from ._buffers import native
+
+        self.wait(timeout)
+        if not self.posting_status()["finished"]:
+            raise ValueError("machine check needs the finished checked program")
+        manifest = self.posting_manifest()
+        model = manifest["definition"]["machine"].get("crash_model")
+        if model is None:
+            return dict(
+                status="unchecked_machine",
+                complete=False,
+                findings=[
+                    dict(
+                        kind="unchecked_machine",
+                        bodies=["machine", "program"],
+                        detail="no declared machine crash model; supply Machine.crash_model or explicitly accept unchecked_machine",
+                    )
+                ],
+            )
+        # Configuration errors are actionable errors, never clear results.
+        session = native.MachineCrashSession(
+            _encode(model).decode(),
+            self.wait_ready().payload.tobytes().decode(),
+            _encode(manifest["definition"]).decode(),
+        )
+        try:
+            for index in range(self._post_chunks):
+                data, _, _ = self._read_post(index)
+                session.push(_encode(data).decode(), getattr(self, "_post_cancel", None))
+            return json.loads(
+                session.finish(self.posting_status()["checked_motions"], getattr(self, "_post_cancel", None))
+            )
+        except ValueError as error:
+            return json.loads(session.incomplete(str(error)))
+
+    def export(self, path=None, *, accept=(), timeout=300):
         """Write the finished program to ``path`` (atomically) once its checks
         allow it: every violation or uncertain result, from the motion checks
         and from material (a definite gouge is a violation; a possible gouge
@@ -854,21 +898,62 @@ class PostedRun(RecordedRun):
             status = material_status(material)
             if status != "clear":
                 findings.append(dict(completed=player.cursor.completed, status=status, findings=[material]))
+        machine = self.check_machine(timeout=timeout)
+        if machine["status"] != "clear":
+            # Preserve each severity: accepting uncertainty must not accept a
+            # definite collision elsewhere in the same machine report.
+            groups = {}
+            for finding in machine["findings"]:
+                status = finding.get("status", machine["status"])
+                groups.setdefault(status, []).append(finding)
+            for status, detail in groups.items():
+                findings.append(dict(completed=None, status=status, findings=detail))
         gate(findings, kinds)
-        target = Path(path)
-        temporary = target.with_name(target.name + ".writing")
-        with temporary.open("w", encoding="ascii") as output:
+        released_statuses = {f["status"] for f in findings}
+        # Missing-model acceptance has its own explicit machine report and
+        # unchecked entry; keep geometric findings focused on checked results.
+        findings = [f for f in findings if f["status"] != "unchecked_machine"]
+        text = None
+        if path is None:
             number = 1
+            parts = []
             while page := self.nc_lines(number, limit=256):
-                output.writelines(line["text"] + "\n" for line in page)
+                parts.extend(line["text"] + "\n" for line in page)
                 number += len(page)
-        temporary.replace(target)
+            text = "".join(parts)
+        target = Path(path) if path is not None else None
+        if target is not None:
+            from tempfile import NamedTemporaryFile
+
+            temporary = None
+            try:
+                with NamedTemporaryFile(
+                    mode="w",
+                    encoding="ascii",
+                    dir=target.parent,
+                    prefix=target.name + ".",
+                    suffix=".writing",
+                    delete=False,
+                ) as output:
+                    temporary = Path(output.name)
+                    number = 1
+                    while page := self.nc_lines(number, limit=256):
+                        output.writelines(line["text"] + "\n" for line in page)
+                        number += len(page)
+                temporary.replace(target)
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
         return dict(
-            path=str(target),
+            path=str(target) if target is not None else None,
+            text=text,
+            motions=self.posting_status()["checked_motions"],
+            machine=machine,
             lines=number - 1,
             findings=tuple(findings),
-            accepted=tuple(sorted(kinds & {f["status"] for f in findings})),
-            unchecked=unchecked(self._verification_config(), turning=self._config.get('turning') is not None),
+            accepted=tuple(sorted(kinds & released_statuses)),
+            unchecked=unchecked(self._verification_config(), turning=self._config.get('turning') is not None)
+            + (("machine",) if machine["status"] == "unchecked_machine" else ()),
             material=material,
         )
 

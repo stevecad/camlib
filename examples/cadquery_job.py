@@ -160,6 +160,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
     parser.add_argument("--rest", action="store_true", help="run the two-tool rest job")
+    parser.add_argument(
+        "--accept-unchecked-machine",
+        action="store_true",
+        help="export this synthetic example for inspection without a physical machine model",
+    )
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     job = build_rest_job() if args.rest else build_job()
@@ -171,7 +176,10 @@ def main():
         player.seek(Cursor(posted.status()["available"]))
         # Written only if every check result is clear (or accepted on purpose);
         # otherwise camlib.export.ExportRefused names the findings.
-        exported = posted.export(args.output / "pocket.nc")
+        exported = posted.export(
+            args.output / "pocket.nc",
+            accept={"unchecked_machine"} if args.accept_unchecked_machine else (),
+        )
         print(
             json.dumps(
                 dict(

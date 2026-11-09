@@ -98,7 +98,7 @@ def run(tolerance, *, cut_past=0.0):
         material = posted.verification_status(sample_limit=0)["material"]
         with tempfile.TemporaryDirectory() as directory:
             try:
-                posted.export(Path(directory) / "pocket.nc")
+                posted.export(Path(directory) / "pocket.nc", accept={"unchecked_machine"})
                 material["exported"] = True
             except ExportRefused:
                 material["exported"] = False

@@ -790,6 +790,7 @@ impl FrontProgress {
     }
 }
 pub struct RoughingPlan {
+    depth_parts: Vec<(crate::verification::ToolPart, f64, f64)>,
     no_op_stock_identity: Option<u64>,
     part_depth_limit: Option<f64>,
     depth_policy_checked: bool,
@@ -1138,6 +1139,25 @@ impl RoughingPlan {
             |i, signal| {
                 let cancel = || signal.is_cancelled();
                 let z = depths[i];
+                // Earlier layers clear the space above this one. Keep the
+                // original entry plane while the flutes span it; deeper
+                // layers admit only their actual increment, with a reserve
+                // for the preceding sweep's conservative height bound.
+                let mut layer_spec = material_spec.clone();
+                if material_spec.max_mm[2] - z > tool.cutter.cutting_length_mm {
+                    layer_spec.max_mm[2] = if i == 0 {
+                        material_spec.max_mm[2]
+                    } else {
+                        depths[i - 1] + 16. * op.tolerance_mm
+                    };
+                }
+                let cut_depth = layer_spec.max_mm[2] - z;
+                if cut_depth > tool.cutter.cutting_length_mm {
+                    return Err(format!(
+                        "roughing layer {i} at Z{z}: actual cut depth {cut_depth} mm exceeds cutting length {} mm; use a smaller stepdown or longer flutes",
+                        tool.cutter.cutting_length_mm
+                    ));
+                }
                 let mut work = 0;
                 let shadow = target
                     .shadow_simplified(z, op.bottom_allowance_mm, r, contour, &mut work, &cancel)
@@ -1157,9 +1177,9 @@ impl RoughingPlan {
                     id: op.id.clone(),
                     tool: op.tool.clone(),
                     region,
-                    top_z_mm: material_spec.max_mm[2],
+                    top_z_mm: layer_spec.max_mm[2],
                     floor_z_mm: z,
-                    stepdown_mm: material_spec.max_mm[2] - z,
+                    stepdown_mm: layer_spec.max_mm[2] - z,
                     stepover_mm: step,
                     feed_mm_min: op.feed_mm_min,
                     plunge_mm_min: op.plunge_mm_min,
@@ -1184,7 +1204,7 @@ impl RoughingPlan {
                     } => LayerPlan::Pocket(Box::new(PocketPlan::prepare_offset(
                         pocket,
                         tool,
-                        &material_spec,
+                        &layer_spec,
                         initial,
                         1,
                         coverage_margin_mm,
@@ -1192,7 +1212,7 @@ impl RoughingPlan {
                     )?)),
                     RoughingClearing::Raster { routing, .. } => {
                         let p =
-                            PocketPlan::prepare(pocket, tool, &material_spec, initial, 1, &cancel)?;
+                            PocketPlan::prepare(pocket, tool, &layer_spec, initial, 1, &cancel)?;
                         LayerPlan::Pocket(Box::new(if let Some(policy) = routing {
                             p.with_routing(policy, &cancel)?
                         } else {
@@ -1220,7 +1240,7 @@ impl RoughingPlan {
                             clockwise: op.clockwise,
                         },
                         tool,
-                        &material_spec,
+                        &layer_spec,
                         initial,
                         1,
                         &cancel,
@@ -1313,6 +1333,15 @@ impl RoughingPlan {
                 "Per-layer nominal residual areas are estimates; actual remaining stock and independent part/assembly/fixture checks are separate".into()]};
         check(cancel)?;
         Ok(Self {
+            depth_parts: if material_spec.max_mm[2] - floor > tool.cutter.cutting_length_mm {
+                crate::verification::parts(&prepared_tool)?
+                    .into_iter()
+                    .filter(|p| p.kind != crate::verification::ToolPart::Cutter)
+                    .map(|p| (p.kind, p.min, p.radius.at(p.min).max(p.radius.at(p.max))))
+                    .collect()
+            } else {
+                vec![]
+            },
             no_op_stock_identity,
             part_depth_limit,
             depth_policy_checked: stock.is_some() || !op.require_part_at_first_depth,
@@ -1424,6 +1453,36 @@ impl RoughingPlan {
                     report.get("front").unwrap_or(&serde_json::Value::Null)
                 )
             })? {
+                let bounds = m.curve.prepare(self.height_guard_mm / 16.)?.bounds();
+                let mut clearance_work = u64::MAX;
+                for &(part, height, radius) in &self.depth_parts {
+                    let pad = radius + self.height_guard_mm;
+                    let rect = [
+                        [bounds.min[0] - pad, bounds.min[1] - pad],
+                        [bounds.max[0] + pad, bounds.max[1] + pad],
+                    ];
+                    if !stock.bounds_clear(
+                        rect,
+                        bounds.min[2] + height - self.height_guard_mm,
+                        &mut clearance_work,
+                        cancel,
+                    )? && !stock.repeated_clearance(
+                        &m,
+                        radius,
+                        height,
+                        &mut clearance_work,
+                        cancel,
+                    )? {
+                        return Err(format!(
+                            "roughing layer {} at Z{}: {:?} clearance is not proven, {} mm above the tip; to keep it above the original stock, tip Z must exceed {} mm; remove obstructing stock first or use a longer tool assembly",
+                            self.report.active_layer,
+                            self.report.layers[self.report.active_layer].tip_z_mm,
+                            part,
+                            height,
+                            stock.spec().max_mm[2] - height + self.height_guard_mm
+                        ));
+                    }
+                }
                 let new = plan.entries();
                 self.report.stock_edge_entries += new.0 - old.0;
                 self.report.helical_entries += new.1 - old.1;

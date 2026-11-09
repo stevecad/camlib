@@ -300,7 +300,7 @@ class DrillCycleTest(unittest.TestCase):
 
     def test_post_nc_and_cached_regeneration(self):
         j = job(peck_mm=1.5)
-        self.assertEqual(j.post_nc("top", machine=linuxcnc(j)).text.count("G83 "), 2)
+        self.assertEqual(j.post_nc("top", machine=linuxcnc(j), accept={"unchecked_machine"}).text.count("G83 "), 2)
         with TemporaryDirectory() as directory:
             cache = RegenerationCache(directory)
             for hit in (False, True):

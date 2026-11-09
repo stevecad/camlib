@@ -414,88 +414,31 @@ class Job:
     def post_nc(
         self, setup_id, *, machine, path=None, accept=(), cache=None, executable=None, on_operation=None, **options
     ):
-        """Post a setup straight to checked NC text, without the playback
-        journal or the replay of posted output into stock (use ``post`` for
-        those). Every block is formatted, decoded independently and checked
-        against its source motion as in ``post``; the setup's motion checks
-        run on the generated toolpath.
+        """Release actual decoded NC after posted-stock and machine checks.
 
-        The program is released only when every non-clear check result is
-        accepted: a violation or uncertain result raises
-        ``camlib.export.ExportRefused`` (with the findings) and nothing is
-        returned or written, unless ``accept`` names that kind
-        (``{"uncertain"}``, ``{"uncertain", "violation"}``). ``path`` writes
-        the program there atomically instead of returning the text; a refused
-        export leaves an existing file untouched. The result lists the
-        findings, what was accepted and which checks were not configured.
-        Options go to ``camlib.post.post_events``. Material checks need the
-        posted stock: use ``post`` for them."""
-        from .export import accepted, gate, unchecked
-        from .posted import OperationEvents
-        from .post import post_events
+        Missing machine checking refuses by default. Explicitly accepting
+        ``unchecked_machine`` permits formatter-only output. ``path`` is
+        replaced atomically after every configured check has passed or its
+        findings were explicitly accepted. Options go to ``Job.post``.
+        """
+        from .export import accepted
 
-        accept = accepted(accept)
-
-        from .posted import check_tool_change_pose
-
-        setup = self.compile().setup(setup_id)
-        check_tool_change_pose(machine, setup.config)
-        if (setup.config.get('verification') or {}).get('material'):
-            raise ValueError('material checks need the posted stock replay: use Job.post')
-        findings = []
-
-        def verified(update):
-            if update.status not in (None, 'clear'):
-                findings.append(
-                    dict(completed=update.completed, status=update.status, findings=list(update.findings()))
-                )
-
-        lathe_material = []
-
-        def operation(update):
-            # A lathe operation's end report carries its material check.
-            if update.stage == 'end' and isinstance(update.report, dict) and 'material' in update.report:
-                lathe_material[:] = [(update.completed, update.report['material'])]
-            if on_operation is not None:
-                on_operation(update)
-
-        simulation = Simulation(**setup.simulation_options(cache), executable=executable)
-        source = OperationEvents(simulation, reuse_active_tool=True, on_operation=operation, on_verification=verified)
-        # The whole text is collected: posting may read ahead of its output.
-        source.prefetch = True
-        parts = []
-        motions = 0
-        try:
-            for chunk in post_events(setup.program_header(), source, machine=machine, **options):
-                parts.append(chunk.text)
-                motions += sum(c['motion'] is not None for c in chunk._parsed['checked'])
-        finally:
-            source.close()
-        from .export import material_status
-
-        material = None
-        if lathe_material:
-            completed, material = lathe_material[0]
-            status = material_status(material)
-            if status != 'clear':
-                findings.append(dict(completed=completed, status=status, findings=[material]))
-        gate(findings, accept)
-        text = ''.join(parts)
-        lines = text.count('\n')
-        release = dict(
-            accepted=tuple(sorted(accept & {f['status'] for f in findings})),
-            unchecked=unchecked(setup.config.get('verification'), turning='turning' in setup.config),
-            material=material,
+        accepted(accept)
+        with self.post(
+            setup_id, machine=machine, cache=cache, executable=executable, on_operation=on_operation, **options
+        ) as run:
+            release = run.export(path, accept=accept)
+        return PostedProgram(
+            release["text"] or "",
+            release["lines"],
+            release["motions"],
+            release["findings"],
+            release["path"],
+            accepted=release["accepted"],
+            unchecked=release["unchecked"],
+            material=release["material"],
+            machine=release["machine"],
         )
-        if path is None:
-            return PostedProgram(text, lines, motions, tuple(findings), **release)
-        from pathlib import Path
-
-        target = Path(path)
-        temporary = target.with_name(target.name + '.writing')
-        temporary.write_text(text, encoding='ascii')
-        temporary.replace(target)
-        return PostedProgram('', lines, motions, tuple(findings), str(target), **release)
 
     def post(self, setup_id, *, machine, cache=None, **options):
         from .posted import PostedRun, OperationEvents, check_tool_change_pose
@@ -522,7 +465,7 @@ class Job:
 @dataclass(frozen=True)
 class PostedProgram:
     """Checked NC program from Job.post_nc: ``text`` (or written to ``path``),
-    its line and motion counts, the source checks' non-clear findings, the
+    its line and motion counts, actual decoded-output checks' findings, the
     finding kinds that were accepted to release it, and the geometric checks
     the setup did not configure (not run: no claim either way)."""
 
@@ -535,6 +478,7 @@ class PostedProgram:
     unchecked: tuple = ()
     # A lathe setup's material check (the final stock against the part).
     material: dict | None = None
+    machine: dict | None = None
 
 
 @dataclass(frozen=True)

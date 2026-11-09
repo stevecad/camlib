@@ -102,18 +102,17 @@ Accept a kind only on purpose, after looking at it: `run.export("top.nc",
 accept={"uncertain"})`. The result also names the checks you did not configure
 (nothing was checked there).
 
-To just write the program (no playback journal and no replay of the posted
-output into stock), use `job.post_nc`. It formats, decodes and checks every
-block exactly as `job.post` does and produces the same text, in less than half
-the time:
+To write NC text or a file directly, use `job.post_nc`. It runs the same
+actual decoded-output stock replay and machine export gate as `job.post`, then
+discards its temporary journal:
 
 ```python
-program = job.post_nc("top", machine=machine, path="top.nc")  # same acceptance rule
+program = job.post_nc("top", machine=machine, path="top.nc")  # requires machine.crash_model
 print(program.lines, program.motions, program.unchecked)
 ```
 
-Milling material checks (`StreamChecks(material=...)`) need the posted-stock
-replay, so they require `job.post`. Every posted move is also proven not to cut deeper into the part than the comparison tolerance,
+Milling material checks (`StreamChecks(material=...)`) run on posted stock
+through either export API. Every posted move is also proven not to cut deeper into the part than the comparison tolerance,
 which decides cells along walls the tool ran tangent to. Choose a tolerance
 above the program's resolution and the mesh's surface error, for example
 `MaterialCheck(target, options=camlib.material.Options(comparison_tolerance_mm=0.005))`
@@ -237,3 +236,10 @@ A finished run can be saved and reopened later without replanning; see
 - [Operations](operations.md): every operation, its parameters and limits.
 - [Postprocessors](posts.md): machines, controllers and writing your own post.
 - [Capabilities and limits](library-capabilities.md).
+
+Machine-ready export requires `Machine.crash_model`; see [machine declaration](machine.md).
+The small formatter examples do not describe a physical machine. To export them
+for inspection, explicitly pass `accept={"unchecked_machine"}`; this is recorded
+and makes no machine-clearance claim. `uncertain` and `violation` findings still
+need their own acceptance. `Job.post_nc` now supports material checks on replayed
+posted stock, just like `Job.post`.

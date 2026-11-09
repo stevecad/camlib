@@ -2001,9 +2001,106 @@ impl RegionSession {
     }
 }
 
+/// Crash checking uses the same authoritative native stock replay as playback.
+#[pyclass]
+struct MachineCrashSession {
+    inner: camlib::machine::Session,
+    failed: bool,
+}
+#[derive(serde::Deserialize)]
+struct MachineDecodedChunk {
+    checked: Vec<camlib::post::Checked>,
+}
+#[pymethods]
+impl MachineCrashSession {
+    #[new]
+    fn new(py: Python<'_>, model: &str, manifest: &str, definition: &str) -> PyResult<Self> {
+        if model.len() > 2 * 1024 * 1024
+            || manifest.len() > 16 * 1024 * 1024
+            || definition.len() > 4 * 1024 * 1024
+        {
+            return Err(PyValueError::new_err("machine check input byte cap"));
+        }
+        let inner = py
+            .detach(|| {
+                let model =
+                    serde_json::from_str(model).map_err(|e| format!("machine model: {e}"))?;
+                let manifest = serde_json::from_str(manifest)
+                    .map_err(|e| format!("machine stock manifest: {e}"))?;
+                let definition = serde_json::from_str(definition)
+                    .map_err(|e| format!("machine post definition: {e}"))?;
+                camlib::machine::Session::new(model, manifest, &definition, &AtomicBool::new(false))
+            })
+            .map_err(PyValueError::new_err)?;
+        Ok(Self {
+            inner,
+            failed: false,
+        })
+    }
+    #[pyo3(signature=(chunk, cancel=None))]
+    fn push(
+        &mut self,
+        py: Python<'_>,
+        chunk: &str,
+        cancel: Option<PyRef<'_, PostCancellation>>,
+    ) -> PyResult<()> {
+        if self.failed {
+            return Err(PyValueError::new_err("machine session is failed"));
+        }
+        self.failed = true;
+        if chunk.len() > 512 * 1024 {
+            return Err(PyValueError::new_err("machine decoded chunk byte cap"));
+        }
+        let flag = cancel.map(|c| c.flag.clone()).unwrap_or_default();
+        py.detach(|| {
+            // Consume actual decoded controls, never normalized source controls.
+            let chunk: MachineDecodedChunk =
+                serde_json::from_str(chunk).map_err(|e| e.to_string())?;
+            for check in chunk.checked {
+                for event in check.control_effects.unwrap_or_default() {
+                    self.inner.event(event, check.event_index, &*flag)?;
+                }
+                if let Some(motion) = check.motion {
+                    self.inner.event(
+                        camlib::motion::Event::Motion { motion },
+                        check.event_index,
+                        &*flag,
+                    )?;
+                }
+            }
+            Ok::<_, String>(())
+        })
+        .map_err(PyValueError::new_err)?;
+        self.failed = false;
+        Ok(())
+    }
+    fn incomplete(&self, reason: String) -> PyResult<String> {
+        serde_json::to_string(&self.inner.incomplete(reason))
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+    #[pyo3(signature=(motions, cancel=None))]
+    fn finish(
+        &mut self,
+        py: Python<'_>,
+        motions: u64,
+        cancel: Option<PyRef<'_, PostCancellation>>,
+    ) -> PyResult<String> {
+        if self.failed {
+            return Err(PyValueError::new_err("machine session is failed"));
+        }
+        let flag = cancel.map(|c| c.flag.clone()).unwrap_or_default();
+        py.detach(|| {
+            let report = self.inner.finish(motions, &*flag)?;
+            serde_json::to_string(report).map_err(|e| e.to_string())
+        })
+        .map_err(PyValueError::new_err)
+    }
+}
+
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<RegionSession>()?;
+    module.add_class::<MachineCrashSession>()?;
     module.add_class::<TurnReceiver>()?;
     module.add_function(wrap_pyfunction!(grbl_number, module)?)?;
     module.add_function(wrap_pyfunction!(grbl_axis_mm, module)?)?;

@@ -504,8 +504,15 @@ class Machine:
     max_axis_feed_mm_min: tuple | None = None
     motion_policy: MotionPolicy | None = None
     schedule_post_feeds: bool = False
+    crash_model: object | None = None
 
     def __post_init__(self):
+        if self.crash_model is not None:
+            from .machine import MachineModel
+
+            if not isinstance(self.crash_model, MachineModel):
+                raise TypeError("crash_model must be camlib.machine.MachineModel")
+            object.__setattr__(self, "crash_model", deepcopy(self.crash_model))
         if self.schedule_post_feeds and self.motion_policy is None:
             raise ValueError('schedule_post_feeds requires an explicit motion_policy')
         if self.motion_policy is not None and not isinstance(self.motion_policy, MotionPolicy):
@@ -2166,6 +2173,8 @@ class PostEngine:
                 definition['machine'].pop(key)
         if not m.schedule_post_feeds:
             definition['machine'].pop('schedule_post_feeds')
+        if m.crash_model is None:
+            definition['machine'].pop('crash_model')
         settings = dict(
             capabilities=m.capabilities(),
             tolerance_mm=m.tolerance_mm,

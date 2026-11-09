@@ -18,7 +18,7 @@ pub struct Line {
     pub motion_id: Option<u64>,
     pub text: String,
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Checked {
     pub event_index: usize,
     pub line_interval: [usize; 2],

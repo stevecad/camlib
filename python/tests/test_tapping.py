@@ -282,7 +282,11 @@ class LeftHandTappingTest(unittest.TestCase):
                 j = job(lambda tap: tapping(tap, hand=hand), tool_change=CHANGE)
                 m = fanuc_machine(fanuc, j, rigid_tapping=True)
                 nc = j.post_nc(
-                    "top", machine=m, post=fanuc.Fanuc0iMBPost, decoder=fanuc.Fanuc0iMBDecoder
+                    "top",
+                    machine=m,
+                    post=fanuc.Fanuc0iMBPost,
+                    decoder=fanuc.Fanuc0iMBDecoder,
+                    accept={"unchecked_machine"},
                 ).text.splitlines()
                 cycles = [i for i, line in enumerate(nc) if line.startswith(("G74", "G84"))]
                 # F = lead x S = 1 mm x 600 rpm (G94), R = the current Z.
@@ -335,7 +339,13 @@ class LeftHandTappingTest(unittest.TestCase):
         j = job(lambda tap: tapping(tap, hand="left"), tool_change=CHANGE)
         # FANUC without rigid tapping declared: no tapping cycle at all.
         with self.assertRaisesRegex(Exception, "declares no left-hand tapping"):
-            j.post_nc("top", machine=fanuc_machine(fanuc, j), post=fanuc.Fanuc0iMBPost, decoder=fanuc.Fanuc0iMBDecoder)
+            j.post_nc(
+                "top",
+                machine=fanuc_machine(fanuc, j),
+                post=fanuc.Fanuc0iMBPost,
+                decoder=fanuc.Fanuc0iMBDecoder,
+                accept={"unchecked_machine"},
+            )
         # A G84-only dialect (right-hand canned cycle) refuses a left-hand tap.
         j = job(lambda tap: tapping(tap, hand="left"))
         g84 = GCodeDialect.linuxcnc().with_commands(tap_synchronized=None, tap_cycle="G84")

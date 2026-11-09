@@ -105,8 +105,15 @@ class ClosedOrbitPosting(unittest.TestCase):
             tool_change_position_mode="table",
             rapid_mm_min=6000,
         )
-        coarse = job.post_nc("top", machine=machine, lowering=LoweringOptions(native_arcs=True)).text
-        fine = job.post_nc("top", machine=replace(machine, decimals=6), lowering=LoweringOptions(native_arcs=True)).text
+        coarse = job.post_nc(
+            "top", machine=machine, lowering=LoweringOptions(native_arcs=True), accept={"unchecked_machine"}
+        ).text
+        fine = job.post_nc(
+            "top",
+            machine=replace(machine, decimals=6),
+            lowering=LoweringOptions(native_arcs=True),
+            accept={"unchecked_machine"},
+        ).text
         # Same blocks as at 6 decimals: no orbit had to be lowered to chords.
         self.assertEqual(len(coarse.splitlines()), len(fine.splitlines()))
 

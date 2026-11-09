@@ -140,7 +140,7 @@ class DwellTest(unittest.TestCase):
             mist=True,
             rapid_mm_min=6000,
         )
-        self.assertEqual(j.post_nc("top", machine=m).text.count("G4 P1.25\n"), 2)
+        self.assertEqual(j.post_nc("top", machine=m, accept={"unchecked_machine"}).text.count("G4 P1.25\n"), 2)
         with TemporaryDirectory() as directory:
             cache = RegenerationCache(directory)
             for hit in (False, True):
