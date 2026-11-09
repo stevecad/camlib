@@ -272,17 +272,126 @@ class RustPostTest(unittest.TestCase):
             post_job(post_job_input(job, "top", machine=moved))
         self.assertIn("ToolChangeTable.from_machine", str(error.exception))
 
-    def test_probing_is_refused_not_posted_as_plain_moves(self):
-        # Probing cycles (#7) are written by the Python posts' declared back
-        # ends; this port of the default post has none yet, so a probing job
-        # is refused with the reason instead of reaching G-code.
+    def test_probing_cycles_post_byte_for_byte(self):
+        # Probing (#7, #147): every cycle, LinuxCNC G38.x and Inspection Plus
+        # macros on the default post, written and decoded by the Rust post
+        # exactly as by the Python post.
+        import camlib
         import test_probing as probing
+        from test_drill_cycles import linuxcnc
 
-        j = probing.job(probing.corner())
-        machine = probing.g38(j)
-        with self.assertRaises(ValueError) as error:
-            post_job(post_job_input(j, "top", machine=machine, accept=("unchecked_machine",)))
-        self.assertIn("the Rust post writes no probing cycles", str(error.exception))
+        values = {**probing.COMMON, **probing.FEEDS}
+        macro = {**probing.COMMON, **probing.FANUC_FEEDS}
+        diameter = camlib.ToolSetDiameter(
+            "diameter",
+            probing.MILL,
+            setter_center_mm=(60, 15),
+            setter_top_z_mm=2,
+            setter_diameter_mm=10,
+            depth_mm=3,
+            clearance_mm=4,
+            clearance_z_mm=20,
+            search_mm=1,
+            tool_number=1,
+            length_register=1,
+            measure_feed_mm_min=50,
+            return_feed_mm_min=500,
+            spindle_rpm=800,
+            spindle_direction="ccw",
+        )
+        g38_cases = (
+            (probing.corner(),),
+            (probing.bore(),),
+            # Two cycles in one program: distinct O-word labels.
+            (probing.corner(), probing.bore()),
+            (camlib.ProbeSurface("s", probing.PROBE, start_mm=(-8, 15, 5), axis="x", surface_mm=0, **values),),
+            (camlib.ProbeSurface("z", probing.PROBE, start_mm=(20, 15, 15), axis="z", surface_mm=10, **values),),
+            (
+                camlib.ProbeInsideCorner(
+                    "i", probing.PROBE, corner_mm=(40, 30), z_mm=5, material=(1, 1), clearance_mm=5, **values
+                ),
+            ),
+            (
+                camlib.ProbeBoss(
+                    "b", probing.PROBE, center_mm=(20, 15), z_mm=5, diameter_mm=12, clearance_mm=4, **values
+                ),
+            ),
+            (camlib.ProbePocket("p", probing.PROBE, center_mm=(20, 15), z_mm=5, axis="y", width_mm=10, **values),),
+            (
+                camlib.ProbeWeb(
+                    "w", probing.PROBE, center_mm=(20, 15), z_mm=5, axis="x", width_mm=8, clearance_mm=4, **values
+                ),
+            ),
+            (probing.tool_length(),),
+            (diameter,),
+        )
+        # The synthetic stock is a solid block: a stylus inside a bore,
+        # pocket or web touches it (stock-contact violations). Accepting them
+        # releases every program, so its bytes are compared.
+        released = ("unchecked_machine", "violation")
+        for operations in g38_cases:
+            with self.subTest(g38=[op.id for op in operations]):
+                j = probing.job(*operations)
+                self.assert_same(j, probing.g38(j), accept=released)
+        # Refused alike, listing the same unaccepted findings.
+        j = probing.job(probing.bore())
+        self.assertFalse(self.assert_same(j, probing.g38(j))["released"])
+        z_macro = {**macro, "return_feed_mm_min": 1200}
+        macro_cases = (
+            (probing.corner(**probing.FANUC_FEEDS), False),
+            (probing.bore(**probing.FANUC_FEEDS), True),
+            (camlib.ProbeSurface("s", probing.PROBE, start_mm=(-8, 15, 5), axis="x", surface_mm=0, **macro), False),
+            (
+                camlib.ProbeSurface("z", probing.PROBE, start_mm=(20, 15, 15), axis="z", surface_mm=10, **z_macro),
+                False,
+            ),
+            (
+                camlib.ProbeInsideCorner(
+                    "i", probing.PROBE, corner_mm=(40, 30), z_mm=5, material=(1, 1), clearance_mm=5, **macro
+                ),
+                False,
+            ),
+            (
+                camlib.ProbePocket("p", probing.PROBE, center_mm=(20, 15), z_mm=5, axis="y", width_mm=10, **macro),
+                True,
+            ),
+        )
+        for op, switching in macro_cases:
+            with self.subTest(inspection_plus=op.id, switching=switching):
+                j = probing.job(op)
+                dialect = GCodeDialect.linuxcnc(
+                    probing="inspection_plus", probe_fast_feed_mm_min=2000, probe_switching=switching
+                )
+                rust = self.assert_same(j, linuxcnc(j, dialect), accept=released)
+                self.assertIn("G65 P98", rust["program"])
+
+    def test_probing_refusals_name_the_same_problem(self):
+        import camlib
+        import test_probing as probing
+        from test_drill_cycles import linuxcnc
+
+        macro = GCodeDialect.linuxcnc(probing="inspection_plus", probe_fast_feed_mm_min=2000)
+        boss = camlib.ProbeBoss(
+            "b",
+            probing.PROBE,
+            center_mm=(20, 15),
+            z_mm=5,
+            diameter_mm=12,
+            clearance_mm=4,
+            **{**probing.COMMON, **probing.FANUC_FEEDS},
+        )
+        for op, dialect, message in (
+            (probing.corner(), None, "declares no probing back end"),
+            (boss, macro, "not modelled for the Inspection Plus macros"),
+            (probing.corner(), macro, r"0.6 x the fast feed #119 \(1200 mm/min\)"),
+        ):
+            with self.subTest(message=message):
+                j = probing.job(op)
+                machine = linuxcnc(j, dialect)
+                with self.assertRaisesRegex(Exception, message):
+                    j.post_nc("top", machine=machine, accept={"unchecked_machine"})
+                with self.assertRaisesRegex(ValueError, message):
+                    post_job(post_job_input(j, "top", machine=machine, accept=("unchecked_machine",)))
 
     @unittest.skipUnless((ROOT / "target/release/cam-post").is_file(), "needs the cam-post build")
     def test_cam_post_command(self):

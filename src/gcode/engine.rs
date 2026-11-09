@@ -119,7 +119,15 @@ impl Engine {
             .map(|t| t.id.clone())
             .collect();
         let mut post = DefaultPost::new(machine.clone());
+        // Cutter radii (a probe's stylus ball): probing cycles are laid out
+        // from them, and the decoder reads them back with them.
+        post.radii = header
+            .tools
+            .iter()
+            .map(|t| (t.id.clone(), t.cutter.diameter_mm / 2.))
+            .collect();
         let mut decoder = Decoder::new(m, header.initial_position_mm, beams)?;
+        decoder.set_probing_tools(&header.tools);
         post.geometry_tolerance_mm = header.tolerance_mm;
         let lines = post.call(
             Hook::Begin {
@@ -211,8 +219,12 @@ impl Engine {
             self.post.position_mm = Some(self.decoder.position);
             self.post.source_event = Some(original.clone());
             let block = self.post.call(Hook::Event(&typed), 8)?;
-            let context = context(&typed);
-            let decoded = self.decoder.read(&block, context.as_ref())?;
+            let decoded = if let Event::Probe { cycle, covers } = &typed {
+                self.decoder.read_probe(&block, cycle, *covers)?
+            } else {
+                let context = context(&typed);
+                self.decoder.read(&block, context.as_ref())?
+            };
             if self.decoder.ended || self.decoder.tool_pending {
                 return Err("event ended program or left a partial tool transition".into());
             }

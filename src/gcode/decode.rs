@@ -8,7 +8,9 @@ use super::machine::{Code, Machine, OPTIONAL_EFFECTS, REQUIRED, ToolSetting, cod
 use crate::motion::{
     CompensationSide, Coolant, Curve, Event, Motion, MoveKind, Plane, SpindleDirection, Vec3,
 };
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+mod probe;
 
 /// The version string of the Python decoder this one follows.
 pub const VERSION: &str = "configured_motion_native_v1";
@@ -37,6 +39,8 @@ enum Effect {
 
 #[derive(Clone, Debug)]
 enum CycleItem {
+    /// A probing cycle's move, read back from its blocks.
+    Probe(MoveKind, Vec3, Option<f64>),
     Move(Vec3, Option<f64>, bool),
     Dwell(f64),
     Spindle(f64, SpindleDirection),
@@ -155,6 +159,11 @@ pub struct Decoder {
     cycle_initial: Option<f64>,
     compensation: CompensationSide,
     beams: BTreeSet<String>,
+    /// Probing: the program's probe tools, every tool's cutter radius (a
+    /// probe's stylus ball) and the O-word labels already used.
+    probes: BTreeSet<String>,
+    tool_radii: BTreeMap<String, f64>,
+    probe_labels: BTreeSet<String>,
     rules: Vec<(Code, Effect)>,
     required: BTreeSet<String>,
     motions: crate::post_decode::Decoder,
@@ -224,6 +233,9 @@ impl Decoder {
             cycle_initial: None,
             compensation: CompensationSide::Off,
             beams: beam_tools,
+            probes: BTreeSet::new(),
+            tool_radii: BTreeMap::new(),
+            probe_labels: BTreeSet::new(),
             rules,
             required,
             motions,
@@ -1257,6 +1269,22 @@ impl Decoder {
             Ok(())
         };
         match item {
+            CycleItem::Probe(kind, end, feed) => {
+                let Some(context) = context else {
+                    return Err("probing cycle move expected".into());
+                };
+                let event = self.motion_event(
+                    context,
+                    Curve::Line {
+                        start: self.position,
+                        end,
+                    },
+                    feed,
+                    kind,
+                );
+                self.position = end;
+                Ok(event)
+            }
             CycleItem::Dwell(seconds) => {
                 control(context)?;
                 Ok(Event::Dwell { seconds })

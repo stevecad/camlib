@@ -308,7 +308,8 @@ engine (issue #120). It is a port of the Python default post and decoder, not a
 second design: for the same job and machine it writes the same program, byte
 for byte (`python/tests/test_rust_post.py` compares them on the examples and on
 jobs with canned cycles, tapping, cutter compensation, dwells, plasma words,
-lowering, inch output and traverse feeds). Posts you write in Python stay
+probing cycles on both probing back ends (LinuxCNC G38.x and Inspection Plus
+macros, #147), lowering, inch output and traverse feeds). Posts you write in Python stay
 Python; only the default post and the dialects you declare as data run in Rust.
 
 The machine and its dialect cross as JSON: `Machine.to_dict()`, the same form

@@ -7,13 +7,8 @@ use super::machine::{Machine, ToolSetting};
 use crate::motion::{
     CompensationSide, Coolant, Curve, DrillCycle, Event, Motion, MoveKind, SpindleDirection, Vec3,
 };
+use crate::probe::{Leg, ProbeCycle, ProbeFeature, ProbeResult};
 use std::collections::BTreeMap;
-
-/// Probing cycles are written only by Python posts with a declared probing
-/// back end (`GCodeDialect.probing`); this port of the default post has none.
-const PROBING_REFUSED: &str = "the Rust post writes no probing cycles: post a job with probing \
-     operations from Python (Job.post_nc) with a dialect that declares probing ('g38' or \
-     'inspection_plus')";
 
 /// What a hook is called with.
 pub enum Hook<'a> {
@@ -47,7 +42,16 @@ pub struct DefaultPost {
     cycle_open: bool,
     cycle_initial: Option<f64>,
     covered: u32,
+    /// The moves still covered are a probing cycle's (none of its events
+    /// may be written separately).
+    covered_probe: bool,
     tool_setting: Option<ToolSetting>,
+    /// Each program tool's cutter radius (a probe's stylus ball), by id:
+    /// probing cycles are laid out from them.
+    pub radii: BTreeMap<String, f64>,
+    work_offset: Option<u32>,
+    /// The next LinuxCNC O-word label for a protected probe move.
+    probe_label: u32,
 }
 
 /// `PostProcessor.version`/`GCodePost.version` of the Python post this one
@@ -92,6 +96,13 @@ fn edge_differs(a: f64, b: f64) -> bool {
     let d = ((a - b + 180.).rem_euclid(360.) - 180.).abs();
     d.is_nan() || d > 1e-9
 }
+/// Python's `format(value, 'g')` for the feeds in refusal messages: six
+/// significant digits, without trailing zeros.
+fn format_g(value: f64) -> String {
+    format!("{:.5e}", value)
+        .parse::<f64>()
+        .map_or_else(|_| value.to_string(), |v| v.to_string())
+}
 /// `math.floor(math.log10(step) + 1e-9)` digits for a resolution step.
 fn step_digits(step: f64) -> usize {
     (-(step.log10() + 1e-9).floor()).max(0.) as usize
@@ -117,7 +128,11 @@ impl DefaultPost {
             cycle_open: false,
             cycle_initial: None,
             covered: 0,
+            covered_probe: false,
             tool_setting: None,
+            radii: BTreeMap::new(),
+            work_offset: None,
+            probe_label: 100,
         }
     }
     pub fn machine(&self) -> &Machine {
@@ -216,13 +231,23 @@ impl DefaultPost {
                 Event::SurfaceSpeed { .. } => "on_surface_speed",
                 Event::FeedPerRev { .. } => "on_feed_per_rev",
                 Event::CutterCompensation { .. } => "on_cutter_compensation",
-                // The Rust post ports the Python default post, which writes
-                // no probing cycles; probing back ends are Python posts.
-                Event::Probe { .. } => {
-                    return Err(PROBING_REFUSED.into());
-                }
+                Event::Probe { .. } => "on_probe",
             },
         };
+        if self.covered > 0 && self.covered_probe {
+            // A written probing cycle carries all its moves.
+            if name != "on_motion" {
+                return Err("a probing cycle covers only its own moves".into());
+            }
+            self.covered -= 1;
+            if self.covered == 0 {
+                self.covered_probe = false;
+            }
+            return Ok(vec![]);
+        }
+        if name == "on_probe" {
+            self.limit = 1024;
+        }
         if self.covered > 0 {
             // A written canned cycle carries the moves and dwell of its hole.
             if !["on_motion", "on_dwell", "on_spindle", "on_spindle_orient"].contains(&name) {
@@ -280,6 +305,7 @@ impl DefaultPost {
         match event {
             Event::Motion { motion } => self.on_motion(motion),
             Event::WorkOffset { number } => {
+                self.work_offset = Some(u32::from(*number));
                 let code = d
                     .work_offsets
                     .get((*number as usize).wrapping_sub(1))
@@ -347,7 +373,7 @@ impl DefaultPost {
                 self.emit(&[d.code(if *optional { "optional_stop" } else { "stop" })?])
             }
             Event::CutterCompensation { side, .. } => self.on_cutter_compensation(*side),
-            Event::Probe { .. } => Err(PROBING_REFUSED.into()),
+            Event::Probe { cycle, covers } => self.on_probe(cycle, *covers),
             Event::Beam { power_percent } => {
                 let s_max = d.beam_s_max.ok_or(
                     "this dialect declares no beam (beam_s_max): it cannot post plasma or laser cutting",
@@ -478,6 +504,352 @@ impl DefaultPost {
             }
             Event::Cycle { .. } => self.on_cycle(event),
         }
+    }
+
+    /// `GCodePost.on_probe`: a probing cycle as the dialect's probing
+    /// blocks, LinuxCNC G38.x (`g38`) or Renishaw Inspection Plus macro
+    /// calls (`inspection_plus`). The blocks carry every move it covers.
+    fn on_probe(&mut self, cycle: &ProbeCycle, covers: u32) -> Result<(), String> {
+        let back_end = self.machine.dialect.probing.clone().ok_or(
+            "this machine's dialect declares no probing back end: GCodeDialect(probing='g38') for \
+             LinuxCNC G38.x or probing='inspection_plus' for Renishaw Inspection Plus macros",
+        )?;
+        let no_tool = "a probing cycle needs an active tool from the machine table";
+        let setting = self.tool_setting.as_ref().ok_or(no_tool)?;
+        let radius = *self.radii.get(&setting.tool).ok_or(no_tool)?;
+        let start = cycle.start(radius)?;
+        let legs = cycle.legs(radius)?;
+        let position = self.position_mm;
+        let Some(position) = position.filter(|p| {
+            (0..3).map(|k| (p[k] - start[k]).abs()).fold(0., f64::max) <= self.machine.tolerance_mm
+        }) else {
+            return Err(format!(
+                "a probing cycle starts at {start:?}, not at {position:?}"
+            ));
+        };
+        let lines = if back_end == "g38" {
+            self.probe_g38(cycle, &legs, radius, position)?
+        } else {
+            self.probe_inspection_plus(cycle, &legs, position)?
+        };
+        for line in lines {
+            self.emit(&[&line])?;
+        }
+        self.covered = covers;
+        self.covered_probe = true;
+        Ok(())
+    }
+
+    /// The axis words of a probing move from `position` to `end`.
+    fn changed(&self, position: Vec3, end: Vec3) -> Result<Vec<String>, String> {
+        let d = &self.machine.dialect;
+        let axes: Vec<usize> = (0..3).filter(|&i| end[i] != position[i]).collect();
+        if axes.is_empty() {
+            return Err("a probing move has zero length".into());
+        }
+        let names: Vec<&str> = axes.iter().map(|&i| d.axes[i].as_str()).collect();
+        let values: Vec<f64> = axes.iter().map(|&i| end[i]).collect();
+        self.words(&names, &values, true)
+    }
+
+    fn feed_words(&self, feed: Option<f64>) -> Result<Vec<String>, String> {
+        let feed = feed.ok_or("a probing move needs its feed")?;
+        self.words(&[&self.machine.dialect.feed_word], &[feed], true)
+    }
+
+    /// `GCodePost._probe_g38`: LinuxCNC 2.9 (docs/src/gcode/g-code.adoc
+    /// G38.n, G10 L1/L2/L10; overview.adoc numbered parameters). Protected
+    /// moves: G38.3, then abort if #5070 = 1 (tripped). Measuring moves:
+    /// G38.2 to search_mm beyond the expected contact, which errors if
+    /// nothing is touched; the error of each touch is #506x minus the
+    /// expected tip coordinate.
+    fn probe_g38(
+        &mut self,
+        cycle: &ProbeCycle,
+        legs: &[Leg],
+        radius: f64,
+        position: Vec3,
+    ) -> Result<Vec<String>, String> {
+        let d = self.machine.dialect.clone();
+        let mut out = vec![];
+        let search = cycle.search_mm;
+        let mut touches: Vec<usize> = vec![];
+        let mut pos = position;
+        let mut i = 0;
+        while i < legs.len() {
+            let Leg {
+                kind,
+                mut end,
+                feed_mm_min: feed,
+            } = legs[i];
+            match kind {
+                MoveKind::ProbePosition => {
+                    let label = self.probe_label;
+                    self.probe_label += 1;
+                    let mut words = vec!["G38.3".to_string()];
+                    words.extend(self.changed(pos, end)?);
+                    words.extend(self.feed_words(feed)?);
+                    out.push(words.join(" "));
+                    out.push(format!("O{label} IF [#5070 NE 0]"));
+                    out.push("(ABORT, camlib: protected probe move obstructed)".into());
+                    out.push(format!("O{label} ENDIF"));
+                }
+                MoveKind::ProbeMeasure => {
+                    let touch = legs.get(i + 1).copied();
+                    let Some(touch) =
+                        touch.filter(|t| t.kind == MoveKind::ProbeTouch && t.feed_mm_min == feed)
+                    else {
+                        return Err("a measuring move continues into its touch".into());
+                    };
+                    let contact = touch.end;
+                    let axis = (0..3)
+                        .find(|&k| contact[k] != pos[k])
+                        .ok_or("a measuring move has zero length")?;
+                    let direction = if contact[axis] > pos[axis] { 1. } else { -1. };
+                    let target = contact[axis] + direction * search;
+                    touches.push(axis);
+                    let mut words = vec!["G38.2".to_string()];
+                    words.extend(self.words(&[&d.axes[axis]], &[target], true)?);
+                    words.extend(self.feed_words(feed)?);
+                    out.push(words.join(" "));
+                    out.push(format!(
+                        "#<probe{}> = [#{} {} {}]",
+                        touches.len(),
+                        5061 + axis,
+                        if contact[axis] < 0. { "+" } else { "-" },
+                        self.number(contact[axis].abs(), true)?
+                    ));
+                    end = contact;
+                    i += 1;
+                }
+                MoveKind::ProbeReturn => {
+                    let mut words = vec!["G1".to_string()];
+                    words.extend(self.changed(pos, end)?);
+                    words.extend(self.feed_words(feed)?);
+                    out.push(words.join(" "));
+                }
+                MoveKind::Rapid => {
+                    let mut words = vec!["G0".to_string()];
+                    words.extend(self.changed(pos, end)?);
+                    out.push(words.join(" "));
+                }
+                other => return Err(format!("unexpected probing move {other:?}")),
+            }
+            pos = end;
+            i += 1;
+        }
+        match cycle.result {
+            ProbeResult::WorkOffset { number } => {
+                let active = self
+                    .work_offset
+                    .ok_or("probing a work offset needs the active work offset selected first")?;
+                let mut words = vec!["G10 L2".to_string(), format!("P{number}")];
+                for axis in 0..3 {
+                    let used: Vec<usize> = touches
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, a)| **a == axis)
+                        .map(|(k, _)| k + 1)
+                        .collect();
+                    let error = match used.as_slice() {
+                        [] => continue,
+                        [one] => format!("#<probe{one}>"),
+                        [a, b] => format!("[#<probe{a}> + #<probe{b}>] / 2"),
+                        _ => return Err("at most two touches along one axis".into()),
+                    };
+                    words.push(format!(
+                        "{}[#{} + {error}]",
+                        d.axes[axis],
+                        5201 + 20 * active as usize + axis
+                    ));
+                }
+                out.push(words.join(" "));
+            }
+            ProbeResult::ToolLength { register } => {
+                out.push(format!(
+                    "G10 L10 P{register} {}[#5422 - #<probe1>]",
+                    d.axes[2]
+                ));
+                out.push(format!(
+                    "{} {}{register}",
+                    d.code("length_on")?,
+                    d.length_word
+                ));
+            }
+            ProbeResult::ToolRadius { register } => {
+                out.push(format!(
+                    "G10 L1 P{register} R[{} + [#<probe1> - #<probe2>] / 2]",
+                    self.number(radius, true)?
+                ));
+            }
+        }
+        Ok(out)
+    }
+
+    /// `GCodePost._macro`: a G65 argument with its decimal point, as the
+    /// Inspection Plus examples write them (H-2000-6031:
+    /// "G65P9814D50.Z-10.S2.R10.").
+    fn macro_number(&self, value: f64) -> Result<String, String> {
+        let text = self.number(value, true)?;
+        Ok(if text.contains('.') { text } else { text + "." })
+    }
+
+    /// `GCodePost._probe_inspection_plus`: Renishaw Inspection Plus
+    /// (H-2000-6031 chapters 5 and 7). O9810 protected positioning (X Y Z
+    /// F), O9811 single surface (X, Y or Z: the surface position), O9812
+    /// pocket (X or Y: its width), O9814 bore (D), O9815 inside corner (X Y:
+    /// the corner), each with S (work offset S1..S6 = G54..G59; "New work
+    /// offset = active work offset + error") and Q (overtravel: the search
+    /// beyond the expected position).
+    fn probe_inspection_plus(
+        &self,
+        cycle: &ProbeCycle,
+        legs: &[Leg],
+        position: Vec3,
+    ) -> Result<Vec<String>, String> {
+        let d = &self.machine.dialect;
+        let feature = &cycle.feature;
+        let calls = match feature {
+            ProbeFeature::Surface { .. } => 1,
+            ProbeFeature::OutsideCorner { .. } => 1,
+            ProbeFeature::InsideCorner { .. } => 2,
+            ProbeFeature::Bore { .. } => 4,
+            ProbeFeature::Pocket { .. } => 2,
+            other => {
+                let name = match other {
+                    ProbeFeature::Boss { .. } => "boss",
+                    ProbeFeature::Web { .. } => "web",
+                    ProbeFeature::ToolLength { .. } => "tool_length",
+                    _ => "tool_diameter",
+                };
+                return Err(format!(
+                    "{name} probing is not modelled for the Inspection Plus macros: their moves around a boss or web \
+                     (O9814/O9812 with Z and R) and their tool setting cycles are not taken from a source here; \
+                     post it with probing=\"g38\" or split it into single surfaces"
+                ));
+            }
+        };
+        let ProbeResult::WorkOffset { number } = cycle.result else {
+            return Err("Inspection Plus cycles correct a work offset (S1..S6)".into());
+        };
+        if !(1..=6).contains(&number) {
+            return Err(
+                "Inspection Plus S1..S6 correct G54..G59; this cycle corrects another work offset"
+                    .into(),
+            );
+        }
+        let fast = d
+            .probe_fast_feed_mm_min
+            .ok_or("Inspection Plus probing needs the installed fast feed #119")?;
+        let z_surface = matches!(
+            feature,
+            ProbeFeature::Surface {
+                axis: crate::probe::Axis::Z,
+                ..
+            }
+        );
+        let (measure, back) = (0.6 * fast, if z_surface { 0.6 } else { 1. } * fast);
+        let tolerance = self.machine.feed_tolerance_mm_min;
+        if (cycle.measure_feed_mm_min - measure).abs() > tolerance
+            || (cycle.return_feed_mm_min - back).abs() > tolerance
+        {
+            return Err(format!(
+                "Inspection Plus measures at 0.6 x the fast feed #119 ({} mm/min) and moves back at \
+                 {} mm/min (#119{}): set measure_feed_mm_min and return_feed_mm_min to those",
+                format_g(measure),
+                format_g(back),
+                if z_surface { " x 0.6 in Z" } else { " in XY" }
+            ));
+        }
+        let tail = format!("S{number}. Q{}", self.macro_number(cycle.search_mm)?);
+        let mut out = vec![];
+        if d.probe_switching {
+            out.push("G65 P9832".to_string());
+        }
+        let mut pos = position;
+        let mut i = 0;
+        while i < legs.len() {
+            let leg = legs[i];
+            if leg.kind == MoveKind::ProbePosition {
+                let mut words = vec!["G65 P9810".to_string()];
+                for k in 0..3 {
+                    if leg.end[k] != pos[k] {
+                        words.push(format!("{}{}", d.axes[k], self.macro_number(leg.end[k])?));
+                    }
+                }
+                let feed = leg.feed_mm_min.ok_or("a probing move needs its feed")?;
+                words.push(format!("{}{}", d.feed_word, self.macro_number(feed)?));
+                out.push(words.join(" "));
+                pos = leg.end;
+                i += 1;
+                continue;
+            }
+            if leg.kind != MoveKind::ProbeMeasure {
+                return Err(format!("unexpected probing move {:?}", leg.kind));
+            }
+            let group = &legs[i..(i + 3 * calls).min(legs.len())];
+            let pattern = [
+                MoveKind::ProbeMeasure,
+                MoveKind::ProbeTouch,
+                MoveKind::ProbeReturn,
+            ];
+            if group.len() != 3 * calls
+                || group
+                    .iter()
+                    .enumerate()
+                    .any(|(k, g)| g.kind != pattern[k % 3])
+            {
+                return Err("an Inspection Plus call covers whole touches".into());
+            }
+            let axis = (0..3)
+                .find(|&k| group[1].end[k] != pos[k])
+                .ok_or("a measuring move has zero length")?;
+            let call = match feature {
+                ProbeFeature::Surface { surface_mm, .. } => {
+                    format!(
+                        "G65 P9811 {}{}",
+                        d.axes[axis],
+                        self.macro_number(*surface_mm)?
+                    )
+                }
+                ProbeFeature::OutsideCorner { corner_mm, .. } => {
+                    let value = *corner_mm
+                        .get(axis)
+                        .ok_or("an outside corner is touched in X or Y")?;
+                    format!("G65 P9811 {}{}", d.axes[axis], self.macro_number(value)?)
+                }
+                ProbeFeature::InsideCorner { corner_mm, .. } => format!(
+                    "G65 P9815 {}{} {}{}",
+                    d.axes[0],
+                    self.macro_number(corner_mm[0])?,
+                    d.axes[1],
+                    self.macro_number(corner_mm[1])?
+                ),
+                ProbeFeature::Bore { diameter_mm, .. } => {
+                    format!("G65 P9814 D{}", self.macro_number(*diameter_mm)?)
+                }
+                ProbeFeature::Pocket {
+                    axis: a, width_mm, ..
+                } => {
+                    let a = match a {
+                        crate::probe::Axis::X => 0,
+                        crate::probe::Axis::Y => 1,
+                        crate::probe::Axis::Z => {
+                            return Err("an Inspection Plus pocket is measured in X or Y".into());
+                        }
+                    };
+                    format!("G65 P9812 {}{}", d.axes[a], self.macro_number(*width_mm)?)
+                }
+                _ => unreachable!("refused above"),
+            };
+            out.push(format!("{call} {tail}"));
+            pos = group[group.len() - 1].end;
+            i += 3 * calls;
+        }
+        if d.probe_switching {
+            out.push("G65 P9833".to_string());
+        }
+        Ok(out)
     }
 
     fn on_begin(&mut self, tolerance_mm: f64) -> Result<(), String> {
@@ -695,7 +1067,9 @@ impl DefaultPost {
 
     fn on_motion(&mut self, motion: &Motion) -> Result<(), String> {
         if motion.kind.is_probe() {
-            return Err(PROBING_REFUSED.into());
+            // The program validator keeps probing moves inside their cycle,
+            // whose blocks carry them.
+            return Err("a probing move outside its probing cycle".into());
         }
         let d = self.machine.dialect.clone();
         let c = &motion.curve;

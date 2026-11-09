@@ -364,6 +364,8 @@ pub fn post(input: Input, run_id: String, cancel: &impl CancelSignal) -> Result<
             describe(first),
             statuses.join(", ")
         );
+        // As `ExportRefused.findings`: the unaccepted results.
+        let findings = refused.into_iter().cloned().collect();
         return Ok(Report {
             released: false,
             program: None,
@@ -845,6 +847,15 @@ fn motion_findings(check: &Value) -> Vec<Value> {
             g["source"] = json!("stock");
             g["cell_range"] = f["cell_range"].clone();
             g["contact_point_mm"] = f["contact_point_mm"].clone();
+            // The obstruction for that part over the move (#129); null when
+            // the record has none, as `finding.get(...)` in Python.
+            for key in [
+                "obstruction_top_mm",
+                "lowest_tip_z_mm",
+                "max_clear_radius_mm",
+            ] {
+                g[key] = f.get(key).cloned().unwrap_or(Value::Null);
+            }
             out.push(g);
         }
     }
