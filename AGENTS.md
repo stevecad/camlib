@@ -102,6 +102,9 @@ at a time.
    before taking another route.
 3. **Branch and open a pull request.** `main` is protected: every change lands
    through a PR with all CI checks passing. Reference the issue (`Closes #N`).
+   Merge through the merge queue ("Merge when ready"): GitHub tests queued PRs
+   together with `main`, exactly as they will land, and merges them only if
+   the required checks pass. A failing batch is split, so nothing broken lands.
 4. **Tests come with the change.** Add tests that fail without the change, in
    Rust (`tests/`, or unit tests next to the code) and in Python (`python/tests/`)
    where the API changes. Never delete or weaken an existing test to make a change

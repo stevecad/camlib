@@ -5,6 +5,9 @@ name: CI
 # second run after the merge would only repeat it. Run manually if needed.
 on:
   pull_request:
+  # The merge queue (#148) runs the required checks on each queued batch:
+  # the PRs combined with main, exactly as they will land.
+  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -32,7 +35,9 @@ jobs:
       - id: filter
         shell: bash
         env:
-          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          # The merge base: the PR's base, a queued batch's main, else the
+          # previous commit of a push. Empty (unknown) runs everything.
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
         run: |
           if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
             echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
