@@ -30,7 +30,9 @@ def bowl():
     block = cq.Workplane("XY").box(44, 44, 12, centered=False)
     # The sphere's axis horizontal: its poles (where a tessellator fans
     # degenerate slivers) lie outside the part.
-    sphere = cq.Workplane("XY").add(cq.Solid.makeSphere(25, cq.Vector(22, 22, 12 + 25 - 9), cq.Vector(1, 0, 0), -90, 90, 360))
+    sphere = cq.Workplane("XY").add(
+        cq.Solid.makeSphere(25, cq.Vector(22, 22, 12 + 25 - 9), cq.Vector(1, 0, 0), -90, 90, 360)
+    )
     return block.cut(sphere)
 
 

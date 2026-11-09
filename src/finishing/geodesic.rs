@@ -666,6 +666,8 @@ struct Iso<'a> {
     tol: f64,
     nodes: Vec<Vec3>,
     edges: HashMap<u32, Side>,
+    /// The node of a crossing at a mesh vertex, shared by every edge there.
+    at_vertex: HashMap<u32, u32>,
     /// (from node, to node, face, the curve's points between them).
     links: Vec<(u32, u32, u32, Vec<Vec3>)>,
 }
@@ -677,15 +679,40 @@ impl<'a> Iso<'a> {
         }
         let [a, b] = self.drive.topo.edges[e as usize];
         let (pa, pb) = (self.drive.v[a as usize], self.drive.v[b as usize]);
-        let c: Side = self
-            .field
-            .edge_crossings(e, self.level)
-            .into_iter()
-            .map(|s| {
-                self.nodes.push(lerp(pa, pb, s));
-                (s, self.nodes.len() as u32 - 1)
-            })
-            .collect();
+        let mut c: Side = vec![];
+        for s in self.field.edge_crossings(e, self.level) {
+            // A crossing at an end (within rounding) is that vertex: one
+            // node for every edge there, so pieces meeting at a vertex
+            // chain whichever edges the rounding puts it on.
+            let end = if s <= 1e-9 {
+                Some((a, 0.))
+            } else if s >= 1. - 1e-9 {
+                Some((b, 1.))
+            } else {
+                None
+            };
+            let entry = match end {
+                Some((k, t)) => {
+                    let node = match self.at_vertex.get(&k) {
+                        Some(&n) => n,
+                        None => {
+                            self.nodes.push(self.drive.v[k as usize]);
+                            let n = self.nodes.len() as u32 - 1;
+                            self.at_vertex.insert(k, n);
+                            n
+                        }
+                    };
+                    (t, node)
+                }
+                None => {
+                    self.nodes.push(lerp(pa, pb, s));
+                    (s, self.nodes.len() as u32 - 1)
+                }
+            };
+            if c.last().is_none_or(|x: &(f64, u32)| x.1 != entry.1) {
+                c.push(entry);
+            }
+        }
         self.edges.insert(e, c.clone());
         c
     }
@@ -724,7 +751,16 @@ impl<'a> Iso<'a> {
         sides: [Side; 3],
         depth: usize,
     ) {
-        let ring: Vec<u32> = sides.iter().flatten().map(|x| x.1).collect();
+        // A crossing at a corner appears on both sides there: once.
+        let mut ring: Vec<u32> = vec![];
+        for x in sides.iter().flatten() {
+            if ring.last() != Some(&x.1) {
+                ring.push(x.1);
+            }
+        }
+        if ring.len() > 1 && ring.first() == ring.last() {
+            ring.pop();
+        }
         let level = self.level;
         match ring.len() {
             0 => {
@@ -904,7 +940,24 @@ impl<'a> Iso<'a> {
     /// then loops.
     fn paths(&self) -> Vec<ContactPath> {
         let mut adj: HashMap<u32, Vec<usize>> = HashMap::new();
-        for (i, &(a, b, _, _)) in self.links.iter().enumerate() {
+        // A contour along a mesh edge (from vertex to vertex, straight) is
+        // linked by both faces there: one segment, once. (Two links between
+        // the same nodes through different faces are two arcs of a ring.)
+        // None from a node to itself.
+        let vertex_of: HashMap<u32, u32> = self.at_vertex.iter().map(|(&v, &n)| (n, v)).collect();
+        let along_edge = |a: u32, b: u32| match (vertex_of.get(&a), vertex_of.get(&b)) {
+            (Some(&u), Some(&v)) => self.drive.topo.vertex_faces[u as usize]
+                .iter()
+                .any(|&f| self.drive.t[f as usize].contains(&v)),
+            _ => false,
+        };
+        let mut seen = std::collections::HashSet::new();
+        for (i, (a, b, _, mid)) in self.links.iter().enumerate() {
+            let (a, b) = (*a, *b);
+            if a == b || (mid.is_empty() && along_edge(a, b) && !seen.insert((a.min(b), a.max(b))))
+            {
+                continue;
+            }
             adj.entry(a).or_default().push(i);
             adj.entry(b).or_default().push(i);
         }
@@ -981,6 +1034,7 @@ fn contour(
         tol: 0.225 * tol,
         nodes: vec![],
         edges: HashMap::new(),
+        at_vertex: HashMap::new(),
         links: vec![],
     };
     let started = std::time::Instant::now();
@@ -3873,6 +3927,7 @@ mod tests {
                 tol: 0.005,
                 nodes: vec![],
                 edges: HashMap::new(),
+                at_vertex: HashMap::new(),
                 links: vec![],
             };
             for &f in &faces {
