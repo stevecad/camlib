@@ -79,10 +79,24 @@ Do not add these. Open an issue to discuss first if you believe one is needed.
 
 ## How to work an issue
 
-1. **Take the next issue in [ROADMAP.md](ROADMAP.md) order.** Issues are grouped
-   into GitHub milestones by phase. Work the lowest open phase first, and inside a
-   phase the order listed, unless an issue says it can run in parallel. Do not
-   start an issue whose dependencies are still open.
+Every change starts from a GitHub issue, and only one person works an issue
+at a time.
+
+1. **Claim an issue before you start.** Prefer an existing open issue: known
+   problems get solved before new ones are added. Take the next unclaimed issue
+   in [ROADMAP.md](ROADMAP.md) order. Issues are grouped into GitHub milestones
+   by phase. Work the lowest open phase first, and inside a phase the order
+   listed, unless an issue says it can run in parallel. Do not start an issue
+   whose dependencies are still open.
+   - **Skip claimed issues.** An issue with the `claimed` label is taken; pick
+     another.
+   - **Claim it:** add the `claimed` label and comment that you are working on
+     it (`gh issue edit N --add-label claimed`, then `gh issue comment N`).
+     Claim before writing code, so nobody else starts the same problem.
+   - **Nothing fits?** Open a new issue describing the problem and its
+     acceptance criteria, then claim it the same way.
+   - **Stopping before it is done?** Remove the label and comment what is
+     finished and what is left, so someone else can pick it up.
 2. **Read the whole issue.** Its "Acceptance" section is the definition of done.
    If the proposed approach turns out wrong, say so in the issue with evidence
    before taking another route.
@@ -100,7 +114,8 @@ Do not add these. Open an issue to discuss first if you believe one is needed.
    `bench/report.py`, and explain in the PR what changed and why it is better.
 6. **Update the docs** (`docs/`, `README.md`) for any user-visible change.
 7. **Keep PRs focused**: one issue, or a tightly related group. Note anything
-   left undone in the issue rather than half-finishing it silently.
+   left undone in the issue rather than half-finishing it silently. Anything a
+   PR leaves out gets its own issue.
 
 ## Commands
 

@@ -17,6 +17,7 @@ from pathlib import Path
 
 import camlib
 from camlib.post import ToolSetting
+from test_turning import body as test_body
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -30,14 +31,27 @@ def example(name):
 
 def holder(insert, rn, side="outer", width=4, length=60, offset=0):
     return camlib.TurningHolder.rectangle(
-        insert=insert, nose_radius_mm=rn, side=side, width_mm=width, length_mm=length, offset_mm=offset
+        insert=insert,
+        nose_radius_mm=rn,
+        side=side,
+        width_mm=width,
+        length_mm=length,
+        offset_mm=offset,
+        y_mm=test_body(insert, side)[0]["y_mm"],
     )
 
 
+def turning_tool(id, *, insert, side, **values):
+    """A TurningTool with the shared test body (#103); an ISO code insert
+    keeps its own worst-case thickness and clearance."""
+    declared = test_body(insert, side)[1]
+    if getattr(insert, "thickness_mm", None) is not None:
+        declared = {k: v for k, v in declared.items() if k == "seat"}
+    return camlib.TurningTool(id, insert=insert, side=side, **{**declared, **values})
+
+
 CNMG_I = camlib.TurningInsert.iso_code("CNMG120408", holder="PCLNR2525M12")
-CNMG = camlib.TurningTool(
-    "cnmg", insert=CNMG_I, side="outer", hand="right", holder=holder(CNMG_I, 0.8, width=25, length=150)
-)
+CNMG = turning_tool("cnmg", insert=CNMG_I, side="outer", hand="right", holder=holder(CNMG_I, 0.8, width=25, length=150))
 
 
 def motions(setup, operation):
@@ -52,13 +66,15 @@ def motions(setup, operation):
 
 def face_groove_setup(outer):
     insert = camlib.FaceGrooveInsert(3, 10)
-    tool = camlib.TurningTool(
+    tool = turning_tool(
         "fg",
         insert=insert,
         nose_radius_mm=0.2,
         side="outer",
         hand="right",
         holder=holder(insert, 0.2, width=3, length=40),
+        # Curved for these 26..33 mm grooves (its maker's range, #103).
+        curved_for_diameter_mm=(26, 33),
     )
     return camlib.Setup(
         "s",
@@ -78,7 +94,7 @@ def face_groove_setup(outer):
 
 def radial_groove_setup(width):
     insert = camlib.GrooveInsert(3, 4)
-    tool = camlib.TurningTool(
+    tool = turning_tool(
         "g3",
         insert=insert,
         nose_radius_mm=0.2,
@@ -108,7 +124,7 @@ def radial_groove_setup(width):
 def inside_groove_setup(z_max, face):
     cone = 8 / math.tan(math.radians(59))
     drill_insert = camlib.DrillInsert(16, 118, 50)
-    drill = camlib.TurningTool(
+    drill = turning_tool(
         "drill",
         insert=drill_insert,
         nose_radius_mm=0,
@@ -117,7 +133,7 @@ def inside_groove_setup(z_max, face):
         holder=holder(drill_insert, 0, width=40),
     )
     bar_i = camlib.TurningInsert.iso(included_angle_deg=55, approach_angle_deg=95, edge_length_mm=6, nose_radius_mm=0.4)
-    bar = camlib.TurningTool(
+    bar = turning_tool(
         "bar",
         insert=bar_i,
         side="inner",
@@ -125,7 +141,7 @@ def inside_groove_setup(z_max, face):
         holder=holder(bar_i, 0.4, side="inner", width=10, length=80, offset=1),
     )
     gi = camlib.GrooveInsert(3, 4)
-    groove = camlib.TurningTool(
+    groove = turning_tool(
         "ig",
         insert=gi,
         nose_radius_mm=0.2,
@@ -206,7 +222,7 @@ class InsideGrooveAfterFacingTest(unittest.TestCase):
 class ThreadPostingTest(unittest.TestCase):
     def setUp(self):
         insert = camlib.ThreadInsert(60, 3)
-        thread = camlib.TurningTool(
+        thread = turning_tool(
             "thread60",
             insert=insert,
             nose_radius_mm=0.1,

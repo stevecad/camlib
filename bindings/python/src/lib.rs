@@ -495,6 +495,12 @@ fn turning_iso_code(code: &str, approach_angle_deg: f64) -> PyResult<(String, f6
     ))
 }
 
+/// An ISO 1832 insert's worst-case thickness and clearance (#103).
+#[pyfunction]
+fn turning_iso_insert_body(code: &str) -> PyResult<(f64, f64)> {
+    camlib::turning::body::iso_insert_body(code).map_err(PyValueError::new_err)
+}
+
 /// The approach angle of an ISO 5608 holder designation.
 #[pyfunction]
 fn turning_holder_approach(code: &str) -> PyResult<f64> {
@@ -2008,6 +2014,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(turning_iso_insert, module)?)?;
     module.add_function(wrap_pyfunction!(turning_iso_code, module)?)?;
     module.add_function(wrap_pyfunction!(turning_holder_approach, module)?)?;
+    module.add_function(wrap_pyfunction!(turning_iso_insert_body, module)?)?;
     module.add_function(wrap_pyfunction!(turning_rectangle_holder, module)?)?;
     module.add_function(wrap_pyfunction!(turning_validate_tool, module)?)?;
     module.add_function(wrap_pyfunction!(schedule_motion, module)?)?;

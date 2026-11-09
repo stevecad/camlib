@@ -11,7 +11,13 @@ def head_ahead(ahead, above):
     """A holder whose head reaches ``ahead`` mm ahead of the nose (toward
     -z) at ``above`` mm above it, 30 mm long."""
     x0, x1, z0, z1 = above, above + 30, -ahead, 20
-    return camlib.TurningHolder(Outline((x0, z0), (Line((x1, z0)), Line((x1, z1)), Line((x0, z1)), Line((x0, z0)))))
+    return camlib.TurningHolder(
+        Outline((x0, z0), (Line((x1, z0)), Line((x1, z1)), Line((x0, z1)), Line((x0, z0)))), y_mm=(-10, 2)
+    )
+
+
+# These tests' outside tool body (#103): a 3 mm positive insert on a flat seat.
+BODY = dict(seat=camlib.TurningSeat(0, 0), insert_thickness_mm=3, insert_clearance_deg=7)
 
 
 def rough_with(holder, chuck_z_mm=-50):
@@ -19,7 +25,7 @@ def rough_with(holder, chuck_z_mm=-50):
     insert = camlib.TurningInsert.iso(
         included_angle_deg=80, approach_angle_deg=95, edge_length_mm=12, nose_radius_mm=0.8
     )
-    t = camlib.TurningTool("cnmg", insert=insert, side="outer", hand="right", holder=holder)
+    t = camlib.TurningTool("cnmg", insert=insert, side="outer", hand="right", holder=holder, **BODY)
     return job(
         # The stock ends at z -45: no uncut ring between the passes' end and
         # the chuck for a head to meet.
@@ -36,14 +42,33 @@ class NoDefaultsTest(unittest.TestCase):
             included_angle_deg=80, approach_angle_deg=95, edge_length_mm=12, nose_radius_mm=0.8
         )
         holder = camlib.TurningHolder.rectangle(
-            insert=insert, nose_radius_mm=0.8, side="outer", width_mm=20, length_mm=100, offset_mm=0
+            insert=insert, nose_radius_mm=0.8, side="outer", width_mm=20, length_mm=100, offset_mm=0, y_mm=(-10, 2)
         )
+        # The body off the centre plane is required too (#103).
+        with self.assertRaisesRegex(TypeError, "needs seat, insert_thickness_mm, insert_clearance_deg"):
+            camlib.TurningTool("t", insert=insert, side="outer", hand="right", holder=holder)
+        with self.assertRaisesRegex(TypeError, "holder.y_mm"):
+            camlib.TurningTool(
+                "t", insert=insert, side="outer", hand="right", holder=camlib.TurningHolder(holder.outline), **BODY
+            )
+        with self.assertRaisesRegex(TypeError, "give no seat"):
+            camlib.TurningTool(
+                "d",
+                insert=camlib.DrillInsert(10, 118, 40),
+                nose_radius_mm=0,
+                side="outer",
+                hand="right",
+                holder=holder,
+                **BODY,
+            )
         with self.assertRaisesRegex(TypeError, "needs holder"):
             camlib.TurningTool("t", insert=insert, side="outer", hand="right")
         with self.assertRaisesRegex(TypeError, "needs side, hand"):
             camlib.TurningTool("t", insert=insert, holder=holder)
         with self.assertRaisesRegex(TypeError, "nose_radius_mm"):
-            camlib.TurningTool("t", insert=camlib.GrooveInsert(2, 10), side="outer", hand="right", holder=holder)
+            camlib.TurningTool(
+                "t", insert=camlib.GrooveInsert(2, 10), side="outer", hand="right", holder=holder, **BODY
+            )
         with self.assertRaisesRegex(TypeError, "Holder.rectangle"):
             camlib.TurningTool("t", insert=insert, side="outer", hand="right", holder_width_mm=20)
         with self.assertRaisesRegex(TypeError, "TurningInsert.iso"):
@@ -59,18 +84,37 @@ class NoDefaultsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "approach angle"):
             camlib.TurningInsert.iso_code("CNMG120408")
         with self.assertRaisesRegex(TypeError, "offset_mm"):
-            camlib.TurningHolder.rectangle(insert=insert, nose_radius_mm=0.8, side="outer", width_mm=20, length_mm=100)
+            camlib.TurningHolder.rectangle(
+                insert=insert, nose_radius_mm=0.8, side="outer", width_mm=20, length_mm=100, y_mm=(-10, 2)
+            )
+        with self.assertRaisesRegex(TypeError, "y_mm"):
+            camlib.TurningHolder.rectangle(
+                insert=insert, nose_radius_mm=0.8, side="outer", width_mm=20, length_mm=100, offset_mm=0
+            )
 
     def test_a_nose_radius_that_contradicts_the_outline_is_refused(self):
         insert = camlib.TurningInsert.iso_code("CNMG120408", approach_angle_deg=95)
         self.assertEqual(insert.nose_radius_mm, 0.8)
         holder = camlib.TurningHolder.rectangle(
-            insert=insert, nose_radius_mm=0.8, side="outer", width_mm=25, length_mm=150, offset_mm=0
+            insert=insert, nose_radius_mm=0.8, side="outer", width_mm=25, length_mm=150, offset_mm=0, y_mm=(-25, 3)
         )
-        tool = camlib.TurningTool("t", insert=insert, side="outer", hand="right", holder=holder)
+        # From the code: thickness and clearance (its worst case), the edge
+        # from the 95 degree holder; the seat is the holder's.
+        self.assertEqual((insert.thickness_mm, insert.clearance_deg, insert.edge_deg), (5.13, 0.0, 5.0))
+        tool = camlib.TurningTool(
+            "t", insert=insert, side="outer", hand="right", holder=holder, seat=camlib.TurningSeat(-6, -6)
+        )
         self.assertEqual(tool.nose_radius_mm, 0.8)
         tool.validate()
-        wrong = camlib.TurningTool("t", insert=insert, side="outer", hand="right", holder=holder, nose_radius_mm=0.4)
+        wrong = camlib.TurningTool(
+            "t",
+            insert=insert,
+            side="outer",
+            hand="right",
+            holder=holder,
+            nose_radius_mm=0.4,
+            seat=camlib.TurningSeat(-6, -6),
+        )
         with self.assertRaisesRegex(ValueError, "differs from the insert's corner radius"):
             wrong.validate()
 
@@ -107,15 +151,19 @@ class OutlineTest(unittest.TestCase):
         drawn = camlib.InsertOutline(
             Outline((5, 0), (Arc((0, 0), 5, 0, 360),)), corner=0, cutting=(0,), programming_point_mm=(-5, -5)
         )
-        self.assertEqual(drawn, camlib.TurningInsert.iso_code("RCMT10T3M0", approach_angle_deg=95))
-        t = tool("r10", drawn, nose_radius_mm=5, width_mm=20, length_mm=100)
+        # The same geometry (the ISO one also knows its body: thickness,
+        # clearance and edge, which a drawn outline declares on the tool).
+        self.assertEqual(drawn.to_dict(), camlib.TurningInsert.iso_code("RCMT10T3M0", approach_angle_deg=95).to_dict())
+        with self.assertRaisesRegex(TypeError, "edge_deg"):
+            tool("r10", drawn, nose_radius_mm=5, width_mm=20, length_mm=100)
+        t = tool("r10", drawn, nose_radius_mm=5, width_mm=20, length_mm=100, edge_deg=5)
         self.assertEqual(t.validate(), t)
         # Its nose circle must lie in it: a corner arc of the wrong radius.
         bad = camlib.InsertOutline(
             Outline((5, 0), (Arc((0, 0), 5, 0, 360),)), corner=0, cutting=(), programming_point_mm=(-5, -5)
         )
         with self.assertRaisesRegex(ValueError, "cutting segments"):
-            tool("r10", bad, nose_radius_mm=5, width_mm=20, length_mm=100).validate()
+            tool("r10", bad, nose_radius_mm=5, width_mm=20, length_mm=100, edge_deg=5).validate()
 
     def test_a_holder_head_ahead_of_the_insert_is_caught(self):
         with self.assertRaisesRegex(Exception, "the holder would hit the part"):

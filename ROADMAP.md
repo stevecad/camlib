@@ -41,7 +41,6 @@ is ordered by real dependency, not by size:
 
 Smaller, independent items first, then the 3D stock and what needs it.
 
-- [ ] #119 Geodesic finishing: tool-centre mode (spacing on the radius-offset surface)
 - [ ] #7 Probing: work offset, feature and tool-setting cycles (3-axis; tilted planes come with #5)
 - [ ] #92 Deburr: ball-end and bull-nose tools
 - [ ] #93 Deburr: edges next to drafted or filleted walls
@@ -150,3 +149,4 @@ These can run in parallel with any phase.
 - [x] #102 Turning: an inside groove after facing fails with 'needs an open hole in front of it'
 - [x] #103 Turning: tools need an insert thickness and out-of-plane holder bodies
 - [x] #12 Geodesic finishing
+- [x] #119 Geodesic finishing: tool-centre mode (spacing on the radius-offset surface)

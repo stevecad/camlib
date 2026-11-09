@@ -1,3 +1,23 @@
+> [!CAUTION]
+> ## ⚠️ EXPERIMENTAL SOFTWARE: NOT PRODUCTION READY ⚠️
+>
+> **camlib is experimental and under active development. Its toolpaths and
+> G-code have not been proven on real machines, and it does not yet check
+> programs against the machine itself (spindle head, table, fixtures,
+> tool-change and rapid paths: see
+> [#116](https://github.com/stevecad/camlib/issues/116)).**
+>
+> **Review and test ALL G-code THOROUGHLY before running it on any machine:**
+>
+> - simulate the posted file in independent verification software;
+> - check every work offset, tool length and tool number against your setup;
+> - dry-run above the part, then single-block the first run with the rapid and
+>   feed overrides turned down and a hand on feed hold / E-stop.
+>
+> A wrong program can destroy the machine, the tool, the fixture and the part,
+> and can injure or kill. You use camlib entirely at your own risk. It is
+> provided under the MIT license **with no warranty of any kind**.
+
 # camlib
 
 camlib is a CAM engine for three-axis milling, turning and plasma/laser
@@ -96,6 +116,24 @@ cargo run --release --example pocket
 
 See `operation::OperationPlan`, `motion::Curve`, `tool::ToolAssembly` and
 `stock::Stock`. All internal units are millimetres.
+
+## Contributing
+
+Every change starts from a GitHub issue, and only one person works an issue at a
+time:
+
+1. **Claim an issue.** Prefer an existing open issue, so known problems are
+   solved first; follow the order in [ROADMAP.md](ROADMAP.md). Issues with the
+   `claimed` label are taken: pick another. To claim one, add the `claimed`
+   label and comment that you are working on it.
+2. **No existing issue fits?** Open one describing the problem and what "done"
+   means, then claim it.
+3. **Work it through a pull request** that references the issue
+   (`Closes #N`). `main` is protected; every change needs passing CI.
+4. **Stopping early?** Remove the `claimed` label and comment on what is left.
+
+[AGENTS.md](AGENTS.md) has the full rules (for people and AI agents alike):
+what camlib is and is not, the correctness rules, and how to work an issue.
 
 ## Development
 

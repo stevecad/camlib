@@ -14,7 +14,7 @@ past the chuck face. The run streams every move with the exact stock change
 it makes, like a milling run: playback, posting and export work the same.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 
 from ._buffers import native
@@ -130,6 +130,13 @@ class InsertOutline:
     corner: int
     cutting: tuple
     programming_point_mm: tuple
+    # What the ISO constructors know of the body (#103): the major edge's
+    # direction (from the holder's approach angle), and from an ISO 1832
+    # code the worst-case thickness and the clearance. Not serialized: they
+    # feed the TurningTool's body.
+    edge_deg: float | None = None
+    thickness_mm: float | None = None
+    clearance_deg: float | None = None
 
     @property
     def nose_radius_mm(self):
@@ -182,7 +189,8 @@ class TurningInsert:
         data = native.turning_iso_insert(
             float(included_angle_deg), float(approach_angle_deg), float(edge_length_mm), float(nose_radius_mm)
         )
-        return InsertOutline.from_dict(json.loads(data))
+        insert = InsertOutline.from_dict(json.loads(data))
+        return replace(insert, edge_deg=float(approach_angle_deg) - 90)
 
     @staticmethod
     def iso_code(code, *, approach_angle_deg=None, holder=None):
@@ -201,7 +209,13 @@ class TurningInsert:
         if holder is not None:
             approach_angle_deg = native.turning_holder_approach(str(holder))
         data, _ = native.turning_iso_code(str(code), float(approach_angle_deg))
-        return InsertOutline.from_dict(json.loads(data))
+        thickness, clearance = native.turning_iso_insert_body(str(code))
+        return replace(
+            InsertOutline.from_dict(json.loads(data)),
+            edge_deg=float(approach_angle_deg) - 90,
+            thickness_mm=thickness,
+            clearance_deg=clearance,
+        )
 
 
 @dataclass(frozen=True)
@@ -261,12 +275,14 @@ class DrillInsert:
 @dataclass(frozen=True)
 class Bar:
     """A round boring bar: ``diameter_mm``, its axis at ``axis_x_mm`` in the
-    tool frame (parallel to z), from ``z_mm[0]`` to ``z_mm[1]``. Its section
-    through its axis bounds its reach on both sides of the spindle axis."""
+    tool frame (parallel to z) and ``axis_y_mm`` across the centre plane
+    (the cutting face at 0, the insert below it), from ``z_mm[0]`` to
+    ``z_mm[1]``. Checked as the round body it is, off the centre plane too."""
 
     diameter_mm: float
     axis_x_mm: float
     z_mm: tuple
+    axis_y_mm: float
 
     def to_dict(self):
         return dict(diameter_mm=self.diameter_mm, axis_x_mm=self.axis_x_mm, z_mm=list(_pair(self.z_mm, "Bar.z_mm")))
@@ -282,6 +298,9 @@ class Holder:
 
     outline: Outline
     bar: Bar | None = None
+    # The outline's extent across the centre plane, (low, high) mm: the
+    # cutting face at 0, the insert body toward negative (#103). Required.
+    y_mm: tuple | None = None
 
     def to_dict(self):
         data = dict(outline=self.outline.to_dict())
@@ -290,7 +309,7 @@ class Holder:
         return data
 
     @classmethod
-    def rectangle(cls, *, insert, nose_radius_mm, side, width_mm, length_mm, offset_mm):
+    def rectangle(cls, *, insert, nose_radius_mm, side, width_mm, length_mm, offset_mm, y_mm):
         """camlib's rectangular holder for ``insert``: outside, a shank
         ``width_mm`` along z and ``length_mm`` away from the cut, starting
         ``offset_mm`` behind the insert's reach (a turning insert's nose
@@ -298,7 +317,9 @@ class Holder:
         (``side="inner"``), an axial bar ``width_mm`` across, its top
         ``offset_mm`` under the nose center, ``length_mm`` out of the bore;
         a drill's chuck ``width_mm`` across, ``offset_mm`` behind the
-        flutes, ``length_mm`` long."""
+        flutes, ``length_mm`` long. ``y_mm``: its extent across the centre
+        plane, (low, high) mm (an outside shank from its height below the
+        face up to its clamp; a boring bar's section)."""
         data = native.turning_rectangle_holder(
             json.dumps(insert.to_dict()),
             float(nose_radius_mm),
@@ -308,7 +329,7 @@ class Holder:
             float(offset_mm),
         )
         data = json.loads(data)
-        return cls(Outline.from_dict(data["outline"]))
+        return cls(Outline.from_dict(data["outline"]), y_mm=tuple(float(v) for v in _pair(y_mm, "y_mm")))
 
 
 # Top-level names (camlib.TurningHolder, camlib.TurningBar; camlib.BoringBar
@@ -317,6 +338,23 @@ TurningHolder = Holder
 TurningBar = Bar
 
 _REMOVED = ("holder_width_mm", "holder_length_mm", "holder_offset_mm")
+
+
+@dataclass(frozen=True)
+class Seat:
+    """How the holder's seat tilts the insert: its orthogonal rake and its
+    inclination (degrees, ISO 3002-1), about the major cutting edge. They
+    are the holder maker's data: ISO 5608 designations do not carry them,
+    and ISO 5610 gives only recommended values. ``Seat(0, 0)``: a flat seat.
+    Negative rake tilts the face up away from the edge (the flank below the
+    edge backs off); positive inclination raises the edge away from the
+    nose."""
+
+    rake_deg: float
+    inclination_deg: float
+
+
+TurningSeat = Seat
 
 
 class TurningTool:
@@ -328,11 +366,55 @@ class TurningTool:
     ``Holder``, e.g. ``Holder.rectangle``). ``nose_radius_mm`` is the
     insert's: an ``InsertOutline`` states it (its corner's radius); the
     other inserts need it. Every value is required: a missing one is
-    refused with its name."""
+    refused with its name.
 
-    __slots__ = ("id", "insert", "nose_radius_mm", "side", "hand", "holder")
+    The body off the centre plane (#103) is required too, so every check
+    sees the real tool, not its flat outline:
 
-    def __init__(self, id, *, insert=None, side=None, hand=None, holder=None, nose_radius_mm=None, **removed):
+    - ``seat``: the holder's ``Seat`` (rake, inclination); not for a drill.
+    - ``insert_thickness_mm``, ``insert_clearance_deg``: the insert's
+      thickness below its cutting face and its normal clearance. From
+      ``TurningInsert.iso_code`` they are the code's worst case (the largest
+      thickness its symbol and tolerance class allow); give them to use the
+      insert's real values. Not for a drill.
+    - ``edge_deg``: the major cutting edge's direction in the tool frame,
+      for an ``InsertOutline`` not built by ``TurningInsert`` (grooving,
+      threading and face grooving inserts know theirs).
+    - ``curved_for_diameter_mm``: a face grooving blade curved to follow
+      the groove, its maker's (min, max) diameter range; without it the
+      blade is checked as straight.
+    - the holder's ``y_mm`` (and a ``Bar``'s ``axis_y_mm``)."""
+
+    __slots__ = (
+        "id",
+        "insert",
+        "nose_radius_mm",
+        "side",
+        "hand",
+        "holder",
+        "seat",
+        "insert_thickness_mm",
+        "insert_clearance_deg",
+        "edge_deg",
+        "curved_for_diameter_mm",
+    )
+
+    def __init__(
+        self,
+        id,
+        *,
+        insert=None,
+        side=None,
+        hand=None,
+        holder=None,
+        nose_radius_mm=None,
+        seat=None,
+        insert_thickness_mm=None,
+        insert_clearance_deg=None,
+        edge_deg=None,
+        curved_for_diameter_mm=None,
+        **removed,
+    ):
         if removed:
             names = ", ".join(sorted(removed))
             hint = (
@@ -351,8 +433,35 @@ class TurningTool:
                 nose_radius_mm = insert.nose_radius_mm
         elif nose_radius_mm is None:
             missing.append("nose_radius_mm")
+        drill = isinstance(insert, DrillInsert)
+        if not drill and insert is not None:
+            if isinstance(insert, InsertOutline):
+                insert_thickness_mm = insert.thickness_mm if insert_thickness_mm is None else insert_thickness_mm
+                insert_clearance_deg = insert.clearance_deg if insert_clearance_deg is None else insert_clearance_deg
+                edge_deg = insert.edge_deg if edge_deg is None else edge_deg
+            else:
+                # Grooving and threading edges run along z; a face grooving
+                # blade's across r.
+                edge_deg = (0.0 if isinstance(insert, FaceGrooveInsert) else 90.0) if edge_deg is None else edge_deg
+            missing += [
+                name
+                for name, value in (
+                    ("seat", seat),
+                    ("insert_thickness_mm", insert_thickness_mm),
+                    ("insert_clearance_deg", insert_clearance_deg),
+                    ("edge_deg", edge_deg),
+                )
+                if value is None
+            ]
+        if holder is not None and getattr(holder, "y_mm", None) is None:
+            missing.append("holder.y_mm (the holder's extent across the centre plane)")
         if missing:
-            raise TypeError(f"TurningTool {id!r} needs {', '.join(missing)} (turning tools have no default values)")
+            raise TypeError(
+                f"TurningTool {id!r} needs {', '.join(missing)} (turning tools have no default values; "
+                "the body off the centre plane is checked too)"
+            )
+        if drill and any(v is not None for v in (seat, insert_thickness_mm, insert_clearance_deg, edge_deg)):
+            raise TypeError(f"TurningTool {id!r}: a drill's outline is its exact section; give no seat or insert body")
         for name, value in (
             ("id", id),
             ("insert", insert),
@@ -360,6 +469,11 @@ class TurningTool:
             ("side", side),
             ("hand", hand),
             ("holder", holder),
+            ("seat", seat),
+            ("insert_thickness_mm", insert_thickness_mm),
+            ("insert_clearance_deg", insert_clearance_deg),
+            ("edge_deg", edge_deg),
+            ("curved_for_diameter_mm", None if curved_for_diameter_mm is None else tuple(curved_for_diameter_mm)),
         ):
             object.__setattr__(self, name, value)
 
@@ -373,9 +487,29 @@ class TurningTool:
         return hash(json.dumps(self.to_dict(), sort_keys=True))
 
     def __repr__(self):
-        return f"TurningTool({self.id!r}, insert={self.insert!r}, nose_radius_mm={self.nose_radius_mm!r}, side={self.side!r}, hand={self.hand!r}, holder={self.holder!r})"
+        return (
+            f"TurningTool({self.id!r}, insert={self.insert!r}, nose_radius_mm={self.nose_radius_mm!r}, "
+            f"side={self.side!r}, hand={self.hand!r}, holder={self.holder!r}, seat={self.seat!r}, "
+            f"insert_thickness_mm={self.insert_thickness_mm!r}, insert_clearance_deg={self.insert_clearance_deg!r}, "
+            f"edge_deg={self.edge_deg!r}, curved_for_diameter_mm={self.curved_for_diameter_mm!r})"
+        )
 
     def to_dict(self):
+        body = dict(
+            holder_y_mm=[float(v) for v in self.holder.y_mm],
+            bar_axis_y_mm=float(self.holder.bar.axis_y_mm) if self.holder.bar is not None else 0.0,
+        )
+        if self.seat is not None:
+            insert = dict(
+                insert_thickness_mm=float(self.insert_thickness_mm),
+                insert_clearance_deg=float(self.insert_clearance_deg),
+                rake_deg=float(self.seat.rake_deg),
+                inclination_deg=float(self.seat.inclination_deg),
+                edge_deg=float(self.edge_deg),
+            )
+            if self.curved_for_diameter_mm is not None:
+                insert["curved_for_diameter_mm"] = [float(v) for v in self.curved_for_diameter_mm]
+            body["insert"] = insert
         return dict(
             id=self.id,
             insert=self.insert.to_dict(),
@@ -383,6 +517,7 @@ class TurningTool:
             side=self.side,
             hand=self.hand,
             holder=self.holder.to_dict(),
+            body=body,
         )
 
     def validate(self):
