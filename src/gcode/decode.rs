@@ -939,15 +939,23 @@ impl Decoder {
             let plane = self.plane.ok_or("NC motion with unknown plane")?;
             let [u, v, a] = plane.axes();
             let mut center = start;
+            let mut offset = [0.; 3];
             for i in [u, v] {
                 let word = &d.centers[i];
                 let value = get(word).ok_or("NC arc needs both center offsets")?;
-                center[i] += value * units;
+                offset[i] = value * units;
+                center[i] += offset[i];
                 used.insert(word.chars().next().unwrap());
             }
             let (x, y) = (start[u] - center[u], start[v] - center[v]);
             let (ex, ey) = (end[u] - center[u], end[v] - center[v]);
-            if x.hypot(y) < 1e-6 || !d.radius_accepts(x.hypot(y), ex.hypot(ey)) {
+            let radii = crate::post_rounding::arc_radii(
+                [start[u], start[v]],
+                [end[u], end[v]],
+                [offset[u], offset[v]],
+                units,
+            );
+            if radii.start < 1e-6 || !d.radius_tolerance().accepts_arc(&radii) {
                 return Err(
                     "NC arc radius mismatch/collapse exceeds declared decoder model".into(),
                 );

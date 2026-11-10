@@ -225,7 +225,18 @@ while at most 100 × `radius_tolerance_mm`. The defaults are LinuxCNC's
 documented ones (0.00127 mm and 0.1 %), so a stock LinuxCNC accepts every
 block; declare your INI's `CENTER_ARC_RADIUS_TOLERANCE_MM` if it differs (at
 most 0.005 here). `radius_tolerance_mm=0` demands exactly consistent words, as
-the controller posts above without a documented tolerance use. The certified
+the controller posts above without a documented tolerance use.
+
+The radii are decided on the words themselves, so every platform writes the
+same program (issue #169). When the start, end and centre offsets are all
+words (up to 9 decimals, or half of one for X written as a diameter), the
+squared radii are compared as exact integers on the word grid: words with
+equal radii have a mismatch of exactly 0, with no epsilon. A start that no
+word wrote (a declared tool-change position, for example) is a binary64 value,
+and the radii are computed from it with correctly rounded arithmetic only,
+never the platform's `hypot`. The post and both decoders use the same rule.
+
+The certified
 deviation of a posted arc
 includes the spiral: the start/end radius difference of the written words is
 added to the bound before it is compared with the posting tolerance.

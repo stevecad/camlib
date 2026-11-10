@@ -225,6 +225,46 @@ _DWELL_CYCLES = frozenset(('drill_dwell_cycle', 'bore_dwell_cycle'))
 _BORE_CYCLES = frozenset(('bore_cycle', 'bore_dwell_cycle', 'bore_stop_cycle', 'fine_bore_cycle'))
 
 
+# Word grid for exact arc radii: 1/(2 x 10^9) output units holds every word of
+# up to 9 decimals and half of one (lathe X words written as diameters).
+_WORD_GRID = 2e9
+
+
+def _on_word_grid(mm, unit):
+    """The integer k such that ``mm`` is the value decoded from the word
+    k / _WORD_GRID times ``unit``, or None when no word gives it."""
+    k = round(mm / unit * _WORD_GRID)
+    return k if abs(k) <= 9e15 and k / _WORD_GRID * unit == mm else None
+
+
+def arc_radii(start, end, offset, unit):
+    """Start radius, end radius and their mismatch (mm) of circular words in
+    one plane: ``start`` and ``end`` are (u, v) positions in mm, ``offset``
+    the centre offset words times ``unit``.
+
+    Decided without the platform's libm, so every platform gets the same
+    answer (issue #169). When every value is a word, the squared radii are
+    exact integers on the word grid: exactly equal radii have error 0, so a
+    zero tolerance stays strict. A start no word wrote is a binary64 value and
+    is used as a controller does (centre = start + offset). Only correctly
+    rounded operations are used; the Rust engine (``post_rounding::arc_radii``)
+    computes the same bits."""
+    grid = [_on_word_grid(value, unit) for value in (*start, *end, *offset)]
+    if None not in grid:
+        su, sv, eu, ev, iu, iv = grid
+        a = iu * iu + iv * iv
+        b = (eu - su - iu) ** 2 + (ev - sv - iv) ** 2
+        scale = unit / _WORD_GRID
+        ra, rb = math.sqrt(float(a)), math.sqrt(float(b))
+        error = 0.0 if a == b else float(abs(a - b)) / (ra + rb) * scale
+        return ra * scale, rb * scale, error
+    center = (start[0] + offset[0], start[1] + offset[1])
+    x, y = start[0] - center[0], start[1] - center[1]
+    ex, ey = end[0] - center[0], end[1] - center[1]
+    r1, r2 = math.sqrt(x * x + y * y), math.sqrt(ex * ex + ey * ey)
+    return r1, r2, abs(r1 - r2)
+
+
 def _kind(rapid, kind):
     """Decoded role: a rapid keeps its source role only as an oriented
     shift (the program validator requires the oriented stop before it)."""
@@ -468,10 +508,12 @@ class GCodeDialect:
         tolerances from its documented defaults), with optional changes."""
         return replace(cls(), **changes)
 
-    def radius_accepts(self, r1, r2):
+    def radius_accepts(self, r1, r2, error=None):
         """Whether the controller accepts circular words whose start and end
-        radii are r1 and r2 (see radius_tolerance_mm)."""
-        error = abs(r1 - r2)
+        radii are r1 and r2 (see radius_tolerance_mm). ``error`` is their
+        mismatch when computed exactly (``arc_radii``); default |r1 - r2|."""
+        if error is None:
+            error = abs(r1 - r2)
         return error <= self.radius_tolerance_mm or (
             error <= 100 * self.radius_tolerance_mm and error <= self.radius_relative_tolerance * max(r1, r2)
         )
@@ -1963,15 +2005,18 @@ class GCodeDecoder(_TransactionCopy):
         if effect in ('arc_cw', 'arc_ccw'):
             u, v, a = {'xy': (0, 1, 2), 'xz': (2, 0, 1), 'yz': (1, 2, 0)}[self.plane]
             center = list(start)
+            offset = [0.0, 0.0, 0.0]
             for i in (u, v):
                 word = d.centers[i]
                 if word not in values:
                     raise ValueError('NC arc needs both center offsets')
-                center[i] += values[word] * self.units
+                offset[i] = values[word] * self.units
+                center[i] += offset[i]
                 used.add(word)
             x, y = start[u] - center[u], start[v] - center[v]
             ex, ey = end[u] - center[u], end[v] - center[v]
-            if math.hypot(x, y) < 1e-6 or not d.radius_accepts(math.hypot(x, y), math.hypot(ex, ey)):
+            r1, r2, error = arc_radii((start[u], start[v]), (end[u], end[v]), (offset[u], offset[v]), self.units)
+            if r1 < 1e-6 or not d.radius_accepts(r1, r2, error):
                 raise ValueError('NC arc radius mismatch/collapse exceeds declared decoder model')
             angle = math.atan2(x * ey - y * ex, x * ex + y * ey)
             sweep = angle % math.tau if effect == 'arc_ccw' else -((-angle) % math.tau)

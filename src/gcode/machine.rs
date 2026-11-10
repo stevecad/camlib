@@ -524,13 +524,13 @@ impl Dialect {
             ]
             .contains(&w)
     }
-    /// Whether the controller accepts arc words whose start and end radii
-    /// are r1 and r2 (LinuxCNC's rule, `GCodeDialect.radius_accepts`).
-    pub fn radius_accepts(&self, r1: f64, r2: f64) -> bool {
-        let error = (r1 - r2).abs();
-        error <= self.radius_tolerance_mm
-            || error <= 100. * self.radius_tolerance_mm
-                && error <= self.radius_relative_tolerance * r1.max(r2)
+    /// The controller's accepted arc radius mismatch (LinuxCNC's rule,
+    /// `GCodeDialect.radius_accepts`).
+    pub fn radius_tolerance(&self) -> crate::post_rounding::RadiusTolerance {
+        crate::post_rounding::RadiusTolerance {
+            absolute_mm: self.radius_tolerance_mm,
+            relative: self.radius_relative_tolerance,
+        }
     }
 }
 

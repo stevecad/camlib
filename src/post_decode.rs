@@ -267,18 +267,25 @@ impl Decoder {
             let plane = plane.ok_or("NC motion with unknown plane")?;
             let [u, v, a] = plane.axes();
             let mut center = start;
+            let mut offset = [0.; 3];
             for i in [u, v] {
-                center[i] += values[c.centers[i]]
+                offset[i] = values[c.centers[i]]
                     .take()
                     .ok_or("NC arc needs both center offsets")?
                     * unit;
+                center[i] += offset[i];
             }
             let x = start[u] - center[u];
             let y = start[v] - center[v];
             let ex = end[u] - center[u];
             let ey = end[v] - center[v];
-            let radius = x.hypot(y);
-            if radius < 1e-6 || !c.radius_tolerance.accepts(radius, ex.hypot(ey)) {
+            let radii = crate::post_rounding::arc_radii(
+                [start[u], start[v]],
+                [end[u], end[v]],
+                [offset[u], offset[v]],
+                unit,
+            );
+            if radii.start < 1e-6 || !c.radius_tolerance.accepts_arc(&radii) {
                 return Err(
                     "NC arc radius mismatch/collapse exceeds declared decoder model".into(),
                 );

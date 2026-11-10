@@ -26,9 +26,90 @@ impl RadiusTolerance {
             && (0. ..=0.001).contains(&self.relative)
     }
     pub fn accepts(&self, r1: f64, r2: f64) -> bool {
-        let error = (r1 - r2).abs();
+        self.accepts_error((r1 - r2).abs(), r1.max(r2))
+    }
+    /// The same rule for a radius mismatch `error` computed elsewhere
+    /// (`ArcRadii`), `larger` being the larger radius.
+    pub fn accepts_error(&self, error: f64, larger: f64) -> bool {
         error <= self.absolute_mm
-            || (error <= 100. * self.absolute_mm && error <= self.relative * r1.max(r2))
+            || (error <= 100. * self.absolute_mm && error <= self.relative * larger)
+    }
+    /// Whether the controller accepts circular words with these radii.
+    pub fn accepts_arc(&self, radii: &ArcRadii) -> bool {
+        self.accepts_error(radii.error, radii.start.max(radii.end))
+    }
+}
+
+/// Start and end radius (mm) of circular words, and their mismatch.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ArcRadii {
+    pub start: f64,
+    pub end: f64,
+    pub error: f64,
+}
+
+/// Word grid used to decide arc radii exactly: 1/(2 x 10^9) output units
+/// holds every word of up to 9 decimals, and half of one (lathe X words
+/// written as diameters).
+const WORD_GRID: f64 = 2e9;
+
+/// The integer `k` such that `mm` is the value a decoder gets from the word
+/// k / WORD_GRID (parsed, then scaled by `unit`), or None when no such word
+/// exists. k / WORD_GRID is exactly rounded, as parsing the word's text is.
+fn on_word_grid(mm: f64, unit: f64) -> Option<i128> {
+    let k = (mm / unit * WORD_GRID).round_ties_even();
+    (k.abs() <= 9e15 && k / WORD_GRID * unit == mm).then_some(k as i128)
+}
+
+/// Radii of circular words in the plane `(u, v)`: `start` and `end` are the
+/// positions (mm), `offset` the centre offset words times `unit`.
+///
+/// Decided without the platform's libm, so every platform, and the Python
+/// decoder, gets the same answer (issue #169: glibc's `hypot` and macOS's
+/// disagreed by one bit and flipped a zero-tolerance check):
+/// - When every value is a word (`on_word_grid`), the squared radii are exact
+///   integers on the word grid, so words with exactly equal radii have error
+///   exactly 0, and a zero tolerance stays strict without an epsilon. Other
+///   errors are |A - B| / (sqrt A + sqrt B), from correctly rounded operations.
+/// - When the start is a position no word wrote (e.g. a declared tool-change
+///   position), it is a binary64 value: the radii are computed from it as a
+///   controller does (centre = start + offset), with correctly rounded
+///   operations only.
+pub fn arc_radii(start: [f64; 2], end: [f64; 2], offset: [f64; 2], unit: f64) -> ArcRadii {
+    let grid = |mm: f64| on_word_grid(mm, unit);
+    if let (Some(su), Some(sv), Some(eu), Some(ev), Some(iu), Some(iv)) = (
+        grid(start[0]),
+        grid(start[1]),
+        grid(end[0]),
+        grid(end[1]),
+        grid(offset[0]),
+        grid(offset[1]),
+    ) {
+        // |values| <= 9e15, so each squared radius is below 1.5e33 < i128::MAX.
+        let a = iu * iu + iv * iv;
+        let (x, y) = (eu - su - iu, ev - sv - iv);
+        let b = x * x + y * y;
+        let scale = unit / WORD_GRID;
+        let (ra, rb) = ((a as f64).sqrt(), (b as f64).sqrt());
+        let error = if a == b {
+            0.
+        } else {
+            (a - b).abs() as f64 / (ra + rb) * scale
+        };
+        return ArcRadii {
+            start: ra * scale,
+            end: rb * scale,
+            error,
+        };
+    }
+    let center = [start[0] + offset[0], start[1] + offset[1]];
+    let (x, y) = (start[0] - center[0], start[1] - center[1]);
+    let (ex, ey) = (end[0] - center[0], end[1] - center[1]);
+    let (r1, r2) = ((x * x + y * y).sqrt(), (ex * ex + ey * ey).sqrt());
+    ArcRadii {
+        start: r1,
+        end: r2,
+        error: (r1 - r2).abs(),
     }
 }
 
@@ -120,8 +201,13 @@ pub fn circular_words(
         let y = start[v] - c[v];
         let ex = end[u] - c[u];
         let ey = end[v] - c[v];
-        let r = x.hypot(y);
-        if r < 1e-6 || !radius_tolerance.accepts(r, ex.hypot(ey)) {
+        let radii = arc_radii(
+            [start[u], start[v]],
+            [end[u], end[v]],
+            [offsets[u], offsets[v]],
+            unit,
+        );
+        if radii.start < 1e-6 || !radius_tolerance.accepts_arc(&radii) {
             return None;
         }
         let angle = (x * ey - y * ex).atan2(x * ex + y * ey);
@@ -496,5 +582,70 @@ mod tests {
                 }
             }
         }
+    }
+
+    const EXACT: RadiusTolerance = RadiusTolerance {
+        absolute_mm: 0.,
+        relative: 0.,
+    };
+
+    /// Issue #169: X29.999 Y20 I10.002 J0.006 from (9.995, 20) has exactly
+    /// equal radii on the word grid. Rebuilt in binary64, the radius vectors
+    /// differ in the last bit and glibc's hypot calls them unequal (macOS's
+    /// equal); decided on the words, the error is exactly 0 everywhere.
+    #[test]
+    fn equal_radius_words_are_decided_exactly_on_the_word_grid() {
+        let radii = arc_radii([9.995, 20.], [29.999, 20.], [10.002, 0.006], 1.);
+        assert_eq!(radii.error, 0.);
+        assert_eq!(radii.start, radii.end);
+        assert!(EXACT.accepts_arc(&radii));
+        // Inch words: positions are word x 25.4 in mm, as the decoders hold them.
+        let inch = |w: f64| w * 25.4;
+        let radii = arc_radii(
+            [inch(9.995), inch(20.)],
+            [inch(29.999), inch(20.)],
+            [inch(10.002), inch(0.006)],
+            25.4,
+        );
+        assert_eq!(radii.error, 0.);
+        // A lathe X word written as a diameter decodes to half of it.
+        let radii = arc_radii([10.001 * 0.5, 0.], [30.001 * 0.5, 0.], [5., 0.], 1.);
+        assert_eq!(radii.error, 0.);
+        // One grid unit off is a real mismatch: a zero tolerance refuses it.
+        let radii = arc_radii([9.995, 20.], [29.999, 20.001], [10.002, 0.006], 1.);
+        assert!(radii.error > 0. && !EXACT.accepts_arc(&radii));
+        assert!(ABS_0_005.accepts_arc(&radii));
+    }
+
+    /// A start no word wrote is a binary64 value: the radii come from it with
+    /// correctly rounded operations only (no libm), as a controller computes
+    /// them (centre = start + offset).
+    #[test]
+    fn a_start_off_the_word_grid_is_decided_in_binary64() {
+        let start = [0.1 + 0.2, 20.];
+        assert!(on_word_grid(start[0], 1.).is_none());
+        let radii = arc_radii(start, [10.3, 20.], [5., 0.], 1.);
+        let c = [start[0] + 5., start[1]];
+        let (x, ex) = (start[0] - c[0], 10.3 - c[0]);
+        assert_eq!(radii.start, (x * x).sqrt());
+        assert_eq!(radii.end, (ex * ex).sqrt());
+        assert_eq!(radii.error, (radii.start - radii.end).abs());
+    }
+
+    /// The word chooser keeps exactly consistent authored words at zero
+    /// radius tolerance (before #169 was fixed, glibc rejected these).
+    #[test]
+    fn zero_radius_tolerance_keeps_exactly_consistent_words() {
+        let source = Curve::Arc {
+            start: [9.995, 20., 0.],
+            end: [29.999, 20., 0.],
+            center: [19.997, 20.006, 0.],
+            plane: Plane::Xy,
+            sweep_rad: 3.1403928936857164,
+        };
+        let (end, offsets) =
+            circular_words(&source, [9.995, 20., 0.], 1., 3, 1e-5, 0.01, EXACT).unwrap();
+        assert_eq!((end[0], end[1]), (29.999, 20.));
+        assert_eq!((offsets[0], offsets[1]), (10.002, 0.006));
     }
 }
