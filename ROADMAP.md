@@ -39,6 +39,7 @@ is ordered by real dependency, not by size:
 
 - [x] #116 Machine crash detection: check the posted program against a declared machine model (safety)
 - [x] #136 Geodesic contour construction: observe cancellation within a level
+- [x] #161 Waterline: judge reach by the stock under each level, not the highest stock anywhere
 
 ## Phase 2: Complete milling
 
@@ -48,7 +49,7 @@ Smaller, independent items first, then the 3D stock and what needs it.
 - [x] #92 Deburr: ball-end and bull-nose tools
 - [x] #93 Deburr: edges next to drafted or filleted walls
 - [x] #94 Deburr: sloped and vertical edges (3-axis part needs #92; tilted tool with #5/#6)
-- [ ] #107 Material check: prove ball and bull-nose ends with their real shape (shares contact work with #92)
+- [x] #107 Material check: prove ball and bull-nose ends with their real shape (shares contact work with #92)
 - [x] #1 3D stock model (tri-dexel) for undercuts and multi-axis machining
 - [x] #8 Undercut milling tools: T-slot, keyseat, lollipop and dovetail cutters (needs #1)
 
@@ -130,12 +131,12 @@ These can run in parallel with any phase.
 
 - [ ] #20 Validate every controller post on real machines (start with the LinuxCNC simulator in CI)
 - [ ] #21 Release: PyPI distribution name and published wheels
-- [ ] #64 SurfaceMesh: document the 0.1 mm `surface_error_mm` limit, and say which check failed
-- [ ] #66 Undercut neck check: give the clearance and the cell size it needs
+- [x] #64 SurfaceMesh: document the 0.1 mm `surface_error_mm` limit, and say which check failed
+- [x] #66 Undercut neck check: give the clearance and the cell size it needs
 - [ ] #95 Siemens 808D posts: tapping (CYCLE84 / G331, ISO G84/G74)
-- [ ] #96 FANUC 0i-MB post: M29 S rigid tapping form
+- [x] #96 FANUC 0i-MB post: M29 S rigid tapping form
 - [ ] #97 Haas NGC post: G86 needs a source for spindle restart
-- [ ] #108 Material check: keep the per-move proof across resumed streams; scale work budgets
+- [x] #108 Material check: keep the per-move proof across resumed streams; scale work budgets
 
 ## Done
 
