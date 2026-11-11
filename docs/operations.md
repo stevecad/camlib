@@ -361,6 +361,30 @@ straight up and over (not allowed with wear compensation). Tabs are spread
 evenly along each loop, away from its start; the operation refuses tabs that
 do not fit.
 
+`Tabs(width_mm, height_mm, positions_mm=[(x, y), ...])` puts one tab at each
+given point instead, for example to keep tabs off a feature or to hold a part
+where it must stay held. This is the "at points" tab positioning of commercial
+CAM (Fusion 2D Contour, "Tab Positioning: At points"; the tag positions of the
+FreeCAD CAM Tag dressup). Positions are XY points on the part boundary, in the
+region's coordinates; arc-length parameters are not accepted, because they
+depend on where a loop starts and which way it is cut, and a point does not.
+
+- A point is taken as the nearest point of the boundary when it lies within
+  `position_tolerance_mm` (default 0.01) of it. A point farther from every
+  selected boundary is refused with its distance; it is never moved further.
+  A point within the tolerance of two loops is refused as ambiguous.
+- Each loop gets the tabs whose points lie on it. **A loop with no point gets
+  no tab**: a hole's slug or a part whose loop has no tab is cut free. The
+  operation's report lists every such loop in `diagnostics`.
+- The tab is centred where the tool is nearest to the point; a point on a
+  convex corner centres the tab on the corner.
+- The width, height and shape rules are those of evenly spaced tabs, and so is
+  the room a tab needs: tabs whose centres are closer along the tool path than
+  the tab width plus the tool diameter (plus both ramps for triangular tabs)
+  overlap and are refused, as is a tab that close to the loop start, where the
+  tool enters and leaves. Both refusals name the points.
+- `positions_mm` cannot be combined with `count` or `spacing_mm`.
+
 ## Drilling: `Drilling`
 
 Required: `centers_mm` (list of (x, y)), `depth_z_mm`, `clearance_z_mm`.

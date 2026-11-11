@@ -1073,26 +1073,49 @@ class Bore:
 class Tabs:
     """Holding tabs left on a contour so a through-cut part stays attached.
 
-    ``count`` tabs per loop (or one every ``spacing_mm`` of loop length),
-    ``width_mm`` wide along the part edge and ``height_mm`` above the floor.
-    ``shape`` is 'triangle' (45 degree ramps, the default) or 'rectangle'
-    (straight up and over). Passes above the tab top are not changed."""
+    ``count`` tabs per loop (4 by default), or one every ``spacing_mm`` of
+    loop length, or one at each of ``positions_mm``; ``width_mm`` wide along
+    the part edge and ``height_mm`` above the floor. ``shape`` is 'triangle'
+    (45 degree ramps, the default) or 'rectangle' (straight up and over).
+    Passes above the tab top are not changed.
+
+    ``positions_mm`` are (x, y) points on the part boundary, in the region's
+    coordinates (as tabs "at points" in commercial CAM). A point must lie
+    within ``position_tolerance_mm`` of exactly one selected boundary loop and
+    is taken as the nearest point on it; a point farther away is refused, and
+    so are tabs that overlap or sit where the tool enters and leaves the loop.
+    A loop with no point gets NO tab: a hole's slug, or a part, without a tab
+    is cut free."""
 
     width_mm: float
     height_mm: float
-    count: int | None = 4
+    count: int | None = None
     spacing_mm: float | None = None
     shape: str = "triangle"
+    positions_mm: tuple | None = None
+    position_tolerance_mm: float = 0.01
 
     def __post_init__(self):
-        if (self.count is None) == (self.spacing_mm is None):
+        if self.positions_mm is not None:
+            if self.count is not None or self.spacing_mm is not None:
+                raise ValueError("give tabs either positions_mm or count/spacing_mm, not both")
+            points = tuple(tuple(float(n) for n in p) for p in self.positions_mm)
+            if not points or any(len(p) != 2 for p in points):
+                raise ValueError("tab positions_mm must be a non-empty sequence of (x, y) points")
+            object.__setattr__(self, "positions_mm", points)
+        elif self.count is None and self.spacing_mm is None:
+            object.__setattr__(self, "count", 4)
+        elif self.count is not None and self.spacing_mm is not None:
             raise ValueError("give tabs either count or spacing_mm")
         if self.shape not in ("triangle", "rectangle"):
             raise ValueError("tab shape must be 'triangle' or 'rectangle'")
 
     def to_dict(self):
         result = {"width_mm": self.width_mm, "height_mm": self.height_mm, "shape": self.shape}
-        if self.count is not None:
+        if self.positions_mm is not None:
+            result["positions_mm"] = [list(p) for p in self.positions_mm]
+            result["position_tolerance_mm"] = self.position_tolerance_mm
+        elif self.count is not None:
             result["count"] = self.count
         else:
             result["spacing_mm"] = self.spacing_mm

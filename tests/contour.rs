@@ -296,6 +296,8 @@ fn holding_tabs_leave_material_on_the_lower_passes_only() {
             height_mm: 3.,
             count: Some(4),
             spacing_mm: None,
+            positions_mm: None,
+            position_tolerance_mm: None,
             shape,
         });
         let mut p = plan(op).unwrap();
@@ -349,10 +351,268 @@ fn holding_tabs_leave_material_on_the_lower_passes_only() {
         height_mm: 3.,
         count: Some(4),
         spacing_mm: None,
+        positions_mm: None,
+        position_tolerance_mm: None,
         shape: TabShape::Rectangle,
     });
     assert!(plan(op.clone()).err().unwrap().contains("triangular"));
     op.tabs.as_mut().unwrap().count = Some(40);
     op.tabs.as_mut().unwrap().shape = TabShape::Triangle;
     assert!(plan(op).err().unwrap().contains("do not fit"));
+}
+
+// --- Tabs at given positions (#172) ---------------------------------------
+// The fixture part is an annulus around (20, 20): outer radius 8, hole radius
+// 4, cut with a 4 mm tool from Z10 to the floor at Z2 in 2 mm steps. Tabs
+// 2 mm wide and 3 mm high stand to Z5: the passes at Z4 and Z2 rise over them.
+fn tabs_at(points: &[[f64; 2]], shape: TabShape) -> Tabs {
+    Tabs {
+        width_mm: 2.,
+        height_mm: 3.,
+        count: None,
+        spacing_mm: None,
+        positions_mm: Some(points.to_vec()),
+        position_tolerance_mm: Some(0.01),
+        shape,
+    }
+}
+/// The stock's height bounds carry the sweep's chord error (0.002 mm in the
+/// fixture): a standing tab or a cut floor is told within this.
+const TIGHT: f64 = 0.01;
+fn on_circle(radius: f64, degrees: f64) -> [f64; 2] {
+    let a = degrees.to_radians();
+    [20. + radius * a.cos(), 20. + radius * a.sin()]
+}
+/// The smallest angle (rad) between the direction of p from the part center
+/// and any of the given directions (degrees).
+fn off_angle(p: [f64; 2], degrees: &[f64]) -> f64 {
+    let a = (p[1] - 20.).atan2(p[0] - 20.);
+    degrees
+        .iter()
+        .map(|d| ((a - d.to_radians() + TAU / 2.).rem_euclid(TAU) - TAU / 2.).abs())
+        .fold(f64::INFINITY, f64::min)
+}
+/// Runs the plan through the stock; returns the motions and the stock.
+fn run(mut p: ContourPlan) -> (Vec<Motion>, Stock, ContourPlan) {
+    let cancel = AtomicBool::new(false);
+    let mut stock = Stock::new(fixture().stock.height().unwrap().clone()).unwrap();
+    let mut motions = vec![];
+    while let Some(m) = p.next_motion_with_stock(&stock, &cancel).unwrap() {
+        commit(&mut stock, &m);
+        motions.push(m);
+    }
+    (motions, stock, p)
+}
+fn cell(stock: &Stock, x: f64, y: f64) -> HeightBounds {
+    let spec = stock.spec();
+    let i = ((x - spec.min_mm[0]) / spec.cell_size_mm) as usize;
+    let j = ((y - spec.min_mm[1]) / spec.cell_size_mm) as usize;
+    let n = ((spec.max_mm[0] - spec.min_mm[0]) / spec.cell_size_mm).ceil() as usize;
+    stock.cells()[j * n + i]
+}
+
+#[test]
+fn tabs_at_given_positions_stand_there_and_nowhere_else() {
+    // Unevenly placed, the first 0.004 mm off the boundary (inside the
+    // 0.01 mm position tolerance).
+    let angles = [40., 150., 290.];
+    let points = [on_circle(8.004, 40.), on_circle(8., 150.), on_circle(8., 290.)];
+    for shape in [TabShape::Triangle, TabShape::Rectangle] {
+        let mut op = operation();
+        op.boundaries = Boundaries::Outer;
+        op.tabs = Some(tabs_at(&points, shape));
+        let (motions, stock, _) = run(plan(op).unwrap());
+        // From the motions: the tool rises to the tab top (Z5) once per tab
+        // on each of the two lower passes, and travels level there over the
+        // tab width plus the tool diameter (3 mm either side of the point,
+        // measured on the tool-center circle), centered on each point.
+        let mut rises = 0;
+        let mut reach = [0f64; 3];
+        for m in motions.iter().filter(|m| m.kind != MoveKind::Rapid) {
+            let (a, b) = (m.curve.start(), m.curve.end());
+            assert!(a[2] >= 2. - 1e-9 && b[2] >= 2. - 1e-9);
+            rises += usize::from(b[2] == 5. && a[2] < 5.);
+            let radius = (a[0] - 20.).hypot(a[1] - 20.);
+            for p in [a, b] {
+                let off = off_angle([p[0], p[1]], &angles) * radius;
+                if a[2] == 5. && b[2] == 5. {
+                    assert!(off <= 3. + 1e-6, "level at the tab top {off} mm from a tab");
+                    let k = (0..3)
+                        .find(|&k| off_angle([p[0], p[1]], &angles[k..=k]) * radius == off)
+                        .unwrap();
+                    reach[k] = reach[k].max(off);
+                } else if p[2] < 5. - 1e-9 && shape == TabShape::Rectangle {
+                    // Below the tab top the tool stays off the tabs.
+                    assert!(off >= 3. - 1e-6, "{p:?} is {off} mm from a tab");
+                }
+            }
+        }
+        assert_eq!(rises, 6, "{shape:?}");
+        assert!(reach.iter().all(|r| (r - 3.).abs() < 1e-6), "{reach:?}");
+        // From the stock, around the middle of the cut (r 10): full height
+        // (Z5) within the tab width of each point, the floor (Z2) everywhere
+        // beyond the tab and its ramps. 0.5 mm either way covers the cells.
+        let ramp = if shape == TabShape::Triangle { 3. } else { 0. };
+        let (mut standing, mut cut) = (0, 0);
+        for k in 0..1440 {
+            let p = on_circle(10., k as f64 / 4.);
+            let off = off_angle(p, &angles) * 10.;
+            let h = cell(&stock, p[0], p[1]);
+            assert!(h.upper_mm <= 5. + TIGHT, "{h:?}");
+            if off < 1. - 0.5 {
+                assert!(h.lower_mm >= 5. - TIGHT, "{shape:?} {k} {h:?}");
+                standing += 1;
+            } else if off > 1. + ramp + 0.5 {
+                assert!(h.upper_mm <= 2. + TIGHT, "{shape:?} {k} {h:?}");
+                cut += 1;
+            }
+        }
+        assert!(standing >= 3 * 10 && cut > 700, "{standing} {cut}");
+    }
+}
+
+#[test]
+fn tabs_at_positions_go_to_the_loop_each_point_is_on() {
+    // One point on the outer boundary and one on the hole.
+    let mut op = operation();
+    op.tabs = Some(tabs_at(&[on_circle(8., 150.), on_circle(4., 180.)], TabShape::Rectangle));
+    let (motions, stock, p) = run(plan(op).unwrap());
+    assert!(p.report().diagnostics.iter().all(|d| !d.contains("tab")));
+    let level = |r: f64| {
+        motions
+            .iter()
+            .filter(|m| m.kind != MoveKind::Rapid)
+            .filter(|m| m.curve.start()[2] == 5. && m.curve.end()[2] == 5.)
+            .filter(|m| ((m.curve.start()[0] - 20.).hypot(m.curve.start()[1] - 20.) - r).abs() < 0.1)
+            .count()
+    };
+    assert!(level(10.) >= 2 && level(2.) >= 2);
+    // The hole's tab stands at the point (the tool circles at r 2 there and
+    // is 4 mm wide); the far side of the hole is cut to the floor.
+    assert!(cell(&stock, 20. - 3.5, 20.).lower_mm >= 5. - TIGHT);
+    assert!(cell(&stock, 20. + 3.5, 20.).upper_mm <= 2. + TIGHT);
+    assert!(cell(&stock, 20., 20. + 3.5).upper_mm <= 2. + TIGHT);
+
+    // Points on the outer boundary only: the hole gets no tab, and the
+    // report says so.
+    let mut op = operation();
+    op.tabs = Some(tabs_at(&[on_circle(8., 150.)], TabShape::Rectangle));
+    let (motions, stock, p) = run(plan(op).unwrap());
+    let said: Vec<&String> = p
+        .report()
+        .diagnostics
+        .iter()
+        .filter(|d| d.contains("no tab position"))
+        .collect();
+    assert_eq!(said.len(), 1, "{:?}", p.report().diagnostics);
+    assert!(said[0].contains("hole 0 of component 0"), "{said:?}");
+    for m in motions.iter().filter(|m| m.kind != MoveKind::Rapid) {
+        let (a, b) = (m.curve.start(), m.curve.end());
+        if (a[0] - 20.).hypot(a[1] - 20.) < 3. && (b[0] - 20.).hypot(b[1] - 20.) < 3. {
+            // Hole passes stay flat at their depth.
+            assert!(a[2] != 5. && b[2] != 5., "{m:?}");
+        }
+    }
+    for k in 0..360 {
+        let q = on_circle(3.5, k as f64);
+        assert!(cell(&stock, q[0], q[1]).upper_mm <= 2. + TIGHT, "{k}");
+    }
+    assert!(cell(&stock, 20. + 10. * 150f64.to_radians().cos(), 20. + 10. * 150f64.to_radians().sin()).lower_mm >= 5. - TIGHT);
+}
+
+#[test]
+fn tabs_at_the_even_positions_are_the_evenly_spaced_tabs() {
+    // count = 4 centers the tabs at 1/8, 3/8, 5/8, 7/8 of the loop from its
+    // start (at angle 0): the same points given explicitly make the same path.
+    let mut even = operation();
+    even.boundaries = Boundaries::Outer;
+    even.tabs = Some(Tabs {
+        count: Some(4),
+        positions_mm: None,
+        position_tolerance_mm: None,
+        ..tabs_at(&[], TabShape::Triangle)
+    });
+    let mut given = even.clone();
+    given.tabs = Some(tabs_at(
+        &[45., 135., 225., 315.].map(|d| on_circle(8., d)),
+        TabShape::Triangle,
+    ));
+    let (a, _, _) = run(plan(even.clone()).unwrap());
+    let (b, _, _) = run(plan(given).unwrap());
+    assert_eq!(a.len(), b.len());
+    for (a, b) in a.iter().zip(&b) {
+        assert_eq!(a.kind, b.kind);
+        for (p, q) in [(a.curve.start(), b.curve.start()), (a.curve.end(), b.curve.end())] {
+            assert!((0..3).all(|k| (p[k] - q[k]).abs() < 1e-9), "{a:?} {b:?}");
+        }
+    }
+    // Without positions the operation serializes as before.
+    let json = serde_json::to_value(&even).unwrap();
+    assert_eq!(
+        json["tabs"],
+        serde_json::json!({"width_mm": 2.0, "height_mm": 3.0, "count": 4, "shape": "triangle"})
+    );
+}
+
+#[test]
+fn tabs_at_positions_refuse_what_cannot_be_placed() {
+    let refused = |tabs: Tabs, boundaries: Boundaries| {
+        let mut op = operation();
+        op.boundaries = boundaries;
+        let said = format!("not refused: {tabs:?}");
+        op.tabs = Some(tabs);
+        plan(op).err().expect(&said)
+    };
+    // 1 mm off the boundary: named, with its distance, not moved.
+    let e = refused(tabs_at(&[on_circle(9., 90.)], TabShape::Rectangle), Boundaries::Outer);
+    assert!(e.contains("(20, 29) is not on a selected part boundary"), "{e}");
+    assert!(e.contains("1.0000 mm away") && e.contains("(20.0000, 28.0000)"), "{e}");
+    // On the hole, which is not selected.
+    let e = refused(tabs_at(&[on_circle(4., 180.)], TabShape::Rectangle), Boundaries::Outer);
+    assert!(e.contains("not on a selected part boundary") && e.contains("4.0000 mm away"), "{e}");
+    // Two tabs 20 degrees (3.5 mm of tool path) apart overlap.
+    let e = refused(
+        tabs_at(&[on_circle(8., 150.), on_circle(8., 170.)], TabShape::Rectangle),
+        Boundaries::Outer,
+    );
+    assert!(e.contains("overlap") && e.contains("apart"), "{e}");
+    // A tab on the loop start, where the tool enters and leaves (read from
+    // the plan without tabs: with no lead, the first plunge ends there).
+    let mut plain = operation();
+    plain.boundaries = Boundaries::Outer;
+    let (motions, _, _) = run(plan(plain).unwrap());
+    let entry = motions.iter().find(|m| m.kind == MoveKind::Plunge).unwrap().curve.end();
+    let start = (entry[1] - 20.).atan2(entry[0] - 20.).to_degrees();
+    assert!(off_angle(on_circle(8., 150.), &[start]) > 0.5, "{start}");
+    for degrees in [start + 5., start - 5.] {
+        let e = refused(tabs_at(&[on_circle(8., degrees)], TabShape::Rectangle), Boundaries::Outer);
+        assert!(e.contains("where the tool enters and leaves"), "{e}");
+    }
+    // A triangular tab 3 mm wide needs 6.5 mm either side of its center
+    // (half its width, the tool radius, the 3 mm ramp): more than half the
+    // hole's 12.5 mm loop, wherever it is put.
+    let mut wide = tabs_at(&[on_circle(4., 180.)], TabShape::Triangle);
+    wide.width_mm = 3.;
+    let e = refused(wide, Boundaries::Holes);
+    assert!(
+        e.contains("where the tool enters and leaves") && e.contains("loop"),
+        "{e}"
+    );
+    // Positions and count/spacing are mutually exclusive; the tolerance is
+    // stated, not assumed.
+    let mut both = tabs_at(&[on_circle(8., 150.)], TabShape::Rectangle);
+    both.count = Some(2);
+    assert!(refused(both.clone(), Boundaries::Outer).contains("not both"));
+    both.count = None;
+    both.spacing_mm = Some(10.);
+    assert!(refused(both.clone(), Boundaries::Outer).contains("not both"));
+    both.spacing_mm = None;
+    both.position_tolerance_mm = None;
+    assert!(refused(both.clone(), Boundaries::Outer).contains("need position_tolerance_mm"));
+    both.positions_mm = Some(vec![]);
+    both.position_tolerance_mm = Some(0.01);
+    assert!(refused(both.clone(), Boundaries::Outer).contains("1..1000 points"));
+    both.positions_mm = None;
+    both.count = Some(4);
+    assert!(refused(both, Boundaries::Outer).contains("applies only to positions_mm"));
 }

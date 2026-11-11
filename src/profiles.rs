@@ -113,6 +113,156 @@ pub(crate) fn stroke_length(s: &Stroke) -> f64 {
         Some((c, sweep)) => (s.a[0] - c[0]).hypot(s.a[1] - c[1]) * sweep.abs(),
     }
 }
+/// The nearest point of a stroke to p, as (distance, stroke parameter). A
+/// point within `eps` of an arc's center is equally near the whole arc: its
+/// middle is taken.
+fn stroke_nearest(s: &Stroke, p: crate::Point, eps: f64) -> (f64, f64) {
+    use std::f64::consts::TAU;
+    let t = match s.arc {
+        None => {
+            let d = [s.b[0] - s.a[0], s.b[1] - s.a[1]];
+            let n = d[0] * d[0] + d[1] * d[1];
+            if n > 0. {
+                (((p[0] - s.a[0]) * d[0] + (p[1] - s.a[1]) * d[1]) / n).clamp(0., 1.)
+            } else {
+                0.
+            }
+        }
+        Some((c, sweep)) => {
+            let v = [p[0] - c[0], p[1] - c[1]];
+            let turn = (v[1].atan2(v[0]) - (s.a[1] - c[1]).atan2(s.a[0] - c[0])) * sweep.signum();
+            let turn = turn.rem_euclid(TAU);
+            let far = |q: crate::Point| (p[0] - q[0]).hypot(p[1] - q[1]);
+            if v[0].hypot(v[1]) <= eps {
+                0.5
+            } else if turn <= sweep.abs() {
+                turn / sweep.abs()
+            } else if far(s.a) <= far(s.b) {
+                0.
+            } else {
+                1.
+            }
+        }
+    };
+    let q = stroke_point(s, t);
+    ((p[0] - q[0]).hypot(p[1] - q[1]), t)
+}
+/// The nearest point of a closed loop to p: (distance, arc length from the
+/// loop start, the point).
+fn loop_nearest(strokes: &[Stroke], p: crate::Point, eps: f64) -> (f64, f64, crate::Point) {
+    let mut best = (f64::INFINITY, 0., p);
+    let mut start = 0.;
+    for s in strokes {
+        let length = stroke_length(s);
+        let (d, t) = stroke_nearest(s, p, eps);
+        // A point at an arc's center (a convex corner of the part, seen from
+        // the tool path) is as near the ends of the neighboring strokes as
+        // the arc itself: the arc's middle wins.
+        let corner = eps > 0.
+            && s.arc
+                .is_some_and(|(c, _)| (p[0] - c[0]).hypot(p[1] - c[1]) <= eps);
+        if corner {
+            return (d, start + t * length, stroke_point(s, t));
+        }
+        if d < best.0 {
+            best = (d, start + t * length, stroke_point(s, t));
+        }
+        start += length;
+    }
+    best
+}
+/// Tab centers (arc length on each tool-center loop) for tabs at given XY
+/// points on the part boundary, as picked points place them in established
+/// CAM (Fusion 2D Contour "Tab Positioning: At points"; FreeCAD CAM Tag
+/// dressup positions).
+///
+/// `boundaries[k]` is the part boundary that tool-center loop `loops[k]` was
+/// offset from. A point belongs to the one boundary within `tolerance` of it
+/// and is taken as its nearest point there; the tab is centered where the
+/// tool is nearest to that point (the middle of the corner arc for a point
+/// on a convex corner). `reach` is the loop length a tab needs either side of
+/// its center (half width, tool radius, ramp and a gap): tabs must be that
+/// far from the loop start, where the tool enters and leaves, and twice that
+/// from each other, as evenly spaced tabs are.
+pub(crate) fn tab_centers_at_points(
+    boundaries: &[Vec<Stroke>],
+    loops: &[Vec<Stroke>],
+    points: &[crate::Point],
+    tolerance: f64,
+    reach: f64,
+    width: f64,
+) -> Result<Vec<Vec<f64>>, String> {
+    // Per loop: (center, the point given).
+    let mut placed: Vec<Vec<(f64, crate::Point)>> = vec![vec![]; loops.len()];
+    for &p in points {
+        let near: Vec<(usize, f64, crate::Point)> = boundaries
+            .iter()
+            .enumerate()
+            .map(|(k, b)| {
+                let (d, _, foot) = loop_nearest(b, p, 0.);
+                (k, d, foot)
+            })
+            .collect();
+        let on: Vec<&(usize, f64, crate::Point)> =
+            near.iter().filter(|n| n.1 <= tolerance).collect();
+        match on.as_slice() {
+            [] => {
+                let (_, d, foot) = near
+                    .iter()
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .ok_or("tabs need a selected boundary loop")?;
+                return Err(format!(
+                    "tab position ({}, {}) is not on a selected part boundary: the nearest point on one, ({:.4}, {:.4}), is {d:.4} mm away, more than position_tolerance_mm {tolerance}; give a point on the boundary (or select its loop with `boundaries`)",
+                    p[0], p[1], foot[0], foot[1]
+                ));
+            }
+            [(k, _, foot)] => {
+                let (_, center, _) = loop_nearest(&loops[*k], *foot, tolerance);
+                placed[*k].push((center, p));
+            }
+            [a, b, ..] => {
+                return Err(format!(
+                    "tab position ({}, {}) is within position_tolerance_mm {tolerance} of two boundary loops ({:.4} mm from loop {} and {:.4} mm from loop {}): give a point on one of them or a smaller tolerance",
+                    p[0], p[1], a.1, a.0, b.1, b.0
+                ));
+            }
+        }
+    }
+    for (ring, tabs) in loops.iter().zip(&mut placed) {
+        if tabs.is_empty() {
+            continue;
+        }
+        tabs.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let length: f64 = ring.iter().map(stroke_length).sum();
+        let start = ring[0].a;
+        for (c, p) in [tabs[0], tabs[tabs.len() - 1]] {
+            let room = c.min(length - c);
+            if room <= reach {
+                return Err(format!(
+                    "the tab at ({}, {}) is {room:.3} mm along the tool path from the loop start ({:.4}, {:.4}), where the tool enters and leaves: a tab of width {width} needs more than {reach:.3} mm there (half its width, the tool radius and its ramp) on a loop {length:.3} mm long; move the tab",
+                    p[0], p[1], start[0], start[1]
+                ));
+            }
+        }
+        for w in tabs.windows(2) {
+            let gap = w[1].0 - w[0].0;
+            if gap <= 2. * reach {
+                return Err(format!(
+                    "the tabs at ({}, {}) and ({}, {}) overlap: their centers are {gap:.3} mm apart along the tool path and tabs of width {width} need more than {:.3} mm (the width, the tool diameter and the ramps); move one or make them narrower",
+                    w[0].1[0],
+                    w[0].1[1],
+                    w[1].1[0],
+                    w[1].1[1],
+                    2. * reach
+                ));
+            }
+        }
+    }
+    Ok(placed
+        .into_iter()
+        .map(|tabs| tabs.into_iter().map(|t| t.0).collect())
+        .collect())
+}
 /// The point at parameter t of a stroke, exactly its ends at 0 and 1.
 pub(crate) fn stroke_point(s: &Stroke, t: f64) -> crate::Point {
     if t <= 0. {
@@ -172,7 +322,7 @@ pub(crate) fn tabbed_loop(
     lifts: &[(f64, f64, f64)],
 ) -> Result<Vec<CutMove>, String> {
     use crate::motion::{Curve, MoveKind};
-    let tabs = tabs.filter(|(p, _)| z < p.top);
+    let tabs = tabs.filter(|(p, centers)| z < p.top && !centers.is_empty());
     if tabs.is_none() && lifts.is_empty() && start_z == z {
         return Ok(strokes
             .iter()
@@ -822,4 +972,95 @@ pub(crate) fn offset_profiles(
         arcs,
         diagnostics: offset.diagnostics,
     })
+}
+
+#[cfg(test)]
+mod tab_position_tests {
+    use super::*;
+    use std::f64::consts::FRAC_PI_2;
+    /// A 10 mm square part and its tool-center loop 2 mm outside (corner
+    /// arcs), both counter-clockwise from the bottom left.
+    fn square() -> (Vec<Stroke>, Vec<Stroke>) {
+        let corners = [[0., 0.], [10., 0.], [10., 10.], [0., 10.]];
+        let normals = [[0., -1.], [1., 0.], [0., 1.], [-1., 0.]];
+        let part = (0..4)
+            .map(|k| Stroke::line(corners[k], corners[(k + 1) % 4]))
+            .collect();
+        let out = |p: [f64; 2], n: [f64; 2]| [p[0] + 2. * n[0], p[1] + 2. * n[1]];
+        let mut path = vec![];
+        for k in 0..4 {
+            let next = (k + 1) % 4;
+            path.push(Stroke::line(
+                out(corners[k], normals[k]),
+                out(corners[next], normals[k]),
+            ));
+            path.push(Stroke {
+                a: out(corners[next], normals[k]),
+                b: out(corners[next], normals[next]),
+                arc: Some((corners[next], FRAC_PI_2)),
+            });
+        }
+        (part, path)
+    }
+    #[test]
+    fn points_map_to_the_tool_path_beside_them_and_corners_to_the_arc_middle() {
+        let (part, path) = square();
+        let arc = 2. * FRAC_PI_2;
+        let place = |p| {
+            tab_centers_at_points(
+                std::slice::from_ref(&part),
+                std::slice::from_ref(&path),
+                &[p],
+                0.01,
+                1.,
+                1.,
+            )
+            .unwrap()[0][0]
+        };
+        // Bottom edge: straight below the point. Right edge: after the first
+        // line and corner arc. Off the edge by less than the tolerance: the
+        // nearest point of the edge.
+        assert!((place([4., 0.]) - 4.).abs() < 1e-12);
+        assert!((place([4., 0.008]) - 4.).abs() < 1e-12);
+        assert!((place([10., 3.]) - (10. + arc + 3.)).abs() < 1e-12);
+        // A convex corner is equally near its whole corner arc: the middle.
+        assert!((place([10., 10.]) - (10. + arc + 10. + arc / 2.)).abs() < 1e-12);
+        assert!((place([10.004, 10.004]) - (10. + arc + 10. + arc / 2.)).abs() < 1e-12);
+    }
+    #[test]
+    fn a_point_between_two_loops_is_refused() {
+        let (part, path) = square();
+        let shift = |s: &[Stroke], d: f64| -> Vec<Stroke> {
+            s.iter()
+                .map(|s| Stroke {
+                    a: [s.a[0] + d, s.a[1]],
+                    b: [s.b[0] + d, s.b[1]],
+                    arc: s.arc.map(|(c, w)| ([c[0] + d, c[1]], w)),
+                })
+                .collect()
+        };
+        // A second part 0.01 mm to the right of the first.
+        let parts = [part.clone(), shift(&part, 10.01)];
+        let paths = [path.clone(), shift(&path, 10.01)];
+        let e = tab_centers_at_points(&parts, &paths, &[[10.005, 5.]], 0.01, 1., 1.).unwrap_err();
+        assert!(
+            e.contains("(10.005, 5) is within position_tolerance_mm 0.01 of two boundary loops"),
+            "{e}"
+        );
+        // With a tolerance that tells them apart it belongs to the nearer.
+        let c = tab_centers_at_points(&parts, &paths, &[[10.002, 5.]], 0.004, 1., 1.).unwrap();
+        assert!(c[1].is_empty() && (c[0][0] - (10. + 2. * FRAC_PI_2 + 5.)).abs() < 1e-12);
+        // Each loop gets the tabs whose points are on it, sorted along it.
+        let c = tab_centers_at_points(
+            &parts,
+            &paths,
+            &[[15., 0.], [8., 0.], [3., 0.]],
+            0.004,
+            1.,
+            1.,
+        )
+        .unwrap();
+        assert_eq!(c[0].len(), 2);
+        assert!(c[0][0] < c[0][1] && c[1].len() == 1);
+    }
 }

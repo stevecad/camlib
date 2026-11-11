@@ -61,7 +61,8 @@ pub struct ContourOperation {
     pub limits: Option<crate::limits::Limits>,
 }
 /// Holding tabs: `count` per loop (or one per `spacing_mm` of loop length),
-/// `width_mm` wide along the part edge, `height_mm` above the floor.
+/// or one at each of `positions_mm`; `width_mm` wide along the part edge,
+/// `height_mm` above the floor.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tabs {
@@ -71,6 +72,18 @@ pub struct Tabs {
     pub count: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spacing_mm: Option<f64>,
+    /// Tab centres as XY points on the selected part boundaries, in the
+    /// region's coordinates, instead of `count`/`spacing_mm` (as "Tab
+    /// Positioning: At points" in Fusion 2D Contour and the tag positions of
+    /// the FreeCAD CAM Tag dressup). Each point must lie within
+    /// `position_tolerance_mm` of exactly one selected boundary loop; that
+    /// loop gets the tab. A loop with no point gets no tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub positions_mm: Option<Vec<[f64; 2]>>,
+    /// How far a position may be from the part boundary and still be taken
+    /// as the nearest point on it. Required with `positions_mm`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position_tolerance_mm: Option<f64>,
     pub shape: TabShape,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -308,6 +321,11 @@ impl ContourPlan {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
+        let owners = prepared
+            .loops
+            .iter()
+            .map(|p| (p.component, p.hole))
+            .collect::<Vec<_>>();
         let loops = prepared
             .loops
             .into_iter()
@@ -372,7 +390,7 @@ impl ContourPlan {
                 }
             }
         }
-        let report = ContourReport {
+        let mut report = ContourReport {
             strategy: "contour",
             geometric_residual_status: ResidualStatus::Pending,
             target_z_mm: target,
@@ -405,8 +423,14 @@ impl ContourPlan {
             .tabs
             .as_ref()
             .map(|t| -> Result<crate::profiles::TabPlan, String> {
+                if t.positions_mm.is_some() && (t.count.is_some() || t.spacing_mm.is_some()) {
+                    return Err("tabs are placed either at positions_mm or evenly by count or spacing_mm, not both: give only one of them".into());
+                }
+                if t.positions_mm.is_none() && t.position_tolerance_mm.is_some() {
+                    return Err("tabs position_tolerance_mm applies only to positions_mm: give positions_mm or remove it".into());
+                }
                 if !(t.width_mm.is_finite() && t.width_mm > 0. && t.height_mm.is_finite() && t.height_mm > 0.)
-                    || t.count.is_some() == t.spacing_mm.is_some()
+                    || (t.positions_mm.is_none() && t.count.is_some() == t.spacing_mm.is_some())
                     || t.count.is_some_and(|n| n == 0 || n > 1000)
                     || t.spacing_mm.is_some_and(|s| !(s.is_finite() && s > 0.))
                 {
@@ -418,6 +442,49 @@ impl ContourPlan {
                 let top = target + t.height_mm;
                 let ramp = if t.shape == TabShape::Triangle { (top - target).max(0.) } else { 0. };
                 let half = t.width_mm / 2. + cutter.diameter_mm / 2.;
+                if let Some(points) = &t.positions_mm {
+                    let tolerance = t.position_tolerance_mm.ok_or(
+                        "tabs at positions_mm need position_tolerance_mm: how far a point may be from the part boundary and still be taken as on it",
+                    )?;
+                    if !(tolerance.is_finite() && tolerance > 0.) {
+                        return Err(format!("tabs position_tolerance_mm {tolerance} must be positive"));
+                    }
+                    if points.is_empty() || points.len() > 1000 {
+                        return Err(format!("tabs positions_mm needs 1..1000 points, not {}", points.len()));
+                    }
+                    if let Some(p) = points.iter().find(|p| !p.iter().all(|n| n.is_finite() && n.abs() <= 1e6)) {
+                        return Err(format!("tab position ({}, {}) is not a finite point", p[0], p[1]));
+                    }
+                    // The part boundary each tool-center loop was offset from.
+                    let definition = source.definition();
+                    let boundaries = owners
+                        .iter()
+                        .map(|&(component, hole)| {
+                            let c = &definition.components[component];
+                            crate::pocket::Stroke::from_boundary(hole.map_or(&c.outer, |h| &c.holes[h]))
+                        })
+                        .collect::<Vec<_>>();
+                    let centers = crate::profiles::tab_centers_at_points(
+                        &boundaries,
+                        &loops,
+                        points,
+                        tolerance,
+                        half + ramp + guard,
+                        t.width_mm,
+                    )?;
+                    for (k, (&(component, hole), c)) in owners.iter().zip(&centers).enumerate() {
+                        if c.is_empty() {
+                            let name = hole.map_or_else(
+                                || format!("the outer boundary of component {component}"),
+                                |h| format!("hole {h} of component {component}"),
+                            );
+                            report.diagnostics.push(format!(
+                                "tabs: loop {k} ({name}) has no tab position and is cut without tabs"
+                            ));
+                        }
+                    }
+                    return Ok(crate::profiles::TabPlan { top, half, ramp: t.shape == TabShape::Triangle, centers });
+                }
                 let centers = loops
                     .iter()
                     .map(|ring| {
