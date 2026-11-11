@@ -40,6 +40,16 @@ path = "src/bin/post_job.rs"
 lto = "thin"
 codegen-units = 1
 
+# CI's Rust tests (#194). The 55 integration test binaries each link the whole
+# engine; with the release profile's thin LTO and single codegen unit that
+# build took 37 of the Windows job's 48 minutes. Same optimisation level as
+# release, without LTO. The release build itself is tested by the Python and
+# wheel jobs, which build the real extension.
+[profile.ci]
+inherits = "release"
+lto = false
+codegen-units = 16
+
 [profile.iteration]
 inherits = "release"
 opt-level = 2

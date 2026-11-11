@@ -84,12 +84,13 @@ jobs:
           PYO3_PYTHON: python
       - name: Tests
         if: needs.changes.outputs.code == 'true'
-        run: cargo test --release --workspace --all-features --lib --tests
+        # The `ci` profile: release optimisation without LTO (see Cargo.toml).
+        run: cargo test --profile ci --workspace --all-features --lib --tests
         env:
           PYO3_PYTHON: python
       - name: Doctests
         if: needs.changes.outputs.code == 'true'
-        run: cargo test --release --doc
+        run: cargo test --profile ci --doc
 
   msrv:
     name: Rust 1.88 (minimum supported version) builds
