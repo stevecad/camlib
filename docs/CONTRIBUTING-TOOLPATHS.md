@@ -75,8 +75,9 @@ stock change. Never bypass `emit`.
 
 ## 6. Tests
 
-- **Rust:** an integration test in `tests/` (for example `tests/slot.rs`) or
-  unit tests next to the code. Cover the guarantee, the refusals and an edge
+- **Rust:** an integration test in `tests/` (for example `tests/slot.rs`,
+  added to the list in `tests/main.rs`: the integration tests are one binary)
+  or unit tests next to the code. Cover the guarantee, the refusals and an edge
   case.
 - **Python:** `python/tests/test_<operation>.py` running it end to end through
   `Simulation` or a `Job`, with the independent check, plus posting where it

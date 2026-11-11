@@ -132,6 +132,8 @@ PYO3_PYTHON=$(which python) cargo build --release --workspace --all-features
 # Rust tests, lints and formatting.
 cargo test --release --workspace --all-features --lib --tests
 cargo test --release --doc
+# One file's integration tests (they are one binary, tests/main.rs):
+cargo test --release --test integration slot::
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --check
 

@@ -8,6 +8,8 @@ repository = "https://github.com/stevecad/camlib"
 readme = "README.md"
 description = "Native CAM engine with a Python API: three-axis milling, turning and plasma/laser cutting"
 publish = false
+# The integration tests are one binary, tests/main.rs (#194): see its header.
+autotests = false
 
 [workspace]
 members = [".", "bindings/python"]
@@ -26,6 +28,10 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 sha2 = "=0.10.9"
 crc32fast = "=1.5.0"
 
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"
 
 [[bin]]
 name = "cam-sim-stream"
