@@ -10,7 +10,17 @@ from camlib.motion import Motion, Line, Arc, Helix, ToolChange
 
 
 class Oracle:
-    def __init__(self, *, tools, initial_position, tool_change, coolant_codes, stop_window='fine', work_offset=1):
+    def __init__(
+        self,
+        *,
+        tools,
+        initial_position,
+        tool_change,
+        coolant_codes,
+        stop_window='fine',
+        work_offset=1,
+        spindle_position_deg=None,
+    ):
         reserved = {0, 1, 2, 3, 4, 5, 6, 17, 19, 30, 40, 41, 42, 43, 44, 45, 70}
         if any(not re.fullmatch(r'M[0-9]{1,2}', code) or int(code[1:]) in reserved for code in coolant_codes.values()):
             raise ValueError('oracle: invalid/reserved OEM coolant declaration')
@@ -32,6 +42,11 @@ class Oracle:
         self.coolant = 'off'
         self.ended = False
         self.count = 0
+        # CYCLE84: the declared oriented-stop angle, the M function of the
+        # running spindle (3/4) and the taps made (hand, start, bottom, feed).
+        self.spindle_position_deg = spindle_position_deg
+        self.turning = None
+        self.taps = []
 
     def read(self, line):
         if self.ended:
@@ -47,6 +62,8 @@ class Oracle:
             return []
         if 'native' not in self.ready:
             raise ValueError('oracle: language not selected')
+        if text.startswith('CYCLE84'):
+            return self.cycle84(text)
         resets = {
             'G90': 'absolute',
             'G17': 'plane',
@@ -84,6 +101,7 @@ class Oracle:
             return []
         if text == 'M5':
             self.rpm = 0
+            self.turning = None
             self.ready.add('spindle')
             return []
         if text == 'D0':
@@ -112,6 +130,7 @@ class Oracle:
             if self.active is None or self.edge is None or not 0 < values['S'] <= 99999.999:
                 raise ValueError('oracle: spindle state')
             self.rpm = values['S']
+            self.turning = int(values['M'])
             return []
         if 'T' in values:
             if self.rpm or values['T'] != int(values['T']) or not set(values) <= {'T', 'D'}:
@@ -205,3 +224,58 @@ class Oracle:
         self.position = end
         self.count += 1
         return [Motion(self.count, 'observed', setting.tool, curve, feed, 'rapid' if code == 0 else 'cut')]
+
+    def cycle84(self, text):
+        """CYCLE84 as the 07/2018 manual gives it (pp.166-169), written out
+        move by move. An omitted parameter is taken as zero (p.154, p.168)."""
+        call = re.fullmatch(r'CYCLE84\((.*)\)', text)
+        if call is None or '(' in call[1] or ')' in call[1]:
+            raise ValueError('oracle: cycle call syntax')
+        given = [a.strip() for a in call[1].split(',')]
+        if len(given) > 18:
+            raise ValueError('oracle: alarm 12340, too many parameters')
+        try:
+            numbers = [float(a) if a else 0.0 for a in given + [''] * (18 - len(given))]
+        except ValueError:
+            raise ValueError('oracle: cycle parameter is not a number') from None
+        rtp, rfp, sdis, dp, dpr, dtb, sdac, mpit, pit, poss, sst, sst1, axn, sys1, sys2, vari, dam, vrt = numbers
+        if (
+            not {'native', 'absolute', 'plane', 'feed', 'radius', 'frame', 'window', 'length'} <= self.ready
+            or self.units != 1.0
+            or self.offset is None
+            or self.active is None
+            or self.edge is None
+        ):
+            raise ValueError('oracle: cycle before initialized (mm, G17, tool edge, work offset)')
+        setting = self.tools.get((self.active, self.edge))
+        if setting is None or self.turning is None or self.rpm <= 0:
+            raise ValueError('oracle: tapping without tool geometry or a running spindle')
+        if self.spindle_position_deg is None or poss != self.spindle_position_deg:
+            raise ValueError('oracle: POSS is not the declared oriented stop')
+        if axn != 3 or sys1 or sys2 or vari or dtb or mpit:
+            raise ValueError('oracle: outside the one-pass Z subset')
+        if dpr or sdis:
+            raise ValueError('oracle: relative depth/safety clearance not in the subset')
+        x, y, z = self.position
+        # p.167: G0 to RFP + SDIS; the subset has the tool already there.
+        if rfp + sdis != z or rtp != z:
+            raise ValueError('oracle: the cycle would traverse before or after tapping')
+        if not dp < z or not 0.001 <= abs(pit) <= 2000:
+            raise ValueError('oracle: depth or lead')
+        # p.168: positive lead right-hand (as M3), negative left-hand (as M4).
+        hand = 'right' if pit > 0 else 'left'
+        if sdac not in (3, 4):
+            raise ValueError('oracle: SDAC leaves the spindle stopped or undefined')
+        down = abs(pit) * sst
+        up = abs(pit) * (sst1 or sst)  # p.168: SST1 = 0 retracts at SST
+        if sst <= 0 or sst != self.rpm:
+            raise ValueError('oracle: tapping speed is not the programmed spindle speed')
+        top, bottom = (x, y, z), (x, y, dp)
+        self.taps.append((hand, self.turning, top, bottom, down, up))
+        # p.167: afterwards the earlier speed with the direction SDAC.
+        self.turning = int(sdac)
+        moves = []
+        for start, end, feed in ((top, bottom, down), (bottom, top, up)):
+            self.count += 1
+            moves.append(Motion(self.count, 'observed', setting.tool, Line(start, end), feed, 'tap'))
+        return moves

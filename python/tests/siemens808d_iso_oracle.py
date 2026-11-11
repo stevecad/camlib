@@ -21,6 +21,7 @@ class Oracle:
         calculator=False,
         increment='B',
         work_offset=1,
+        safety_clearance=None,
     ):
         self.tools = {t.number: t for t in tools}
         self.position = tuple(initial_position)
@@ -39,6 +40,12 @@ class Oracle:
         self.coolant = 'off'
         self.ended = False
         self.count = 0
+        # G84/G74: GUD _ZSFR[0] (mm), the running M3/M4, the modal cycle and
+        # the taps made (hand, M function, start, bottom, feed).
+        self.safety_clearance = safety_clearance
+        self.turning = None
+        self.cycle = False
+        self.taps = []
 
     def read(self, line):
         if self.ended or not line.isascii() or len(line) > 1024:
@@ -58,6 +65,11 @@ class Oracle:
         if text == 'G291':
             return []
         text = text.replace(' ', '').replace('\t', '')
+        if self.cycle and text != 'G80':
+            raise ValueError('oracle: block inside a modal tapping cycle')
+        tapping = re.fullmatch(r'G98G(84|74)(.+)', text)
+        if tapping is not None:
+            return self.tap(tapping[1] == '84', tapping[2])
         parts = re.findall(r'([A-Z])([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))', text)
         if ''.join(w + v for w, v in parts) != text or len({w for w, v in parts}) != len(parts):
             raise ValueError('oracle: unsupported words')
@@ -99,6 +111,8 @@ class Oracle:
             self.flags.add(setters[g])
             if g == 49:
                 self.length = None
+            if g == 80:
+                self.cycle = False
             return []
         if g in (50.1, 92.1):
             if set(v) != {'G', 'X', 'Y', 'Z'} or any(v[a] != 0 for a in 'XYZ'):
@@ -124,12 +138,14 @@ class Oracle:
             if set(v) != {'M'}:
                 raise ValueError('oracle: spindle off')
             self.rpm = 0
+            self.turning = None
             self.flags.add('spindle')
             return []
         if m in (3, 4):
             if set(v) != {'M', 'S'} or not self.active or self.pending or self.length is None or v['S'] <= 0:
                 raise ValueError('oracle: spindle on')
             self.rpm = v['S']
+            self.turning = int(m)
             return []
         if set(v) == {'T'}:
             if v['T'] not in self.tools or self.rpm or self.coolant != 'off':
@@ -206,3 +222,40 @@ class Oracle:
         self.position = tuple(self.active.position_after_mm)
         self.pending = True
         self.length = None
+
+    def tap(self, right, words):
+        """G98 G84/G74 X Y Z R F as the 02/2016 ISO manual gives it (pp.128,
+        143-146): to R plus the safety clearance, tap to Z at F, reverse back
+        and return to the initial plane."""
+        parts = re.findall(r'([A-Z])([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))', words)
+        if ''.join(w + x for w, x in parts) != words or sorted(w for w, x in parts) != ['F', 'R', 'X', 'Y', 'Z']:
+            raise ValueError('oracle: tapping cycle words')
+        quantum = 0.001 / (10 if self.increment == 'C' else 1)
+        v = {}
+        for w, x in parts:
+            v[w] = float(x)
+            # p.11: an undotted geometric word counts input increments.
+            if '.' not in x and not self.calculator and w != 'F':
+                v[w] *= quantum
+        needed = {'absolute', 'plane', 'feed', 'radius', 'length', 'cycles', 'scale', 'rotation', 'mirror', 'frame'}
+        if not needed <= self.flags or self.units != 1 or self.offset is None or self.length is None or self.pending:
+            raise ValueError('oracle: tapping cycle before initialized (mm, G17, G43, work offset)')
+        if self.safety_clearance is None or self.rpm <= 0 or self.turning is None:
+            raise ValueError('oracle: tapping without a declared safety clearance or a running spindle')
+        x, y, z = self.position
+        if (v['X'], v['Y']) != (x, y):
+            raise ValueError('oracle: the cycle would position in XY')
+        # p.144: approach of R shifted by the safety clearance; G98 returns to
+        # the initial plane. The subset has the tool at both already.
+        if abs(v['R'] + self.safety_clearance - z) > 1e-9:
+            raise ValueError('oracle: the cycle would traverse before tapping')
+        if not v['Z'] < v['R'] or v['F'] <= 0:
+            raise ValueError('oracle: depth or feed')
+        top, bottom = (x, y, z), (x, y, v['Z'])
+        self.taps.append(('right' if right else 'left', self.turning, top, bottom, v['F'], v['F'] / self.rpm))
+        self.cycle = True
+        moves = []
+        for start, end in ((top, bottom), (bottom, top)):
+            self.count += 1
+            moves.append(Motion(self.count, 'observed', self.active.tool, Line(start, end), v['F'], 'tap'))
+        return moves

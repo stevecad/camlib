@@ -16,6 +16,7 @@ from camlib.post import (
     LoweringOptions,
 )
 from test_post import fixture
+from test_tapping import CHANGE, job as tap_job, tapping, tool_table as tap_table
 from siemens808d_oracle import Oracle
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'examples'))
@@ -507,6 +508,161 @@ class Siemens808D(unittest.TestCase):
         self.assertFalse(result['first_posted_motion']['source_native_exited'])
         self.assertIn('siemens808d_post.Siemens808DPost', result['definition']['post'])
         self.assertIn('examples/siemens808d_post.py', result['source_sha256'])
+
+
+def tap_machine(j, **settings):
+    values = dict(
+        tool_change='m6',
+        coolant_codes=OEM,
+        work_to_machine=WorkFrame(),
+        max_feed_mm_min=10000,
+        max_spindle_rpm=30000,
+        max_sweep_rad=6.283185307179586,
+        tool_changes=True,
+        tool_change_position_mode='table',
+        rapid_mm_min=6000,
+        output_units='mm',
+        decimals=3,
+        position_controlled_spindle=True,
+        tap_spindle_position_deg=90,
+    )
+    values.update(settings)
+    return define_machine('Test OEM 808D', tap_table(j), **values)
+
+
+def tap_nc(hand='right', post=Siemens808DPost, **settings):
+    j = tap_job(lambda tap: tapping(tap, hand=hand), tool_change=CHANGE)
+    m = tap_machine(j, **settings)
+    text = j.post_nc('top', machine=m, post=post, decoder=Siemens808DDecoder, accept={'unchecked_machine'}).text
+    return j, m, text.splitlines()
+
+
+def cycle84_with(index, change):
+    """A deliberately wrong post: one CYCLE84 parameter rewritten."""
+
+    class Wrong(Siemens808DPost):
+        def emit(self, *words):
+            if len(words) == 1 and str(words[0]).startswith('CYCLE84('):
+                fields = words[0][8:-1].split(',')
+                fields[index] = change(fields[index])
+                words = ('CYCLE84(' + ','.join(fields) + ')',)
+            return super().emit(*words)
+
+    return Wrong
+
+
+class Siemens808DTapping(unittest.TestCase):
+    """#95: CYCLE84 rigid tapping (07/2018 manual pp.166-169), both hands."""
+
+    def test_golden_cycle84_both_hands_and_independent_expansion(self):
+        for hand, sdac, pit, spindle in (('right', '3', '1', 'M3'), ('left', '4', '-1', 'M4')):
+            with self.subTest(hand):
+                j, m, nc = tap_nc(hand)
+                cycles = [i for i, line in enumerate(nc) if line.startswith('CYCLE84')]
+                # RTP = RFP = the current Z, no SDIS; DP absolute; SDAC and the
+                # sign of PIT are the hand; POSS 90; SST = SST1 = 600; AXN 3.
+                self.assertEqual(
+                    [nc[i : i + 2] for i in cycles],
+                    [[f'CYCLE84(11,11,,4,,,{sdac},,{pit},90,600,600,3,0,0,0)', '; CYCLE84 retracted']] * 2,
+                )
+                for i in cycles:
+                    # The hole position is approached before the call (p.156).
+                    self.assertRegex(nc[i - 1], r'^G[01] .*Z11\b')
+                    turning = next(line for line in reversed(nc[:i]) if re.match(r'M[345]\b', line))
+                    self.assertEqual(turning, f'{spindle} S600')
+                self.assertFalse(any(re.search(r'G33|G63|SPOS', line) for line in nc))
+                header = j.compile().setup('top').program_header()
+                oracle = Oracle(
+                    tools=m.tools,
+                    initial_position=header.initial_position_mm,
+                    tool_change='m6',
+                    coolant_codes=OEM,
+                    spindle_position_deg=90,
+                )
+                taps = [e for line in nc for e in oracle.read(line) if isinstance(e, Motion) and e.kind == 'tap']
+                self.assertTrue(oracle.ended)
+                m_function = 3 if hand == 'right' else 4
+                self.assertEqual(
+                    oracle.taps,
+                    [(hand, m_function, (x, 8.0, 11.0), (x, 8.0, 4.0), 600.0, 600.0) for x in (8.0, 20.0)],
+                )
+                # Down and back for each hole, and the spindle left as it ran.
+                self.assertEqual(
+                    [(e.curve.start[2], e.curve.end[2], e.feed_mm_min) for e in taps],
+                    [(11.0, 4.0, 600.0), (4.0, 11.0, 600.0)] * 2,
+                )
+
+    def test_wrong_hand_or_direction_is_refused(self):
+        def flipped(text):
+            return text[1:] if text.startswith('-') else '-' + text
+
+        for hand in ('right', 'left'):
+            with self.subTest(hand):
+                # A lead of the other sign taps the other hand (p.168).
+                with self.assertRaisesRegex(Exception, 'lead sign .thread hand. differs from the running spindle'):
+                    tap_nc(hand, post=cycle84_with(8, flipped))
+                # SDAC leaving the spindle reversed after the cycle (p.167).
+                with self.assertRaisesRegex(Exception, 'SDAC must restore the running spindle direction'):
+                    tap_nc(hand, post=cycle84_with(6, lambda v: {'3': '4', '4': '3'}[v]))
+
+        class Reversed(Siemens808DPost):
+            # The spindle started the wrong way round, the cycle agreeing with it.
+            def on_spindle(self, event):
+                super().on_spindle(replace(event, direction='ccw') if event.rpm else event)
+
+        # The intent check: the decoded spindle direction is not the planned one.
+        with self.assertRaisesRegex(Exception, 'decoded effects differ from source'):
+            tap_nc('right', post=Reversed)
+
+    def test_wrong_cycle_parameters_are_refused(self):
+        for index, change, message in (
+            (0, lambda v: '12', 'RTP and RFP must be the current Z'),
+            (1, lambda v: '10', 'RTP and RFP must be the current Z'),
+            (2, lambda v: '2', 'no SDIS, DPR, DTB or MPIT'),
+            (4, lambda v: '7', 'no SDIS, DPR, DTB or MPIT'),
+            (7, lambda v: '6', 'no SDIS, DPR, DTB or MPIT'),
+            (3, lambda v: '12', 'final depth DP below'),
+            (9, lambda v: '0', 'POSS differs from the declared'),
+            (10, lambda v: '500', 'SST and SST1 must repeat the running spindle speed'),
+            (11, lambda v: '0', 'SST and SST1 must repeat the running spindle speed'),
+            (12, lambda v: '1', 'AXN=3'),
+            (15, lambda v: '1', 'VARI=0'),
+            (8, lambda v: '0', 'PIT must be 0.001..2000'),
+            (8, lambda v: 'R1', 'plain numbers'),
+        ):
+            with self.subTest(index=index, message=message), self.assertRaisesRegex(Exception, message):
+                tap_nc(post=cycle84_with(index, change))
+
+        class Trailing(Siemens808DPost):
+            def tap(self, motion):
+                super().tap(motion)
+                if motion.curve.end[2] > motion.curve.start[2]:
+                    self.emit('G1 Z11 F100')
+
+        with self.assertRaisesRegex(Exception, 'CYCLE84 retracts by itself'):
+            tap_nc(post=Trailing)
+
+    def test_undeclared_premises_refuse_tapping(self):
+        for settings, message in (
+            (dict(position_controlled_spindle=False, tap_spindle_position_deg=None), 'position_controlled_spindle'),
+            (dict(tap_spindle_position_deg=None), 'tap_spindle_position_deg'),
+        ):
+            with self.subTest(settings=settings), self.assertRaisesRegex(Exception, message):
+                tap_nc(**settings)
+        j = tap_job(tapping, tool_change=CHANGE)
+        for settings in (
+            dict(position_controlled_spindle=False),
+            dict(position_controlled_spindle=1),
+            dict(tap_spindle_position_deg=360),
+            dict(tap_spindle_position_deg=-1),
+            dict(tap_spindle_position_deg=True),
+            dict(tap_spindle_position_deg=0.00001),
+        ):
+            with self.subTest(settings=settings), self.assertRaises(ValueError):
+                tap_machine(j, **settings)
+        # The manual gives the lead in mm only.
+        with self.assertRaisesRegex(Exception, 'tapping needs output_units="mm"'):
+            tap_nc(output_units='inch', decimals=4)
 
 
 if __name__ == '__main__':

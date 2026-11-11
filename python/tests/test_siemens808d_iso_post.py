@@ -1,5 +1,6 @@
 from dataclasses import replace
 import math
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -8,6 +9,7 @@ import unittest
 from camlib.motion import Arc, Helix, Line, Motion, Coolant, Spindle, Stop, ToolChange, WorkFrame, WorkOffset
 from camlib.post import Cancellation, LoweringOptions, PostEngine, ToolSetting
 from test_post import fixture
+from test_tapping import CHANGE, job as tap_job, tapping, tool_table as tap_table
 from siemens808d_iso_oracle import Oracle
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'examples'))
@@ -394,6 +396,171 @@ class SiemensISO(unittest.TestCase):
         self.assertTrue(result['posted_material']['complete'])
         self.assertFalse(result['first_posted_motion']['source_finished'])
         self.assertFalse(result['first_posted_motion']['source_native_exited'])
+
+
+TAPPING = dict(
+    position_controlled_spindle=True,
+    tap_deep_hole_mode=0,
+    tap_retract_speed_percent=100,
+    tap_safety_clearance_mm=0,
+    tap_restores_spindle=True,
+)
+
+
+def tap_machine(j, **settings):
+    values = dict(
+        startup_units='mm',
+        output_units='mm',
+        decimals=3,
+        extern_toolprog_mode=0,
+        cutting_edge_default=0,
+        tool_corr_move_mode=0,
+        tool_length_const=17,
+        tool_change='m6',
+        coolant_codes=OEM,
+        traverse_feed_mm_min=3000,
+        work_to_machine=WorkFrame(),
+        max_feed_mm_min=10000,
+        max_spindle_rpm=30000,
+        max_sweep_rad=6.283185307179586,
+        max_tool_number=99,
+        max_length_register=99,
+        tool_changes=True,
+        tool_change_position_mode='table',
+        rapid_mm_min=6000,
+        **TAPPING,
+    )
+    values.update(settings)
+    return define_machine('ISO milling example', tap_table(j), **values)
+
+
+def tap_nc(hand='right', post=Siemens808DISOPost, **settings):
+    j = tap_job(lambda tap: tapping(tap, hand=hand), tool_change=CHANGE)
+    m = tap_machine(j, **settings)
+    text = j.post_nc('top', machine=m, post=post, decoder=Siemens808DISODecoder, accept={'unchecked_machine'}).text
+    return j, m, text.splitlines()
+
+
+class SiemensISOTapping(unittest.TestCase):
+    """#95: G84/G74 rigid tapping (02/2016 ISO manual pp.143-149)."""
+
+    def test_golden_g84_g74_and_independent_expansion(self):
+        for hand, code, spindle in (('right', 'G84', 'M3'), ('left', 'G74', 'M4')):
+            for clearance, r in ((0, '11.'), (2, '9.'), (0.5, '10.5')):
+                with self.subTest(hand=hand, clearance=clearance):
+                    j, m, nc = tap_nc(hand, tap_safety_clearance_mm=clearance)
+                    cycles = [i for i, line in enumerate(nc) if code in line.split()]
+                    # F = lead x S = 1 mm x 600 rpm (G94); R plus the declared
+                    # safety clearance is the current Z; G80 after each hole.
+                    self.assertEqual(
+                        [nc[i : i + 2] for i in cycles],
+                        [[f'G98 {code} X{x}. Y8. Z4. R{r} F600.', 'G80'] for x in (8, 20)],
+                    )
+                    for i in cycles:
+                        self.assertIn('Z11.', nc[i - 1].split())
+                        turning = next(line for line in reversed(nc[:i]) if line.split()[0] in ('M3', 'M4', 'M5'))
+                        self.assertEqual(turning, f'{spindle} S600')
+                    # The cycles are rigid by themselves: no M29 is written.
+                    self.assertFalse(any('M29' in line or 'G63' in line for line in nc))
+                    header = j.compile().setup('top').program_header()
+                    m_function = 3 if hand == 'right' else 4
+                    for calculator in (False, True):
+                        for increment in ('B', 'C'):
+                            oracle = Oracle(
+                                tools=m.tools,
+                                initial_position=header.initial_position_mm,
+                                coolant_codes=OEM,
+                                calculator=calculator,
+                                increment=increment,
+                                safety_clearance=clearance,
+                            )
+                            taps = [e for line in nc for e in oracle.read(line) if e.kind == 'tap']
+                            self.assertTrue(oracle.ended)
+                            self.assertEqual(
+                                oracle.taps,
+                                [(hand, m_function, (x, 8.0, 11.0), (x, 8.0, 4.0), 600.0, 1.0) for x in (8.0, 20.0)],
+                            )
+                            self.assertEqual(
+                                [(e.curve.start[2], e.curve.end[2], e.feed_mm_min) for e in taps],
+                                [(11.0, 4.0, 600.0), (4.0, 11.0, 600.0)] * 2,
+                            )
+
+    def test_wrong_hand_or_direction_is_refused(self):
+        class OtherHand(Siemens808DISOPost):
+            def emit(self, *words):
+                swap = {'G84': 'G74', 'G74': 'G84'}
+                return super().emit(*(swap.get(w, w) for w in words))
+
+        class Reversed(Siemens808DISOPost):
+            def on_spindle(self, event):
+                super().on_spindle(replace(event, direction='ccw') if event.rpm else event)
+
+        for hand in ('right', 'left'):
+            with (
+                self.subTest(hand),
+                self.assertRaisesRegex(Exception, 'cycle hand differs from the running spindle direction'),
+            ):
+                tap_nc(hand, post=OtherHand)
+        # The intent check: the decoded spindle direction is not the planned one.
+        with self.assertRaisesRegex(Exception, 'decoded effects differ from source'):
+            tap_nc('right', post=Reversed)
+
+    def test_wrong_cycle_blocks_are_refused(self):
+        def rewritten(pattern, replacement):
+            class Wrong(Siemens808DISOPost):
+                def emit(self, *words):
+                    line = ' '.join(str(w) for w in words if w is not None and w != '')
+                    # The cycle block, and the G80 that follows it.
+                    if ' G84 ' in line or line == 'G80' and getattr(self, '_tapped', False):
+                        self._tapped = True
+                        line = re.sub(pattern, replacement, line)
+                    return super().emit(line)
+
+            return Wrong
+
+        for pattern, replacement, message in (
+            (r'R11\.', 'R10.', 'R plus the declared safety clearance must be the current Z'),
+            (r'G98 ', 'G99 ', 'undeclared controller command|unsupported or duplicate'),
+            (r'^G98 ', '', 'undeclared controller command'),
+            (r'Z4\.', 'Z12.', 'must go down'),
+            (r' R11\.', '', 'G98 G84/G74 X Y Z R F'),
+            (r'F600\.', 'F600. P500', 'G98 G84/G74 X Y Z R F'),
+            (r'F600\.', 'F600', 'explicit decimals'),
+            (r'X8\.', 'X9.', 'must start at its hole position'),
+            (r'^G80$', 'G1 Z11. F100.', 'must be deselected by G80'),
+        ):
+            with self.subTest(pattern=pattern, replacement=replacement), self.assertRaisesRegex(Exception, message):
+                tap_nc(post=rewritten(pattern, replacement))
+        # A declared safety clearance the post ignored.
+        with self.assertRaisesRegex(Exception, 'R plus the declared safety clearance'):
+            tap_nc(post=rewritten(r'R9\.', 'R11.'), tap_safety_clearance_mm=2)
+
+    def test_undeclared_or_unsupported_premises_refuse_tapping(self):
+        for settings, message in (
+            (dict(position_controlled_spindle=False), 'position_controlled_spindle=True'),
+            (dict(tap_deep_hole_mode=None), 'declare tap_deep_hole_mode'),
+            (dict(tap_retract_speed_percent=None), 'declare tap_retract_speed_percent'),
+            (dict(tap_safety_clearance_mm=None), 'declare tap_safety_clearance_mm'),
+            (dict(tap_restores_spindle=None), 'declare tap_restores_spindle'),
+            (dict(tap_deep_hole_mode=2), 'deep-hole tapping'),
+            (dict(tap_deep_hole_mode=3), 'deep-hole tapping'),
+            (dict(tap_retract_speed_percent=120), 'tap_retract_speed_percent=100'),
+            (dict(tap_restores_spindle=False), 'tap_restores_spindle=True'),
+        ):
+            with self.subTest(settings=settings), self.assertRaisesRegex(Exception, message):
+                tap_nc(**settings)
+        j = tap_job(tapping, tool_change=CHANGE)
+        for settings in (
+            dict(position_controlled_spindle=1),
+            dict(tap_deep_hole_mode=0.0),
+            dict(tap_retract_speed_percent=100.0),
+            dict(tap_safety_clearance_mm=-1),
+            dict(tap_safety_clearance_mm=0.0005),
+            dict(tap_safety_clearance_mm=True),
+            dict(tap_restores_spindle=1),
+        ):
+            with self.subTest(settings=settings), self.assertRaises(ValueError):
+                tap_machine(j, **settings)
 
 
 if __name__ == '__main__':

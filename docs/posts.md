@@ -294,8 +294,8 @@ them against your machine before use:
 | `haas_ngc_post.py` | Haas NGC (2020 manual) | [setup notes](haas-ngc-post.md) |
 | `fanuc_0imb_post.py` | FANUC 0i-MB | [setup notes](fanuc-0imb-post.md); `inspection_plus_fast_feed_mm_min=` posts probing as Renishaw Inspection Plus macros |
 | `lnc_mill_post.py` | LNC milling, LNC-M8000 (A-LNC programming manual V01.02) | [setup notes](lnc-mill-post.md); native G2/G3 in G17/G18/G19 checked against parameter 50048; canned cycles and M29 rigid tapping with the declared parameters |
-| `siemens808d_post.py` | SINUMERIK 808D native | [setup notes](siemens808d-post.md) |
-| `siemens808d_iso_post.py` | SINUMERIK 808D ISO mode | [setup notes](siemens808d-iso-post.md) |
+| `siemens808d_post.py` | SINUMERIK 808D native | [setup notes](siemens808d-post.md); CYCLE84 rigid tapping in both hands with the declared spindle premises |
+| `siemens808d_iso_post.py` | SINUMERIK 808D ISO mode | [setup notes](siemens808d-iso-post.md); G84/G74 rigid tapping with the declared GUD settings |
 | `centroid_post.py` | Centroid CNC12 mill (Acorn, Oak, ...) | [setup notes](centroid-post.md) |
 | `qtplasmac_post.py` | LinuxCNC 2.9 QtPlasmaC (plasma) | [setup notes](qtplasmac-post.md) |
 | `centroid_plasma_post.py` | Centroid CNC12 plasma (Acorn THC) | [setup notes](centroid-plasma-post.md) |
