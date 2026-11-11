@@ -698,6 +698,63 @@ class PythonPosts(unittest.TestCase):
         with self.assertRaises(ValueError):
             list(post_program(p, replace(m, tools=(replace(m.tools[0], gauge_length_mm=99),))))
 
+    def test_gauge_line_travel_checks_each_decoded_tool_at_its_own_length(self):
+        # 176: the gauge line travels Z -400..0 (machine); the work origin is
+        # at machine Z -300. The 60 mm tool's tip reaches work Z 240, the
+        # 115 mm tool's work Z 185.
+        from camlib.tools import HolderSection
+
+        p, m = self.machine()
+        short = p.tools[0]
+        self.assertEqual(short.gauge_length_mm, 60)
+        long = replace(short, id='long', gauge_length_mm=115, holders=(HolderSection(35, 115, 4, 4),))
+        start = p.initial_position_mm
+        m = replace(
+            m,
+            tools=(*m.tools, ToolSetting.for_tool(long, number=3, length_register=8, position_after_mm=start)),
+            work_to_machine=WorkFrame((0, 0, -300)),
+            gauge_travel_mm=((-500, -500, -400), (500, 500, 0)),
+        )
+
+        def program(short_top, long_top):
+            def rise(first, tool, top):
+                peak = (start[0], start[1], top)
+                return (
+                    Motion(first, 'rise', tool, Line(start, peak), 1200),
+                    Motion(first + 1, 'rise', tool, Line(peak, start), 1200),
+                )
+
+            return replace(
+                p,
+                tools=(short, long),
+                events=(
+                    *p.events[:3],
+                    *rise(1, 't1', short_top),
+                    Spindle(0),
+                    ToolChange('long', 3, 8, start),
+                    Spindle(12000),
+                    *rise(3, 'long', long_top),
+                    Spindle(0),
+                ),
+            )
+
+        for decoder in (GCodeDecoder, NativeGCodeDecoder):
+            # Each tool up to its own Z home, on its limit.
+            chunks = list(post_program(program(240, 185), m, decoder=decoder))
+            self.assertIn('Z240', ''.join(c.text for c in chunks))
+            # The long tool where only the short one can go.
+            with self.assertRaisesRegex(ValueError, r'tool long \(gauge length 115 mm\).*machine Z'):
+                list(post_program(program(240, 240), m, decoder=decoder))
+            with self.assertRaisesRegex(ValueError, r'tool t1 \(gauge length 60 mm\).*machine Z'):
+                list(post_program(program(240.001, 185), m, decoder=decoder))
+        # One tip box cannot describe both tools: the short tool's refuses the
+        # long tool's low reach, the long tool's the short tool's home.
+        for tip_top, moves in ((-60, (240, -200)), (-115, (240, 185))):
+            boxed = replace(m, gauge_travel_mm=None, tip_travel_mm=((-500, -500, tip_top - 400), (500, 500, tip_top)))
+            with self.assertRaisesRegex(ValueError, 'travel'):
+                list(post_program(program(*moves), boxed))
+        list(post_program(program(240, -215), m))
+
     def test_streams_before_source_exhaustion_cancels_before_pulling_next_batch(self):
         p, m = self.machine()
         produced = 0

@@ -293,6 +293,7 @@ fn mutated_tool_word_is_caught_by_decode_and_compare() {
             max_axis_feed_mm_min: m.max_axis_feed_mm_min,
             work_to_machine: m.work_to_machine.clone(),
             tip_travel_mm: m.tip_travel_mm,
+            gauge_travel_mm: m.gauge_travel_mm,
             definition: json!({"mutation_test":true}),
             run_id: "mutation".into(),
             decoded_initial_position_mm: d.position,

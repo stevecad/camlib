@@ -25,6 +25,12 @@ pub struct Settings {
     pub max_axis_feed_mm_min: Option<Vec3>,
     pub work_to_machine: WorkFrame,
     pub tip_travel_mm: Option<[Vec3; 2]>,
+    /// The spindle gauge line's travel (machine coordinates); each decoded
+    /// tool's tip is checked against it lowered by that tool's gauge length
+    /// (`verification::MachineLimits::min_gauge_mm`). Not with
+    /// `tip_travel_mm`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gauge_travel_mm: Option<[Vec3; 2]>,
     pub definition: serde_json::Value,
     pub run_id: String,
     pub decoded_initial_position_mm: Vec3,
@@ -107,6 +113,8 @@ pub struct IntentChecker {
     /// A cutter-compensation change written in the block of the move that
     /// follows it (FANUC/Haas start-up and cancel), not yet seen there.
     deferred_compensation: Option<Event>,
+    /// Gauge length per program tool, for gauge-line travel.
+    gauge_lengths: std::collections::HashMap<String, f64>,
 }
 
 /// Transport bound on the blocks one source event writes: 8, or for a
@@ -234,11 +242,29 @@ impl IntentChecker {
             return Err("invalid nominal axis feed limits".into());
         }
         settings.work_to_machine.validate()?;
-        if let Some([min, max]) = settings.tip_travel_mm {
+        if settings.tip_travel_mm.is_some() && settings.gauge_travel_mm.is_some() {
+            return Err("machine travel is declared once: tip_travel_mm (the tip box of one tool length) or gauge_travel_mm (the spindle gauge line's box, checked per tool)".into());
+        }
+        if let Some([min, max]) = settings.tip_travel_mm.or(settings.gauge_travel_mm) {
             for i in 0..3 {
                 if !min[i].is_finite() || !max[i].is_finite() || min[i] >= max[i] {
                     return Err("invalid configured machine tip travel".into());
                 }
+            }
+        }
+        if settings.gauge_travel_mm.is_some() {
+            if settings.work_to_machine.z != [0., 0., 1.] {
+                return Err("gauge_travel_mm needs the work Z axis along machine Z (work_to_machine.z = [0, 0, 1]): the tip is the gauge line lowered by the gauge length along the spindle axis".into());
+            }
+            if let Some(t) = header
+                .tools
+                .iter()
+                .find(|t| t.cutter.shape == crate::tool::CutterShape::Beam)
+            {
+                return Err(format!(
+                    "gauge_travel_mm gives a spindle tool's tip travel from its gauge length; beam tool {} has none: declare tip_travel_mm",
+                    t.id
+                ));
             }
         }
         let scheduling = if let Some(policy) = &settings.motion_scheduling {
@@ -328,9 +354,14 @@ impl IntentChecker {
             pending_scheduled: None,
             cycle: None,
             deferred_compensation: None,
+            gauge_lengths: header
+                .tools
+                .iter()
+                .map(|t| (t.id.clone(), t.gauge_length_mm))
+                .collect(),
         };
-        state.check_point(header.initial_position_mm)?;
-        state.check_point(state.settings.decoded_initial_position_mm)?;
+        state.check_point(header.initial_position_mm, None)?;
+        state.check_point(state.settings.decoded_initial_position_mm, None)?;
         let mut chunk = state.chunk(None, lines)?;
         chunk.decoded_initial_position_mm = Some(state.settings.decoded_initial_position_mm);
         let mut output = state.output(chunk, vec![], vec![]);
@@ -338,13 +369,46 @@ impl IntentChecker {
         check_chunk_size(&output)?;
         Ok((state, output))
     }
-    fn check_point(&self, point: Vec3) -> Result<(), String> {
-        let Some([min, max]) = self.settings.tip_travel_mm else {
+    /// `point` (a tip position, work coordinates) against the machine's
+    /// travel, with `tool` in the spindle. The start pose has no program
+    /// tool (`None`): on the gauge line it is checked as the start of the
+    /// first move, with that move's tool; the machine is already there.
+    fn check_point(&self, point: Vec3, tool: Option<&str>) -> Result<(), String> {
+        let machine = self.settings.work_to_machine.to_design(point);
+        if let Some([min, max]) = self.settings.tip_travel_mm {
+            if (0..3).any(|i| machine[i] < min[i] || machine[i] > max[i]) {
+                return Err("decoded tool tip exceeds configured machine travel".into());
+            }
+            return Ok(());
+        }
+        let (Some([min, max]), Some(tool)) = (self.settings.gauge_travel_mm, tool) else {
             return Ok(());
         };
-        let machine = self.settings.work_to_machine.to_design(point);
-        if (0..3).any(|i| machine[i] < min[i] || machine[i] > max[i]) {
-            return Err("decoded tool tip exceeds configured machine travel".into());
+        let length = *self
+            .gauge_lengths
+            .get(tool)
+            .ok_or_else(|| format!("gauge-line travel: tool {tool} is not a program tool"))?;
+        // The gauge line is the tip raised by the gauge length (G43).
+        let gauge = [machine[0], machine[1], machine[2] + length];
+        // As the planned-move check (verification::travel_decided): a limit
+        // is inside, and binary64 representation error of the transformed
+        // position is not a step any controller commands.
+        let scale = point
+            .into_iter()
+            .chain(self.settings.work_to_machine.origin_mm)
+            .map(f64::abs)
+            .sum::<f64>()
+            .max(1.)
+            + length;
+        let guard = 256. * f64::EPSILON * scale;
+        if let Some(i) = (0..3).find(|&i| gauge[i] < min[i] - guard || gauge[i] > max[i] + guard) {
+            return Err(format!(
+                "decoded tool {tool} (gauge length {length} mm) exceeds configured machine travel on machine {}: gauge line at {:.6} mm, travel {:.6} to {:.6} mm",
+                ["X", "Y", "Z"][i],
+                gauge[i],
+                min[i],
+                max[i]
+            ));
         }
         Ok(())
     }
@@ -591,7 +655,7 @@ impl IntentChecker {
                         "event {index}: stationary output deviation {bound}mm exceeds output tolerance"
                     ));
                 }
-                self.check_point(point)?;
+                self.check_point(point, Some(&a.tool))?;
                 (None, Some(bound))
             }
             (Event::Motion { motion: a }, [Event::Motion { motion: b }]) => {
@@ -653,7 +717,7 @@ impl IntentChecker {
                             bounds.max[axis]
                         }
                     });
-                    self.check_point(p)?;
+                    self.check_point(p, Some(&b.tool))?;
                 }
                 (Some(b.clone()), Some(bound))
             }
@@ -694,7 +758,7 @@ impl IntentChecker {
                         "event {index}: decoded tool-change pose deviation {bound}mm exceeds output tolerance: the plan starts tool {a} at {ap:?} after its change, the machine leaves it at {bp:?}; plan with the machine's tool-change pose (Setup.tool_change: ToolChangeTable.from_machine for a table, ToolChangePosition for Z home, None to keep the tip)"
                     ));
                 }
-                self.check_point(*bp)?;
+                self.check_point(*bp, Some(b))?;
                 (None, (bound > 0.).then_some(bound))
             }
             // A controller's dwell resolution may round the time: never more
@@ -775,10 +839,12 @@ impl IntentChecker {
                 if serde_json::to_value(expected).ok() == serde_json::to_value(single).ok() =>
             {
                 if let Event::ToolChange {
-                    position_after_mm, ..
+                    tool,
+                    position_after_mm,
+                    ..
                 } = single
                 {
-                    self.check_point(*position_after_mm)?;
+                    self.check_point(*position_after_mm, Some(tool))?;
                 }
                 (None, None)
             }
@@ -1677,6 +1743,134 @@ mod normal_limit_tests {
                 .unwrap()
                 .contains_key("nominal_normal_acceleration")
         );
+    }
+}
+
+#[cfg(test)]
+mod gauge_travel_tests {
+    use super::normal_limit_tests::fixture;
+    use super::*;
+    use crate::motion::{Curve, Motion, MoveKind, SpindleDirection};
+
+    /// A program of two tools, `t1` and a copy `long` 55 mm longer, each
+    /// rising to work Z `top`; the gauge line travels Z -400..0 and the work
+    /// origin is at machine Z -300.
+    fn run(top: f64, tilt: bool) -> Result<(), String> {
+        let (checker, _, mut header) = fixture(None, false);
+        let mut long = header.tools[0].clone();
+        long.id = "long".into();
+        long.gauge_length_mm += 55.;
+        long.holders.last_mut().unwrap().z_max_mm += 55.;
+        long.prepare().unwrap();
+        header.tools.push(long);
+        let short_length = header.tools[0].gauge_length_mm;
+        let start = [2., 0., 5.];
+        let mut settings = checker.settings.clone();
+        settings.gauge_travel_mm = Some([[-500., -500., -400.], [500., 500., 0.]]);
+        settings.work_to_machine.origin_mm = [0., 0., -300.];
+        if tilt {
+            settings.work_to_machine.y = [0., 0., 1.];
+            settings.work_to_machine.z = [0., -1., 0.];
+        }
+        let (mut checker, _) = IntentChecker::begin(&header, settings, &["BEGIN".into()])?;
+        let mut events = vec![Event::WorkOffset { number: 1 }];
+        for (i, tool) in ["t1", "long"].into_iter().enumerate() {
+            events.extend([
+                Event::ToolChange {
+                    tool: tool.into(),
+                    number: i as u32 + 1,
+                    length_register: i as u32 + 1,
+                    position_after_mm: start,
+                },
+                Event::Spindle {
+                    rpm: 1000.,
+                    direction: SpindleDirection::Cw,
+                },
+                Event::Motion {
+                    motion: Motion {
+                        id: 2 * i as u64 + 1,
+                        operation: "op".into(),
+                        tool: tool.into(),
+                        kind: MoveKind::Cut,
+                        curve: Curve::Line {
+                            start,
+                            end: [2., 0., top - short_length],
+                        },
+                        feed_mm_min: Some(600.),
+                    },
+                },
+                Event::Motion {
+                    motion: Motion {
+                        id: 2 * i as u64 + 2,
+                        operation: "op".into(),
+                        tool: tool.into(),
+                        kind: MoveKind::Cut,
+                        curve: Curve::Line {
+                            start: [2., 0., top - short_length],
+                            end: start,
+                        },
+                        feed_mm_min: Some(600.),
+                    },
+                },
+                Event::Spindle {
+                    rpm: 0.,
+                    direction: SpindleDirection::Cw,
+                },
+            ]);
+        }
+        checker
+            .consume(
+                &events,
+                &events.iter().cloned().map(|e| vec![e]).collect::<Vec<_>>(),
+                &vec![vec!["BLOCK".into()]; events.len()],
+                &|| false,
+            )
+            .map(|_| ())
+    }
+
+    #[test]
+    fn decoded_moves_are_checked_against_each_tools_own_gauge_line_travel() {
+        // Work Z 300 is machine Z 0: `top` is the gauge line's height with
+        // the short tool. 245: the long tool's gauge line is at its limit.
+        run(245., false).unwrap();
+        run(200., false).unwrap();
+        // 300: the short tool at Z home, on its limit; the long tool's gauge
+        // line would be 55 mm above it.
+        let e = run(300., false).unwrap_err();
+        assert!(
+            e.contains("tool long") && e.contains("machine Z") && e.contains("55.0"),
+            "{e}"
+        );
+        // Above home is outside for the short tool too, named first.
+        let e = run(300.001, false).unwrap_err();
+        assert!(e.contains("tool t1") && e.contains("machine Z"), "{e}");
+        assert!(
+            run(200., true)
+                .unwrap_err()
+                .contains("work Z axis along machine Z")
+        );
+    }
+
+    #[test]
+    fn travel_is_declared_once_and_a_tip_box_is_recorded_as_before() {
+        let (checker, _, header) = fixture(None, false);
+        let mut settings = checker.settings.clone();
+        assert!(
+            !serde_json::to_value(&settings)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("gauge_travel_mm")
+        );
+        settings.tip_travel_mm = Some([[-10.; 3], [10.; 3]]);
+        settings.gauge_travel_mm = settings.tip_travel_mm;
+        let e = IntentChecker::begin(&header, settings.clone(), &["BEGIN".into()])
+            .err()
+            .unwrap();
+        assert!(e.contains("declared once"), "{e}");
+        settings.tip_travel_mm = None;
+        settings.gauge_travel_mm = Some([[10.; 3], [-10.; 3]]);
+        assert!(IntentChecker::begin(&header, settings, &["BEGIN".into()]).is_err());
     }
 }
 

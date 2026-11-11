@@ -122,7 +122,8 @@ endpoints) against:
 - fixtures (`Prism(role="fixture")`) and protected parts
   (`Prism(role="protected_target")`),
 - cutter, shank and holder geometry,
-- declared machine travel and feed limits.
+- declared machine travel (one tip box, or the gauge line's travel with each
+  tool checked at its own gauge length) and feed limits.
 
 Also available:
 

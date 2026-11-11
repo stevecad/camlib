@@ -45,13 +45,46 @@ class Prism:
 
 @dataclass(frozen=True)
 class MachineLimits:
-    min_tip_mm: tuple
-    max_tip_mm: tuple
+    """A machine's travel and feed limits for the planned-move checks.
+
+    Travel is declared once, in machine coordinates, limits included:
+
+    - ``min_tip_mm``/``max_tip_mm``: the travel of one tool's tip. It holds
+      for one gauge length, so it fits a job whose tools share it.
+    - ``min_gauge_mm``/``max_gauge_mm`` (``MachineLimits.gauge_line``): the
+      travel of the spindle gauge line, the machine's own axis travel (its
+      soft limits act on the machine position whatever length offset is
+      active). Each tool's tip is checked against that box lowered along
+      machine Z by the tool's ``gauge_length_mm``, so tools of different
+      lengths each get their own travel. Needs the work Z axis along machine
+      Z, and tools held in a spindle (not a beam)."""
+
+    min_tip_mm: tuple | None
+    max_tip_mm: tuple | None
     max_feed_mm_min: float
     max_normal_accel_mm_s2: float | None = None
     max_axis_feed_mm_min: tuple | None = None
+    min_gauge_mm: tuple | None = None
+    max_gauge_mm: tuple | None = None
+
+    @classmethod
+    def gauge_line(
+        cls, min_gauge_mm, max_gauge_mm, max_feed_mm_min, max_normal_accel_mm_s2=None, max_axis_feed_mm_min=None
+    ):
+        """Limits with the travel declared on the spindle gauge line."""
+        return cls(
+            None, None, max_feed_mm_min, max_normal_accel_mm_s2, max_axis_feed_mm_min, min_gauge_mm, max_gauge_mm
+        )
 
     def __post_init__(self):
+        tip = (self.min_tip_mm is not None, self.max_tip_mm is not None)
+        gauge = (self.min_gauge_mm is not None, self.max_gauge_mm is not None)
+        if (all(tip), all(gauge)) not in ((True, False), (False, True)) or any(tip) and any(gauge):
+            raise ValueError(
+                "machine travel is declared once: either the tip box of one tool length (min_tip_mm and "
+                "max_tip_mm) or the spindle gauge line's box (min_gauge_mm and max_gauge_mm, "
+                "MachineLimits.gauge_line), which gives every tool its own tip travel from its gauge length"
+            )
         if self.max_axis_feed_mm_min is not None:
             import math
 
@@ -69,6 +102,9 @@ class MachineLimits:
             data.pop("max_normal_accel_mm_s2")
         if self.max_axis_feed_mm_min is None:
             data.pop("max_axis_feed_mm_min")
+        for key in ("min_tip_mm", "max_tip_mm", "min_gauge_mm", "max_gauge_mm"):
+            if data[key] is None:
+                data.pop(key)
         return data
 
 

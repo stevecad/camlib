@@ -102,6 +102,11 @@ pub struct Machine {
     pub work_to_machine: WorkFrame,
     #[serde(deserialize_with = "present")]
     pub tip_travel_mm: Option<[Vec3; 2]>,
+    /// The spindle gauge line's travel in machine coordinates (the axis soft
+    /// limits); each tool's tip travel follows from its gauge length. Not
+    /// with `tip_travel_mm`, and not on a lathe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gauge_travel_mm: Option<[Vec3; 2]>,
     pub output_units: String,
     pub decimals: u32,
     pub tolerance_mm: f64,
@@ -577,6 +582,17 @@ impl Machine {
                 .is_some_and(|z| !(z.is_finite() && z.abs() <= 1e6))
         {
             return Err("z_home tool changes need tool_change_home_z_mm (the gauge line's machine Z after M6), and only they".into());
+        }
+        if self.gauge_travel_mm.is_some() {
+            if self.tip_travel_mm.is_some() {
+                return Err("machine travel is declared once: tip_travel_mm (the tip box of one tool length) or gauge_travel_mm (the spindle gauge line's box, checked per tool)".into());
+            }
+            if self.work_to_machine.z != [0., 0., 1.] {
+                return Err("gauge_travel_mm needs a work frame aligned with machine Z".into());
+            }
+            if self.dialect.tool_change == "lathe_t" || self.dialect.x_diameter {
+                return Err("gauge_travel_mm is a milling spindle's gauge-line travel; a lathe declares tip_travel_mm".into());
+            }
         }
         if self.tool_change_position_mode == "z_home" && self.work_to_machine.z != [0., 0., 1.] {
             return Err("z_home tool changes need a work frame aligned with machine Z".into());

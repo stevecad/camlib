@@ -157,6 +157,7 @@ impl Engine {
             max_axis_feed_mm_min: m.max_axis_feed_mm_min,
             work_to_machine: m.work_to_machine.clone(),
             tip_travel_mm: m.tip_travel_mm,
+            gauge_travel_mm: m.gauge_travel_mm,
             definition: definition.clone(),
             run_id,
             decoded_initial_position_mm: decoder.position,

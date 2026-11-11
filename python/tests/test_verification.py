@@ -218,6 +218,121 @@ class TravelLimitTest(unittest.TestCase):
             except ExportRefused as refused:
                 return refused
 
+    def test_gauge_line_travel_checks_each_tool_against_its_own_tip_travel(self):
+        # 176: the gauge line travels X 0..500, Y 0..400, Z -400..0. A 60 mm
+        # tool's tip reaches machine Z -60, a 115 mm tool's only Z -115.
+        from camlib.tools import EndMill, HolderSection, ToolAssembly
+
+        def mill(id, gauge):
+            return ToolAssembly(
+                id,
+                EndMill("em4", diameter=4, flute_length=30, overall_length=50),
+                35,
+                gauge,
+                (HolderSection(35, gauge, 4, 4),),
+            )
+
+        short, long = mill("short", 60), mill("long", 115)
+        limits = MachineLimits.gauge_line((0, 0, -400), (500, 400, 0), 10000)
+        self.assertEqual(
+            limits.to_dict(), dict(max_feed_mm_min=10000, min_gauge_mm=(0, 0, -400), max_gauge_mm=(500, 400, 0))
+        )
+        s = Scene("mill", "1", machine=limits, work_to_machine=WorkFrame((200, 150, -300)))
+
+        def up(t, z):
+            return Motion(1, "op", t.id, Line((0, 0, 100), (0, 0, z)), 600)
+
+        with Verifier(s) as verifier:
+            # Work Z 240 is machine Z -60: the short tool's Z home.
+            self.assertEqual(verifier.check(short, up(short, 240))["status"], "clear")
+            report = verifier.check(long, up(long, 240))
+            self.assertEqual(report["status"], "violation")
+            self.assertEqual(report["tool"], "long")
+            finding = next(f for f in report["findings"] if f["kind"] == "machine_travel")
+            self.assertIn("Tool long", finding["detail"])
+            self.assertIn("machine Z", finding["detail"])
+            self.assertAlmostEqual(finding["witness"]["margin_lower_mm"], 55, places=3)
+            # The long tool's own home, on its limit, is inside; 0.001 above is not.
+            self.assertEqual(verifier.check(long, up(long, 185))["status"], "clear")
+            self.assertEqual(verifier.check(long, up(long, 185.001))["status"], "violation")
+            self.assertEqual(verifier.check(short, up(short, 240.001))["status"], "violation")
+        # One tool: the gauge line gives the travel its tip box did.
+        tip = Scene(
+            "mill",
+            "1",
+            machine=MachineLimits((0, 0, -515), (500, 400, -115), 10000),
+            work_to_machine=WorkFrame((200, 150, -300)),
+        )
+        with Verifier(tip) as a, Verifier(s) as b:
+            for z in (150, 185, 185.001, 240):
+                x, y = a.check(long, up(long, z)), b.check(long, up(long, z))
+                self.assertEqual(x["status"], y["status"], z)
+                self.assertEqual(
+                    [(f["kind"], f["witness"]["fraction"]) for f in x["findings"]],
+                    [(f["kind"], f["witness"]["fraction"]) for f in y["findings"]],
+                )
+        # A tip box still serializes as it did.
+        self.assertEqual(
+            tip.machine.to_dict(), dict(min_tip_mm=(0, 0, -515), max_tip_mm=(500, 400, -115), max_feed_mm_min=10000)
+        )
+
+    def test_machine_travel_is_declared_once(self):
+        import math
+
+        from camlib.post import Machine, ToolSetting
+
+        for arguments in [
+            dict(min_tip_mm=None, max_tip_mm=None),
+            dict(min_tip_mm=(0, 0, 0), max_tip_mm=None),
+            dict(min_tip_mm=(0, 0, 0), max_tip_mm=(1, 1, 1), min_gauge_mm=(0, 0, 0), max_gauge_mm=(1, 1, 1)),
+            dict(min_tip_mm=None, max_tip_mm=None, min_gauge_mm=(0, 0, 0)),
+        ]:
+            with self.assertRaisesRegex(ValueError, "declared once.*min_gauge_mm"):
+                MachineLimits(max_feed_mm_min=1000, **arguments)
+        # A work frame whose Z is not machine Z: refused, the tool axis is not modelled.
+        tilted = WorkFrame((0, 0, 0), (1, 0, 0), (0, 0, 1), (0, -1, 0))
+        limits = MachineLimits.gauge_line((-10, -10, -10), (10, 10, 10), 1000)
+        with self.assertRaisesRegex(ValueError, "work Z axis along machine Z"):
+            Verifier(Scene("s", "1", machine=limits, work_to_machine=tilted))
+
+        def machine(**changes):
+            options = dict(
+                dialect=GCodeDialect.linuxcnc(),
+                output_units="mm",
+                decimals=3,
+                max_feed_mm_min=10000,
+                max_spindle_rpm=30000,
+                planes=("xy", "xz", "yz"),
+                arcs=True,
+                helices=True,
+                max_sweep_rad=math.tau,
+                max_tool_number=99,
+                max_length_register=99,
+                tool_changes=True,
+                flood=True,
+                mist=True,
+                tool_change_position_mode="table",
+                rapid_mm_min=6000,
+            )
+            return Machine("mill", (ToolSetting("t1", 1, 1, 60, (0, 0, 20)),), **{**options, **changes})
+
+        gauge = ((0, 0, -400), (500, 400, 0))
+        m = machine(gauge_travel_mm=gauge)
+        self.assertEqual(m.verification_limits(), MachineLimits.gauge_line(*gauge, 10000))
+        self.assertEqual(m.to_dict()["gauge_travel_mm"], gauge)
+        # A machine without it is recorded as before.
+        self.assertNotIn("gauge_travel_mm", machine().to_dict())
+        with self.assertRaisesRegex(ValueError, "declared once"):
+            machine(gauge_travel_mm=gauge, tip_travel_mm=gauge)
+        with self.assertRaisesRegex(ValueError, "aligned with machine Z"):
+            machine(gauge_travel_mm=gauge, work_to_machine=tilted)
+        with self.assertRaisesRegex(ValueError, "min below max"):
+            machine(gauge_travel_mm=(gauge[1], gauge[0]))
+        with self.assertRaisesRegex(ValueError, "a lathe declares tip_travel_mm"):
+            machine(gauge_travel_mm=gauge, dialect=replace(GCodeDialect.linuxcnc(), x_diameter=True))
+        with self.assertRaisesRegex(ValueError, "tip_travel_mm or gauge_travel_mm"):
+            machine().verification_limits()
+
     def test_a_program_starting_at_home_on_the_limit_is_released(self):
         import tempfile
 

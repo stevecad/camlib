@@ -16,7 +16,7 @@ level `Setup` is the job setup (`camlib.jobs.Setup`).
 | `camlib.planar` | `PlanarRegion` (`components`, reported `boundary_error_mm`), `Component`, `Boundary` (line/arc regions) |
 | `camlib.surface` | `SurfaceMesh` (triangle surfaces with a finite stated `surface_error_mm` in the inclusive range 0–0.1 mm; checked at construction) |
 | `camlib.simulation` | `StockSpec(min, max, cell_size, max_cells=, mesh=)` and `StockSpec.from_mesh(mesh, cell_size)`, `InitialStock` (declared whole-cell blank bounds, [preparation](preparation.md)), `StockMesh` (closed stock solid: `from_triangles`, `transformed`; `StockState.stock_mesh()` returns the finished stock), `DexelStockSpec(min, max, cell_size, max_rays=, max_intervals=)` (tri-dexel stock: undercuts), `SweepOptions` (chord error, tip step and work budgets of the stock sweep), `Simulation`, `ToolChangePosition`, `ToolChangeTable`, `SimulationError`, `ReachRefused` and its typed `ReachRefusal` ([reach refusals](operations.md#pocket-pocket-restpocket)), `CamWarning`, low-level streaming |
-| `camlib.verification` | `StreamChecks(scene=, options=, material=, stock_contact=)`, `StockContactOptions` (resolution, work and finding limits), `Scene(id, revision, bodies, machine, work_to_machine)`, `Prism` (fixture or protected part; `z_error_mm`, `representation`), `MachineLimits` (tip travel, feed, acceleration, axis feeds), `MaterialCheck(target, after_operation=)` |
+| `camlib.verification` | `StreamChecks(scene=, options=, material=, stock_contact=)`, `StockContactOptions` (resolution, work and finding limits), `Scene(id, revision, bodies, machine, work_to_machine)`, `Prism` (fixture or protected part; `z_error_mm`, `representation`), `MachineLimits` (travel of one tip or of the gauge line, feed, acceleration, axis feeds), `MaterialCheck(target, after_operation=)` |
 | `camlib.playback` | `Player`, `Cursor` (operation, motion and `fraction` along it), `RecordedRun` (replay, seek, save) |
 | `camlib.dexel_state` | `DexelStockState` (a tri-dexel run's committed stock: `volume()`, `heights` (the height view), `ray(axis, index)`, `rays(axis)`, `grid`, `preview(frame, fraction)`, `compare_solid(mesh, tolerance_mm)` (leftover material and over-cut against a closed mesh of the part, undercuts included), checkpoints), `heights_at` |
 | `camlib.post` | `Machine`, `ToolSetting`, `GCodeDialect`, `GCodePost`, `NativeGCodeDecoder`, `LoweringOptions`, `post_program`, `post_events` (post an event list you built), `post_job_input`/`post_job` (the Rust default post, see [posts](posts.md#posting-without-python-rust-webassembly)) |
@@ -67,8 +67,24 @@ These rarely need changing; each failure names the budget it hit.
 | `DexelStockSpec` | `max_rays` caps the three ray grids together; `max_intervals` the stored intervals (two per uncut ray) |
 | `StockContactOptions` | `spatial_resolution_mm` (0.001) smallest region examined; `max_nodes`, `max_cell_reads` work per move; `max_findings` per move |
 | verification `Options` | the same for fixture/part checks, and `target_floor_tolerance_mm` (floor allowance on protected parts) |
-| `MachineLimits` | `min_tip_mm`, `max_tip_mm` (tip travel box, limits included: a tip on a limit, such as a mill at home, is inside), `max_feed_mm_min`, `max_normal_accel_mm_s2`, `max_axis_feed_mm_min` |
+| `MachineLimits` | Travel, declared once: `min_tip_mm`, `max_tip_mm` (the tip travel box of one tool length) or `min_gauge_mm`, `max_gauge_mm` (`MachineLimits.gauge_line(min, max, max_feed_mm_min)`: the spindle gauge line's travel; each tool is checked against it lowered by its gauge length, see below). Limits included: a tip on a limit, such as a mill at home, is inside. `max_feed_mm_min`, `max_normal_accel_mm_s2`, `max_axis_feed_mm_min` |
 | `RegenerationCache` | `max_entry_bytes`, `max_total_bytes` disk limits |
+
+**Machine travel with tools of different lengths.** A machine's travel is its
+axes' travel: the controller's soft limits act on the machine position (the
+spindle gauge line), whatever tool length offset is active (LinuxCNC INI
+`MIN_LIMIT`/`MAX_LIMIT`; FANUC stored stroke check 1, parameters 1320/1321).
+The tip of a tool sits its gauge length below the gauge line, so a short tool
+reaches higher and a long tool lower. A single tip box
+(`min_tip_mm`/`max_tip_mm`, `Machine.tip_travel_mm`) is the travel of one
+gauge length only. For a job whose tools differ, declare the gauge line's
+travel instead (`MachineLimits.gauge_line(...)`, `Machine.gauge_travel_mm`):
+every planned move, and every move decoded from the posted program, is then
+checked against its own tool's travel (the gauge box lowered along machine Z
+by that tool's `gauge_length_mm`), and a finding names the tool and the axis.
+Declare one or the other, never both. Gauge-line travel needs the work Z axis
+along machine Z and spindle-held tools: a tilted work frame, a beam (plasma or
+laser) tool or a lathe is refused, and declares a tip box.
 
 `CadSource.from_shape(id, revision, shape, document_id=None, reference="body")`
 records where CAD input came from (document, reference, geometry SHA-256,

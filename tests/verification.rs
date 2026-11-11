@@ -463,11 +463,13 @@ fn nominal_normal_acceleration_is_analytic_for_all_planes_directions_and_helical
             });
             let mut s = scene(vec![]);
             s.machine = Some(MachineLimits {
-                min_tip_mm: [-1000.; 3],
-                max_tip_mm: [1000.; 3],
+                min_tip_mm: Some([-1000.; 3]),
+                max_tip_mm: Some([1000.; 3]),
                 max_feed_mm_min: 1000.,
                 max_normal_accel_mm_s2: Some(40.),
                 max_axis_feed_mm_min: None,
+                min_gauge_mm: None,
+                max_gauge_mm: None,
             });
             s.work_to_machine.origin_mm = [100., 20., -5.];
             s.work_to_machine.x = [0., 1., 0.];
@@ -526,11 +528,13 @@ fn nominal_normal_acceleration_is_analytic_for_all_planes_directions_and_helical
 fn normal_acceleration_limits_bind_identity_scope_validation_and_finding_caps() {
     let mut s = scene(vec![]);
     s.machine = Some(MachineLimits {
-        min_tip_mm: [-100.; 3],
-        max_tip_mm: [100.; 3],
+        min_tip_mm: Some([-100.; 3]),
+        max_tip_mm: Some([100.; 3]),
         max_feed_mm_min: 500.,
         max_normal_accel_mm_s2: None,
         max_axis_feed_mm_min: None,
+        min_gauge_mm: None,
+        max_gauge_mm: None,
     });
     let before = s.prepare(Options::default()).unwrap().digest().to_owned();
     s.machine.as_mut().unwrap().max_normal_accel_mm_s2 = Some(40.);
@@ -585,11 +589,13 @@ fn normal_acceleration_limits_bind_identity_scope_validation_and_finding_caps() 
 fn machine_travel_includes_arc_extrema_frames_and_declared_feed_limit() {
     let mut s = scene(vec![]);
     s.machine = Some(MachineLimits {
-        min_tip_mm: [-6., -1., -50.],
-        max_tip_mm: [6., 4., 50.],
+        min_tip_mm: Some([-6., -1., -50.]),
+        max_tip_mm: Some([6., 4., 50.]),
         max_feed_mm_min: 500.,
         max_normal_accel_mm_s2: None,
         max_axis_feed_mm_min: None,
+        min_gauge_mm: None,
+        max_gauge_mm: None,
     });
     let arc = motion(Curve::Arc {
         start: [5., 0., 0.],
@@ -608,11 +614,13 @@ fn machine_travel_includes_arc_extrema_frames_and_declared_feed_limit() {
         .unwrap();
     assert_eq!(travel.witness.as_ref().unwrap().fraction, 0.5);
     s.machine = Some(MachineLimits {
-        min_tip_mm: [90., -10., -10.],
-        max_tip_mm: [110., 10., 30.],
+        min_tip_mm: Some([90., -10., -10.]),
+        max_tip_mm: Some([110., 10., 30.]),
         max_feed_mm_min: 1000.,
         max_normal_accel_mm_s2: None,
         max_axis_feed_mm_min: None,
+        min_gauge_mm: None,
+        max_gauge_mm: None,
     });
     s.work_to_machine.origin_mm = [100., 0., 0.];
     s.work_to_machine.x = [0., 1., 0.];
@@ -632,11 +640,13 @@ fn machine_travel_is_closed_a_tip_on_its_limit_is_inside() {
     // #166: a mill at home sits on its travel limit (X 0, Y 0, Z top).
     let mut s = scene(vec![]);
     s.machine = Some(MachineLimits {
-        min_tip_mm: [0., 0., -515.],
-        max_tip_mm: [500., 400., -115.],
+        min_tip_mm: Some([0., 0., -515.]),
+        max_tip_mm: Some([500., 400., -115.]),
         max_feed_mm_min: 10000.,
         max_normal_accel_mm_s2: None,
         max_axis_feed_mm_min: None,
+        min_gauge_mm: None,
+        max_gauge_mm: None,
     });
     s.work_to_machine.origin_mm = [200., 150., -300.];
     let home = [-200., -150., 185.];
@@ -685,11 +695,13 @@ fn machine_travel_is_closed_a_tip_on_its_limit_is_inside() {
     assert_eq!(check(s.clone(), &over).status, Status::Violation);
     // A rotated frame: the line ends exactly on the +Y limit.
     s.machine = Some(MachineLimits {
-        min_tip_mm: [90., -10., -10.],
-        max_tip_mm: [110., 10., 30.],
+        min_tip_mm: Some([90., -10., -10.]),
+        max_tip_mm: Some([110., 10., 30.]),
         max_feed_mm_min: 1000.,
         max_normal_accel_mm_s2: None,
         max_axis_feed_mm_min: None,
+        min_gauge_mm: None,
+        max_gauge_mm: None,
     });
     s.work_to_machine.origin_mm = [100., 0., 0.];
     s.work_to_machine.x = [0., 1., 0.];
@@ -1197,11 +1209,13 @@ fn nominal_axis_feed_covers_all_planes_senses_pitch_and_tilted_interior_extrema(
 fn axis_feed_verification_binds_limits_coverage_caps_cancel_and_identity() {
     let mut s = scene(vec![]);
     s.machine = Some(MachineLimits {
-        min_tip_mm: [-100.; 3],
-        max_tip_mm: [100.; 3],
+        min_tip_mm: Some([-100.; 3]),
+        max_tip_mm: Some([100.; 3]),
         max_feed_mm_min: 2000.,
         max_normal_accel_mm_s2: None,
         max_axis_feed_mm_min: None,
+        min_gauge_mm: None,
+        max_gauge_mm: None,
     });
     let before = s.prepare(Options::default()).unwrap().digest().to_owned();
     s.machine.as_mut().unwrap().max_axis_feed_mm_min = Some([700., 700., 700.]);
@@ -1248,4 +1262,247 @@ fn axis_feed_verification_binds_limits_coverage_caps_cancel_and_identity() {
         s.machine.as_mut().unwrap().max_axis_feed_mm_min = Some([1000., invalid, 1000.]);
         assert!(s.prepare(Options::default()).is_err());
     }
+}
+
+/// `tool()` under another id and gauge length (its holder reaches the gauge line).
+fn tool_of(id: &str, gauge_length_mm: f64) -> ToolAssembly {
+    let mut t = tool();
+    t.id = id.into();
+    t.gauge_length_mm = gauge_length_mm;
+    t.holders[0].z_max_mm = gauge_length_mm;
+    t
+}
+fn check_with(s: &Scene, t: &ToolAssembly, mut m: Motion) -> Report {
+    m.tool = t.id.clone();
+    s.clone()
+        .prepare(Options::default())
+        .unwrap()
+        .verify_motion(&t.prepare().unwrap(), &m, &AtomicBool::new(false))
+        .unwrap()
+}
+fn gauge_limits(min: [f64; 3], max: [f64; 3]) -> MachineLimits {
+    MachineLimits {
+        min_tip_mm: None,
+        max_tip_mm: None,
+        max_feed_mm_min: 10000.,
+        max_normal_accel_mm_s2: None,
+        max_axis_feed_mm_min: None,
+        min_gauge_mm: Some(min),
+        max_gauge_mm: Some(max),
+    }
+}
+
+#[test]
+fn gauge_line_travel_gives_each_tool_its_own_tip_travel() {
+    // #176. The gauge line travels X 0..500, Y 0..400, Z -400..0 (machine).
+    // A 60 mm tool's tip reaches Z -460..-60, a 115 mm tool's Z -515..-115.
+    let mut s = scene(vec![]);
+    s.machine = Some(gauge_limits([0., 0., -400.], [500., 400., 0.]));
+    s.work_to_machine.origin_mm = [200., 150., -300.];
+    let (short, long) = (tool_of("short", 60.), tool_of("long", 115.));
+    // Work Z 240 is machine Z -60: the short tool's Z home, 55 mm above the
+    // long tool's.
+    let up = || line([0., 0., 150.], [0., 0., 240.]);
+    let r = check_with(&s, &short, up());
+    assert_eq!(r.status, Status::Clear, "{:?}", r.findings);
+    assert!(r.coverage.machine_tip_travel_examined);
+    let r = check_with(&s, &long, up());
+    assert_eq!(r.status, Status::Violation);
+    assert_eq!(r.tool, "long");
+    let f = r
+        .findings
+        .iter()
+        .find(|f| f.kind == FindingKind::MachineTravel)
+        .unwrap();
+    assert!(
+        f.detail.contains("Tool long") && f.detail.contains("machine Z"),
+        "{}",
+        f.detail
+    );
+    let w = f.witness.as_ref().unwrap();
+    assert_eq!(w.fraction, 1.);
+    assert!((w.margin_lower_mm - 55.).abs() < 1e-3, "{w:?}");
+    // The bottom is the other way round: the long tool reaches 55 mm lower.
+    let down = || line([0., 0., -150.], [0., 0., -215.]);
+    assert_eq!(check_with(&s, &long, down()).status, Status::Clear);
+    let r = check_with(&s, &short, down());
+    assert_eq!(r.status, Status::Violation);
+    let f = &r.findings[0];
+    assert!(
+        f.detail.contains("Tool short") && f.detail.contains("machine Z"),
+        "{}",
+        f.detail
+    );
+    // X and Y do not depend on the tool, and the finding names the axis.
+    for t in [&short, &long] {
+        let r = check_with(&s, t, line([0., 0., 0.], [0., 251., 0.]));
+        assert_eq!(r.status, Status::Violation);
+        assert!(r.findings[0].detail.contains("machine Y"));
+        assert_eq!(
+            check_with(&s, t, line([0., 0., 0.], [300., 250., 0.])).status,
+            Status::Clear
+        );
+    }
+    // Arcs: decided from their bounds, or by subdivision where they cross.
+    let arc = |top: f64| {
+        motion(Curve::Arc {
+            start: [0., 0., top],
+            end: [-10., 0., top - 10.],
+            center: [0., 0., top - 10.],
+            plane: Plane::Xz,
+            sweep_rad: -FRAC_PI_2,
+        })
+    };
+    assert_eq!(check_with(&s, &short, arc(240.)).status, Status::Clear);
+    assert_eq!(check_with(&s, &long, arc(240.)).status, Status::Violation);
+    assert_eq!(check_with(&s, &long, arc(185.)).status, Status::Clear);
+    // An arc that only crosses the long tool's top in its middle.
+    let over = motion(Curve::Arc {
+        start: [0., 0., 181.],
+        end: [10., 0., 181.],
+        center: [5., 0., 181.],
+        plane: Plane::Xz,
+        sweep_rad: PI,
+    });
+    assert_eq!(check_with(&s, &short, over.clone()).status, Status::Clear);
+    assert_eq!(check_with(&s, &long, over).status, Status::Violation);
+}
+
+#[test]
+fn gauge_line_travel_is_closed_a_tool_at_home_is_inside() {
+    // The gauge line at Z home (machine Z 0) and at X0/Y0: on its limits.
+    // Lengths and offsets that binary64 cannot represent exactly.
+    for (length, origin_z) in [(115., -300.), (123.4, -300.1), (60.7, -87.3)] {
+        let mut s = scene(vec![]);
+        s.machine = Some(gauge_limits([0., 0., -400.], [500., 400., 0.]));
+        s.work_to_machine.origin_mm = [200.3, 150.7, origin_z];
+        let t = tool_of("t", length);
+        let home = [-200.3, -150.7, 0. - length - origin_z];
+        for m in [
+            line(home, [home[0], home[1], home[2] - 30.]),
+            line([home[0] + 50., home[1] + 50., home[2] - 30.], home),
+            line(home, [home[0] + 100., home[1], home[2]]),
+        ] {
+            let r = check_with(&s, &t, m);
+            assert_eq!(r.status, Status::Clear, "{length}: {:?}", r.findings);
+        }
+        // One output unit above home is outside, at the endpoint.
+        let r = check_with(
+            &s,
+            &t,
+            line([home[0], home[1], home[2] - 30.], [home[0], home[1], home[2] + 0.001]),
+        );
+        assert_eq!(r.status, Status::Violation, "{length}");
+        assert_eq!(r.findings[0].witness.as_ref().unwrap().fraction, 1.);
+    }
+}
+
+#[test]
+fn one_tool_gets_the_same_travel_from_its_tip_box_or_the_gauge_line() {
+    // tool(): gauge length 20. The tip box is the gauge box 20 mm lower.
+    let mut tip = scene(vec![]);
+    tip.machine = Some(MachineLimits {
+        min_tip_mm: Some([-6., -1., -50.]),
+        max_tip_mm: Some([6., 4., 10.]),
+        min_gauge_mm: None,
+        max_gauge_mm: None,
+        ..gauge_limits([0.; 3], [0.; 3])
+    });
+    let mut gauge = scene(vec![]);
+    gauge.machine = Some(gauge_limits([-6., -1., -30.], [6., 4., 30.]));
+    let arc = |r: f64| {
+        motion(Curve::Arc {
+            start: [r, 0., 3.],
+            end: [-r, 0., 3.],
+            center: [0., 0., 3.],
+            plane: Plane::Xy,
+            sweep_rad: PI,
+        })
+    };
+    for m in [
+        line([0., 0., 0.], [6., 4., 10.]),
+        line([0., 0., 0.], [6., 4., 10.5]),
+        line([0., 0., -50.], [-6., -1., -50.]),
+        line([0., 0., -50.], [-7., -1., -50.]),
+        arc(3.),
+        arc(4.),
+        arc(5.),
+    ] {
+        let (a, b) = (check(tip.clone(), &m), check(gauge.clone(), &m));
+        assert_eq!(a.status, b.status, "{:?}", m.curve);
+        assert_eq!(a.findings.len(), b.findings.len());
+        for (x, y) in a.findings.iter().zip(&b.findings) {
+            assert_eq!(x.kind, y.kind);
+            assert_eq!(x.fraction_interval, y.fraction_interval);
+            assert_eq!(
+                x.witness.as_ref().map(|w| (w.fraction, w.tip_mm)),
+                y.witness.as_ref().map(|w| (w.fraction, w.tip_mm))
+            );
+        }
+    }
+    // The tip box's finding text is what it was before gauge-line travel.
+    let r = check(tip, &line([0., 0., 0.], [6., 4., 10.5]));
+    assert_eq!(
+        r.findings[0].detail,
+        "Tip exceeds configured travel after rigid work-to-machine transform"
+    );
+}
+
+#[test]
+fn machine_travel_is_declared_once_and_gauge_line_travel_refuses_what_it_cannot_model() {
+    let prepare = |s: &Scene| s.prepare(Options::default()).map(|_| ());
+    let mut s = scene(vec![]);
+    // Both boxes, neither, or half of one.
+    let mut both = gauge_limits([-10.; 3], [10.; 3]);
+    both.min_tip_mm = Some([-10.; 3]);
+    both.max_tip_mm = Some([10.; 3]);
+    let mut neither = both.clone();
+    (neither.min_tip_mm, neither.max_tip_mm) = (None, None);
+    (neither.min_gauge_mm, neither.max_gauge_mm) = (None, None);
+    let mut half = gauge_limits([-10.; 3], [10.; 3]);
+    half.max_gauge_mm = None;
+    for m in [both, neither, half] {
+        s.machine = Some(m);
+        let e = prepare(&s).unwrap_err();
+        assert!(e.contains("min_gauge_mm") && e.contains("min_tip_mm"), "{e}");
+    }
+    // An empty gauge box.
+    s.machine = Some(gauge_limits([0.; 3], [10., 10., 0.]));
+    assert!(prepare(&s).unwrap_err().contains("invalid machine tip travel"));
+    // A work frame whose Z is not machine Z: the tool axis is not modelled.
+    s.machine = Some(gauge_limits([-10.; 3], [10.; 3]));
+    s.work_to_machine.y = [0., 0., 1.];
+    s.work_to_machine.z = [0., -1., 0.];
+    assert!(prepare(&s).unwrap_err().contains("work Z axis along machine Z"));
+    // Rotated about machine Z is an upright spindle still.
+    s.work_to_machine.x = [0., 1., 0.];
+    s.work_to_machine.y = [-1., 0., 0.];
+    s.work_to_machine.z = [0., 0., 1.];
+    prepare(&s).unwrap();
+    assert_eq!(
+        check(s.clone(), &line([-1., 0., -10.], [1., 0., -30.])).status,
+        Status::Clear
+    );
+    assert_eq!(
+        check(s.clone(), &line([-1., 0., -10.], [1., 0., -30.5])).status,
+        Status::Violation
+    );
+    // A beam has no gauge length to derive its travel from.
+    let mut beam = tool();
+    beam.cutter.shape = CutterShape::Beam;
+    beam.cutter.neck = None;
+    let e = s
+        .prepare(Options::default())
+        .unwrap()
+        .verify_motion(
+            &beam.prepare().unwrap(),
+            &line([0.; 3], [1., 0., 0.]),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+    assert!(e.contains("beam tool t1") && e.contains("min_tip_mm"), "{e}");
+    // An existing scene (a tip box, no gauge fields) reads and writes as before.
+    let json = r#"{"min_tip_mm":[0.0,0.0,-515.0],"max_tip_mm":[500.0,400.0,-115.0],"max_feed_mm_min":10000.0}"#;
+    let m: MachineLimits = serde_json::from_str(json).unwrap();
+    assert_eq!(serde_json::to_string(&m).unwrap(), json);
 }

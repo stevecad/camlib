@@ -1,5 +1,6 @@
 //! Independent continuous prism/assembly checks. No planner-fit or stock-sweep
 //! calls. Clear intervals require separation bounds, never just sampled endpoints.
+use crate::tool::ToolAssembly;
 use crate::{
     motion::{Motion, PreparedCurve, Vec3, WorkFrame},
     planar::{Boundary, ConstructionOptions, PlanarRegion, PreparedRegion},
@@ -45,8 +46,15 @@ pub struct Prism {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineLimits {
-    pub min_tip_mm: Vec3,
-    pub max_tip_mm: Vec3,
+    /// Travel of one tool's tip (machine coordinates): `min_tip_mm` and
+    /// `max_tip_mm` together, or neither. It is the travel of a tool of one
+    /// gauge length, so with tools of different lengths declare the gauge
+    /// line's travel (`min_gauge_mm`/`max_gauge_mm`) instead. Exactly one of
+    /// the two boxes is declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_tip_mm: Option<Vec3>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tip_mm: Option<Vec3>,
     pub max_feed_mm_min: f64,
     /// Optional limit on nominal curve normal acceleration at declared feed.
     /// No junction, tangential/axis acceleration or controller timing model.
@@ -54,6 +62,110 @@ pub struct MachineLimits {
     pub max_normal_accel_mm_s2: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_axis_feed_mm_min: Option<Vec3>,
+    /// Travel of the spindle gauge line (machine coordinates): the machine's
+    /// own axis travel. Controllers hold soft limits on the machine position,
+    /// whatever tool length offset is active (LinuxCNC INI `[JOINT_n]`/
+    /// `[AXIS_L]` `MIN_LIMIT`/`MAX_LIMIT`; FANUC stored stroke check 1,
+    /// parameters 1320/1321, in the machine coordinate system), and the
+    /// length offset moves the controlled point from the gauge line to the
+    /// tip (G43). So each tool's tip travels that box lowered along machine Z
+    /// by the tool's gauge length
+    /// (`ToolAssembly::gauge_length_mm`), so every tool is checked against
+    /// its own tip travel (#176). Needs the work Z axis along machine Z (an
+    /// upright spindle) and tools held in the spindle (not a beam).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_gauge_mm: Option<Vec3>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_gauge_mm: Option<Vec3>,
+}
+
+/// The travel of one tool's tip in machine coordinates: the declared tip box,
+/// or the gauge-line box lowered by the tool's gauge length.
+struct TipTravel<'a> {
+    min: Vec3,
+    max: Vec3,
+    /// `Some` when derived from the gauge line: the tool and its gauge length.
+    gauge: Option<(&'a str, f64)>,
+    /// Magnitudes entering the derived limit, for its representation error.
+    scale: f64,
+}
+
+impl MachineLimits {
+    /// The declared travel box: `(min, max, on the gauge line)`.
+    fn travel(&self) -> Result<(Vec3, Vec3, bool), String> {
+        match (
+            self.min_tip_mm,
+            self.max_tip_mm,
+            self.min_gauge_mm,
+            self.max_gauge_mm,
+        ) {
+            (Some(min), Some(max), None, None) => Ok((min, max, false)),
+            (None, None, Some(min), Some(max)) => Ok((min, max, true)),
+            _ => Err("machine travel is declared once: either the tip box of one tool length (min_tip_mm and max_tip_mm) or the spindle gauge line's box (min_gauge_mm and max_gauge_mm), which gives every tool its own tip travel from its gauge length".into()),
+        }
+    }
+    fn tip_travel<'a>(&self, tool: &'a ToolAssembly) -> Result<TipTravel<'a>, String> {
+        let (min, max, gauge_line) = self.travel()?;
+        if !gauge_line {
+            return Ok(TipTravel {
+                min,
+                max,
+                gauge: None,
+                scale: 0.,
+            });
+        }
+        if tool.cutter.shape == CutterShape::Beam {
+            return Err(format!(
+                "gauge-line machine travel gives a spindle tool's tip travel from its gauge length; beam tool {} has none: declare the head's tip travel (min_tip_mm and max_tip_mm)",
+                tool.id
+            ));
+        }
+        let length = tool.gauge_length_mm;
+        Ok(TipTravel {
+            min: [min[0], min[1], min[2] - length],
+            max: [max[0], max[1], max[2] - length],
+            gauge: Some((&tool.id, length)),
+            scale: length + min[2].abs().max(max[2].abs()),
+        })
+    }
+}
+
+impl TipTravel<'_> {
+    /// How far `q` (machine coordinates) is outside, and on which axis.
+    fn outside(&self, q: Vec3) -> (f64, usize) {
+        (0..3)
+            .map(|k| ((self.min[k] - q[k]).max(q[k] - self.max[k]), k))
+            .fold((f64::NEG_INFINITY, 0), |a, b| if b.0 > a.0 { b } else { a })
+    }
+    fn violation(&self, q: Vec3) -> String {
+        let Some((tool, length)) = self.gauge else {
+            return "Tip exceeds configured travel after rigid work-to-machine transform".into();
+        };
+        let (_, k) = self.outside(q);
+        let low = self.min[k] - q[k] > q[k] - self.max[k];
+        let limit = if low { self.min[k] } else { self.max[k] };
+        format!(
+            "Tool {tool} (gauge length {length} mm) tip at machine {axis} {at:.6} mm is {side} its travel limit {limit:.6} mm: the gauge line's {axis} limit{offset}",
+            axis = ["X", "Y", "Z"][k],
+            at = q[k],
+            side = if low { "below" } else { "above" },
+            offset = if k == 2 {
+                " less the tool's gauge length"
+            } else {
+                ""
+            },
+        )
+    }
+    fn unresolved(&self) -> String {
+        match self.gauge {
+            None => {
+                "Travel separation unresolved at configured bounds/resolution/work budget".into()
+            }
+            Some((tool, _)) => format!(
+                "Tool {tool} travel separation unresolved at configured bounds/resolution/work budget"
+            ),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -474,11 +586,23 @@ impl Scene {
         {
             return Err("verification scene needs version 1/mm, identity/revision and configured bounded checks".into());
         }
+        if let Some(m) = &self.machine {
+            let (min, max, gauge_line) = m.travel()?;
+            if !point_ok(min) || !point_ok(max) || (0..3).any(|k| min[k] >= max[k]) {
+                return Err(
+                    "invalid machine tip travel, declared feed, axis feed or normal acceleration limit"
+                        .into(),
+                );
+            }
+            // The tip is below the gauge line along the spindle axis, machine
+            // Z on an upright machine; a tilted work frame would put the tool
+            // axis elsewhere, which this model does not describe.
+            if gauge_line && self.work_to_machine.z != [0., 0., 1.] {
+                return Err("gauge-line machine travel needs the work Z axis along machine Z (work_to_machine.z = [0, 0, 1]): the tip is the gauge line lowered by the gauge length along the spindle axis".into());
+            }
+        }
         if let Some(m) = &self.machine
-            && (!point_ok(m.min_tip_mm)
-                || !point_ok(m.max_tip_mm)
-                || (0..3).any(|k| m.min_tip_mm[k] >= m.max_tip_mm[k])
-                || !m.max_feed_mm_min.is_finite()
+            && (!m.max_feed_mm_min.is_finite()
                 || !(1e-6..=1e7).contains(&m.max_feed_mm_min)
                 || m.max_axis_feed_mm_min.is_some_and(|limits| {
                     limits
@@ -1104,10 +1228,10 @@ fn check_body<C: CancelSignal>(
 /// reports what it cannot resolve.
 fn travel_decided(
     scene: &Scene,
+    limits: &TipTravel<'_>,
     path: &PreparedCurve,
     error: f64,
 ) -> Result<Option<Option<Finding>>, String> {
-    let limits = scene.machine.as_ref().unwrap();
     let frame = &scene.work_to_machine;
     let factor = (0..3)
         .map(|k| frame.x[k].hypot(frame.y[k]).hypot(frame.z[k]))
@@ -1118,18 +1242,15 @@ fn travel_decided(
             .chain(frame.origin_mm)
             .map(f64::abs)
             .sum::<f64>()
-            .max(1.);
+            .max(1.)
+            + limits.scale;
         error * factor + 256. * f64::EPSILON * scale
-    };
-    let outside = |q: Vec3| {
-        (0..3)
-            .map(|k| (limits.min_tip_mm[k] - q[k]).max(q[k] - limits.max_tip_mm[k]))
-            .fold(f64::NEG_INFINITY, f64::max)
     };
     if matches!(path.curve(), crate::motion::Curve::Line { .. }) {
         for fraction in [0., 1.] {
             let p = path.position(fraction)?;
-            let (margin, g) = (outside(frame.to_design(p)), guard(p));
+            let q = frame.to_design(p);
+            let (margin, g) = (limits.outside(q).0, guard(p));
             if margin > g {
                 return Ok(Some(Some(Finding {
                     status: Status::Violation,
@@ -1144,8 +1265,7 @@ fn travel_decided(
                         section_height_mm: None,
                         margin_lower_mm: margin - g,
                     }),
-                    detail: "Tip exceeds configured travel after rigid work-to-machine transform"
-                        .into(),
+                    detail: limits.violation(q),
                 })));
             }
         }
@@ -1157,8 +1277,8 @@ fn travel_decided(
         let corner: Vec3 = std::array::from_fn(|k| b.min[k].abs().max(b.max[k].abs()));
         let g = guard(corner);
         if (0..3).all(|k| {
-            frame.origin_mm[k] + b.min[k] >= limits.min_tip_mm[k] - g
-                && frame.origin_mm[k] + b.max[k] <= limits.max_tip_mm[k] + g
+            frame.origin_mm[k] + b.min[k] >= limits.min[k] - g
+                && frame.origin_mm[k] + b.max[k] <= limits.max[k] + g
         }) {
             return Ok(Some(None));
         }
@@ -1168,14 +1288,14 @@ fn travel_decided(
 
 fn check_travel<C: CancelSignal>(
     scene: &Scene,
+    limits: &TipTravel<'_>,
     path: &PreparedCurve,
     error: f64,
     work: &mut Work<'_, C>,
 ) -> Result<Option<Finding>, String> {
-    if let Some(decided) = travel_decided(scene, path, error)? {
+    if let Some(decided) = travel_decided(scene, limits, path, error)? {
         return Ok(decided);
     }
-    let limits = scene.machine.as_ref().unwrap();
     let mut stack = vec![(0., 1., 0u8)];
     let mut uncertain = None;
     while let Some((a, b, depth)) = stack.pop() {
@@ -1193,21 +1313,18 @@ fn check_travel<C: CancelSignal>(
             .chain(frame.origin_mm)
             .map(f64::abs)
             .sum::<f64>()
-            .max(1.);
+            .max(1.)
+            + limits.scale;
         let factor = (0..3)
             .map(|k| frame.x[k].hypot(frame.y[k]).hypot(frame.z[k]))
             .fold(1., f64::max);
         let guard = error * factor + 256. * f64::EPSILON * scale;
         let reach = path.length_mm() * factor * (b - a) / 2. + guard;
-        if (0..3)
-            .all(|k| q[k] - reach > limits.min_tip_mm[k] && q[k] + reach < limits.max_tip_mm[k])
-        {
+        if (0..3).all(|k| q[k] - reach > limits.min[k] && q[k] + reach < limits.max[k]) {
             work.stats.pruned_intervals += 1;
             continue;
         }
-        let outside = (0..3)
-            .map(|k| (limits.min_tip_mm[k] - q[k]).max(q[k] - limits.max_tip_mm[k]))
-            .fold(f64::NEG_INFINITY, f64::max);
+        let outside = limits.outside(q).0;
         if outside > guard {
             return Ok(Some(Finding {
                 status: Status::Violation,
@@ -1222,8 +1339,7 @@ fn check_travel<C: CancelSignal>(
                     section_height_mm: None,
                     margin_lower_mm: outside - guard,
                 }),
-                detail: "Tip exceeds configured travel after rigid work-to-machine transform"
-                    .into(),
+                detail: limits.violation(q),
             }));
         }
         if depth == 48 || path.length_mm() * (b - a) <= work.options.spatial_resolution_mm {
@@ -1241,7 +1357,7 @@ fn check_travel<C: CancelSignal>(
         holder_section: None,
         fraction_interval: span,
         witness: None,
-        detail: "Travel separation unresolved at configured bounds/resolution/work budget".into(),
+        detail: limits.unresolved(),
     }))
 }
 
@@ -1283,6 +1399,10 @@ impl PreparedScene {
         }
         let path = motion.curve.prepare(self.options.tolerance_mm)?;
         let error = path_error(motion, self.options.tolerance_mm);
+        let travel = match &self.definition.machine {
+            Some(m) => Some(m.tip_travel(tool.definition())?),
+            None => None,
+        };
         // Where a probing move expects its contact, the stylus (or the
         // measured cutter) may touch whatever it measures; the other parts
         // stay checked.
@@ -1394,12 +1514,12 @@ impl PreparedScene {
             }
         }
         let mut travel_examined = false;
-        if self.definition.machine.is_some()
+        if let Some(travel) = &travel
             && !work.stats.budget_exhausted
             && findings.len() < self.options.max_findings
         {
             travel_examined = true;
-            if let Some(f) = check_travel(&self.definition, &path, error, &mut work)? {
+            if let Some(f) = check_travel(&self.definition, travel, &path, error, &mut work)? {
                 findings.push(f);
             }
             work.stats.pairs_checked += 1;

@@ -44,6 +44,15 @@ machine = Machine(
 )
 ```
 
+`tip_travel_mm` is the travel of one tool's tip (machine coordinates). With
+tools of different gauge lengths declare the machine's own axis travel
+instead, `gauge_travel_mm=((x_min, y_min, z_min), (x_max, y_max, z_max))`
+(the spindle gauge line, as the controller's soft limits state it): each
+tool's decoded moves are then checked against that box lowered by the tool's
+gauge length, and `Machine.verification_limits()` gives the planned-move
+checks the same limits. See
+[Machine travel with tools of different lengths](python.md).
+
 Key settings:
 
 - **`tools`**: the machine tool table. `position_after_mm` is where the tool

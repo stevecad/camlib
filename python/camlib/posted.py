@@ -79,6 +79,10 @@ def check_tool_change_pose(machine, config):
     the posted output check compares each actual change again. Raises
     ValueError naming the tool, both poses and the setup to declare."""
     if 'turning' in config:
+        if machine.gauge_travel_mm is not None:
+            # A lathe run's tools are posting stand-ins: their gauge length
+            # is not a turret tool's offset.
+            raise ValueError("gauge_travel_mm is a milling spindle's gauge-line travel; a lathe declares tip_travel_mm")
         return
     mode = machine.tool_change_position_mode
     change = config.get('tool_change')

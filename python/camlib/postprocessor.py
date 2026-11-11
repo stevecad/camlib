@@ -509,6 +509,13 @@ class Machine:
     frame: WorkFrame = WorkFrame()
     work_to_machine: WorkFrame = WorkFrame()
     tip_travel_mm: tuple | None = None
+    # The spindle gauge line's travel in machine coordinates, (min, max): the
+    # machine's own axis travel (soft limits act on the machine position,
+    # whatever length offset is active). Each tool's tip travel is that box
+    # lowered along machine Z by the tool's gauge length, so tools of
+    # different lengths are each checked against their own. Instead of
+    # tip_travel_mm (the tip box of one tool length); not on a lathe.
+    gauge_travel_mm: tuple | None = field(default=None, kw_only=True)
     output_units: str = field(kw_only=True)
     decimals: int = field(kw_only=True)
     tolerance_mm: float = 0.01
@@ -626,6 +633,28 @@ class Machine:
         # Frozen dataclasses must not retain caller-owned lists in identity/state.
         if self.tip_travel_mm is not None:
             object.__setattr__(self, 'tip_travel_mm', tuple(tuple(p) for p in self.tip_travel_mm))
+        if self.gauge_travel_mm is not None:
+            if self.tip_travel_mm is not None:
+                raise ValueError(
+                    'machine travel is declared once: tip_travel_mm (the tip box of one tool length) or '
+                    "gauge_travel_mm (the spindle gauge line's box, checked per tool)"
+                )
+            if tuple(self.work_to_machine.z) != (0, 0, 1):
+                raise ValueError('gauge_travel_mm needs a work frame aligned with machine Z')
+            if self.dialect.tool_change == 'lathe_t' or self.dialect.x_diameter:
+                raise ValueError(
+                    "gauge_travel_mm is a milling spindle's gauge-line travel; a lathe declares tip_travel_mm"
+                )
+            travel = tuple(tuple(float(v) for v in p) for p in self.gauge_travel_mm)
+            if (
+                len(travel) != 2
+                or any(len(p) != 3 or not all(math.isfinite(v) for v in p) for p in travel)
+                or any(a >= b for a, b in zip(*travel))
+            ):
+                raise ValueError(
+                    'gauge_travel_mm is (min, max): two finite machine points, min below max on every axis'
+                )
+            object.__setattr__(self, 'gauge_travel_mm', travel)
 
     def to_dict(self):
         """The machine as JSON-ready data: every field, with the optional
@@ -634,7 +663,13 @@ class Machine:
         the ``cam-post`` command) reads it. The crash model is its
         ``crash_model``."""
         data = asdict(self)
-        for key in ('max_normal_accel_mm_s2', 'max_axis_feed_mm_min', 'motion_policy', 'crash_model'):
+        for key in (
+            'max_normal_accel_mm_s2',
+            'max_axis_feed_mm_min',
+            'motion_policy',
+            'crash_model',
+            'gauge_travel_mm',
+        ):
             if data[key] is None:
                 data.pop(key)
         if not self.schedule_post_feeds:
@@ -657,8 +692,12 @@ class Machine:
         """Source nominal-curve limits; controller/junction dynamics stay unchecked."""
         from .verification import MachineLimits
 
+        if self.gauge_travel_mm is not None:
+            return MachineLimits.gauge_line(
+                *self.gauge_travel_mm, self.max_feed_mm_min, self.max_normal_accel_mm_s2, self.max_axis_feed_mm_min
+            )
         if self.tip_travel_mm is None:
-            raise ValueError('verification_limits requires explicit tip_travel_mm')
+            raise ValueError('verification_limits requires explicit tip_travel_mm or gauge_travel_mm')
         return MachineLimits(
             *self.tip_travel_mm, self.max_feed_mm_min, self.max_normal_accel_mm_s2, self.max_axis_feed_mm_min
         )
@@ -2855,7 +2894,7 @@ class PostEngine:
             decoded_initial_position_mm=decoder.position,
             lowering=asdict(self.lowering) if self.lowering is not None else None,
         )
-        for key in ('max_normal_accel_mm_s2', 'max_axis_feed_mm_min'):
+        for key in ('max_normal_accel_mm_s2', 'max_axis_feed_mm_min', 'gauge_travel_mm'):
             if getattr(m, key) is not None:
                 settings[key] = getattr(m, key)
         if m.schedule_post_feeds:
