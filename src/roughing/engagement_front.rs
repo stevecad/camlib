@@ -21,12 +21,13 @@
 //! - the stream verifier still checks the run against stock, part and machine.
 use crate::{
     Point,
+    engagement::{ClearedSweep, EngagementOptions, EngagementScene, EngagementStatus},
     entry::{EntryPolicy, PocketEntry},
     heights::Heights,
     motion::{Curve, Event, Motion, MoveKind, Vec3},
     planar::Boundary,
     pocket::{PocketOperation, PocketPlan, ResidualStatus, Stroke},
-    stock::{CancelSignal, Stock, StockSpec},
+    stock::{CancelSignal, ClearanceCursor, Stock, StockSpec},
     tool::ToolAssembly,
 };
 use serde::Serialize;
@@ -109,8 +110,32 @@ pub struct EngagementFrontReport {
     pub strategy: &'static str,
     pub target_z_mm: f64,
     pub target_radial_engagement_mm: f64,
+    /// The declared width as a contact angle, acos(1 - w/r): the limit every
+    /// cutting and stay-down link stroke is proven against.
+    pub engagement_limit_deg: f64,
+    /// Largest contact angle bound the exact proof returned for a stroke of
+    /// this layer (at most the limit), and the radial width of a straight
+    /// pass with that contact, r (1 - cos).
+    pub proven_max_engagement_deg: f64,
+    pub proven_max_engagement_mm: f64,
+    /// Strokes proven within the limit, and passes planned again with a
+    /// smaller steering width because a stroke of theirs was not.
+    pub engagement_proved_strokes: usize,
+    pub engagement_replans: usize,
+    /// Strokes in confined material (a pocket barely wider than the cutter)
+    /// that could not be proven within the limit at half the declared
+    /// width. Like the helical entry they follow, they are cut as entry
+    /// moves at the entry feed, and only when the entry policy allows a
+    /// helix. Their length, and the largest contact bound proven for one.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub confined_strokes: usize,
+    #[serde(skip_serializing_if = "is_zero_f64")]
+    pub confined_stroke_mm: f64,
+    #[serde(skip_serializing_if = "is_zero_f64")]
+    pub confined_max_engagement_deg: f64,
     /// Largest radial width the steering grid predicted for a planned step.
-    /// A grid estimate (see `engagement_grid_mm`), not a verified bound.
+    /// A grid estimate (see `engagement_grid_mm`); the proven bound is
+    /// `proven_max_engagement_deg`.
     pub max_estimated_engagement_mm: f64,
     pub engagement_grid_mm: f64,
     pub passes: usize,
@@ -170,6 +195,14 @@ impl Default for EngagementFrontReport {
             strategy: "engagement_front",
             target_z_mm: 0.,
             target_radial_engagement_mm: 0.,
+            engagement_limit_deg: 0.,
+            proven_max_engagement_deg: 0.,
+            proven_max_engagement_mm: 0.,
+            engagement_proved_strokes: 0,
+            engagement_replans: 0,
+            confined_strokes: 0,
+            confined_stroke_mm: 0.,
+            confined_max_engagement_deg: 0.,
             max_estimated_engagement_mm: 0.,
             engagement_grid_mm: 0.,
             passes: 0,
@@ -221,8 +254,17 @@ struct Layer {
     thin: Vec<Point>,
     z: f64,
     material_guard: f64,
+    /// Cleared heights overwritten since the journal was last emptied, so a
+    /// pass whose engagement was not proven can be planned again.
+    journal: Vec<(usize, f64)>,
 }
 impl Layer {
+    fn undo(&mut self, to: usize) {
+        while self.journal.len() > to {
+            let (k, old) = self.journal.pop().unwrap();
+            self.cleared[k] = old;
+        }
+    }
     fn material(&self, k: usize) -> bool {
         self.top[k].min(self.cleared[k]) > self.z + self.material_guard
     }
@@ -234,11 +276,12 @@ impl Layer {
     /// Mark the disk cleared; returns how many material cells it cleared.
     fn cut(&mut self, p: Point, rad: f64) -> usize {
         let (z, floor) = (self.z, self.z + self.material_guard);
-        let (cleared, top) = (&mut self.cleared, &self.top);
+        let (cleared, top, journal) = (&mut self.cleared, &self.top, &mut self.journal);
         let mut removed = 0;
         self.g.for_disk(p, rad, |k, _, _| {
             if cleared[k] > z {
                 removed += usize::from(top[k].min(cleared[k]) > floor);
+                journal.push((k, cleared[k]));
                 cleared[k] = z;
             }
         });
@@ -267,6 +310,27 @@ fn area(cells: &[Point], p: Point, r: f64, c: f64) -> f64 {
         n += ((r - d) / c + 0.5).clamp(0., 1.);
     }
     n * c * c
+}
+
+/// One sweep over the cells for a step to `p` heading along `u`: the
+/// smoothed material area (mm2) inside the cutter disk, as `area`, and the
+/// estimated contact angle (rad): the material in the ring of one cell just
+/// outside the cutter's leading half, as arc length over its radius. (Behind
+/// the widest point the ring holds the wall the pass leaves beside its own
+/// trail, which the cutter no longer touches.) The exact bound is proven
+/// afterwards (`EngagementFrontPlan::prove`).
+fn step_load(cells: &[Point], p: Point, u: Point, r: f64, c: f64) -> (f64, f64) {
+    let (mut inside, mut ring) = (0., 0.);
+    for q in cells {
+        let v = [q[0] - p[0], q[1] - p[1]];
+        let d = v[0].hypot(v[1]);
+        let within = ((r - d) / c + 0.5).clamp(0., 1.);
+        inside += within;
+        if v[0] * u[0] + v[1] * u[1] >= 0. {
+            ring += ((r + c - d) / c + 0.5).clamp(0., 1.) - within;
+        }
+    }
+    (inside * c * c, ring * c / (r + c / 2.))
 }
 
 /// Exact squared Euclidean distance transform (Felzenszwalb & Huttenlocher,
@@ -490,6 +554,21 @@ fn fit_certifiable(
 
 /// Line/arc fit tolerance as a fraction of the steering grid cell.
 const FIT_FRACTION: f64 = 0.25;
+/// Cells of width the steering gives away (see `steering_width`).
+/// Cells of width the steering gives away (see `steering_width`): half a
+/// cell for material next to a wall that the grid does not count
+/// (`Layer::reachable`), and the stroke fit tolerance.
+const STEER_MARGIN_CELLS: f64 = 0.5 + FIT_FRACTION;
+/// Steps of a pass followed before its strokes are proven: an unproven
+/// stroke then costs at most this much planning again, not the whole pass.
+const PROOF_CHUNK: usize = 384;
+/// How much narrower a pass is steered after a stroke of it was not proven.
+const RETRY_SCALE: f64 = 0.95;
+struct PassMark {
+    pending: usize,
+    journal: usize,
+    report: EngagementFrontReport,
+}
 
 type Pending = (Curve, MoveKind, Option<f64>);
 
@@ -520,6 +599,8 @@ pub(crate) struct EngagementFrontPlan {
     finished: bool,
     report: EngagementFrontReport,
     scratch: Vec<Point>,
+    /// Committed cleared sweeps, for the exact engagement proof of each pass.
+    proof: Option<(EngagementScene, ClearanceCursor)>,
     /// Passes may start on a remnant too thin for a full step (see
     /// `follow`): set only to clear material a helix would otherwise bore
     /// onto, until the next pass is planned.
@@ -564,9 +645,10 @@ impl EngagementFrontPlan {
             strategy: "engagement_front",
             target_z_mm: z,
             target_radial_engagement_mm: width,
+            engagement_limit_deg: (1. - width / r).acos().to_degrees(),
             geometric_residual_status: ResidualStatus::Pending,
             diagnostics: vec![
-                "Engagement is steered on a fine grid seeded from committed whole-cell stock bounds; max_estimated_engagement_mm is a grid estimate, not a verified bound".into(),
+                "Engagement is steered on a fine grid seeded from committed whole-cell stock bounds, then every cutting and stay-down link stroke is proven exactly against the committed cleared sweeps: its contact angle, less the cutter's own trail, is at most engagement_limit_deg = acos(1 - w/r). A pass with an unproven stroke is planned again narrower; helical entries cut a full slot and are not bounded by w".into(),
                 "Every cutting and link stroke is certified exactly against the layer region; air entries are proven by committed sweeps; enclosed material is entered by helix".into(),
             ],
             ..Default::default()
@@ -594,6 +676,7 @@ impl EngagementFrontPlan {
             finished: false,
             report,
             scratch: vec![],
+            proof: None,
             remnant: false,
         })
     }
@@ -834,6 +917,7 @@ impl EngagementFrontPlan {
             thin: vec![],
             z: self.z,
             material_guard: 16. * self.op.tolerance_mm,
+            journal: vec![],
         });
         Ok(())
     }
@@ -888,6 +972,75 @@ impl EngagementFrontPlan {
         Some([(q[0] - p[0]) / d.max(1e-12), (q[1] - p[1]) / d.max(1e-12)])
     }
 
+    /// Nearest reachable material to `p` within `reach`: its distance and
+    /// the unit direction to it.
+    fn nearest_material(&self, p: Point, reach: f64) -> Option<(f64, Point)> {
+        let layer = self.layer.as_ref().unwrap();
+        let mut nearest: Option<(f64, Point)> = None;
+        layer.g.for_disk(p, reach, |q, qc, d| {
+            if layer.reachable[q] && layer.material(q) && nearest.is_none_or(|(b, _)| d < b) {
+                nearest = Some((d, qc));
+            }
+        });
+        let (d, q) = nearest?;
+        Some((
+            d,
+            [(q[0] - p[0]) / d.max(1e-12), (q[1] - p[1]) / d.max(1e-12)],
+        ))
+    }
+
+    /// The start a pass beside candidate `k` should take: the upstream end
+    /// of the material it will cut.
+    ///
+    /// The cutting sense fixes the direction a pass travels along a front
+    /// (material on one side). A start part-way along a strip of material
+    /// leaves the part behind it for later passes, which then each start
+    /// at the nearest point, just behind the last one, and cut only a
+    /// cutter's width before running into cleared stock: a strip beside a
+    /// wall was nibbled by a hundred short passes (#167). Walking back
+    /// along the front, against the travel direction, until the material
+    /// ends finds the start from which one pass cuts the whole strip. A
+    /// front that closes on itself has no end: the candidate stands.
+    fn upstream(&self, k: usize, dir: Point) -> (usize, Point) {
+        let layer = self.layer.as_ref().unwrap();
+        let g = layer.g;
+        let (r, c) = (self.r, g.c);
+        let side = if self.climb { 1. } else { -1. };
+        let standoff = r + 2. * c;
+        let step = 0.5 * r;
+        let origin = g.center(k);
+        let mut best = (k, dir);
+        let mut p = origin;
+        let mut along = dir;
+        let limit = 2 * (g.nx + g.ny);
+        for i in 0..limit {
+            // Step back against the travel direction, then stand off the
+            // nearest material again.
+            let heading = [-side * along[1], side * along[0]];
+            let back = [p[0] - step * heading[0], p[1] - step * heading[1]];
+            let Some((d, to)) = self.nearest_material(back, standoff + step) else {
+                break;
+            };
+            let q = [
+                back[0] + (d - standoff) * to[0],
+                back[1] + (d - standoff) * to[1],
+            ];
+            let Some((ci, cj)) = g.cell(q) else { break };
+            let cell = g.idx(ci, cj);
+            let Some(found) = self.candidate_direction(cell) else {
+                break;
+            };
+            if i > 2 && (q[0] - origin[0]).hypot(q[1] - origin[1]) < step {
+                // Back where it began: a closed front.
+                return (k, dir);
+            }
+            best = (cell, found);
+            p = g.center(cell);
+            along = found;
+        }
+        best
+    }
+
     fn mark_dead(&mut self, p: Point, cells: i64) {
         let layer = self.layer.as_mut().unwrap();
         let Some((i, j)) = layer.g.cell(p) else {
@@ -906,8 +1059,19 @@ impl EngagementFrontPlan {
 
     /// Follow the material front from `start`. Returns the centre polyline
     /// (first point = start) and whether any material was cut.
-    fn follow(&mut self, start: Point, heading: f64, approach: bool) -> (Vec<Point>, bool) {
-        let (r, w) = (self.r, self.width);
+    fn follow(
+        &mut self,
+        start: Point,
+        heading: f64,
+        approach: bool,
+        narrow: f64,
+    ) -> (Vec<Point>, bool, bool) {
+        let r = self.r;
+        // Steering width: the declared width less what the grid cannot
+        // resolve (see `steering_width`), narrowed by `narrow` when an
+        // earlier attempt at this pass was not proven within the limit.
+        let w = narrow * self.steering_width();
+        let limit = (1. - w / r).acos();
         let side = if self.climb { 1. } else { -1. };
         let remnant = self.remnant;
         let layer = self.layer.as_mut().unwrap();
@@ -926,6 +1090,11 @@ impl EngagementFrontPlan {
         let mut max_eng: f64 = 0.;
         let mut end = 0;
         for _ in 0..2_000_000 {
+            if pts.len() > PROOF_CHUNK {
+                // Enough to prove at once; the pass continues from here.
+                end = 4;
+                break;
+            }
             layer.gather(p, r + ds + 2. * c, &mut cells);
             let f = |phi: f64, layer: &Layer| {
                 let q = [p[0] + ds * (th + phi).cos(), p[1] + ds * (th + phi).sin()];
@@ -970,16 +1139,29 @@ impl EngagementFrontPlan {
                 end = 1;
                 break;
             }
+            // A step's load: the area it removes against the target, or its
+            // estimated contact angle against the limit, whichever is
+            // nearer its bound. Area alone under-reads the contact where
+            // the path turns into the material.
+            let load = |phi: f64, layer: &Layer| {
+                let u = [(th + phi).cos(), (th + phi).sin()];
+                let q = [p[0] + ds * u[0], p[1] + ds * u[1]];
+                if !layer.allowed_at(q) {
+                    return f64::INFINITY;
+                }
+                let (a, contact) = step_load(&cells, q, u, r, c);
+                a.max(target * contact / limit)
+            };
             // Turn from the far side towards the material until a step
-            // would remove the target area, then bisect that bracket. The
-            // area is not monotone in the turn, so scan before bisecting.
+            // would reach the target load, then bisect that bracket. The
+            // load is not monotone in the turn, so scan before bisecting.
             const SCAN: usize = 16;
             let mut prev = (fmax, away);
             let mut best = prev;
             let mut bracket = None;
             for i in 1..=SCAN {
                 let u = fmax - 2. * fmax * i as f64 / SCAN as f64;
-                let a = f(side * u, layer);
+                let a = load(side * u, layer);
                 if a > target {
                     bracket = Some((prev.0, u));
                     break;
@@ -993,7 +1175,7 @@ impl EngagementFrontPlan {
                 Some((mut ok, mut over)) => {
                     for _ in 0..10 {
                         let mid = 0.5 * (ok + over);
-                        if f(side * mid, layer) > target {
+                        if load(side * mid, layer) > target {
                             over = mid;
                         } else {
                             ok = mid;
@@ -1025,14 +1207,15 @@ impl EngagementFrontPlan {
                 0 => self.report.pass_ends_exhausted += 1,
                 1 => self.report.pass_ends_overload += 1,
                 2 => self.report.pass_ends_thin += 1,
-                _ => self.report.pass_ends_boundary += 1,
+                3 => self.report.pass_ends_boundary += 1,
+                _ => {}
             }
             self.report.max_estimated_engagement_mm =
                 self.report.max_estimated_engagement_mm.max(max_eng);
         } else {
             pts.truncate(1);
         }
-        (pts, cut_any)
+        (pts, cut_any, end == 4)
     }
 
     /// A stay-down link from `a` to `b` through already cleared stock: the
@@ -1582,6 +1765,9 @@ impl EngagementFrontPlan {
                 }
                 continue;
             };
+            // Start where the material this pass will cut begins (see
+            // `upstream`), not merely at the nearest point beside it.
+            let (k, dir) = self.upstream(k, dir);
             let q = self.layer.as_ref().unwrap().g.center(k);
             let here = self.position;
             let at_layer = (here[2] - z).abs() < 1e-9;
@@ -1619,17 +1805,11 @@ impl EngagementFrontPlan {
             }
             let side = if self.climb { 1. } else { -1. };
             let heading = (side * dir[0]).atan2(-side * dir[1]);
-            let (pts, cut) = self.follow(q, heading, true);
-            if !cut {
-                if !self.remnant {
-                    self.layer.as_mut().unwrap().thin.push(q);
-                }
-                self.mark_dead(q, 3);
-                continue;
-            }
-            if std::mem::take(&mut self.remnant) {
-                self.report.remnant_passes += 1;
-            }
+            // The link or entry is queued first, so the pass's cuts are
+            // proven with it already cleared; all of it is undone if the
+            // pass turns out to cut nothing.
+            self.layer.as_mut().unwrap().journal.clear();
+            let base = self.checkpoint();
             if let Some((waypoints, samples, widest)) = link {
                 let layer = self.layer.as_mut().unwrap();
                 for p in samples {
@@ -1668,12 +1848,250 @@ impl EngagementFrontPlan {
                 self.report.lifts += 1;
                 self.report.stock_edge_entries += 1;
             }
-            self.emit_cuts(&pts)?;
+            let Some(pts) = self.proven_pass(stock, q, heading, true, base.pending, cancel)? else {
+                self.rollback(&base);
+                if !self.remnant {
+                    self.layer.as_mut().unwrap().thin.push(q);
+                }
+                self.mark_dead(q, 3);
+                continue;
+            };
+            if std::mem::take(&mut self.remnant) {
+                self.report.remnant_passes += 1;
+            }
             let end = *pts.last().unwrap();
             self.position = [end[0], end[1], z];
             self.report.passes += 1;
             return Ok(true);
         }
+    }
+
+    /// Everything a planned pass changes, to undo it.
+    fn checkpoint(&mut self) -> PassMark {
+        PassMark {
+            pending: self.pending.len(),
+            journal: self.layer.as_ref().unwrap().journal.len(),
+            report: self.report.clone(),
+        }
+    }
+    fn rollback(&mut self, mark: &PassMark) {
+        self.pending.truncate(mark.pending);
+        self.layer.as_mut().unwrap().undo(mark.journal);
+        let replans = self.report.engagement_replans;
+        self.report = mark.report.clone();
+        self.report.engagement_replans = replans;
+    }
+
+    /// The declared width less what the steering grid cannot resolve: the
+    /// fitted strokes may lie `FIT_FRACTION` of a cell from the planned
+    /// points, and a cell's material is known to half a cell.
+    fn steering_width(&self) -> f64 {
+        let c = self.layer.as_ref().unwrap().g.c;
+        (self.width - STEER_MARGIN_CELLS * c).max(0.5 * self.width)
+    }
+
+    /// Follow the front from `start`, emit its cuts and prove every feed
+    /// stroke queued since `from` (the link or entry before them included)
+    /// within the engagement limit. A pass with an unproven stroke is
+    /// planned again with a narrower steering width; one that cannot be
+    /// proven at half the width stops the run. Returns the pass's points,
+    /// or `None` when it cuts nothing (nothing of it is then queued).
+    fn proven_pass(
+        &mut self,
+        stock: &Stock,
+        start: Point,
+        heading: f64,
+        approach: bool,
+        from: usize,
+        cancel: &impl CancelSignal,
+    ) -> Result<Option<Vec<Point>>, String> {
+        let (mut start, mut heading, mut approach) = (start, heading, approach);
+        let mut narrow = 1.;
+        let mut kept: Vec<Point> = vec![];
+        // Strokes queued before this index are proven already: premises only.
+        let mut proven = from;
+        loop {
+            let mark = self.checkpoint();
+            let (pts, cut, more) = self.follow(start, heading, approach, narrow);
+            if !cut {
+                self.rollback(&mark);
+                return Ok((!kept.is_empty()).then_some(kept));
+            }
+            self.emit_cuts(&pts)?;
+            let proved = self.prove(stock, from, proven, false, cancel)?;
+            let Some((at, detail)) = proved else {
+                let (n, first) = (pts.len(), kept.is_empty());
+                let (before, last) = (pts[n - 2], pts[n - 1]);
+                kept.extend(pts.into_iter().skip(usize::from(!first)));
+                if !more {
+                    return Ok(Some(kept));
+                }
+                proven = self.pending.len();
+                // The next stretch of the same pass, a step wider again
+                // where an earlier stretch had to be narrowed.
+                heading = (last[1] - before[1]).atan2(last[0] - before[0]);
+                start = last;
+                approach = false;
+                narrow = (narrow / RETRY_SCALE).min(1.);
+                continue;
+            };
+            if narrow * RETRY_SCALE < 0.5 {
+                // Confined material: no step width keeps a cutter pinned
+                // between walls within the limit. It is entry motion, as the
+                // helix that opened it is, where the entry policy allows one.
+                if self.entry.policy() == EntryPolicy::StockEdge {
+                    return Err(format!(
+                        "engagement_front: {detail}, even steered at half the declared width: the \
+                         material there is confined (a pocket barely wider than the cutter). \
+                         StockEdgeEntry(helix=None) forbids cutting it as entry motion; allow a \
+                         helical entry, use a smaller tool, or exclude the area"
+                    ));
+                }
+                self.prove(stock, from, proven, true, cancel)?;
+                kept.extend(pts.into_iter().skip(usize::from(!kept.is_empty())));
+                return Ok(Some(kept));
+            }
+            // Keep the part of the pass before the unproven stroke (its
+            // strokes are proven) and steer narrower from there on.
+            narrow *= RETRY_SCALE;
+            self.rollback(&mark);
+            self.report.engagement_replans += 1;
+            let split = pts.iter().position(|p| *p == at).unwrap_or(0);
+            if split >= 2 {
+                let prefix = &pts[..=split];
+                let layer = self.layer.as_mut().unwrap();
+                for p in &prefix[1..] {
+                    layer.cut(*p, self.r);
+                }
+                self.emit_cuts(prefix)?;
+                let before = prefix[split - 1];
+                heading = (at[1] - before[1]).atan2(at[0] - before[0]);
+                start = at;
+                approach = false;
+                kept.extend(prefix.iter().copied().skip(usize::from(!kept.is_empty())));
+            }
+        }
+    }
+
+    /// Prove the contact angle of every cutting and stay-down link stroke
+    /// queued since `from` against the committed cleared sweeps and the
+    /// strokes queued before it. The proof is exact
+    /// (`EngagementScene::check_leading`) and shares nothing with the
+    /// steering grid. Returns where the first unproven stroke starts and
+    /// what was not proven, or `None`. With
+    /// `confined`, an unproven stroke becomes an entry move at the entry
+    /// feed (see `EngagementFrontReport::confined_strokes`) and nothing is
+    /// returned. Strokes before `unproven_from` were proven by an earlier
+    /// call and are premises only.
+    fn prove(
+        &mut self,
+        stock: &Stock,
+        from: usize,
+        unproven_from: usize,
+        confined: bool,
+        cancel: &impl CancelSignal,
+    ) -> Result<Option<(Point, String)>, String> {
+        let tolerance = self.op.tolerance_mm;
+        let (mut scene, mut cursor) = match self.proof.take() {
+            Some(held) => held,
+            None => (
+                EngagementScene::new_with_cancel(stock.spec().clone(), vec![], cancel)?,
+                ClearanceCursor::default(),
+            ),
+        };
+        let (rebuild, sweeps) = stock.committed_clearance_since(&mut cursor, tolerance, cancel)?;
+        if rebuild {
+            scene = EngagementScene::new_with_cancel(stock.spec().clone(), sweeps, cancel)?;
+        } else {
+            for sweep in sweeps {
+                scene.append(sweep)?;
+            }
+        }
+        let mark = scene.mark();
+        let limit = self.report.engagement_limit_deg;
+        let mut failed = None;
+        let (mut proved, mut upper) = (0, 0f64);
+        let entry_feed = self
+            .entry
+            .helix()
+            .feed_mm_min
+            .unwrap_or(self.op.plunge_mm_min);
+        for index in from..self.pending.len() {
+            let (curve, kind) = (self.pending[index].0.clone(), self.pending[index].1);
+            let flat = curve.start()[2] == curve.end()[2]
+                && matches!(
+                    curve,
+                    Curve::Line { .. }
+                        | Curve::Arc {
+                            plane: crate::motion::Plane::Xy,
+                            ..
+                        }
+                );
+            if !flat || kind.is_rapid() {
+                continue;
+            }
+            let motion = Motion {
+                id: 0,
+                operation: self.op.id.clone(),
+                tool: self.op.tool.clone(),
+                feed_mm_min: Some(self.op.feed_mm_min),
+                kind,
+                curve: curve.clone(),
+            };
+            if index >= unproven_from && matches!(kind, MoveKind::Cut | MoveKind::Link) {
+                let report = scene.check_leading(
+                    &motion,
+                    self.r,
+                    limit,
+                    EngagementOptions::default(),
+                    cancel,
+                )?;
+                if matches!(report.status, EngagementStatus::Unresolved) && confined {
+                    let bound = scene.check_leading(
+                        &motion,
+                        self.r,
+                        360.,
+                        EngagementOptions::default(),
+                        cancel,
+                    )?;
+                    self.pending[index].1 = MoveKind::Lead;
+                    self.pending[index].2 = Some(entry_feed);
+                    self.report.confined_strokes += 1;
+                    self.report.confined_stroke_mm += curve.prepare(tolerance)?.length_mm();
+                    self.report.confined_max_engagement_deg = self
+                        .report
+                        .confined_max_engagement_deg
+                        .max(bound.upper_angle_deg);
+                } else if matches!(report.status, EngagementStatus::Unresolved) {
+                    let (a, b) = (curve.start(), curve.end());
+                    failed = Some((
+                        [a[0], a[1]],
+                        format!(
+                            "the contact angle of the stroke from ({:.3}, {:.3}) to ({:.3}, {:.3}) at Z{:.3} \
+                         is not proven within {limit:.2} degrees (max_radial_engagement_mm {})",
+                            a[0], a[1], b[0], b[1], a[2], self.width
+                        ),
+                    ));
+                    break;
+                }
+                if matches!(report.status, EngagementStatus::Bounded) {
+                    proved += 1;
+                    upper = upper.max(report.upper_angle_deg);
+                }
+            }
+            scene.append(ClearedSweep::from_motion(&motion, self.r, tolerance)?)?;
+        }
+        // Planned strokes are premises only until the stock commits them.
+        scene.restore(mark);
+        self.proof = Some((scene, cursor));
+        if failed.is_none() {
+            self.report.engagement_proved_strokes += proved;
+            if upper > self.report.proven_max_engagement_deg {
+                self.report.proven_max_engagement_deg = upper;
+                self.report.proven_max_engagement_mm = self.r * (1. - upper.to_radians().cos());
+            }
+        }
+        Ok(failed)
     }
 
     /// Before a helix bores onto the material `helix_pass` would pick: if
@@ -1795,6 +2213,10 @@ impl EngagementFrontPlan {
                 Curve::start,
             );
             let here = self.position;
+            // The helix's flat floor circle is a premise for the cuts that
+            // follow it.
+            let from = self.pending.len();
+            self.layer.as_mut().unwrap().journal.clear();
             let proven = self
                 .proven(top)
                 .map(|h| h.max(self.guides.cell_entry_height(stock, [start[0], start[1]])));
@@ -1829,9 +2251,7 @@ impl EngagementFrontPlan {
             let p = [start[0], start[1]];
             let radial = [(p[0] - q[0]) / rh, (p[1] - q[1]) / rh];
             let heading = (side * radial[0]).atan2(-side * radial[1]);
-            let (pts, cut) = self.follow(p, heading, false);
-            if cut {
-                self.emit_cuts(&pts)?;
+            if let Some(pts) = self.proven_pass(stock, p, heading, false, from, cancel)? {
                 let end = *pts.last().unwrap();
                 self.position = [end[0], end[1], z];
             }
@@ -2032,6 +2452,7 @@ mod tests {
             thin: vec![],
             z: 0.,
             material_guard: 1e-4,
+            journal: vec![],
         };
         let (p, r) = ([8., 8.], 3.);
         let before = (0..n).filter(|&k| layer.material(k)).count();
@@ -2083,6 +2504,7 @@ mod tests {
             thin: vec![],
             z: 0.,
             material_guard: 1e-4,
+            journal: vec![],
         };
         let (p, q) = ([8., 4.9], [8.9, 4.9]);
         assert!(layer.allowed_at(p) && layer.allowed_at(q));

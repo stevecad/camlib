@@ -1268,16 +1268,23 @@ class OffsetClearing:
 
 @dataclass(frozen=True)
 class AdaptiveClearing:
-    """Maximum radial width in mm; Rust derives its circumference-angle bound.
+    """Engagement-limited roughing: the cutter never takes more than
+    max_radial_engagement_mm of radial width.
+
+    The default path_strategy='engagement_front' follows the boundary
+    between cut and uncut stock, entering from air or proven-cleared stock
+    and helixing only into enclosed material. Every cutting and stay-down
+    link stroke is proven exactly within the contact angle of that width,
+    acos(1 - w/r) (the layer report's proven_max_engagement_deg). Orbit
+    options do not apply to it.
 
     path_strategy='stock_front' is a development strategy: it can stream a
     productive prefix but raises if coverage/steering is unresolved. Its
     cutting_sense is 'climb' (default) or 'conventional' with the CW spindle.
 
-    path_strategy='engagement_front' (Roughing only) follows the cut/uncut
-    stock boundary at about max_radial_engagement_mm per step, entering from
-    air or proven-cleared stock and helixing only into enclosed material.
-    Orbit options do not apply to it.
+    path_strategy='disk_front' (orbits over a whole region) is refused by
+    Roughing: it does not read the stock, so around a part it orbits through
+    the air beside the stock (#167). It remains AdaptivePocket's strategy.
     """
 
     max_radial_engagement_mm: float
@@ -1286,13 +1293,13 @@ class AdaptiveClearing:
     local_orbit_tolerance_mm: float | None = None
     boundary_tolerance_mm: float = 0.01
 
-    path_strategy: str = "disk_front"
+    path_strategy: str = "engagement_front"
     cutting_sense: str | None = None
 
     def to_dict(self):
+        # The strategy is always written: a saved program states which
+        # planner made it.
         result = dict(kind="adaptive", **{k: getattr(self, k) for k in self.__dataclass_fields__})
-        if self.path_strategy == "disk_front":
-            result.pop("path_strategy")
         if self.cutting_sense is None:
             result.pop("cutting_sense")
         return result

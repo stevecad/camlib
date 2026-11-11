@@ -407,7 +407,7 @@ class StockFrontDevelopmentTest(unittest.TestCase):
     def test_roughing_exposes_same_strategy_and_unknown_strategy_is_rejected(self):
         from camlib.operations import AdaptiveClearing
 
-        self.assertNotIn("path_strategy", AdaptiveClearing(0.25).to_dict())
+        self.assertEqual(AdaptiveClearing(0.25).to_dict()["path_strategy"], "engagement_front")
         self.assertEqual(AdaptiveClearing(0.25, path_strategy="stock_front").to_dict()["path_strategy"], "stock_front")
         self.assertEqual(
             AdaptiveClearing(0.25, path_strategy="stock_front", cutting_sense="conventional").to_dict()[

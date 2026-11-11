@@ -160,9 +160,10 @@ impl PocketPlan {
             }
         }
         let scene = &cache.insert((scene, cursor)).0;
-        if scene.support_count() == 0 {
-            return Ok((top, false));
-        }
+        // No early exit without committed sweeps: a column outside the
+        // original stock is air on a fresh stock too (#167: every entry
+        // from beside the stock was otherwise unproven until something had
+        // been cut, so the first pass could only start with a helix).
         let height = |point: Point| -> Result<f64, String> {
             let guard = 32. * self.operation.tolerance_mm
                 + 4096. * f64::EPSILON * (1. + point[0].abs() + point[1].abs() + top.abs());

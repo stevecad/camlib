@@ -146,8 +146,85 @@ class RoughingTest(unittest.TestCase):
             for layer in report['layers']:
                 front = layer['clearing']
                 self.assertEqual(front['strategy'], 'engagement_front')
+                # The steering grid's own estimate; the proven bound follows.
                 self.assertLessEqual(front['max_estimated_engagement_mm'], 0.25 * 1.3)
                 self.assertEqual(front['geometric_residual_status'], 'estimated')
+                # The engagement is proven, stroke by stroke (#167).
+                limit = math.degrees(math.acos(1 - 0.25 / 1))
+                self.assertAlmostEqual(front['engagement_limit_deg'], limit)
+                self.assertLessEqual(front['proven_max_engagement_deg'], limit)
+                self.assertLessEqual(front['proven_max_engagement_mm'], 0.25)
+                self.assertGreater(front['engagement_proved_strokes'], 100)
+
+    def test_issue_167_adaptive_roughing_around_a_block_starts_at_the_stock_edge(self):
+        """#167: a 100 x 60 x 20 mm block in a 130 x 90 mm stock, one 7 mm layer.
+        The old default orbited through the air beside the stock (17,792 moves,
+        635,103 posted) and could not start without a helix."""
+        import cadquery as cq
+
+        from camlib import AdaptiveClearing, StockSpec
+        from camlib.cadquery import export_surface_mesh
+        from camlib.tools import EndMill, HolderSection, ToolAssembly
+
+        block = cq.Workplane('XY').box(100, 60, 20, centered=False).val()
+        mill = ToolAssembly(
+            'mill10',
+            EndMill('em10', diameter=10, flute_length=30, overall_length=75),
+            45,
+            115,
+            (HolderSection(45, 115, 20, 20),),
+        )
+        self.assertEqual(AdaptiveClearing(3).path_strategy, 'engagement_front')
+
+        def run(entry, clearing=AdaptiveClearing(3)):
+            rough = Roughing(
+                'rough',
+                mill,
+                export_surface_mesh(block),
+                top_z_mm=21,
+                floor_z_mm=14,
+                stepdown_mm=7,
+                clearance_z_mm=30,
+                clearing=clearing,
+                radial_allowance_mm=0.3,
+                clockwise=False,
+                entry=entry,
+                feed_mm_min=1000,
+                plunge_mm_min=300,
+                spindle_rpm=9000,
+                coolant='off',
+                tool_number=1,
+                length_register=1,
+            )
+            setup = Setup('top', StockSpec((-15, -15, 0), (115, 75, 21), 0.5), (mill,), (rough,), (0, 0, 60))
+            kinds, report = [], None
+            with Job('adaptive', '1', (setup,)).regenerate() as job:
+                for item in job:
+                    update = item.update
+                    if isinstance(update, OperationUpdate):
+                        if update.stage == 'end':
+                            report = update.report
+                    elif isinstance(getattr(update, 'motion', None), dict):
+                        kinds.append((update.motion['kind'], update.motion['curve']['kind']))
+            return kinds, report
+
+        paths = []
+        for entry in (StockEdgeEntry(helix=None), StockEdgeEntry()):
+            kinds, report = run(entry)
+            self.assertLess(len(kinds), 400)
+            self.assertNotIn('helix', [curve for _, curve in kinds])
+            front = report['layers'][0]['clearing']
+            self.assertEqual(front['strategy'], 'engagement_front')
+            self.assertEqual(front['helical_entries'], 0)
+            self.assertLessEqual(front['passes'], 12)
+            limit = math.degrees(math.acos(1 - 3 / 5))
+            self.assertAlmostEqual(front['engagement_limit_deg'], limit)
+            self.assertLessEqual(front['proven_max_engagement_deg'], limit)
+            self.assertNotIn('confined_strokes', front)
+            paths.append(kinds)
+        self.assertEqual(paths[0], paths[1])
+        with self.assertRaisesRegex(SimulationError, 'does not clear with path_strategy disk_front'):
+            run(StockEdgeEntry(), AdaptiveClearing(3, path_strategy='disk_front'))
 
     def test_empty_cut_policy_is_an_explicit_strict_python_boolean(self):
         operation = config()['operations'][0]
@@ -176,7 +253,8 @@ class RoughingTest(unittest.TestCase):
             self.assertLess(report['floor_geometry_guard_mm'], 0.001)
             self.assertEqual([item['tip_z_mm'] for item in report['layers'][:3]], [8, 6, 4])
             if adaptive:
-                self.assertAlmostEqual(report['max_engagement_deg'], math.degrees(2 * math.acos(0.75)))
+                # The contact angle of a straight pass of that width, acos(1 - w/r).
+                self.assertAlmostEqual(report['max_engagement_deg'], math.degrees(math.acos(0.75)))
                 self.assertEqual(report['max_radial_engagement_mm'], 0.25)
         c = config()
         program = dict(

@@ -1101,6 +1101,7 @@ impl RoughingPlan {
             RoughingClearing::Adaptive {
                 max_radial_engagement_mm: w,
                 orbit_radius_mm,
+                path_strategy,
                 ..
             } => {
                 if !w.is_finite() || w <= 0. || w > r {
@@ -1108,7 +1109,14 @@ impl RoughingPlan {
                 }
                 // Width is an upper limit. A stricter native angle still
                 // honors it, including widths whose angle would exceed170deg.
-                let phi = (2. * (1. - w / r).acos()).to_degrees().min(170.);
+                let phi = if path_strategy == AdaptivePathStrategy::EngagementFront {
+                    // The contact angle of a straight pass of width w, less
+                    // the cutter's own trail: what engagement_front proves
+                    // every stroke against.
+                    (1. - w / r).acos().to_degrees()
+                } else {
+                    (2. * (1. - w / r).acos()).to_degrees().min(170.)
+                };
                 if !(1. ..=170.).contains(&phi) {
                     return Err("adaptive roughing engagement is outside native 1..170 degree circumference bound".into());
                 }
@@ -1225,6 +1233,24 @@ impl RoughingPlan {
                 if op.omit_empty_cuts {
                     return Err("engagement_front plans every pass from the committed stock; omit_empty_cuts does not apply".into());
                 }
+            }
+            RoughingClearing::Adaptive {
+                path_strategy: AdaptivePathStrategy::DiskFront,
+                ..
+            } => {
+                // #167. disk_front covers a region it takes to be solid with
+                // orbits and never reads the stock. Roughing's region is the
+                // stock footprint grown by a margin, so that the stock's edge
+                // is no wall: disk_front then orbits through all the air
+                // beside the stock (75 m of 137 m on a 130 x 90 mm stock).
+                return Err(
+                    "Roughing does not clear with path_strategy disk_front (also what a program \
+                     saved without path_strategy asks for): it treats the whole region as \
+                     material and never reads the stock, so it orbits through the air beside \
+                     the stock. Use path_strategy engagement_front, AdaptiveClearing's default; \
+                     disk_front remains AdaptivePocket's strategy"
+                        .into(),
+                );
             }
             RoughingClearing::Adaptive {
                 path_strategy,

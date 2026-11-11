@@ -65,7 +65,7 @@ comparable only on the same machine; CI runs the same benchmark on every push.
 | RestPocket | [#25](https://github.com/stevecad/camlib/issues/25) | `rest-pocket` (rest) | 82 | 206 | 117 (57%) | 37 | 4 | 8 | 2 | 26.3 / 26.1 | 0.002 |
 | AdaptivePocket | [#26](https://github.com/stevecad/camlib/issues/26) | `adaptive-pocket` (adaptive) | 3752 | 12192 | 8713 (71%) | 18 | 2 | 2 | 461 | 1262.9 / 1225.6 | 0.068 |
 | Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `rough-parallel` (rough) | 2927 | 37872 | 34195 (90%) | 212 | 12 | 12 | 1984 | 8900.3 / 8898.9 | 0.065 |
-| Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-adaptive` (rough) | 97138 | 164270 | 108718 (66%) | 251 | 8 | 8 | 5761 | 17533.4 / 16572.5 | 2.688 |
+| Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-adaptive` (rough) | 4499 | 15979 | 1372 (9%) | 390 | 25 | 25 | 5725 | 1755.4 / 1755.1 | 24.416 |
 | Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-fine-mesh` (rough) | 3295 | 7879 | 6462 (82%) | 200 | 3 | 3 | 5418 | 554.3 / 531.4 | 0.080 |
 | Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-offset` (rough) | 924 | 10665 | 6073 (57%) | 250 | 5 | 8 | 5766 | 1439.8 / 1436.8 | 0.028 |
 | Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-raster` (rough) | 2169 | 27414 | 21291 (78%) | 614 | 13 | 24 | 5766 | 7932.3 / 7931.6 | 0.043 |
@@ -129,7 +129,7 @@ comparable only on the same machine; CI runs the same benchmark on every push.
 | `adaptive-pocket` | Adaptive clearing of an L pocket | 3752 | 1262.9 / 1225.6 | 5781 | 4.8 / 492.8 | 0.0 / 49.6 | 0.073 | 0.005 | 1.349 | 390 |
 | `roughing-raster` | 3D raster roughing around a frustum | 2169 | 7932.3 / 7931.6 | 2400 | 930.8 / 1505.5 | 0.0 / 83.1 | 0.054 | 0.010 | 0.188 | 389 |
 | `roughing-offset` | 3D offset roughing around a frustum | 924 | 1439.8 / 1436.8 | 1219 | 930.8 / 1505.5 | 0.0 / 83.1 | 0.048 | 0.018 | 0.293 | 388 |
-| `roughing-adaptive` | 3D adaptive roughing around a frustum | 97138 | 17533.4 / 16572.5 | 146997 | 930.8 / 1510.5 | 0.0 / 78.1 | 2.738 | 0.017 | 31.231 | 564 |
+| `roughing-adaptive` | 3D adaptive roughing around a frustum | 4499 | 1755.4 / 1755.1 | 7498 | 939.5 / 1546.7 | 0.0 / 53.8 | 24.433 | 4.458 | 37.303 | 396 |
 | `roughing-fine-mesh` | 3D offset roughing of a filleted boss from a fine mesh | 3295 | 554.3 / 531.4 | 4874 | 816.3 / 1385.3 | 0.0 / 0.4 | 0.314 | 0.227 | 10.079 | 406 |
 | `contour` | Outer and inner walls of an annulus | 40 | 55.8 / 55.7 | 79 | 0.0 / 831.6 | 0.0 / 430.2 | 0.011 | 0.005 | 0.010 | 384 |
 | `holes` | Pilot drilling then helical bore milling | 62 | 51.0 / 50.9 | 111 | 0.0 / 413.1 | 0.0 / 125.1 | 0.025 | 0.005 | 0.013 | 388 |

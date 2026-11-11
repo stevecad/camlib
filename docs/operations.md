@@ -215,19 +215,44 @@ location. `clearing` is one of:
   `routing="economical"` orders and joins the rows to shorten links,
 - `OffsetClearing(stepover_mm, coverage_margin_mm=0.01)`: contour-parallel
   passes, with that much overlap reserved for the coverage proof,
-- `AdaptiveClearing(max_radial_engagement_mm)`: engagement-limited, with the
-  same orbit, `cutting_sense` and `path_strategy` options as `AdaptivePocket`.
-- `AdaptiveClearing(w, path_strategy="engagement_front")` (roughing only):
-  follows the boundary between cut and uncut stock, turning so each step
-  removes a radial width of about `w`. Passes start from air or from stock
-  already cleared (proven clear by the committed cuts) and helix only into
-  enclosed material; short moves between passes stay down when the link
-  is clear. The engagement is steered on a fine grid built from the stock
-  model, so `max_estimated_engagement_mm` in the layer report is an
-  estimate. Every cutting and link move is checked exactly against the
-  layer region before it is emitted, and the run fails rather than emit
-  one that does not fit. Orbit options and `omit_empty_cuts` do not apply,
-  and the entry must be `StockEdgeEntry`. With `rapid_descent_clearance_mm`
+- `AdaptiveClearing(max_radial_engagement_mm)`: engagement-limited clearing
+  that follows the boundary between cut and uncut stock
+  (`path_strategy="engagement_front"`, the default). Passes start from air
+  beside the stock or from stock already cleared (proven clear by the
+  committed cuts) and helix only into enclosed material; each pass starts at
+  the upstream end of the material it cuts; short moves between passes stay
+  down when the link is clear.
+  - **The engagement is proven, not estimated.** The declared width `w` on a
+    cutter of radius `r` is a contact angle, `acos(1 - w/r)`: the arc of the
+    cutter in material in a straight pass of that width. Steering runs on a
+    fine grid built from the stock model, and then every cutting and
+    stay-down link stroke is proven exactly against the committed cleared
+    sweeps: its contact angle, not counting the cutter's own trail, is at
+    most that limit. The layer report gives `engagement_limit_deg`,
+    `proven_max_engagement_deg` (and its width, `proven_max_engagement_mm`),
+    `engagement_proved_strokes` and `engagement_replans`: a pass with an
+    unproven stroke is planned again 5% narrower.
+  - **Confined material is entry motion.** In a pocket barely wider than the
+    cutter no step width keeps the contact within the limit, just as the
+    helix that opens it cuts a full slot. Strokes still unproven at half the
+    declared width are cut as lead moves at the entry feed (the helix feed,
+    else the plunge feed) and counted (`confined_strokes`,
+    `confined_stroke_mm`, `confined_max_engagement_deg`). This needs an entry
+    that allows a helix; with `StockEdgeEntry(helix=None)` the operation
+    stops and names the place.
+  - Every cutting and link move is also checked exactly against the layer
+    region before it is emitted, and the run fails rather than emit one that
+    does not fit. Orbit options and `omit_empty_cuts` do not apply, the entry
+    must be `StockEdgeEntry`, and the direction is `cutting_sense` (`"climb"`
+    by default, `"conventional"`); `clockwise` does not apply.
+  - `path_strategy="disk_front"` is refused in `Roughing`. It covers a region
+    it takes to be solid with small orbits and never reads the stock;
+    `Roughing`'s region is the stock grown by a margin, so it orbited through
+    the air beside the stock (#167: 75 m of a 137 m path on a 130 x 90 mm
+    stock). It remains `AdaptivePocket`'s strategy, where the region's
+    boundary is a wall. `path_strategy="stock_front"` is a development
+    strategy with the same options as `AdaptivePocket`.
+  With `rapid_descent_clearance_mm`
   (opt-in, on `Roughing`), a descent into a column that the committed cuts
   prove clear for the whole tool assembly is rapid down to that far above
   the proven height, and only the rest is fed; otherwise every entry feeds

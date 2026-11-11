@@ -437,81 +437,85 @@ fn exact_height_for(c: &Curve, p: [f64; 2], cutter_radius: f64, top: f64) -> f64
     }
 }
 
-type ClearDisk = ([f64; 2], f64);
-#[derive(Default)]
-struct ExposureOracle {
-    cells: std::collections::HashMap<(i32, i32), Vec<ClearDisk>>,
-    last: Option<ClearDisk>,
+/// Independent, sampled engagement check for any path at one depth: no
+/// prover, planner or stock code. Earlier feed moves are kept as centre
+/// samples; a point of the cutter's leading half-circle is in material when it
+/// lies in the stock footprint and no earlier centre (of an earlier move, or
+/// earlier on this one) is within the cutter radius. Sampling can only miss
+/// thin slivers, so it is a refutation check with a stated slack, not a proof.
+struct LeadingOracle {
+    r: f64,
+    step: f64,
+    footprint: [[f64; 2]; 2],
+    cells: std::collections::HashMap<(i32, i32), Vec<[f64; 2]>>,
+    worst_deg: f64,
 }
-fn farthest(c: &Curve, a: f64, b: f64, p: [f64; 2]) -> f64 {
-    let x = position(c, a);
-    let y = position(c, b);
-    let mut q = (x[0] - p[0])
-        .hypot(x[1] - p[1])
-        .max((y[0] - p[0]).hypot(y[1] - p[1]));
-    if let Some((o, s)) = circle(c) {
-        let t = c.start();
-        let phase = (t[1] - o[1]).atan2(t[0] - o[0]);
-        let r = (t[0] - o[0]).hypot(t[1] - o[1]);
-        let angle = (o[1] - p[1]).atan2(o[0] - p[0]);
-        let u = phase + s * a;
-        let v = phase + s * b;
-        if ((u.min(v) - angle) / TAU).ceil() <= ((u.max(v) - angle) / TAU).floor() {
-            q = q.max((o[0] - p[0]).hypot(o[1] - p[1]) + r);
+impl LeadingOracle {
+    fn new(r: f64, footprint: [[f64; 2]; 2]) -> Self {
+        Self {
+            r,
+            step: r / 20.,
+            footprint,
+            cells: Default::default(),
+            worst_deg: 0.,
         }
     }
-    q
-}
-impl ExposureOracle {
-    fn key(p: [f64; 2]) -> (i32, i32) {
-        ((p[0] / 2.).floor() as i32, (p[1] / 2.).floor() as i32)
+    fn key(&self, p: [f64; 2]) -> (i32, i32) {
+        (
+            (p[0] / self.r).floor() as i32,
+            (p[1] / self.r).floor() as i32,
+        )
     }
-    fn add(&mut self, d: ClearDisk) {
-        self.cells.entry(Self::key(d.0)).or_default().push(d);
-        self.last = Some(d);
+    fn cleared(&self, p: [f64; 2]) -> bool {
+        // Discs at samples `step` apart cover the swept strip but for
+        // slivers step^2 / (8 r) deep.
+        let reach = self.r + self.step * self.step / (8. * self.r) + 1e-9;
+        let k = self.key(p);
+        (k.0 - 1..=k.0 + 1).any(|x| {
+            (k.1 - 1..=k.1 + 1).any(|y| {
+                self.cells
+                    .get(&(x, y))
+                    .is_some_and(|v| v.iter().any(|q| (q[0] - p[0]).hypot(q[1] - p[1]) <= reach))
+            })
+        })
     }
-    fn proves(c: &Curve, a: f64, b: f64, d: ClearDisk) -> bool {
-        let q = farthest(c, a, b, d.0);
-        q + 1. <= d.1 + 1e-10 || (q > 0. && (d.1 * d.1 - q * q - 1.) / (2. * q) >= 0.75 - 1e-8)
+    fn poses(&self, c: &Curve) -> Vec<([f64; 2], f64)> {
+        let len = match circle(c) {
+            Some((o, s)) => (c.start()[0] - o[0]).hypot(c.start()[1] - o[1]) * s.abs(),
+            None => (c.end()[0] - c.start()[0]).hypot(c.end()[1] - c.start()[1]),
+        };
+        let n = (len / self.step).ceil().max(1.) as usize;
+        (0..=n)
+            .map(|i| {
+                let t = i as f64 / n as f64;
+                let p = position(c, t);
+                let heading = match circle(c) {
+                    Some((o, s)) => (p[1] - o[1]).atan2(p[0] - o[0]) + s.signum() * PI / 2.,
+                    None => (c.end()[1] - c.start()[1]).atan2(c.end()[0] - c.start()[0]),
+                };
+                ([p[0], p[1]], heading)
+            })
+            .collect()
     }
-    fn check(&mut self, c: &Curve) {
-        let mut intervals = vec![(0., 1., 0)];
-        let mut visits = 0;
-        while let Some((a, b, depth)) = intervals.pop() {
-            visits += 1;
-            assert!(visits < 200_000, "engagement certificate work bound");
-            if box_distance(bounds(c, a, b), [[0., 0.], [32., 28.]]) >= 1. {
-                continue;
-            }
-            if self.last.is_some_and(|d| Self::proves(c, a, b, d)) {
-                continue;
-            }
-            let p = position(c, (a + b) / 2.);
-            let key = Self::key([p[0], p[1]]);
-            let mut found = None;
-            'search: for x in key.0 - 2..=key.0 + 2 {
-                for y in key.1 - 2..=key.1 + 2 {
-                    if let Some(disks) = self.cells.get(&(x, y)) {
-                        for &d in disks.iter().rev() {
-                            if Self::proves(c, a, b, d) {
-                                found = Some(d);
-                                break 'search;
-                            }
-                        }
-                    }
+    /// A flat feed move the cutter makes: clears its sweep; with `check`,
+    /// its leading contact is measured first, pose by pose.
+    fn feed(&mut self, c: &Curve, check: bool) {
+        for (i, (p, heading)) in self.poses(c).into_iter().enumerate() {
+            if check && i > 0 {
+                let mut hit = 0;
+                for d in -89..=89 {
+                    let a = heading + (d as f64).to_radians();
+                    let q = [p[0] + self.r * a.cos(), p[1] + self.r * a.sin()];
+                    let inside = q[0] > self.footprint[0][0]
+                        && q[0] < self.footprint[1][0]
+                        && q[1] > self.footprint[0][1]
+                        && q[1] < self.footprint[1][1];
+                    hit += usize::from(inside && !self.cleared(q));
                 }
+                self.worst_deg = self.worst_deg.max(hit as f64);
             }
-            if found.is_some() {
-                self.last = found;
-                continue;
-            }
-            assert!(
-                depth < 28,
-                "whole-motion exposure exceeds 2acos(.75) at{c:?} fraction{a}..{b}"
-            );
-            let m = (a + b) / 2.;
-            intervals.push((a, m, depth + 1));
-            intervals.push((m, b, depth + 1));
+            let k = self.key(p);
+            self.cells.entry(k).or_default().push(p);
         }
     }
 }
@@ -543,9 +547,9 @@ fn real_cad_roughing_streams_both_entries_and_preserves_whole_columns_and_every_
             let mut outside = 0;
             let mut helices = 0;
             let mut last_helix_end: Option<[f64; 3]> = None;
-            let mut exposure = ExposureOracle::default();
+            let limit = 0.75f64.acos().to_degrees();
+            let mut leading = LeadingOracle::new(1., [[0., 0.], [32., 28.]]);
             let mut depth = 10.;
-            let mut needs_floor_circle = false;
             while let Some(motion) = plan.next_motion_with_stock(&stock, &cancel).unwrap() {
                 assert_eq!(motion.id, 17 + curves.len() as u64);
                 assert_eq!(motion.operation, "rough");
@@ -571,54 +575,64 @@ fn real_cad_roughing_streams_both_entries_and_preserves_whole_columns_and_every_
                     );
                     assert_eq!(serde_json::to_value(plan.report()).unwrap(), before);
                 }
-                if adaptive {
-                    let z = motion.curve.start()[2].min(current[2]);
-                    if z < depth - 1e-7 {
-                        exposure = ExposureOracle::default();
-                        depth = z;
+                let flat = motion.curve.start()[2] == current[2]
+                    && !matches!(motion.curve, Curve::Helix { .. });
+                if adaptive && flat && motion.kind != MoveKind::Rapid {
+                    if current[2] < depth - 1e-7 {
+                        // A new layer: nothing is cleared at this depth yet.
+                        assert!(leading.worst_deg <= limit + 3., "{}", leading.worst_deg);
+                        leading = LeadingOracle::new(1., [[0., 0.], [32., 28.]]);
+                        depth = current[2];
                     }
-                    if let Some((o, s)) = circle(&motion.curve) {
-                        let p = motion.curve.start();
-                        let radius = (p[0] - o[0]).hypot(p[1] - o[1]);
-                        if box_distance([[o[0], o[1]], [o[0], o[1]]], [[0., 0.], [32., 28.]])
-                            >= 1. + radius
-                        {
-                            exposure.add(([o[0], o[1]], 1. + radius));
-                        }
-                        if needs_floor_circle && !matches!(motion.curve, Curve::Helix { .. }) {
-                            assert_eq!(motion.kind, MoveKind::Cut);
-                            assert!((s.abs() - TAU).abs() < 1e-9);
-                            assert_eq!(p[2], current[2]);
-                        }
-                    } else {
-                        assert!(
-                            !needs_floor_circle,
-                            "helix failed to clear a real floor circle"
-                        );
-                    }
-                    if matches!(motion.kind, MoveKind::Cut | MoveKind::Link) && !needs_floor_circle
-                    {
-                        exposure.check(&motion.curve);
-                    }
-                    needs_floor_circle = matches!(motion.curve, Curve::Helix { .. });
-                    if motion.kind == MoveKind::Cut {
-                        let (o, s) = circle(&motion.curve).unwrap();
-                        let p = motion.curve.start();
-                        assert!((s.abs() - TAU).abs() < 1e-9);
-                        exposure.add(([o[0], o[1]], 1. + (p[0] - o[0]).hypot(p[1] - o[1])));
-                    }
+                    // Independent of the planner's own proof: every cutting
+                    // and stay-down link stroke keeps its leading contact
+                    // within acos(1 - w/r). Entry strokes (helix floors,
+                    // confined material) only clear.
+                    leading.feed(
+                        &motion.curve,
+                        matches!(motion.kind, MoveKind::Cut | MoveKind::Link),
+                    );
                 }
                 if motion.kind == MoveKind::Plunge && current[2] < 10. {
-                    assert!(
-                        box_distance(bounds(&motion.curve, 0., 1.), [[0., 0.], [32., 28.]]) > 1.,
-                        "air entry disk hits stock"
-                    );
-                    outside += 1;
+                    let beside =
+                        box_distance(bounds(&motion.curve, 0., 1.), [[0., 0.], [32., 28.]]) > 1.;
+                    if !adaptive {
+                        assert!(beside, "air entry disk hits stock");
+                    } else if !beside {
+                        // engagement_front also enters through stock it has
+                        // cut: the exact heights every earlier motion left
+                        // under the cutter are at or below the plunge's end.
+                        for radial in [0., 0.5, 1.] {
+                            for i in 0..16 {
+                                let angle = TAU * i as f64 / 16.;
+                                let p = [
+                                    current[0] + radial * angle.cos(),
+                                    current[1] + radial * angle.sin(),
+                                ];
+                                if p[0] < 0. || p[0] > 32. || p[1] < 0. || p[1] > 28. {
+                                    continue;
+                                }
+                                let height = curves
+                                    .iter()
+                                    .map(|c| exact_height(c, p))
+                                    .fold(10f64, f64::min);
+                                assert!(
+                                    height <= current[2] + 1e-6,
+                                    "plunge into material at {p:?}: {height} > {}",
+                                    current[2]
+                                );
+                            }
+                        }
+                    }
+                    outside += usize::from(beside);
                 }
                 if let Some((_, s)) = circle(&motion.curve)
                     && matches!(motion.curve, Curve::Helix { .. })
                 {
-                    assert_eq!(s < 0., clockwise);
+                    // Raster follows `clockwise`. engagement_front's direction
+                    // is its cutting sense (climb by default): a bore cut
+                    // counter-clockwise, whatever `clockwise` says.
+                    assert_eq!(s < 0., clockwise && !adaptive);
                     // One helix motion per turn; count descents, not turns.
                     helices += usize::from(last_helix_end != Some(motion.curve.start()));
                     last_helix_end = Some(motion.curve.end());
@@ -634,20 +648,30 @@ fn real_cad_roughing_streams_both_entries_and_preserves_whole_columns_and_every_
             let floor = r["target_z_mm"].as_f64().unwrap();
             assert_eq!(r["completed_layers"], 4);
             assert_eq!(r["layers"].as_array().unwrap().len(), 4);
-            assert_eq!(r["stock_edge_entries"], outside);
+            eprintln!(
+                "adaptive={adaptive} clockwise={clockwise}: {} moves, edge entries {} (beside the stock {outside}), helices {} ({helices})",
+                curves.len(),
+                r["stock_edge_entries"],
+                r["helical_entries"]
+            );
             assert_eq!(r["helical_entries"], helices);
+            if adaptive {
+                // Entries from beside the stock, and through stock already cut.
+                assert!(r["stock_edge_entries"].as_u64().unwrap() >= outside as u64);
+            } else {
+                assert_eq!(r["stock_edge_entries"], outside);
+            }
             assert!(outside >= 4 && helices >= 4);
             assert_eq!(r["motions"], curves.len());
             if adaptive {
-                let phi = 2. * 0.75f64.acos().to_degrees();
-                assert!((r["max_engagement_deg"].as_f64().unwrap() - phi).abs() < 1e-12);
+                assert!(leading.worst_deg <= limit + 3., "{}", leading.worst_deg);
+                assert!((r["max_engagement_deg"].as_f64().unwrap() - limit).abs() < 1e-12);
                 for layer in r["layers"].as_array().unwrap() {
-                    assert!(
-                        layer["clearing"]["max_bounded_engagement_deg"]
-                            .as_f64()
-                            .unwrap()
-                            <= phi
-                    );
+                    let c = &layer["clearing"];
+                    assert_eq!(c["strategy"], "engagement_front");
+                    assert!((c["engagement_limit_deg"].as_f64().unwrap() - limit).abs() < 1e-12);
+                    assert!(c["proven_max_engagement_deg"].as_f64().unwrap() <= limit);
+                    assert!(c["engagement_proved_strokes"].as_u64().unwrap() > 0);
                 }
             }
             for (i, cell) in stock.cells().iter().enumerate() {
@@ -1193,6 +1217,167 @@ fn run_engagement_front(m: &StreamManifest) -> (Vec<camlib::motion::Motion>, f64
     (history, nominal)
 }
 
+/// #167: adaptive roughing around a 100 x 60 x 20 mm block in a 130 x 90 mm
+/// stock, one 7 mm layer, 10 mm cutter, 3 mm radial engagement. The old
+/// default (disk_front) orbited through the air beside the stock (17,792
+/// moves, 137 m of cut, 75 m of it wholly outside the stock footprint) and
+/// engagement_front could not start without a helix.
+#[test]
+fn issue_167_open_block_is_cleared_from_the_stock_edge_within_its_engagement() {
+    let base: StreamManifest = serde_json::from_str(include_str!(
+        "../fixtures/operations/roughing-open-block.json"
+    ))
+    .unwrap();
+    base.validate().unwrap();
+    let footprint = [[-15., -15.], [115., 75.]];
+    let (r, w) = (5., 3.);
+    let limit = (1f64 - w / r).acos().to_degrees();
+    let mut paths = vec![];
+    for helix in [false, true] {
+        let mut m = base.clone();
+        let Operation::Roughing(op) = &mut m.operations[0] else {
+            panic!("fixture")
+        };
+        // The issue's two entries: StockEdgeEntry(helix=None), StockEdgeEntry().
+        assert!(matches!(op.entry, PocketEntry::StockEdge(_)));
+        if helix {
+            op.entry = PocketEntry::StockEdgeOrHelix(HelicalEntry {
+                angle_rad: 3f64.to_radians(),
+                ..HelicalEntry::default()
+            });
+        }
+        let tool = m.tools[0].prepare().unwrap();
+        let mut stock = Stock::new(m.stock.height().unwrap().clone()).unwrap();
+        let mut plan = OperationPlan::prepare_with_stock(
+            m.operations[0].clone(),
+            &m.tools[0],
+            &stock,
+            m.initial_position_mm,
+            1,
+            &|| false,
+        )
+        .unwrap();
+        let mut leading = LeadingOracle::new(r, footprint);
+        let mut motions = vec![];
+        let (mut cut, mut link, mut plunges) = (0., 0., 0);
+        while let Some(motion) = plan.next_motion_with_stock(&stock, &|| false).unwrap() {
+            assert!(motions.len() < 1000, "unbounded path");
+            let c = &motion.curve;
+            assert!(
+                !matches!(c, Curve::Helix { .. }) && motion.kind != MoveKind::Lead,
+                "an open block needs no helix and has no confined material: {motion:?}"
+            );
+            let length = c.prepare(1e-5).unwrap().length_mm();
+            match motion.kind {
+                MoveKind::Plunge => {
+                    // Every descent is in the air beside the stock, or over
+                    // stock this operation has cut down to the layer.
+                    let beside = box_distance(bounds(c, 0., 1.), footprint) > r;
+                    if plunges == 0 {
+                        assert!(beside, "the first entry is from beside the stock: {c:?}");
+                    } else if !beside {
+                        let p = [c.end()[0], c.end()[1]];
+                        for i in 0..16 {
+                            let a = TAU * i as f64 / 16.;
+                            let q = [p[0] + 0.99 * r * a.cos(), p[1] + 0.99 * r * a.sin()];
+                            let inside = q[0] > footprint[0][0]
+                                && q[0] < footprint[1][0]
+                                && q[1] > footprint[0][1]
+                                && q[1] < footprint[1][1];
+                            assert!(!inside || leading.cleared(q), "plunge into stock at {q:?}");
+                        }
+                    }
+                    plunges += 1;
+                }
+                MoveKind::Cut | MoveKind::Link => {
+                    // No cutting through the air beside the stock: the
+                    // cutter is never more than a short approach away.
+                    assert!(
+                        box_distance(bounds(c, 0., 1.), footprint) < 1.5 * r,
+                        "cut beside the stock: {c:?}"
+                    );
+                    if motion.kind == MoveKind::Cut {
+                        cut += length;
+                    } else {
+                        link += length;
+                    }
+                    leading.feed(c, true);
+                }
+                _ => {}
+            }
+            let delta = stock
+                .preview_sweep(&tool, &motion, 1., m.sweep, &|| false)
+                .unwrap();
+            stock.apply_delta(&delta).unwrap();
+            motions.push(motion);
+        }
+        plan.finish_report(&|| false).unwrap();
+        // Independent of the planner and its proof: the leading contact of
+        // every cutting and link stroke, sampled (3 degrees of slack).
+        assert!(leading.worst_deg <= limit + 3., "{}", leading.worst_deg);
+        let report = serde_json::to_value(plan.report()).unwrap();
+        let c = &report["layers"][0]["clearing"];
+        assert_eq!(c["strategy"], "engagement_front");
+        assert!((c["engagement_limit_deg"].as_f64().unwrap() - limit).abs() < 1e-9);
+        let proven = c["proven_max_engagement_deg"].as_f64().unwrap();
+        assert!(proven <= limit && proven > 0.9 * limit, "{proven}");
+        assert!(c["proven_max_engagement_mm"].as_f64().unwrap() <= w);
+        assert!(c["engagement_proved_strokes"].as_u64().unwrap() >= 50);
+        assert_eq!(c["helical_entries"], 0);
+        assert!(c.get("confined_strokes").is_none());
+        // One pass per ring of material, not a hundred nibbles at a strip
+        // (each pass starts at the upstream end of what it cuts), and no
+        // more cutting than the material needs: 5,600 mm2 at up to 3 mm.
+        let passes = c["passes"].as_u64().unwrap();
+        assert!(passes <= 12, "{passes} passes");
+        assert!(link < 250., "{link} mm of links");
+        assert!((1860. ..2700.).contains(&cut), "{cut} mm of cut");
+        assert!(motions.len() < 400, "{} motions", motions.len());
+        // Everything outside the part and its allowance is down to the layer.
+        let floor = report["target_z_mm"].as_f64().unwrap();
+        for (i, cell) in stock.cells().iter().enumerate() {
+            let p = stock.cell_center(i).unwrap();
+            if p[0] < -1.5 || p[0] > 101.5 || p[1] < -1.5 || p[1] > 61.5 {
+                assert!(cell.upper_mm <= floor + 1e-4, "uncut at {p:?}: {cell:?}");
+            } else if p[0] > 0.5 && p[0] < 99.5 && p[1] > 0.5 && p[1] < 59.5 {
+                assert_eq!(cell.lower_mm, 21., "the part's stock is untouched at {p:?}");
+            }
+        }
+        paths.push(
+            motions
+                .iter()
+                .map(|m| (m.kind, m.curve.clone()))
+                .collect::<Vec<_>>(),
+        );
+    }
+    // Allowing a helix changes nothing where none is needed.
+    assert_eq!(paths[0], paths[1]);
+    // The old default is refused, with the reason.
+    let mut m = base.clone();
+    let Operation::Roughing(op) = &mut m.operations[0] else {
+        panic!("fixture")
+    };
+    let camlib::roughing::RoughingClearing::Adaptive { path_strategy, .. } = &mut op.clearing
+    else {
+        panic!("clearing")
+    };
+    *path_strategy = camlib::adaptive::AdaptivePathStrategy::DiskFront;
+    let error = OperationPlan::prepare(
+        m.operations[0].clone(),
+        &m.tools[0],
+        m.stock.height().unwrap(),
+        m.initial_position_mm,
+        1,
+        &AtomicBool::new(false),
+    )
+    .err()
+    .unwrap();
+    assert!(
+        error.contains("disk_front") && error.contains("engagement_front"),
+        "{error}"
+    );
+}
+
 #[test]
 fn engagement_front_rapid_descent_stops_above_proven_cut_stock() {
     let base = engagement_front_frustum();
@@ -1438,8 +1623,8 @@ fn radial_width_is_an_upper_limit_and_can_use_a_stricter_native_angle() {
     .unwrap();
     let r = serde_json::to_value(plan.report()).unwrap();
     assert_eq!(r["max_radial_engagement_mm"], 1.);
-    assert_eq!(r["max_engagement_deg"], 170.);
-    assert!(1. - (170f64.to_radians() / 2.).cos() < 1.);
+    // The whole radius: a quarter of the circumference ahead of the cutter.
+    assert_eq!(r["max_engagement_deg"], 90.);
 }
 
 struct ScheduledRun {
@@ -2168,30 +2353,6 @@ fn exact_centres_with<'a>(
     heights
 }
 
-// Independent whole-disk/whole-cell oracle: scan all cell rectangles, with no
-// production curve bounds, distance query, budget or empty-cut helper involved.
-fn certify_empty_disk(stock: &Stock, curve: &Curve) -> ClearDisk {
-    let (c, sweep) = circle(curve).unwrap();
-    assert!((sweep.abs() - TAU).abs() < 1e-9);
-    assert_eq!(curve.start(), curve.end());
-    let p = curve.start();
-    let radius = 1. + (p[0] - c[0]).hypot(p[1] - c[1]);
-    let half = stock.cell_widths_mm().map(|x| x / 2.);
-    for (i, cell) in stock.cells().iter().enumerate() {
-        let q = stock.cell_center(i).unwrap();
-        let distance = ((c[0] - q[0]).abs() - half[0])
-            .max(0.)
-            .hypot(((c[1] - q[1]).abs() - half[1]).max(0.));
-        if distance <= radius + 1e-8 {
-            assert!(
-                cell.upper_mm <= p[2],
-                "omitted disk overlaps high/uncertain cell{i}"
-            );
-        }
-    }
-    ([c[0], c[1]], radius)
-}
-
 #[test]
 fn empty_cut_policy_preserves_material_pose_entries_and_exposure_across_strategies() {
     use camlib::roughing::RoughingClearing;
@@ -2199,10 +2360,11 @@ fn empty_cut_policy_preserves_material_pose_entries_and_exposure_across_strategi
         ("raster", true, 0f64),
         ("offset", true, 0.),
         ("offset", false, 0.61),
-        ("adaptive", true, 0.),
-        ("adaptive", false, 0.),
     ] {
-        let mut m = fixture(strategy == "adaptive");
+        // Adaptive roughing (engagement_front) plans every pass from the
+        // committed stock, so it has no empty cuts to omit and refuses the
+        // option (engagement_front_refuses_...).
+        let mut m = fixture(false);
         let Operation::Roughing(op) = &mut m.operations[0] else {
             panic!("rough")
         };
@@ -2294,12 +2456,6 @@ fn empty_cut_policy_preserves_material_pose_entries_and_exposure_across_strategi
                 assert!(b[i] <= floor + 1e-6, "missed accessible core");
             }
         }
-        let mut exposure = ExposureOracle::default();
-        let mut depth = 10.;
-        let mut replay_stock = Stock::new(m.stock.height().unwrap().clone()).unwrap();
-        let replay_tool = m.tools[0].prepare().unwrap();
-        let cancel = AtomicBool::new(false);
-        let mut old_at = 0;
         for (i, motion) in new.motions.iter().enumerate() {
             certify_part(&rotate_curve(motion.curve.clone(), -angle));
             if let Curve::Helix { sweep_rad, .. } = motion.curve
@@ -2307,63 +2463,10 @@ fn empty_cut_policy_preserves_material_pose_entries_and_exposure_across_strategi
             {
                 assert_eq!(sweep_rad < 0., clockwise);
                 let next = &new.motions[i + 1];
-                assert_eq!(
-                    next.kind,
-                    if strategy == "adaptive" {
-                        MoveKind::Cut
-                    } else {
-                        MoveKind::Lead
-                    }
-                );
+                assert_eq!(next.kind, MoveKind::Lead);
                 assert!((circle(&next.curve).unwrap().1.abs() - TAU).abs() < 1e-9);
                 assert_eq!(next.curve.start()[2], next.curve.end()[2]);
             }
-            if strategy == "adaptive" {
-                let z = motion.curve.start()[2].min(motion.curve.end()[2]);
-                if z < depth - 1e-7 {
-                    exposure = ExposureOracle::default();
-                    depth = z;
-                }
-                // The original oracle only knew executed clearing disks.
-                // Independently prove every newly omitted baseline orbit empty
-                // before admitting it as an exposure premise. Other original
-                // primitives must remain byte-identical and in order.
-                while old.motions[old_at].curve != motion.curve {
-                    let omitted = &old.motions[old_at];
-                    assert_eq!(omitted.kind, MoveKind::Cut);
-                    exposure.add(certify_empty_disk(&replay_stock, &omitted.curve));
-                    old_at += 1;
-                }
-                assert_eq!(old.motions[old_at].kind, motion.kind);
-                assert_eq!(old.motions[old_at].feed_mm_min, motion.feed_mm_min);
-                old_at += 1;
-                if let Some((o, _)) = circle(&motion.curve) {
-                    let p = motion.curve.start();
-                    let radius = (p[0] - o[0]).hypot(p[1] - o[1]);
-                    if box_distance([[o[0], o[1]], [o[0], o[1]]], [[0., 0.], [32., 28.]])
-                        >= 1. + radius
-                    {
-                        exposure.add(([o[0], o[1]], 1. + radius));
-                    }
-                }
-                let seed = i > 0 && matches!(new.motions[i - 1].curve, Curve::Helix { .. });
-                if matches!(motion.kind, MoveKind::Cut | MoveKind::Link) && !seed {
-                    exposure.check(&motion.curve);
-                }
-                if motion.kind == MoveKind::Cut {
-                    let (o, _) = circle(&motion.curve).unwrap();
-                    let p = motion.curve.start();
-                    exposure.add(([o[0], o[1]], 1. + (p[0] - o[0]).hypot(p[1] - o[1])));
-                }
-                let delta = replay_stock
-                    .preview_sweep(&replay_tool, motion, 1., m.sweep, &cancel)
-                    .unwrap();
-                replay_stock.apply_delta(&delta).unwrap();
-            }
-        }
-        if strategy == "adaptive" {
-            assert_eq!(old_at, old.motions.len());
-            assert_eq!(replay_stock.cells(), new.stock.cells());
         }
         eprintln!(
             "{strategy}/{clockwise}/{angle}: {} ->{} moves, {} ->{} nominal seconds, {skipped} empty guides/orbits",
@@ -2800,12 +2903,10 @@ fn empty_roughing_still_validates_tool_source_pose_setup_entry_and_all_strategy_
                     }
                 },
                 |c| {
-                    if let RoughingClearing::Adaptive {
-                        boundary_tolerance_mm,
-                        ..
-                    } = c
-                    {
-                        *boundary_tolerance_mm = 0.
+                    // #167: disk_front never reads the stock; Roughing
+                    // refuses it.
+                    if let RoughingClearing::Adaptive { path_strategy, .. } = c {
+                        *path_strategy = camlib::adaptive::AdaptivePathStrategy::DiskFront
                     }
                 },
                 |c| {
@@ -2818,8 +2919,12 @@ fn empty_roughing_still_validates_tool_source_pose_setup_entry_and_all_strategy_
                     }
                 },
                 |c| {
-                    if let RoughingClearing::Adaptive { cutting_sense, .. } = c {
-                        *cutting_sense = Some(camlib::adaptive::CuttingSense::Climb)
+                    if let RoughingClearing::Adaptive {
+                        max_radial_engagement_mm,
+                        ..
+                    } = c
+                    {
+                        *max_radial_engagement_mm = 1.5
                     }
                 },
             ];

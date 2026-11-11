@@ -840,10 +840,11 @@
       "clearance_z_mm": 12,
       "clearing": {
         "kind": "adaptive",
+        "path_strategy": "engagement_front",
         "max_radial_engagement_mm": 0.25,
-        "orbit_radius_mm": 0.5,
-        "min_orbit_radius_mm": 0.2,
-        "local_orbit_tolerance_mm": 0.05,
+        "orbit_radius_mm": null,
+        "min_orbit_radius_mm": null,
+        "local_orbit_tolerance_mm": null,
         "boundary_tolerance_mm": 0.01
       },
       "feed_mm_min": 600,

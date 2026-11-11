@@ -273,6 +273,11 @@ pub struct EngagementScene {
     index: Vec<IndexNode>,
     roots: Vec<usize>,
 }
+pub(crate) struct SceneMark {
+    supports: usize,
+    index: usize,
+    roots: Vec<usize>,
+}
 struct IndexNode {
     bounds: [Point; 2],
     /// Lowest removal floor in this entire subtree. Higher-only history can
@@ -317,8 +322,15 @@ impl IndexStack {
 #[derive(Clone, Copy)]
 enum Metric {
     Total,
-    WrongSide { material_on_right: bool },
-    Front { material_on_right: bool },
+    /// Contact on the leading side only: the trailing side is the cutter's
+    /// own swept trail (see `trail_sector`).
+    Leading,
+    WrongSide {
+        material_on_right: bool,
+    },
+    Front {
+        material_on_right: bool,
+    },
 }
 
 impl EngagementScene {
@@ -352,8 +364,21 @@ impl EngagementScene {
         }
         Ok(scene)
     }
-    pub(crate) fn support_count(&self) -> usize {
-        self.supports.len()
+    /// The scene's current extent, to return to with `restore`: supports are
+    /// only ever appended, and index nodes are immutable once written.
+    pub(crate) fn mark(&self) -> SceneMark {
+        SceneMark {
+            supports: self.supports.len(),
+            index: self.index.len(),
+            roots: self.roots.clone(),
+        }
+    }
+    /// Drop every support appended since `mark` (premises that were only
+    /// planned, never committed).
+    pub(crate) fn restore(&mut self, mark: SceneMark) {
+        self.supports.truncate(mark.supports);
+        self.index.truncate(mark.index);
+        self.roots = mark.roots;
     }
     pub(crate) fn stock_spec(&self) -> &StockSpec {
         &self.stock
@@ -471,6 +496,34 @@ impl EngagementScene {
             max_angle_deg,
             options,
             Metric::Total,
+            cancel,
+        )
+    }
+    /// The cutter's engagement while it advances along `motion`: an upper
+    /// bound on the contact angle that excludes the cutter's own trail.
+    ///
+    /// `check` bounds contact with everything the committed supports have
+    /// not cleared, which counts material this same motion has just removed
+    /// behind the cutter: in a straight pass of radial width w it reports
+    /// 2 acos(1 - w/r), twice the engagement. Here the trailing sector is
+    /// known clear for every pose after the motion's start (`trail_sector`),
+    /// so the bound is the engagement itself, acos(1 - w/r) in that pass.
+    /// The start pose itself is the previous motion's end pose and is covered
+    /// by that motion's bound.
+    pub fn check_leading(
+        &self,
+        motion: &Motion,
+        radius: f64,
+        max_angle_deg: f64,
+        options: EngagementOptions,
+        cancel: &impl CancelSignal,
+    ) -> Result<EngagementReport, String> {
+        self.check_metric(
+            motion,
+            radius,
+            max_angle_deg,
+            options,
+            Metric::Leading,
             cancel,
         )
     }
@@ -1061,6 +1114,7 @@ impl EngagementScene {
         #[cfg(feature = "profile-planning")]
         let _profile = crate::planning_profile::span(match metric {
             Metric::Total => "engagement.total",
+            Metric::Leading => "engagement.leading",
             Metric::WrongSide { .. } => "engagement.side",
             Metric::Front { .. } => "engagement.front",
         });
@@ -1220,6 +1274,16 @@ impl EngagementScene {
         let pad = (8. * (numeric / r).sqrt()).min(PI);
         let forbidden = forbidden_sector(span, pad, metric);
         let mut intervals = vec![];
+        if matches!(metric, Metric::Leading)
+            && let Some([lo, hi]) = trail_sector(span, r, pad)
+        {
+            if hi <= TAU {
+                intervals.push([lo, hi]);
+            } else {
+                intervals.push([lo, TAU]);
+                intervals.push([0., hi - TAU]);
+            }
+        }
         let x = span.projection([1., 0.]);
         let y = span.projection([0., 1.]);
         let material = self.material_bounds(p3[2]);
@@ -1342,7 +1406,7 @@ impl EngagementScene {
                     let _profile = crate::planning_profile::span("engagement.line_support");
                     if span.a == 0. && span.b == 1. {
                         let right = match metric {
-                            Metric::Total => None,
+                            Metric::Total | Metric::Leading => None,
                             Metric::WrongSide { material_on_right }
                             | Metric::Front { material_on_right } => Some(material_on_right),
                         };
@@ -1840,10 +1904,49 @@ fn forbidden_sector(span: &Span<'_>, pad: f64, metric: Metric) -> Option<[f64; 2
         Metric::WrongSide { material_on_right } | Metric::Front { material_on_right } => {
             material_on_right
         }
-        Metric::Total => return None,
+        Metric::Total | Metric::Leading => return None,
     };
+    let (heading, turn) = span_heading(span);
+    // The union of instantaneous forbidden halves. Existing world-angle
+    // clear intervals hold for every centre in this whole span.
+    let half = (PI / 2. + turn + pad).min(PI);
+    let centre = heading + if material_on_right { PI / 2. } else { -PI / 2. };
+    let lo = (centre - half).rem_euclid(TAU);
+    let hi = lo + 2. * half;
+    Some(if half == PI { [0., TAU] } else { [lo, hi] })
+}
+
+/// World angles of the cutter circumference that lie in the cutter's own
+/// swept trail for every pose of `span` after the motion's start.
+///
+/// A circumference point at angle t from the feed direction, at centre c, is
+/// p = c + r (cos t, sin t). The centre a small arc length d earlier is
+/// c - d u + O(d^2) for the unit heading u, so the squared distance from p to
+/// it is r^2 + 2 r d cos t + O(d^2). For cos t < 0 that is below r^2: the
+/// point is strictly inside the cutter disc at that earlier pose, and the
+/// cutter has already removed it at this same depth. The open trailing half
+/// is therefore clear at every pose with any trail behind it, on lines and
+/// arcs alike.
+///
+/// Over a span the heading varies by `turn` either side of its middle, so
+/// only the intersection of the trailing halves is used, less the angular
+/// reserve `pad` and the angle the path's declared position error can turn
+/// the heading over one cutter radius.
+fn trail_sector(span: &Span<'_>, r: f64, pad: f64) -> Option<[f64; 2]> {
+    let (heading, turn) = span_heading(span);
+    let reserve = turn + pad + (span.error / r).min(1.).asin();
+    let half = PI / 2. - reserve;
+    if half <= 0. {
+        return None;
+    }
+    let lo = (heading + PI - half).rem_euclid(TAU);
+    Some([lo, lo + 2. * half])
+}
+
+/// Feed heading at the middle of the span and the most it turns either side.
+fn span_heading(span: &Span<'_>) -> (f64, f64) {
     let mid = (span.a + span.b) / 2.;
-    let (heading, turn) = match span.motion.curve {
+    match span.motion.curve {
         Curve::Line { start, end } => ((end[1] - start[1]).atan2(end[0] - start[0]), 0.),
         Curve::Arc {
             start,
@@ -1857,14 +1960,7 @@ fn forbidden_sector(span: &Span<'_>, pad: f64, metric: Metric) -> Option<[f64; 2
             sweep_rad.abs() * (span.b - span.a) / 2.,
         ),
         _ => unreachable!(),
-    };
-    // The union of instantaneous forbidden halves. Existing world-angle
-    // clear intervals hold for every centre in this whole span.
-    let half = (PI / 2. + turn + pad).min(PI);
-    let centre = heading + if material_on_right { PI / 2. } else { -PI / 2. };
-    let lo = (centre - half).rem_euclid(TAU);
-    let hi = lo + 2. * half;
-    Some(if half == PI { [0., TAU] } else { [lo, hi] })
+    }
 }
 
 fn interval_metric_bound(
@@ -1928,7 +2024,9 @@ fn sufficient_metric_bound(
 ) -> Option<f64> {
     match metric {
         Metric::WrongSide { .. } if side => Some(0.),
-        Metric::Total if upper.to_degrees().min(360.) <= max_angle_deg => Some(upper),
+        Metric::Total | Metric::Leading if upper.to_degrees().min(360.) <= max_angle_deg => {
+            Some(upper)
+        }
         Metric::Front { .. }
             if side && upper < TAU && upper.to_degrees().min(360.) <= max_angle_deg =>
         {
@@ -2385,6 +2483,232 @@ fn shape_distance(shape: &Shape, p: Point) -> f64 {
             } else {
                 end
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod leading_tests {
+    use super::*;
+    use crate::motion::{Curve, Motion, MoveKind};
+
+    fn motion(curve: Curve) -> Motion {
+        Motion {
+            id: 1,
+            operation: "op".into(),
+            tool: "t".into(),
+            kind: MoveKind::Cut,
+            curve,
+            feed_mm_min: Some(600.),
+        }
+    }
+    fn line(a: [f64; 2], b: [f64; 2]) -> Motion {
+        motion(Curve::Line {
+            start: [a[0], a[1], 5.],
+            end: [b[0], b[1], 5.],
+        })
+    }
+    fn stock() -> StockSpec {
+        StockSpec {
+            version: 1,
+            units: "mm".into(),
+            min_mm: [0., 0., 0.],
+            max_mm: [200., 100., 10.],
+            cell_size_mm: 1.,
+            max_cells: 100_000,
+        }
+    }
+    /// The smallest limit (to 0.05 degrees) at which `check` proves `m`.
+    fn least(check: impl Fn(f64) -> EngagementReport) -> f64 {
+        let (mut lo, mut hi) = (0f64, 360f64);
+        while hi - lo > 0.05 {
+            let mid = (lo + hi) / 2.;
+            if matches!(check(mid).status, EngagementStatus::Bounded) {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        hi
+    }
+
+    /// #167. A straight pass of radial width w beside an earlier pass: the
+    /// engagement is acos(1 - w/r). The total contact bound counts the wall
+    /// behind the cutter's widest point too and gives twice that.
+    #[test]
+    fn a_straight_pass_engages_acos_one_minus_w_over_r() {
+        let options = EngagementOptions::default();
+        for (r, w) in [(5., 3.), (5., 0.5), (1., 0.25), (3., 3.)] {
+            // The earlier pass runs along y = 50; this one is w further in.
+            let earlier = line([-20., 50.], [220., 50.]);
+            let scene = EngagementScene::new(
+                stock(),
+                vec![ClearedSweep::from_motion(&earlier, r, 1e-5).unwrap()],
+            )
+            .unwrap();
+            for (a, b) in [
+                ([20., 50. + w], [180., 50. + w]),
+                ([180., 50. - w], [20., 50. - w]),
+            ] {
+                let pass = line(a, b);
+                let expected = (1. - w / r).acos().to_degrees();
+                let leading = least(|max| {
+                    scene
+                        .check_leading(&pass, r, max, options, &|| false)
+                        .unwrap()
+                });
+                assert!(
+                    (leading - expected).abs() < 0.1,
+                    "r {r} w {w}: leading {leading} against {expected}"
+                );
+                let total = least(|max| scene.check(&pass, r, max, options, &|| false).unwrap());
+                assert!(
+                    (total - 2. * expected).abs() < 0.1,
+                    "r {r} w {w}: total {total} against {}",
+                    2. * expected
+                );
+            }
+        }
+    }
+
+    /// The trail is only this motion's own: material ahead and on both sides
+    /// still counts, and a slot is half the circumference.
+    #[test]
+    fn leading_contact_counts_everything_ahead() {
+        let options = EngagementOptions::default();
+        let scene = EngagementScene::new(stock(), vec![]).unwrap();
+        let slot = line([50., 50.], [150., 50.]);
+        let bound = least(|max| {
+            scene
+                .check_leading(&slot, 5., max, options, &|| false)
+                .unwrap()
+        });
+        assert!((bound - 180.).abs() < 0.1, "{bound}");
+        // In air beside the stock nothing is engaged.
+        let air = line([50., -6.], [150., -6.]);
+        assert_eq!(
+            scene
+                .check_leading(&air, 5., 0., options, &|| false)
+                .unwrap()
+                .status,
+            EngagementStatus::Bounded
+        );
+    }
+
+    /// The trail credit agrees with the same bound taken the slow way: the
+    /// motion cut into short pieces, each checked for total contact with the
+    /// pieces before it committed. A piece of length s leaves at most
+    /// 2 asin(s / 2r) of its own trail uncredited.
+    #[test]
+    fn leading_contact_agrees_with_committing_the_motion_piece_by_piece() {
+        let options = EngagementOptions::default();
+        let (r, w) = (5., 2.);
+        let earlier = motion(Curve::Arc {
+            start: [130., 50., 5.],
+            end: [70., 50., 5.],
+            center: [100., 50., 5.],
+            plane: Plane::Xy,
+            sweep_rad: PI,
+        });
+        // An arc pass concentric with the earlier one, w further out, and
+        // one w further in: the contact differs on the two sides of a curve.
+        for radius in [30. + w, 30. - w] {
+            let pass = Curve::Arc {
+                start: [100. + radius, 50., 5.],
+                end: [100. - radius, 50., 5.],
+                center: [100., 50., 5.],
+                plane: Plane::Xy,
+                sweep_rad: PI,
+            };
+            let whole = motion(pass);
+            let scene = EngagementScene::new(
+                stock(),
+                vec![ClearedSweep::from_motion(&earlier, r, 1e-5).unwrap()],
+            )
+            .unwrap();
+            let leading = least(|max| {
+                scene
+                    .check_leading(&whole, r, max, options, &|| false)
+                    .unwrap()
+            });
+            let pieces = 400;
+            let slack = 2. * (PI * radius / pieces as f64 / (2. * r)).asin().to_degrees();
+            let mut stepped = EngagementScene::new(
+                stock(),
+                vec![ClearedSweep::from_motion(&earlier, r, 1e-5).unwrap()],
+            )
+            .unwrap();
+            let mut worst = 0f64;
+            for i in 0..pieces {
+                let at = |k: usize| {
+                    let a = PI * k as f64 / pieces as f64;
+                    [100. + radius * a.cos(), 50. + radius * a.sin(), 5.]
+                };
+                let piece = motion(Curve::Arc {
+                    start: if i == 0 {
+                        [100. + radius, 50., 5.]
+                    } else {
+                        at(i)
+                    },
+                    end: if i + 1 == pieces {
+                        [100. - radius, 50., 5.]
+                    } else {
+                        at(i + 1)
+                    },
+                    center: [100., 50., 5.],
+                    plane: Plane::Xy,
+                    sweep_rad: PI / pieces as f64,
+                });
+                // The first pieces have no trail of their own yet.
+                if i > 20 {
+                    worst = worst.max(least(|max| {
+                        stepped.check(&piece, r, max, options, &|| false).unwrap()
+                    }));
+                }
+                stepped
+                    .append(ClearedSweep::from_motion(&piece, r, 1e-5).unwrap())
+                    .unwrap();
+            }
+            assert!(
+                leading <= worst + 0.1 && leading >= worst - slack - 0.1,
+                "radius {radius}: leading {leading}, piece by piece {worst} (slack {slack})"
+            );
+        }
+    }
+
+    #[test]
+    fn a_scene_returns_to_its_mark() {
+        let options = EngagementOptions::default();
+        let mut scene = EngagementScene::new(stock(), vec![]).unwrap();
+        let pass = line([20., 53.], [180., 53.]);
+        let before = least(|max| {
+            scene
+                .check_leading(&pass, 5., max, options, &|| false)
+                .unwrap()
+        });
+        for n in [1, 2, 5, 9] {
+            let mark = scene.mark();
+            for i in 0..n {
+                let y = 50. - i as f64;
+                scene
+                    .append(
+                        ClearedSweep::from_motion(&line([-20., y], [220., y]), 5., 1e-5).unwrap(),
+                    )
+                    .unwrap();
+            }
+            let with = least(|max| {
+                scene
+                    .check_leading(&pass, 5., max, options, &|| false)
+                    .unwrap()
+            });
+            assert!(with < before - 60., "{with} {before}");
+            scene.restore(mark);
+            let after = least(|max| {
+                scene
+                    .check_leading(&pass, 5., max, options, &|| false)
+                    .unwrap()
+            });
+            assert_eq!(after, before);
         }
     }
 }

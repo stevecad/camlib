@@ -423,57 +423,57 @@
     "rough": {
      "toolpath": "Roughing",
      "issue": 27,
-     "moves": 97138,
-     "cut_mm": 164270.346,
-     "rapid_mm": 250.626,
-     "air_cut_mm": 108717.969,
-     "plunges": 8,
-     "retracts": 8,
-     "removed_mm3": 5760.958,
-     "cycle_seconds_exact_stop": 17533.436,
-     "cycle_seconds_tangent": 16572.546,
-     "engine_seconds": 2.6884
+     "moves": 4499,
+     "cut_mm": 15978.541,
+     "rapid_mm": 390.448,
+     "air_cut_mm": 1372.382,
+     "plunges": 25,
+     "retracts": 25,
+     "removed_mm3": 5724.767,
+     "cycle_seconds_exact_stop": 1755.436,
+     "cycle_seconds_tangent": 1755.111,
+     "engine_seconds": 24.4162
     }
    },
    "toolpath": {
-    "moves": 97138,
-    "cycle_seconds_exact_stop": 17533.436,
-    "cycle_seconds_tangent": 16572.546,
-    "posted_blocks": 146997,
+    "moves": 4499,
+    "cycle_seconds_exact_stop": 1755.436,
+    "cycle_seconds_tangent": 1755.111,
+    "posted_blocks": 7498,
     "post_error": null,
     "removed_mm3": [
-     5760.958,
-     6020.166
+     5724.767,
+     5987.143
     ],
     "material": {
      "leftover_mm3": [
-      930.8245097397311,
-      1510.4739214525448
+      939.5261244023775,
+      1546.664960876536
      ],
      "overcut_mm3": [
       0.0,
-      78.08243844812348
+      53.760860024094924
      ],
      "leftover_cells": [
-      4720,
-      544
+      4788,
+      476
      ],
      "overcut_cells": [
       0,
-      400
+      324
      ],
      "max_residual_height_mm": 2.200650402008413,
      "complete": true
     }
    },
    "engine": {
-    "run_seconds": 2.7377,
-    "first_move_seconds": 0.0169,
-    "post_seconds": 31.2306,
+    "run_seconds": 24.4326,
+    "first_move_seconds": 4.4585,
+    "post_seconds": 37.303,
     "repeats": 3,
     "peak_rss_kib": {
-     "python": 920624.0,
-     "native": 577932.0
+     "python": 422228.0,
+     "native": 405152.0
     }
    }
   },

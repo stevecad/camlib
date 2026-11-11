@@ -24,8 +24,10 @@ def part():
 def roughing_job(
     adaptive=False, *, routing=None, offset=False, omit_empty_cuts=False, stock_front=False, engagement_front=False
 ):
+    # Adaptive roughing is engagement_front (Roughing refuses disk_front, #167).
+    engagement_front = engagement_front or (adaptive and not stock_front)
     if engagement_front:
-        clearing = AdaptiveClearing(0.25, path_strategy='engagement_front')
+        clearing = AdaptiveClearing(0.25)
     if stock_front:
         adaptive = True
     if offset and (adaptive or routing is not None):
@@ -43,7 +45,7 @@ def roughing_job(
             orbit_radius_mm=0.5,
             min_orbit_radius_mm=0.2,
             local_orbit_tolerance_mm=0.05,
-            path_strategy='stock_front' if stock_front else 'disk_front',
+            path_strategy='stock_front',
         )
         if adaptive
         else OffsetClearing(0.8)
