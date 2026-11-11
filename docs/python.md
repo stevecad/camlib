@@ -73,7 +73,7 @@ These rarely need changing; each failure names the budget it hit.
 **Machine travel with tools of different lengths.** A machine's travel is its
 axes' travel: the controller's soft limits act on the machine position (the
 spindle gauge line), whatever tool length offset is active (LinuxCNC INI
-`MIN_LIMIT`/`MAX_LIMIT`; FANUC stored stroke check 1, parameters 1320/1321).
+`MIN_LIMIT`/`MAX_LIMIT`; FANUC stored stroke check 1, parameters 1320/1321: B-63534EN/02 section 6.3, p. 855–856).
 The tip of a tool sits its gauge length below the gauge line, so a short tool
 reaches higher and a long tool lower. A single tip box
 (`min_tip_mm`/`max_tip_mm`, `Machine.tip_travel_mm`) is the travel of one

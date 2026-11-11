@@ -66,7 +66,9 @@ pub struct MachineLimits {
     /// own axis travel. Controllers hold soft limits on the machine position,
     /// whatever tool length offset is active (LinuxCNC INI `[JOINT_n]`/
     /// `[AXIS_L]` `MIN_LIMIT`/`MAX_LIMIT`; FANUC stored stroke check 1,
-    /// parameters 1320/1321, in the machine coordinate system), and the
+    /// parameters 1320/1321, which the builder sets to the maximum stroke
+    /// and which checks one fixed point whatever the tool length: FANUC
+    /// 16i/18i-MB Operator's Manual B-63534EN/02, section 6.3, p. 855-856), and the
     /// length offset moves the controlled point from the gauge line to the
     /// tip (G43). So each tool's tip travels that box lowered along machine Z
     /// by the tool's gauge length
