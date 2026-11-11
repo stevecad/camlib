@@ -326,6 +326,42 @@ class MotionDecoder(unittest.TestCase):
                         with self.assertRaisesRegex(ValueError, 'radius mismatch'):
                             decoder.read_line(line, context)
 
+    def test_python_and_native_decoders_decide_arc_radii_alike(self):
+        # Each decoder has its own implementation of the radius rule (#169);
+        # at zero tolerance they must accept and refuse the same words. Ends
+        # are the start rotated about the centre (exactly equal radii), then
+        # nudged by -1, 0 or +1 in the last decimal.
+        machine = self.machine()
+        machine = replace(machine, dialect=replace(machine.dialect, radius_tolerance_mm=0, radius_relative_tolerance=0))
+        rng = random.Random(169)
+        outcomes = []
+
+        def word(n):
+            return f'{n / 1000:.3f}'
+
+        for _ in range(300):
+            s = [rng.randint(-50000, 50000) for _ in range(2)]
+            i = [rng.randint(-20000, 20000) or 1 for _ in range(2)]
+            c = [s[0] + i[0], s[1] + i[1]]
+            x, y = s[0] - c[0], s[1] - c[1]
+            x, y = rng.choice([(-y, x), (-x, -y), (y, -x)])
+            e = [c[0] + x + rng.randint(-1, 1), c[1] + y + rng.randint(-1, 1)]
+            line = f'G2 X{word(e[0])} Y{word(e[1])} I{word(i[0])} J{word(i[1])} F100'
+            accepted = []
+            for cls in (GCodeDecoder, NativeGCodeDecoder):
+                decoder = self.setup_decoder(machine, cls)
+                decoder.position = (float(word(s[0])), float(word(s[1])), decoder.position[2])
+                decoder.plane = 'xy'
+                try:
+                    decoder.read_line(line, dict(id=1, operation='case', kind='cut'))
+                    accepted.append(True)
+                except ValueError as error:
+                    self.assertIn('radius mismatch', str(error))
+                    accepted.append(False)
+            self.assertEqual(accepted[0], accepted[1], line)
+            outcomes.append(accepted[0])
+        self.assertTrue(any(outcomes) and not all(outcomes))
+
     def test_arc_radii_are_exact_on_the_word_grid_and_match_the_engine(self):
         r1, r2, error = arc_radii((9.995, 20.0), (29.999, 20.0), (10.002, 0.006), 1.0)
         self.assertEqual((error, r1), (0.0, r2))

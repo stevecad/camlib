@@ -234,7 +234,9 @@ squared radii are compared as exact integers on the word grid: words with
 equal radii have a mismatch of exactly 0, with no epsilon. A start that no
 word wrote (a declared tool-change position, for example) is a binary64 value,
 and the radii are computed from it with correctly rounded arithmetic only,
-never the platform's `hypot`. The post and both decoders use the same rule.
+never the platform's `hypot`. The post and the decoders use the same rule,
+each with its own implementation (the word chooser, the Rust decoders and
+the Python decoder), and a test checks that they agree bit for bit.
 
 The certified
 deviation of a posted arc

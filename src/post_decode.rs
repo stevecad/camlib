@@ -46,6 +46,56 @@ pub struct Decoded {
     pub feed: Option<f64>,
     pub rapid: bool,
 }
+/// Start radius, end radius and their mismatch (mm) of decoded circular words
+/// in one plane: `start` and `end` are positions (mm), `offset` the centre
+/// offset words times `unit` (issue #169, `docs/posts.md`).
+///
+/// The decoders' own reading of the rule, kept apart from the word chooser's
+/// `post_rounding::arc_radii` so that a mistake in one is not repeated in the
+/// other; `decoder_and_chooser_agree_on_arc_radii` checks they give the same
+/// bits. Only correctly rounded operations, no libm:
+/// - every value is a word k / 2e9 output units: the centre and both radius
+///   vectors are integers on that grid and the squared radii exact;
+/// - otherwise (a start no word wrote) the binary64 positions, with the
+///   centre at start + offset, as a controller computes it.
+pub(crate) fn arc_radii(
+    start: [f64; 2],
+    end: [f64; 2],
+    offset: [f64; 2],
+    unit: f64,
+) -> (f64, f64, f64) {
+    // Steps per output unit: every word of up to 9 decimals, and half of one
+    // (an X word written as a diameter).
+    const STEPS: f64 = 2e9;
+    // The k whose word k / STEPS decodes (parse, then times unit) to mm.
+    let word = |mm: f64| {
+        let k = (mm / unit * STEPS).round_ties_even();
+        (k.abs() <= 9e15 && k / STEPS * unit == mm).then_some(k as i128)
+    };
+    let words = [start[0], start[1], end[0], end[1], offset[0], offset[1]].map(word);
+    if let [Some(su), Some(sv), Some(eu), Some(ev), Some(iu), Some(iv)] = words {
+        // |k| <= 9e15: centre <= 1.8e16, squared radius < 1.5e33 < i128::MAX.
+        let (cu, cv) = (su + iu, sv + iv);
+        let squared = |u: i128, v: i128| (u - cu).pow(2) + (v - cv).pow(2);
+        let (a, b) = (squared(su, sv), squared(eu, ev));
+        let (ra, rb) = ((a as f64).sqrt(), (b as f64).sqrt());
+        let step = unit / STEPS;
+        let error = if a == b {
+            0.
+        } else {
+            a.abs_diff(b) as f64 / (ra + rb) * step
+        };
+        return (ra * step, rb * step, error);
+    }
+    let center = [start[0] + offset[0], start[1] + offset[1]];
+    let radius = |p: [f64; 2]| {
+        let (x, y) = (p[0] - center[0], p[1] - center[1]);
+        (x * x + y * y).sqrt()
+    };
+    let (r1, r2) = (radius(start), radius(end));
+    (r1, r2, (r1 - r2).abs())
+}
+
 fn key(letter: u8, value: f64) -> (u8, u64) {
     (letter, if value == 0. { 0 } else { value.to_bits() })
 }
@@ -279,13 +329,13 @@ impl Decoder {
             let y = start[v] - center[v];
             let ex = end[u] - center[u];
             let ey = end[v] - center[v];
-            let radii = crate::post_rounding::arc_radii(
+            let (r1, r2, error) = arc_radii(
                 [start[u], start[v]],
                 [end[u], end[v]],
                 [offset[u], offset[v]],
                 unit,
             );
-            if radii.start < 1e-6 || !c.radius_tolerance.accepts_arc(&radii) {
+            if r1 < 1e-6 || !c.radius_tolerance.accepts_error(error, r1.max(r2)) {
                 return Err(
                     "NC arc radius mismatch/collapse exceeds declared decoder model".into(),
                 );

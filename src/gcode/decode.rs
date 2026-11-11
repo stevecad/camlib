@@ -949,13 +949,13 @@ impl Decoder {
             }
             let (x, y) = (start[u] - center[u], start[v] - center[v]);
             let (ex, ey) = (end[u] - center[u], end[v] - center[v]);
-            let radii = crate::post_rounding::arc_radii(
+            let (r1, r2, error) = crate::post_decode::arc_radii(
                 [start[u], start[v]],
                 [end[u], end[v]],
                 [offset[u], offset[v]],
                 units,
             );
-            if radii.start < 1e-6 || !d.radius_tolerance().accepts_arc(&radii) {
+            if r1 < 1e-6 || !d.radius_accepts(r1, r2, error) {
                 return Err(
                     "NC arc radius mismatch/collapse exceeds declared decoder model".into(),
                 );

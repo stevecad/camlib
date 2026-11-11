@@ -648,4 +648,73 @@ mod tests {
         assert_eq!((end[0], end[1]), (29.999, 20.));
         assert_eq!((offsets[0], offsets[1]), (10.002, 0.006));
     }
+
+    /// The decoders decide radii with their own code (`post_decode::arc_radii`),
+    /// so a mistake in the chooser's is not repeated there. The two must still
+    /// give the same bits, or a program the chooser writes could be refused
+    /// when it is decoded again. Words are parsed from text as a decoder does:
+    /// mm and inch, lathe diameters, exactly equal radii nudged by -1, 0 or +1
+    /// in the last decimal, unrelated ends, and starts no word wrote.
+    #[test]
+    fn decoder_and_chooser_agree_on_arc_radii() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = |n: i64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % (2 * n as u64 + 1)) as i64 - n
+        };
+        let (mut exact_equal, mut exact_unequal, mut binary64) = (0, 0, 0);
+        for case in 0..20_000 {
+            let unit = [1., 25.4][case % 2];
+            let decimals = (case / 2) % 5;
+            let scale = 10_i64.pow(decimals as u32);
+            // The value a decoder holds for the word n / 10^decimals.
+            let half = if case % 7 == 0 { 0.5 } else { 1. };
+            let mm = |n: i64| {
+                let text = format!("{}{}", if n < 0 { "-" } else { "" }, n.unsigned_abs());
+                let text = if decimals == 0 {
+                    text
+                } else {
+                    let digits = format!("{:0>w$}", n.unsigned_abs(), w = decimals + 1);
+                    let (int, frac) = digits.split_at(digits.len() - decimals);
+                    format!("{}{int}.{frac}", if n < 0 { "-" } else { "" })
+                };
+                text.parse::<f64>().unwrap() * unit * half
+            };
+            let range = 500 * scale;
+            let (s, i) = ([next(range), next(range)], [next(range), next(range)]);
+            let c = [s[0] + i[0], s[1] + i[1]];
+            let e = match case % 4 {
+                // Start rotated by 90, 180 or 270 degrees about the centre.
+                0..=2 => {
+                    let (x, y) = (s[0] - c[0], s[1] - c[1]);
+                    let (x, y) = [(-y, x), (-x, -y), (y, -x)][case % 4];
+                    [c[0] + x + next(1), c[1] + y + next(1)]
+                }
+                _ => [next(range), next(range)],
+            };
+            let mut start = [mm(s[0]), mm(s[1])];
+            if case % 11 == 0 {
+                start[0] = f64::from_bits(start[0].to_bits() + 1);
+            }
+            let end = [mm(e[0]), mm(e[1])];
+            let offset = [mm(i[0]), mm(i[1])];
+            let chooser = arc_radii(start, end, offset, unit);
+            let (r1, r2, error) = crate::post_decode::arc_radii(start, end, offset, unit);
+            let bits = |r: [f64; 3]| r.map(f64::to_bits);
+            assert_eq!(
+                bits([chooser.start, chooser.end, chooser.error]),
+                bits([r1, r2, error]),
+                "{start:?} {end:?} {offset:?} unit {unit}"
+            );
+            match on_word_grid(start[0], unit) {
+                None => binary64 += 1,
+                Some(_) if error == 0. => exact_equal += 1,
+                Some(_) => exact_unequal += 1,
+            }
+        }
+        // Every branch of the rule was exercised.
+        assert!(exact_equal > 1000 && exact_unequal > 1000 && binary64 > 1000);
+    }
 }
