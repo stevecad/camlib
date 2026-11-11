@@ -27,7 +27,7 @@ See [Operations](operations.md) for parameters. Summary:
 | 3D roughing / rest roughing | Layered clearing above a mesh part: raster, offset, adaptive; air passes can be omitted |
 | Contour | Outer walls and/or hole walls of a part: climb (default) or conventional, tangent leads, wear compensation (G41/G42), holding tabs (triangle or rectangle) |
 | 3D finishing cutters | Ball (all patterns, certified error), flat and bull-nose (raster, spiral, radial, project, waterline; exact contacts, proven no-gouge moves, sampled error) |
-| Parallel / spiral / radial / project / pencil / scallop finishing | Mesh surfaces; slope (contact-angle) limits; rest finishing from the stock model |
+| Parallel / spiral / radial / project / pencil / scallop finishing | Mesh surfaces; zigzag or one-way parallel rows; slope (contact-angle) limits; rest finishing from the stock model |
 | Waterline, ramp finishing | Constant-Z contours, or one continuous descent per level (`ramp=True`); steep-and-shallow pairs waterline with parallel or spiral |
 | Flat-area finishing | Horizontal faces of a mesh part at their exact heights, flat end mills |
 | Morph, flow | Passes between two guide curves; CAD face parameter lines (CadQuery) followed with Project |

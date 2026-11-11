@@ -27,6 +27,7 @@ machine, so they have no defaults: pass them as keyword arguments.
 | `feed_z_mm` | `retract_z_mm` | Rapid descent stops here and plunge feed begins; leaving a pass, feed changes to rapid here |
 | `boundary_tolerance_mm` | 0.01 | Allowed construction error of offset boundaries (Contour, Chamfer, Bore, TrochoidalSlot, adaptive clearing) |
 | `reverse` | off | Run the passes the other way: Facing and Parallel start each pass from the opposite end, Waterline cuts its contours the other way, Contour/Chamfer (`None` = from `cutting_sense`) reverse the loop direction |
+| `one_way` | off | Parallel: cut every row in the same direction instead of alternating (see [Parallel finishing](#parallel-finishing-parallel)); Facing has `mode="one_way"` |
 
 Heights follow the usual CAM convention: an operation starts and ends at
 `clearance_z_mm`, travels between passes at `retract_z_mm`, and descends at
@@ -722,6 +723,33 @@ points; `safety_margin_mm` (0.005) keeps the tool that far above the exact
 no-gouge height; `stock_to_leave_mm` leaves material. In a direct comparison
 with OpenCamLib's drop-cutter on the same mesh, camlib's tip stayed between
 +0.0046 and +0.0099 mm above the exact no-gouge height.
+
+Pass direction: rows run along `axis`, stepping from the low to the high end
+of the other axis. By default they alternate (zigzag: the first row from the
+low end of `axis`, or from the high end with `reverse=True`, the next one
+back). `one_way=True` cuts every row in the same direction (the first row's):
+after each row the tool leaves the stock, retracts, returns over the part at
+`retract_z_mm` with a rapid and enters the next row from the same side. The
+return is a link like any other (never a feed move over the surface) and is
+checked as one: stock contact, fixtures and machine limits. It applies to
+slope-limited and rest finishing rows too, and is refused for the other
+patterns, which have their own direction. The rows are zigzag's rows, each
+held to the same path error, safety margin and clearance proof (either way a
+row lies between the exact no-gouge height and `safety_margin_mm +
+path_error_mm` above it), so the surface left is zigzag's within that
+tolerance; only the direction and the longer links differ. Other CAM systems
+offer the same choice for parallel passes: Autodesk Fusion's Parallel strategy has a Direction parameter "to create only
+climb cuts or only conventional cuts"
+([Generate a Parallel toolpath](https://help.autodesk.com/cloudhelp/ENU/Fusion-CAM/files/3D-PARALLEL-STEPS.htm)),
+and FreeCAD CAM's 3D Surface operation separates the `Line` cut pattern (one
+direction) from `ZigZag`
+([Surface.py](https://github.com/FreeCAD/FreeCAD/blob/920d14763241267340e755f3d3b6ece8ef60fa43/src/Mod/CAM/Path/Op/Surface.py)).
+With one-way rows the uncut material is always on the same side of the tool.
+The spindle turns clockwise (M3), so material on the right of the travel is
+climb milling and on the left conventional: `axis="x"` cuts conventional and
+`axis="y"` climb, and `reverse=True` swaps each. (On a slope the ball also
+cuts uphill or downhill; that depends on the surface, not on this option.)
+The report has `one_way: true` when it is set.
 
 Depth: when the remaining stock stands no higher above `floor_z_mm` than the
 cutting length, every pass is within the flutes. Where it stands higher (a

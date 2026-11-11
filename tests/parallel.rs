@@ -1,7 +1,7 @@
 use camlib::{
     facing::TraverseAxis,
-    finishing::{ParallelOperation, ParallelPlan},
-    motion::{Curve, MoveKind},
+    finishing::{FinishPattern, ParallelOperation, ParallelPlan},
+    motion::{Curve, Motion, MoveKind},
     pocket::Operation,
     stock::{CancelSignal, Stock},
     stream::StreamManifest,
@@ -617,5 +617,204 @@ fn parallel_rows_link_at_retract_height_never_rapid_below_feed_height() {
         .err()
         .unwrap()
         .contains("stock top")
+    );
+}
+
+/// Run a plan on fresh stock; returns the motions, whether each changed any
+/// stock cell, and the stock left.
+fn run_rows(m: &StreamManifest, op: ParallelOperation) -> (Vec<(Motion, bool)>, Stock, usize) {
+    let cancel = AtomicBool::new(false);
+    let spec = m.stock.height().unwrap();
+    let mut p =
+        ParallelPlan::prepare(op, &m.tools[0], spec, m.initial_position_mm, 1, &cancel).unwrap();
+    let mut stock = Stock::new(spec.clone()).unwrap();
+    let tool = m.tools[0].prepare().unwrap();
+    let mut pos = m.initial_position_mm;
+    let mut motions = vec![];
+    while let Some(motion) = p.next_motion_with_stock(&stock, &cancel).unwrap() {
+        assert_eq!(motion.curve.start(), pos, "continuous motion");
+        pos = motion.curve.end();
+        let d = stock
+            .preview_sweep(&tool, &motion, 1., m.sweep, &cancel)
+            .unwrap();
+        let changed = !d.changes().is_empty();
+        stock.apply_delta(&d).unwrap();
+        motions.push((motion, changed));
+    }
+    p.finish_report(&cancel).unwrap();
+    assert_eq!(p.report().rows_completed, p.report().rows);
+    let rows = p.report().rows;
+    (motions, stock, rows)
+}
+/// Per row, in cutting order: its cross-axis coordinate and the sign of
+/// every cut's travel along the axis (read from the motions alone).
+fn row_directions(motions: &[(Motion, bool)], axis: usize) -> Vec<(f64, f64)> {
+    let mut rows: Vec<(f64, f64)> = vec![];
+    for (motion, _) in motions {
+        if motion.kind != MoveKind::Cut {
+            continue;
+        }
+        let (a, b) = (motion.curve.start(), motion.curve.end());
+        assert_eq!(a[1 - axis], b[1 - axis], "a raster cut stays on its row");
+        let sign = (b[axis] - a[axis]).signum();
+        assert!(sign != 0., "{motion:?}");
+        match rows.last() {
+            Some(&(c, s)) if c == a[1 - axis] => assert_eq!(s, sign, "a row turns back"),
+            _ => rows.push((a[1 - axis], sign)),
+        }
+    }
+    rows
+}
+// Issue #175: one-way rows. Direction, links and the surface left are read
+// from the emitted motions and the swept stock, not from the planner.
+#[test]
+fn one_way_rows_cut_one_direction_link_by_rapid_and_leave_the_zigzag_surface() {
+    let m = fixture();
+    let top = m.stock.height().unwrap().max_mm[2];
+    // The committed fixture has no one_way: the default is zigzag, and a
+    // default operation serialises without the key (cache keys unchanged).
+    let base = operation(&m);
+    assert!(!base.one_way);
+    assert!(
+        serde_json::to_value(&base)
+            .unwrap()
+            .get("one_way")
+            .is_none()
+    );
+    for (axis, reverse) in [
+        (TraverseAxis::X, false),
+        (TraverseAxis::X, true),
+        (TraverseAxis::Y, false),
+        (TraverseAxis::Y, true),
+    ] {
+        let k = if axis == TraverseAxis::X { 0 } else { 1 };
+        let forward = if reverse { -1. } else { 1. };
+        let mut op = operation(&m);
+        op.axis = axis;
+        op.reverse = reverse;
+        let (retract, feed) = (top + 1., top + 0.5);
+        op.retract_z_mm = Some(retract);
+        op.feed_z_mm = Some(feed);
+        // Either way a row lies between the exact no-gouge height and
+        // safety_margin_mm + path_error_mm above it: the operation's tolerance.
+        let band = op.path_error_mm + op.safety_margin_mm;
+        let (zigzag, zig_stock, zig_rows) = run_rows(&m, op.clone());
+        op.one_way = true;
+        assert_eq!(serde_json::to_value(&op).unwrap()["one_way"], true);
+        let (one_way, one_stock, rows) = run_rows(&m, op);
+        assert_eq!(rows, zig_rows);
+
+        // Default (unchanged): rows alternate, starting as `reverse` says.
+        let zig = row_directions(&zigzag, k);
+        assert_eq!(zig.len(), rows);
+        for (i, (_, sign)) in zig.iter().enumerate() {
+            assert_eq!(*sign, if i % 2 == 0 { forward } else { -forward });
+        }
+        // One way: the same rows in the same order, every one cut forward.
+        let one = row_directions(&one_way, k);
+        assert_eq!(
+            one.iter().map(|r| r.0).collect::<Vec<_>>(),
+            zig.iter().map(|r| r.0).collect::<Vec<_>>()
+        );
+        assert!(one.iter().all(|r| r.1 == forward), "{axis:?} {reverse}");
+        // Nothing but a rapid ever travels against the cutting direction,
+        // and those returns are links: at the retract height, above the
+        // stock top, removing no stock; one per row change.
+        let mut returns = 0;
+        let mut cutting = false;
+        for (motion, changed) in &one_way {
+            let (a, b) = (motion.curve.start(), motion.curve.end());
+            let along = (b[k] - a[k]) * forward;
+            cutting |= motion.kind == MoveKind::Cut;
+            if motion.kind != MoveKind::Rapid {
+                assert!(along >= 0., "feed move against the direction: {motion:?}");
+            } else {
+                assert!(a[2] >= feed && b[2] >= feed, "{motion:?}");
+                assert!(!changed, "a rapid removed stock: {motion:?}");
+            }
+            // (Before the first row the tool arrives from the start position.)
+            if along < 0. && cutting {
+                assert!(a[2] == retract && b[2] == retract, "{motion:?}");
+                assert!(retract > top);
+                // The full return: from beyond one stock side to the other.
+                assert!(along.abs() > m.stock.height().unwrap().max_mm[k]);
+                returns += 1;
+            }
+        }
+        assert_eq!(returns, rows - 1);
+        // Zigzag differs: it does cut the other way (the test would not
+        // pass on zigzag output).
+        assert!(zigzag.iter().any(|(motion, _)| motion.kind == MoveKind::Cut
+            && (motion.curve.end()[k] - motion.curve.start()[k]) * forward < 0.));
+
+        // The surface left, from the exact swept-ball envelope of the cuts
+        // at every stock cell: equal to zigzag's within that tolerance, and
+        // against the part (the X-axis roof ridge): never below it.
+        let surface = |motions: &[(Motion, bool)], q: [f64; 2]| {
+            motions
+                .iter()
+                .map(|(motion, _)| swept_height(&motion.curve, q))
+                .fold(top, f64::min)
+        };
+        let roof = |x: f64| 4. + x.min(24. - x) / 3.;
+        for (i, h) in one_stock.cells().iter().enumerate() {
+            let q = one_stock.cell_center(i).unwrap();
+            let (a, z) = (surface(&one_way, q), surface(&zigzag, q));
+            assert!(
+                (a - z).abs() <= band + 1e-9,
+                "one-way surface differs from zigzag at {q:?}: {a} vs {z}"
+            );
+            assert!(a >= roof(q[0]) - 1e-7, "gouge at {q:?}: {a}");
+            assert!(h.lower_mm <= a + 1e-7 && h.upper_mm >= a - 1e-7);
+            let other = zig_stock.cells()[i];
+            assert!((h.upper_mm - other.upper_mm).abs() <= band + 1e-9);
+        }
+    }
+}
+#[test]
+fn one_way_keeps_its_direction_on_slope_limited_runs_and_is_refused_off_raster() {
+    let m = fixture();
+    let cancel = AtomicBool::new(false);
+    // Slope-limited rows are cut as separate runs (vertical plunge entry):
+    // every run still goes the same way.
+    for reverse in [false, true] {
+        let mut op = operation(&m);
+        op.reverse = reverse;
+        op.one_way = true;
+        op.slope_from_deg = 10.;
+        let (motions, _, _) = run_rows(&m, op);
+        let forward = if reverse { -1. } else { 1. };
+        let mut cuts = 0;
+        for (motion, _) in &motions {
+            let along = (motion.curve.end()[0] - motion.curve.start()[0]) * forward;
+            if motion.kind != MoveKind::Rapid {
+                assert!(along >= 0., "{motion:?}");
+                cuts += usize::from(motion.kind == MoveKind::Cut);
+            }
+        }
+        assert!(cuts > 0);
+    }
+    let mut op = operation(&m);
+    op.one_way = true;
+    op.pattern = FinishPattern::Spiral {
+        center_mm: [12., 8.],
+        inner_radius_mm: 0.,
+        outer_radius_mm: None,
+        outward: false,
+        clockwise: false,
+    };
+    let error = ParallelPlan::prepare(
+        op,
+        &m.tools[0],
+        m.stock.height().unwrap(),
+        m.initial_position_mm,
+        1,
+        &cancel,
+    )
+    .err()
+    .unwrap();
+    assert!(
+        error.contains("one_way applies to the raster pattern only"),
+        "{error}"
     );
 }

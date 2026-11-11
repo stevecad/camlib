@@ -109,6 +109,18 @@ pub struct ParallelOperation<G = SurfaceMesh> {
     /// Raster: start the first row from the high end. Others require false.
     #[serde(default)]
     pub reverse: bool,
+    /// Raster: cut every row in the same direction (from the low end of
+    /// `axis`, or the high end with `reverse`) instead of alternating. The
+    /// tool returns to the start side at the retract height, a rapid link
+    /// like any other, and never cuts on the way back. Others require false.
+    /// Established practice for a consistent climb or conventional cut:
+    /// Autodesk Fusion's Parallel strategy ("To create only climb cuts or
+    /// only conventional cuts, set the Direction parameter", Fusion help,
+    /// "Generate a Parallel toolpath") and FreeCAD CAM's 3D Surface
+    /// operation (cut pattern `Line` against `ZigZag`, Path/Op/Surface.py).
+    /// Issue #175.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub one_way: bool,
     #[serde(default, skip_serializing_if = "FinishPattern::is_raster")]
     pub pattern: FinishPattern,
     /// Contact (slope) angle limits, degrees from the tool axis: cut only
@@ -250,6 +262,9 @@ impl RestMap {
         false
     }
 }
+fn is_false(v: &bool) -> bool {
+    !*v
+}
 pub(crate) fn is_zero(v: &f64) -> bool {
     *v == 0.
 }
@@ -326,6 +341,11 @@ pub(crate) fn filter_runs(
     Ok(out)
 }
 impl<G> ParallelOperation<G> {
+    /// Raster row `row` is cut from the high end of the axis to the low end.
+    /// Zigzag alternates from the first row's direction; one-way keeps it.
+    fn row_reversed(&self, row: usize) -> bool {
+        self.reverse ^ (!self.one_way && row % 2 == 1)
+    }
     pub(crate) fn map_geometry<H, E>(
         self,
         f: &mut impl FnMut(G) -> Result<H, E>,
@@ -340,6 +360,7 @@ impl<G> ParallelOperation<G> {
             clearance_z_mm: self.clearance_z_mm,
             axis: self.axis,
             reverse: self.reverse,
+            one_way: self.one_way,
             pattern: self.pattern,
             slope_from_deg: self.slope_from_deg,
             slope_to_deg: self.slope_to_deg,
@@ -367,6 +388,9 @@ pub struct ParallelReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stock_top: Option<FinishingStockTop>,
     pub strategy: &'static str,
+    /// Raster rows all cut in the same direction (reported when requested).
+    #[serde(skip_serializing_if = "is_false")]
+    pub one_way: bool,
     pub geometric_residual_status: ResidualStatus,
     pub triangles: usize,
     pub rows: usize,
@@ -760,6 +784,13 @@ impl ParallelPlan {
                     ),
                 ),
                 (
+                    op.pattern.is_raster() || !op.one_way,
+                    format!(
+                        "one_way applies to the raster pattern only; the {} pattern has its own direction",
+                        op.pattern.name()
+                    ),
+                ),
+                (
                     op.entry_air_gap_mm >= guard,
                     format!("entry_air_gap_mm {} must be positive", op.entry_air_gap_mm),
                 ),
@@ -1088,6 +1119,7 @@ impl ParallelPlan {
         let report = ParallelReport {
             stock_top: None,
             strategy: op.pattern.name(),
+            one_way: op.one_way,
             geometric_residual_status: ResidualStatus::Pending,
             triangles: mesh.triangles.len(),
             rows,
@@ -1339,7 +1371,7 @@ impl ParallelPlan {
         row: usize,
     ) -> Vec<[f64; 2]> {
         let cross = 1 - axis;
-        let reverse = op.reverse ^ (row % 2 == 1);
+        let reverse = op.row_reversed(row);
         let c = if row + 1 == rows {
             spec.max_mm[cross] + radius
         } else {
@@ -1367,7 +1399,7 @@ impl ParallelPlan {
         let mut a = [0.; 3];
         let mut b = [0.; 3];
         let cross = 1 - self.axis;
-        let reverse = self.op.reverse ^ (self.row % 2 == 1);
+        let reverse = self.op.row_reversed(self.row);
         a[cross] = if self.row + 1 == self.report.rows {
             self.spec.max_mm[cross] + self.radius
         } else {

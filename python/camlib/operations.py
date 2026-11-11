@@ -108,6 +108,11 @@ class Parallel:
     # Required: stock top < feed <= retract <= clearance.
     retract_z_mm: float | None = None
     feed_z_mm: float | None = None
+    # Pass direction: False (default) alternates the rows (zigzag); True
+    # cuts every row in the same direction along the axis (from the low end,
+    # or the high end with reverse) and returns at retract_z_mm with a rapid
+    # link, for a consistent climb or conventional cut (docs/operations.md).
+    one_way: bool = False
 
     def to_dict(self):
         result = {field: getattr(self, field) for field in self.__dataclass_fields__}
@@ -119,6 +124,8 @@ class Parallel:
         for key in ('retract_z_mm', 'feed_z_mm', 'rest_threshold_mm'):
             if result.get(key, 0) is None:
                 result.pop(key)
+        if result['one_way'] is False:
+            result.pop('one_way')
         _drop_default_slopes(result)
         return result
 

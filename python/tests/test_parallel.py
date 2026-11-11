@@ -11,9 +11,11 @@ from camlib import Engine
 from camlib.cadquery import export_surface_mesh
 from camlib.operations import Facing
 from camlib.playback import Cursor, Player, RecordedRun
-from camlib.simulation import OperationUpdate, ReachRefused, Simulation, SimulationError
+from camlib.material import Options, SurfaceTarget, Verifier
+from camlib.simulation import OperationUpdate, ReachRefused, Simulation, SimulationError, VerificationUpdate
 from camlib.surface import SurfaceMesh
 from camlib.tools import EndMill, ToolAssembly, HolderSection
+from camlib.verification import StockContactOptions, StreamChecks
 
 
 def example():
@@ -164,6 +166,107 @@ class ParallelTest(unittest.TestCase):
         config["operations"] = (replace(config["operations"][0], safety_margin_mm=0),)
         with Simulation(**config) as sim:
             with self.assertRaisesRegex(SimulationError, "parallel finishing"):
+                list(sim.run_operations())
+            self.assertEqual(sim.state.completed, 0)
+
+
+class OneWayTest(unittest.TestCase):
+    """Issue #175: every row cut in the same direction, the return a link."""
+
+    def run_rows(self, **changes):
+        config = example().parallel_job()
+        op = replace(config["operations"][0], retract_z_mm=11, feed_z_mm=10.5, **changes)
+        config.update(operations=(op,), verification=StreamChecks(stock_contact=StockContactOptions()))
+        motions, contact, report = [], [], None
+        with Simulation(**config) as sim:
+            for update in sim.run_operations():
+                if isinstance(update, OperationUpdate):
+                    if update.stage == "end":
+                        report = update.report
+                elif isinstance(update, VerificationUpdate):
+                    if update.kind == "motion":
+                        contact.append(update.check["stock_contact"])
+                else:
+                    motions.append(update.motion)
+            heights = list(sim.state.heights)
+            material = Verifier(
+                SurfaceTarget("roof", "parallel-1", op.surface, 0, source_enclosure="offset"),
+                Options(max_findings=4096),
+            ).check(sim.state)
+        self.assertEqual(report["rows_completed"], report["rows"])
+        return op, motions, contact, report, heights, material
+
+    def test_default_is_zigzag_and_its_manifest_is_unchanged(self):
+        op = example().parallel_job()["operations"][0]
+        self.assertFalse(op.one_way)
+        self.assertNotIn("one_way", op.to_dict())
+        self.assertIs(replace(op, one_way=True).to_dict()["one_way"], True)
+
+    def test_rows_cut_one_direction_and_return_by_checked_rapid_links(self):
+        for reverse, forward in ((False, 1), (True, -1)):
+            _, zigzag, _, zig_report, zig_heights, zig_material = self.run_rows(reverse=reverse)
+            self.assertNotIn("one_way", zig_report)
+            op, motions, contact, report, heights, material = self.run_rows(one_way=True, reverse=reverse)
+            self.assertIs(report["one_way"], True)
+            returns = cuts = 0
+            for motion in motions:
+                a, b = motion["curve"]["start"], motion["curve"]["end"]
+                along = (b[0] - a[0]) * forward
+                if motion["kind"] == "cut":
+                    cuts += 1
+                    self.assertGreater(along, 0, motion)
+                    self.assertEqual(a[1], b[1])
+                if motion["kind"] != "rapid":
+                    self.assertGreaterEqual(along, 0, motion)
+                elif along < 0 and cuts:
+                    # The return (after the first row; before it the tool
+                    # arrives from the start position): over the whole part
+                    # at the retract height.
+                    returns += 1
+                    self.assertEqual((a[2], b[2]), (11, 11))
+                    self.assertGreater(-along, 24)
+            self.assertGreater(cuts, report["rows"])
+            self.assertEqual(returns, report["rows"] - 1)
+            # Every rapid and link was checked against the stock it met.
+            self.assertGreater(len(contact), returns)
+            self.assertEqual({c["status"] for c in contact}, {"clear"})
+            self.assertTrue(all(c["fully_examined"] for c in contact))
+            # The surface left: the same stock as zigzag cell by cell within
+            # the operation's tolerance (either way a row lies between the
+            # exact no-gouge height and safety_margin_mm + path_error_mm
+            # above it); above the part; and the material verifier's verdict
+            # against the part is the same.
+            self.assertEqual(len(heights), len(zig_heights))
+            band = op.path_error_mm + op.safety_margin_mm
+            self.assertLessEqual(max(abs(a - b) for a, b in zip(heights, zig_heights)), band + 1e-9)
+            # No cell's upper bound is below the roof under it (no gouge).
+            for i in range(len(heights) // 2):
+                x0 = (i % 96) * 0.25
+                low = min(4 + min(x, 24 - x) / 3 for x in (x0, x0 + 0.25))
+                self.assertGreaterEqual(heights[2 * i + 1], low)
+            self.assertTrue(material["complete"])
+            self.assertEqual(material["gouge"]["definite_cells"], 0)
+            for side in ("gouge", "residual"):
+                for key in ("assessment", "definite_cells", "possible_only_cells"):
+                    self.assertEqual(material[side][key], zig_material[side][key])
+            # Zigzag (the default) does cut both ways.
+            signs = {m["curve"]["end"][0] > m["curve"]["start"][0] for m in zigzag if m["kind"] == "cut"}
+            self.assertEqual(signs, {True, False})
+
+    def test_other_patterns_refuse_one_way(self):
+        config = example().parallel_job()
+        op = config["operations"][0]
+        manifest = dict(op.to_dict(), one_way=True, pattern=dict(kind="spiral", center_mm=(12, 8)))
+
+        class Spiral:
+            id, tool = op.id, op.tool
+
+            def to_dict(self):
+                return manifest
+
+        config["operations"] = (Spiral(),)
+        with Simulation(**config) as sim:
+            with self.assertRaisesRegex(SimulationError, "one_way applies to the raster pattern only"):
                 list(sim.run_operations())
             self.assertEqual(sim.state.completed, 0)
 
