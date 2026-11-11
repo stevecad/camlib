@@ -23,7 +23,7 @@ use std::{collections::VecDeque, sync::OnceLock};
 
 mod engagement_front;
 pub(crate) mod parallel;
-use engagement_front::EngagementFrontPlan;
+pub(crate) use engagement_front::EngagementFrontPlan;
 pub use engagement_front::EngagementFrontReport;
 
 #[derive(Clone, Debug, Serialize)]

@@ -107,6 +107,8 @@ class AdaptiveHeightsTest(unittest.TestCase):
             20,
             retract_z_mm=13,
             feed_z_mm=11,
+            # This test is of the orbit planner's links.
+            path_strategy="disk_front",
             feed_mm_min=600,
             plunge_mm_min=150,
             spindle_rpm=12000,

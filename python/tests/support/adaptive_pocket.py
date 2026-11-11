@@ -24,7 +24,7 @@ def target():
     return cq.Workplane("XY").box(26, 26, 10, centered=(False, False, False)).cut(cavity())
 
 
-def adaptive_job():
+def adaptive_job(path_strategy="engagement_front"):
     face = cavity().faces("<Z").val()
     # Export the same XY floor at the nominal final depth.
     region = export_floor_region(face, name="l-pocket", source=dict(model="CadQuery L-pocket", revision="adaptive-1"))
@@ -46,6 +46,7 @@ def adaptive_job():
         tool_number=1,
         length_register=1,
         coolant="flood",
+        path_strategy=path_strategy,
     )
     return dict(
         stock=StockSpec((0, 0, 0), (26, 26, 10), 0.4),

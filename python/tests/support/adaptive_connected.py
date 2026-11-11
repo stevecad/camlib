@@ -53,6 +53,7 @@ def connected_job():
         1.5,
         12,
         min_orbit_radius_mm=0.25,
+        path_strategy="disk_front",
         feed_mm_min=600,
         plunge_mm_min=150,
         spindle_rpm=12000,

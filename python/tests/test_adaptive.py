@@ -20,7 +20,8 @@ def example():
 
 @lru_cache(None)
 def config():
-    return example().adaptive_job()
+    # These tests are of the orbit planner; the default is engagement_front (#190).
+    return example().adaptive_job(path_strategy="disk_front")
 
 
 class AdaptiveTest(unittest.TestCase):
@@ -303,7 +304,7 @@ class StockFrontDevelopmentTest(unittest.TestCase):
             with self.subTest(entry=entry):
                 c = dict(config())
                 op = c["operations"][0]
-                self.assertNotIn("path_strategy", op.to_dict())
+                self.assertEqual(op.to_dict()["path_strategy"], "disk_front")
                 op = replace(op, floor_z_mm=9, path_strategy="stock_front", entry=entry)
                 self.assertEqual(op.to_dict()["path_strategy"], "stock_front")
                 c["operations"] = (op,)
@@ -403,6 +404,50 @@ class StockFrontDevelopmentTest(unittest.TestCase):
                         fresh.accept(old_frame)
                     self.assertEqual(fresh.completed, 0)
             self.assertFalse(list(Path(directory).rglob("*.tmp")))
+
+    def test_the_default_follows_the_stock_and_proves_its_engagement(self):
+        """#190: AdaptivePocket's default plans from the stock (engagement_front): far less motion than the orbit
+        planner on the same pocket, one helix per depth level, every cutting stroke proven within
+        acos(1 - stepover / r)."""
+        import math
+        from camlib.simulation import OperationUpdate, Simulation
+
+        def run(c):
+            motions, report = 0, None
+            with Simulation(**c) as sim:
+                for update in sim.run_operations():
+                    if isinstance(update, OperationUpdate):
+                        if update.stage == "end":
+                            report = update.report
+                    else:
+                        motions += 1
+                self.assertTrue(sim.state.finished)
+                return motions, report, sim.state.volume()["removed_lower_mm3"]
+
+        default = example().adaptive_job()
+        self.assertEqual(default["operations"][0].to_dict()["path_strategy"], "engagement_front")
+        moves, report, removed = run(default)
+        orbit_moves, _, orbit_removed = run(example().adaptive_job(path_strategy="disk_front"))
+        self.assertLess(moves * 3, orbit_moves)
+        # The same pocket: both remove its volume (224 x 2 mm3 less what a 4 mm cutter leaves in the corners).
+        self.assertGreater(removed, 0.93 * 448)
+        self.assertAlmostEqual(removed, orbit_removed, delta=0.05 * 448)
+        self.assertEqual(
+            (report["strategy"], report["clearing"], report["completed_layers"]),
+            ("adaptive_pocket", "engagement_front", 2),
+        )
+        limit = math.degrees(math.acos(1 - 1.5 / 2))
+        self.assertAlmostEqual(report["max_engagement_deg"], limit)
+        for layer in report["layers"]:
+            front = layer["clearing"]
+            self.assertEqual(front["helical_entries"], 1)
+            self.assertLessEqual(front["proven_max_engagement_deg"], limit)
+        # Orbit options belong to the orbit planner.
+        from dataclasses import replace
+
+        bad = dict(default, operations=(replace(default["operations"][0], orbit_radius_mm=1),))
+        with self.assertRaisesRegex(Exception, "does not use orbits"):
+            run(bad)
 
     def test_roughing_exposes_same_strategy_and_unknown_strategy_is_rejected(self):
         from camlib.operations import AdaptiveClearing

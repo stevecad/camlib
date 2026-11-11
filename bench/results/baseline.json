@@ -237,57 +237,57 @@
     "adaptive": {
      "toolpath": "AdaptivePocket",
      "issue": 26,
-     "moves": 3752,
-     "cut_mm": 12192.195,
-     "rapid_mm": 18.176,
-     "air_cut_mm": 8712.504,
-     "plunges": 2,
-     "retracts": 2,
-     "removed_mm3": 461.118,
-     "cycle_seconds_exact_stop": 1262.885,
-     "cycle_seconds_tangent": 1225.621,
-     "engine_seconds": 0.0682
+     "moves": 522,
+     "cut_mm": 1095.835,
+     "rapid_mm": 89.83,
+     "air_cut_mm": 431.028,
+     "plunges": 8,
+     "retracts": 8,
+     "removed_mm3": 472.318,
+     "cycle_seconds_exact_stop": 144.388,
+     "cycle_seconds_tangent": 144.112,
+     "engine_seconds": 1.8143
     }
    },
    "toolpath": {
-    "moves": 3752,
-    "cycle_seconds_exact_stop": 1262.885,
-    "cycle_seconds_tangent": 1225.621,
-    "posted_blocks": 5781,
+    "moves": 522,
+    "cycle_seconds_exact_stop": 144.388,
+    "cycle_seconds_tangent": 144.112,
+    "posted_blocks": 777,
     "post_error": null,
     "removed_mm3": [
-     461.118,
-     525.123
+     472.318,
+     536.357
     ],
     "material": {
      "leftover_mm3": [
-      4.799999517308152,
-      492.8024332736381
+      0.0,
+      481.6024892729654
      ],
      "overcut_mm3": [
       0.0,
-      49.602673393734854
+      56.03681947652485
      ],
      "leftover_cells": [
-      15,
-      501
+      0,
+      481
      ],
      "overcut_cells": [
       0,
-      155
+      281
      ],
      "max_residual_height_mm": 10.000000000001478,
      "complete": true
     }
    },
    "engine": {
-    "run_seconds": 0.0731,
-    "first_move_seconds": 0.0049,
-    "post_seconds": 1.3485,
+    "run_seconds": 1.8221,
+    "first_move_seconds": 0.1052,
+    "post_seconds": 3.4886,
     "repeats": 3,
     "peak_rss_kib": {
-     "python": 414144.0,
-     "native": 399184.0
+     "python": 404448.0,
+     "native": 394508.0
     }
    }
   },
@@ -423,23 +423,23 @@
     "rough": {
      "toolpath": "Roughing",
      "issue": 27,
-     "moves": 4499,
+     "moves": 4501,
      "cut_mm": 15978.541,
      "rapid_mm": 390.448,
      "air_cut_mm": 1372.382,
      "plunges": 25,
      "retracts": 25,
      "removed_mm3": 5724.767,
-     "cycle_seconds_exact_stop": 1755.436,
-     "cycle_seconds_tangent": 1755.111,
-     "engine_seconds": 24.4162
+     "cycle_seconds_exact_stop": 1752.563,
+     "cycle_seconds_tangent": 1752.232,
+     "engine_seconds": 28.4249
     }
    },
    "toolpath": {
-    "moves": 4499,
-    "cycle_seconds_exact_stop": 1755.436,
-    "cycle_seconds_tangent": 1755.111,
-    "posted_blocks": 7498,
+    "moves": 4501,
+    "cycle_seconds_exact_stop": 1752.563,
+    "cycle_seconds_tangent": 1752.232,
+    "posted_blocks": 7500,
     "post_error": null,
     "removed_mm3": [
      5724.767,
@@ -467,13 +467,13 @@
     }
    },
    "engine": {
-    "run_seconds": 24.4326,
-    "first_move_seconds": 4.4585,
-    "post_seconds": 37.303,
+    "run_seconds": 28.4431,
+    "first_move_seconds": 4.817,
+    "post_seconds": 44.237,
     "repeats": 3,
     "peak_rss_kib": {
-     "python": 422228.0,
-     "native": 405152.0
+     "python": 421268.0,
+     "native": 404940.0
     }
    }
   },

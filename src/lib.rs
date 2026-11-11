@@ -85,6 +85,7 @@ pub mod planar;
 #[cfg(feature = "profile-planning")]
 pub mod planning_profile;
 pub mod pocket;
+pub mod pocket_front;
 pub mod post;
 pub mod post_decode;
 pub mod post_intent;

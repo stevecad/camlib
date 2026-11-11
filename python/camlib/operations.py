@@ -1485,24 +1485,25 @@ class RestPocket(Pocket):
 
 @dataclass(frozen=True)
 class AdaptivePocket(Pocket):
-    """Region-based bounded engagement, with one seed per guide component/depth.
+    """A pocket cleared with a bounded radial engagement.
 
-    None selects orbit radius equal to half the native cutter radius. Narrow
-    features/corner rest are reported; plunge and seed orbit use plunge feed
-    outside the steady engagement guarantee. Stock-clear jumps need zero added
-    height tolerance, so rest_tolerance_mm must remain None.
+    The default path_strategy='engagement_front' follows the boundary between
+    cut and uncut stock inside the region, one depth level at a time (#190).
+    stepover_mm is the radial width of each pass (at most the cutter radius);
+    max_engagement_deg below acos(1 - stepover/r) narrows it further. Each
+    level enters by a helix into uncut material (entry's helix, or
+    HelicalEntry's default) and every cutting stroke is proven within that
+    contact angle against the committed cleared sweeps. Nothing is cut twice.
+    Orbit options, max_stay_down_mm and rest_tolerance_mm do not apply; the
+    direction is cutting_sense ('climb' by default, or 'conventional').
 
-    Set min_orbit_radius_mm below orbit_radius_mm and local_orbit_tolerance_mm
-    (for example .05 mm) to size orbits from whole-guide clearance. This controls
-    radius selection, separately from machining and boundary tolerances. None
-    preserves the existing fixed/two-scale strategies.
-
-    path_strategy='stock_front' selects the replacement under development; it
-    raises on unresolved steering/coverage. Reachable-domain coverage and clear
-    re-entry are implemented; broad geometry, dynamics and speed remain under
-    qualification.
-    cutting_sense='climb' (default) or 'conventional' describes material relative
-    to feed with the CW spindle. With disk_front, clockwise sets the orbit direction.
+    path_strategy='disk_front' is the earlier planner: it covers the region
+    with orbits of orbit_radius_mm (None: half the cutter radius) whatever the
+    stock holds, so its orbits overlap and it cuts far longer. With it,
+    clockwise sets the orbit direction; set min_orbit_radius_mm below
+    orbit_radius_mm and local_orbit_tolerance_mm (for example .05 mm) to size
+    orbits from whole-guide clearance. path_strategy='stock_front' is a
+    development strategy that raises on unresolved steering/coverage.
     """
 
     orbit_radius_mm: float | None = None
@@ -1512,7 +1513,7 @@ class AdaptivePocket(Pocket):
     min_orbit_radius_mm: float | None = None
     local_orbit_tolerance_mm: float | None = None
 
-    path_strategy: str = "disk_front"
+    path_strategy: str = "engagement_front"
     cutting_sense: str | None = None
 
     def to_dict(self):
@@ -1536,8 +1537,8 @@ class AdaptivePocket(Pocket):
             boundary_tolerance_mm=self.boundary_tolerance_mm,
             clockwise=self.clockwise,
         )
-        if self.path_strategy != "disk_front":
-            result["path_strategy"] = self.path_strategy
+        # The strategy is always written: a saved program states which planner made it.
+        result["path_strategy"] = self.path_strategy
         if self.cutting_sense is not None:
             result["cutting_sense"] = self.cutting_sense
         if self.orbit_radius_mm is not None:

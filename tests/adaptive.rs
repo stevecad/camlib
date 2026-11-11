@@ -1629,3 +1629,158 @@ fn stock_front_does_not_invent_productive_material_in_an_upstream_snapshot() {
     assert!(report.coverage_complete);
     assert_eq!(stock.volume().remaining_upper_mm3, before);
 }
+
+/// #190: the adaptive pocket planned from the stock (`engagement_front`), on
+/// the L pocket. The orbit planner covers the region with overlapping orbits
+/// whatever the stock holds; this one follows the boundary between cut and
+/// uncut stock, so nothing is cut twice.
+#[test]
+fn engagement_front_pocket_clears_the_region_once_within_its_engagement() {
+    use camlib::operation::OperationPlan;
+    let cancel = AtomicBool::new(false);
+    // The L: (3,3) (23,3) (23,11) (11,11) (11,23) (3,23), floor Z8, top Z10.
+    let corners = [
+        [3., 3.],
+        [23., 3.],
+        [23., 11.],
+        [11., 11.],
+        [11., 23.],
+        [3., 23.],
+    ];
+    let inside = |p: [f64; 2]| {
+        (p[0] > 3. && p[0] < 23. && p[1] > 3. && p[1] < 11.)
+            || (p[0] > 3. && p[0] < 11. && p[1] > 3. && p[1] < 23.)
+    };
+    let to_wall = |p: [f64; 2]| {
+        (0..6)
+            .map(|k| {
+                let (a, b) = (corners[k], corners[(k + 1) % 6]);
+                let e = [b[0] - a[0], b[1] - a[1]];
+                let t = (((p[0] - a[0]) * e[0] + (p[1] - a[1]) * e[1])
+                    / (e[0] * e[0] + e[1] * e[1]))
+                    .clamp(0., 1.);
+                dist([a[0] + t * e[0], a[1] + t * e[1]], p)
+            })
+            .fold(f64::INFINITY, f64::min)
+    };
+    let length = |c: &Curve| c.prepare(1e-5).unwrap().length_mm();
+    let run = |strategy: AdaptivePathStrategy| {
+        let m = fixture();
+        let mut op = operation();
+        op.path_strategy = strategy;
+        let tool = m.tools[0].prepare().unwrap();
+        let mut stock = Stock::new(m.stock.height().unwrap().clone()).unwrap();
+        let mut plan = OperationPlan::prepare_with_stock(
+            Operation::AdaptivePocket(op),
+            &m.tools[0],
+            &stock,
+            m.initial_position_mm,
+            1,
+            &cancel,
+        )
+        .unwrap();
+        let mut motions = vec![];
+        while let Some(motion) = plan.next_motion_with_stock(&stock, &cancel).unwrap() {
+            assert!(motions.len() < 100_000);
+            let delta = stock
+                .preview_sweep(&tool, &motion, 1., m.sweep, &cancel)
+                .unwrap();
+            stock.apply_delta(&delta).unwrap();
+            motions.push(motion);
+        }
+        plan.finish_report(&cancel).unwrap();
+        (motions, stock, serde_json::to_value(plan.report()).unwrap())
+    };
+    let (orbits, _, _) = run(AdaptivePathStrategy::DiskFront);
+    let (motions, stock, report) = run(AdaptivePathStrategy::EngagementFront);
+
+    // Independent of the planner: at depth, the cutter (radius 2) stays
+    // inside the L and off its walls, over every curve.
+    for motion in &motions {
+        let z = motion.curve.start()[2].min(motion.curve.end()[2]);
+        if z >= 10. {
+            continue;
+        }
+        let path = motion.curve.prepare(1e-5).unwrap();
+        for i in 0..=64 {
+            let p = path.position(i as f64 / 64.).unwrap();
+            let q = [p[0], p[1]];
+            assert!(
+                inside(q) && to_wall(q) >= 2. - 1e-6,
+                "cutter in the wall at {p:?}"
+            );
+        }
+    }
+    // The stock: everything the cutter can reach is at the floor, and
+    // nothing outside the pocket is touched. (A 0.4 mm cell is 0.29 mm
+    // across its half diagonal; a 2 mm cutter leaves the inside corners.)
+    for (i, cell) in stock.cells().iter().enumerate() {
+        let p = stock.cell_center(i).unwrap();
+        let corner = corners.iter().any(|c| dist(*c, p) < 2.5);
+        // With the wall pass, right up to the walls: a cell whose centre is
+        // more than its half diagonal inside is wholly inside.
+        if inside(p) && to_wall(p) > 0.3 && !corner {
+            assert!(cell.upper_mm <= 8. + 1e-4, "uncut at {p:?}: {cell:?}");
+        } else if !inside(p) && to_wall(p) > 0.6 {
+            assert_eq!(cell.lower_mm, 10., "cut outside the pocket at {p:?}");
+        }
+    }
+    // Two depth levels, each entered by one helix, every cutting stroke
+    // proven within acos(1 - stepover / r) = acos(1 - 1.5 / 2).
+    let limit = (1f64 - 1.5 / 2.).acos().to_degrees();
+    assert_eq!(report["strategy"], "adaptive_pocket");
+    assert_eq!(report["clearing"], "engagement_front");
+    assert_eq!(report["completed_layers"], 2);
+    assert!((report["max_engagement_deg"].as_f64().unwrap() - limit).abs() < 1e-9);
+    for layer in report["layers"].as_array().unwrap() {
+        let c = &layer["clearing"];
+        assert_eq!(c["helical_entries"], 1);
+        // One contour-style pass along the L's wall, none skipped.
+        assert_eq!(c["wall_passes"], 1);
+        assert!(c.get("wall_passes_skipped").is_none());
+        // Only the stretch into each inside corner, where the contact is
+        // not proven within the limit, runs as entry motion: a small part
+        // of the 65 mm wall loop, not whole walls.
+        let confined = c
+            .get("confined_stroke_mm")
+            .map_or(0., |v| v.as_f64().unwrap());
+        assert!(confined < 8., "{confined} mm of entry-feed strokes: {c}");
+        assert!(c["proven_max_engagement_deg"].as_f64().unwrap() <= limit);
+        assert!(c["engagement_proved_strokes"].as_u64().unwrap() > 10);
+    }
+    // Far less motion than the orbits for the same pocket.
+    let cut = |list: &[Motion]| -> f64 {
+        list.iter()
+            .filter(|m| !m.kind.is_rapid())
+            .map(|m| length(&m.curve))
+            .sum()
+    };
+    assert!(
+        motions.len() * 3 < orbits.len() && cut(&motions) * 3. < cut(&orbits),
+        "{} moves, {:.0} mm against {} moves, {:.0} mm of orbits",
+        motions.len(),
+        cut(&motions),
+        orbits.len(),
+        cut(&orbits)
+    );
+    // The radial width is the stepover: wider than the cutter radius is refused.
+    let m = fixture();
+    let mut op = operation();
+    op.path_strategy = AdaptivePathStrategy::EngagementFront;
+    op.pocket.stepover_mm = 2.5;
+    let stock = Stock::new(m.stock.height().unwrap().clone()).unwrap();
+    let error = OperationPlan::prepare_with_stock(
+        Operation::AdaptivePocket(op),
+        &m.tools[0],
+        &stock,
+        m.initial_position_mm,
+        1,
+        &cancel,
+    )
+    .err()
+    .unwrap();
+    assert!(
+        error.contains("stepover_mm") && error.contains("cutter radius"),
+        "{error}"
+    );
+}

@@ -63,9 +63,9 @@ comparable only on the same machine; CI runs the same benchmark on every push.
 | Pocket | [#25](https://github.com/stevecad/camlib/issues/25) | `pocket-dense` (clear-pocket) | 9088 | 79836 | 292 (0%) | 26383 | 1216 | 1216 | 8694 | 11873.8 / 11873.4 | 0.335 |
 | Pocket | [#25](https://github.com/stevecad/camlib/issues/25) | `rest-pocket` (pocket) | 30 | 99 | 8 (8%) | 44 | 4 | 4 | 124 | 16.7 / 16.7 | 0.001 |
 | RestPocket | [#25](https://github.com/stevecad/camlib/issues/25) | `rest-pocket` (rest) | 82 | 206 | 117 (57%) | 37 | 4 | 8 | 2 | 26.3 / 26.1 | 0.002 |
-| AdaptivePocket | [#26](https://github.com/stevecad/camlib/issues/26) | `adaptive-pocket` (adaptive) | 3752 | 12192 | 8713 (71%) | 18 | 2 | 2 | 461 | 1262.9 / 1225.6 | 0.068 |
+| AdaptivePocket | [#26](https://github.com/stevecad/camlib/issues/26) | `adaptive-pocket` (adaptive) | 522 | 1096 | 431 (39%) | 90 | 8 | 8 | 472 | 144.4 / 144.1 | 1.814 |
 | Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `rough-parallel` (rough) | 2927 | 37872 | 34195 (90%) | 212 | 12 | 12 | 1984 | 8900.3 / 8898.9 | 0.065 |
-| Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-adaptive` (rough) | 4499 | 15979 | 1372 (9%) | 390 | 25 | 25 | 5725 | 1755.4 / 1755.1 | 24.416 |
+| Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-adaptive` (rough) | 4501 | 15979 | 1372 (9%) | 390 | 25 | 25 | 5725 | 1752.6 / 1752.2 | 28.425 |
 | Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-fine-mesh` (rough) | 3295 | 7879 | 6462 (82%) | 200 | 3 | 3 | 5418 | 554.3 / 531.4 | 0.080 |
 | Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-offset` (rough) | 924 | 10665 | 6073 (57%) | 250 | 5 | 8 | 5766 | 1439.8 / 1436.8 | 0.028 |
 | Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-raster` (rough) | 2169 | 27414 | 21291 (78%) | 614 | 13 | 24 | 5766 | 7932.3 / 7931.6 | 0.043 |
@@ -126,10 +126,10 @@ comparable only on the same machine; CI runs the same benchmark on every push.
 | `facing` | Face a 40 x 24 block 2 mm | 20 | 47.1 / 47.1 | 43 | 0.0 / 254.0 | 0.0 / 0.0 | 0.011 | 0.005 | 0.003 | 26 |
 | `pocket` | Pocket around a round island (CAD region) | 352 | 508.3 / 508.3 | 383 | 3.8 / 541.5 | 0.0 / 489.6 | 0.035 | 0.009 | 0.024 | 31 |
 | `rest-pocket` | Face, 4 mm pocket, 2 mm rest pocket | 130 | 69.9 / 69.6 | 169 | 0.0 / 267.0 | 0.0 / 66.0 | 0.008 | 0.003 | 0.011 | 26 |
-| `adaptive-pocket` | Adaptive clearing of an L pocket | 3752 | 1262.9 / 1225.6 | 5781 | 4.8 / 492.8 | 0.0 / 49.6 | 0.073 | 0.005 | 1.349 | 390 |
+| `adaptive-pocket` | Adaptive clearing of an L pocket | 522 | 144.4 / 144.1 | 777 | 0.0 / 481.6 | 0.0 / 56.0 | 1.822 | 0.105 | 3.489 | 385 |
 | `roughing-raster` | 3D raster roughing around a frustum | 2169 | 7932.3 / 7931.6 | 2400 | 930.8 / 1505.5 | 0.0 / 83.1 | 0.054 | 0.010 | 0.188 | 389 |
 | `roughing-offset` | 3D offset roughing around a frustum | 924 | 1439.8 / 1436.8 | 1219 | 930.8 / 1505.5 | 0.0 / 83.1 | 0.048 | 0.018 | 0.293 | 388 |
-| `roughing-adaptive` | 3D adaptive roughing around a frustum | 4499 | 1755.4 / 1755.1 | 7498 | 939.5 / 1546.7 | 0.0 / 53.8 | 24.433 | 4.458 | 37.303 | 396 |
+| `roughing-adaptive` | 3D adaptive roughing around a frustum | 4501 | 1752.6 / 1752.2 | 7500 | 939.5 / 1546.7 | 0.0 / 53.8 | 28.443 | 4.817 | 44.237 | 395 |
 | `roughing-fine-mesh` | 3D offset roughing of a filleted boss from a fine mesh | 3295 | 554.3 / 531.4 | 4874 | 816.3 / 1385.3 | 0.0 / 0.4 | 0.314 | 0.227 | 10.079 | 406 |
 | `contour` | Outer and inner walls of an annulus | 40 | 55.8 / 55.7 | 79 | 0.0 / 831.6 | 0.0 / 430.2 | 0.011 | 0.005 | 0.010 | 384 |
 | `holes` | Pilot drilling then helical bore milling | 62 | 51.0 / 50.9 | 111 | 0.0 / 413.1 | 0.0 / 125.1 | 0.025 | 0.005 | 0.013 | 388 |

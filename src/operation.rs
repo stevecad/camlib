@@ -28,6 +28,7 @@ use serde::Serialize;
 pub enum OperationReport<'a> {
     Roughing(&'a RoughingReport),
     Adaptive(&'a AdaptiveReport),
+    AdaptiveFront(&'a crate::pocket_front::PocketFrontReport),
     Pocket(&'a PocketReport),
     Slot(&'a SlotReport),
     Facing(&'a FacingReport),
@@ -51,6 +52,8 @@ pub enum OperationReport<'a> {
 pub enum OperationPlan {
     Roughing(Box<RoughingPlan>),
     Adaptive(Box<AdaptivePlan>),
+    /// An adaptive pocket cleared by the engagement front (#190).
+    AdaptiveFront(Box<crate::pocket_front::PocketFrontPlan>),
     Pocket(Box<PocketPlan>),
     Slot(Box<SlotPlan>),
     Facing(Box<FacingPlan>),
@@ -260,6 +263,15 @@ impl OperationPlan {
             Operation::Pocket(p) => Ok(Self::Pocket(Box::new(PocketPlan::prepare_with_stock(
                 p, tool, stock, initial, first_id, cancel,
             )?))),
+            Operation::AdaptivePocket(p)
+                if p.path_strategy == crate::adaptive::AdaptivePathStrategy::EngagementFront =>
+            {
+                Ok(Self::AdaptiveFront(Box::new(
+                    crate::pocket_front::PocketFrontPlan::prepare_with_stock(
+                        p, tool, stock, initial, first_id, cancel,
+                    )?,
+                )))
+            }
             Operation::AdaptivePocket(p) => Ok(Self::Adaptive(Box::new(
                 AdaptivePlan::prepare_with_stock(p, tool, stock, initial, first_id, cancel)?,
             ))),
@@ -286,6 +298,15 @@ impl OperationPlan {
             Operation::Roughing(p) => Ok(Self::Roughing(Box::new(RoughingPlan::prepare(
                 p, tool, stock, initial, first_id, cancel,
             )?))),
+            Operation::AdaptivePocket(p)
+                if p.path_strategy == crate::adaptive::AdaptivePathStrategy::EngagementFront =>
+            {
+                Ok(Self::AdaptiveFront(Box::new(
+                    crate::pocket_front::PocketFrontPlan::prepare(
+                        p, tool, stock, initial, first_id, cancel,
+                    )?,
+                )))
+            }
             Operation::AdaptivePocket(p) => Ok(Self::Adaptive(Box::new(AdaptivePlan::prepare(
                 p, tool, stock, initial, first_id, cancel,
             )?))),
@@ -349,6 +370,7 @@ impl OperationPlan {
         match self {
             Self::Roughing(p) => OperationReport::Roughing(p.report()),
             Self::Adaptive(p) => OperationReport::Adaptive(p.report()),
+            Self::AdaptiveFront(p) => OperationReport::AdaptiveFront(p.report()),
             Self::Pocket(p) => OperationReport::Pocket(p.report()),
             Self::Slot(p) => OperationReport::Slot(p.report()),
             Self::Facing(p) => OperationReport::Facing(p.report()),
@@ -374,6 +396,7 @@ impl OperationPlan {
         match self {
             Self::Roughing(p) => p.prefix_events(),
             Self::Adaptive(p) => p.prefix_events(),
+            Self::AdaptiveFront(p) => p.prefix_events(),
             Self::Pocket(p) => p.prefix_events(),
             Self::Slot(p) => p.prefix_events(),
             Self::Facing(p) => p.prefix_events(),
@@ -399,6 +422,7 @@ impl OperationPlan {
         match self {
             Self::Roughing(p) => p.suffix_events(),
             Self::Adaptive(p) => p.suffix_events(),
+            Self::AdaptiveFront(p) => p.suffix_events(),
             Self::Pocket(p) => p.suffix_events(),
             Self::Slot(p) => p.suffix_events(),
             Self::Facing(p) => p.suffix_events(),
@@ -428,6 +452,7 @@ impl OperationPlan {
         match self {
             Self::Roughing(p) => p.next_motion_with_stock(stock, cancel),
             Self::Adaptive(p) => p.next_motion_with_stock(stock, cancel),
+            Self::AdaptiveFront(p) => p.next_motion_with_stock(stock, cancel),
             Self::Pocket(p) => p.next_motion_with_stock(stock, cancel),
             Self::Slot(p) => p.next_motion_with_stock(stock, cancel),
             Self::Facing(p) => p.next_motion_with_stock(stock, cancel),
@@ -465,6 +490,7 @@ impl OperationPlan {
         match self {
             Self::Roughing(p) => p.finish_report(cancel),
             Self::Adaptive(p) => p.finish_report(cancel),
+            Self::AdaptiveFront(p) => p.finish_report(cancel),
             Self::Pocket(p) => {
                 p.finish_report(cancel)?;
                 Ok(())

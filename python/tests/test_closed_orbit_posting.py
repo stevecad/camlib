@@ -81,7 +81,7 @@ class ClosedOrbitPosting(unittest.TestCase):
         from camlib.postprocessor import GCodeDialect
         from support.adaptive_pocket import adaptive_job
 
-        c = adaptive_job()
+        c = adaptive_job(path_strategy="disk_front")
         tool = c["tools"][0]
         setup = Setup("top", c["stock"], c["tools"], c["operations"], c["initial_position_mm"])
         job = Job("adaptive-orbits", c["revision"], (setup,))

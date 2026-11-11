@@ -30,7 +30,17 @@ def helical_job(adaptive=False):
         't1', EndMill('em4', diameter=4, flute_length=20, overall_length=50), 30, 60, (HolderSection(30, 60, 4, 4),)
     )
     cls = AdaptivePocket if adaptive else Pocket
-    extra = dict(orbit_radius_mm=1, min_orbit_radius_mm=0.25, local_orbit_tolerance_mm=0.05) if adaptive else {}
+    # The orbit planner: this job checks its entries and its orbit options.
+    extra = (
+        dict(
+            path_strategy='disk_front',
+            orbit_radius_mm=1,
+            min_orbit_radius_mm=0.25,
+            local_orbit_tolerance_mm=0.05,
+        )
+        if adaptive
+        else {}
+    )
     operation = cls(
         'helical',
         tool,

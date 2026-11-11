@@ -158,20 +158,37 @@ the error text.
 
 ## Adaptive pocket: `AdaptivePocket`
 
-Same region and depths as `Pocket`, cleared with bounded tool engagement
-(`max_engagement_deg`, default 90): no full-width slotting, for hard
-materials and high-speed toolpaths. `retract_z_mm`/`feed_z_mm` work as for
-`Pocket`; it relinks through its own proven-clear re-entries, so
-`max_stay_down_mm` is refused.
+Same region and depths as `Pocket`, cleared with a bounded radial engagement:
+no full-width slotting, for hard materials and high-speed toolpaths.
+`retract_z_mm`/`feed_z_mm` work as for `Pocket`.
 
+- **It follows the stock** (`path_strategy="engagement_front"`, the default):
+  one depth level at a time, each pass runs along the boundary between cut
+  and uncut stock inside the region, so nothing is cut twice. The region's
+  boundary is a wall.
+- **`stepover_mm` is the radial width of each pass**, at most the cutter
+  radius. Its contact angle, `acos(1 - stepover / r)`, is the limit every
+  cutting stroke is proven against (see `AdaptiveClearing` under
+  [3D roughing](#3d-roughing-roughing-restroughing) for the proof and the
+  report fields, which each level carries). A `max_engagement_deg` below that
+  angle narrows the width further.
+- **Entry:** each level enters by a helix into uncut material, with `entry`'s
+  helix (`HelicalEntry`) or `HelicalEntry`'s defaults when none is given, and
+  straight down only through stock the committed cuts prove is gone.
 - `cutting_sense`: `"climb"` (default) or `"conventional"` with a clockwise
-  spindle (`clockwise` is the older orbit-direction switch).
-- Orbits: `orbit_radius_mm` (default half the tool radius). Set
-  `min_orbit_radius_mm` below it with `local_orbit_tolerance_mm` (for example
-  0.05) to size each orbit from the clearance around it instead.
-- Narrow features and corner rest it cannot reach are reported.
-- `path_strategy="stock_front"` selects a newer strategy still under
-  qualification; it stops with an error where its coverage is unresolved.
+  spindle.
+- Orbit options, `max_stay_down_mm` and `rest_tolerance_mm` do not apply and
+  are refused. Corners the cutter cannot reach are left and reported as the
+  level's residual area.
+- `path_strategy="disk_front"` is the earlier planner: it covers the region
+  with orbits of `orbit_radius_mm` (default half the tool radius) whatever
+  the stock holds. Its orbits overlap, so it cuts many times longer (33.7 m
+  against 1.1 m on a 50 x 30 x 8 mm pocket with a 10 mm cutter). With it,
+  `clockwise` sets the orbit direction, `max_engagement_deg` (default 90)
+  bounds the total contact, and `min_orbit_radius_mm` with
+  `local_orbit_tolerance_mm` sizes each orbit from the clearance around it.
+- `path_strategy="stock_front"` is a development strategy; it stops with an
+  error where its coverage is unresolved.
 
 ## Surface mesh inputs
 

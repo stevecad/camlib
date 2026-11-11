@@ -495,7 +495,7 @@ impl AdaptivePlan {
         cancel: &impl CancelSignal,
     ) -> Result<Self, String> {
         if op.path_strategy == AdaptivePathStrategy::EngagementFront {
-            return Err("path_strategy engagement_front is available for Roughing; use disk_front or stock_front for an adaptive pocket".into());
+            return Err("an engagement_front adaptive pocket is planned by PocketFrontPlan (OperationPlan::prepare)".into());
         }
         let prepared = tool.prepare()?;
         let r = prepared.cutter().definition().diameter_mm / 2.;

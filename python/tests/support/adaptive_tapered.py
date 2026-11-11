@@ -52,6 +52,7 @@ def tapered_job():
         1.5,
         12,
         orbit_radius_mm=1,
+        path_strategy="disk_front",
         min_orbit_radius_mm=0.25,
         local_orbit_tolerance_mm=0.05,
         feed_mm_min=600,
