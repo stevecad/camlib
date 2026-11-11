@@ -100,7 +100,9 @@ declared = dict(
     max_spindle_rpm=12000,
     max_sweep_rad=math.tau,
     tool_changes=True,
-    tool_change_position_mode="table",
+    # Where the builder's M6 leaves the spindle (see "Tool change pose").
+    tool_change_position_mode="z_home",
+    tool_change_home_z_mm=gauge_line_machine_z_after_m6,  # measured on this machine
     rapid_mm_min=10000,
 )
 machine = define_machine(
@@ -121,10 +123,57 @@ Python's module search path. These are example builder bindings, not universal
 FANUC M-code assignments. `tools` contains ordinary `ToolSetting` entries. The
 controller offset-table contents at each configured H register must equal the
 declared physical gauge length; H7 selects register 7, not a length of 7 mm.
-The supplied poses are the actual tip positions after ATC.
+Where the tool change leaves the tip is declared as described under
+[Tool change pose](#tool-change-pose).
 `startup_standard_modes=True` explicitly declares length-offset A with G49,
 Cartesian coordinates, no scale/rotation/mirror, and no macro/AI contour mode.
 The profile does not alter controller parameters or offsets.
+
+## Tool change pose
+
+M06 runs the machine tool builder's tool-change macro (M functions are the
+builder's, pages 114–116), so the manual does not say where the spindle is
+afterwards. camlib needs it: the first block after `M6` is the `G1 G43 H… Z…`
+block, whose Z word must be the tip's position at that moment so that
+activating the offset moves nothing. Declare it in one of two ways; any other
+`tool_change_position_mode` is refused.
+
+| Declaration | What it states | Each tool's tip after M6 |
+| --- | --- | --- |
+| `tool_change_position_mode="z_home"`, `tool_change_home_z_mm=<Z>` | One fact about the machine: M6 leaves the spindle gauge line at this machine Z, and X and Y where they were | work Z = `tool_change_home_z_mm` − work offset Z − the tool's gauge length |
+| `tool_change_position_mode="table"` | One measured pose per tool: `ToolSetting.position_after_mm` | as stated |
+
+With `z_home`, a tool table entry needs only the tool, its T and H numbers and
+its gauge length (`ToolSetting.for_tool(tool, number=3, length_register=8)`).
+Plan the job with the matching
+`Setup(tool_change=ToolChangePosition(gauge_z_mm=<home Z minus work offset Z>))`,
+as for any `z_home` machine (see [Postprocessors](posts.md)). For a gauge line
+at work Z 80, a 60 mm tool and a 70 mm tool are written:
+
+```
+T2
+M6
+G1 G43 H7 Z20. F3000.
+...
+G1 G49 Z80. F3000.
+T3
+M6
+G1 G43 H8 Z10. F3000.
+```
+
+A `z_home` entry that also states `position_after_mm` must state the same tip
+Z (home Z − work offset Z − gauge length); if the two disagree, posting stops
+and names the tool and both values, since one of the gauge length, the home Z
+and the measured pose is wrong. Its X and Y are not read: `z_home` keeps X and
+Y where the change was called. A `table` entry without `position_after_mm` is
+refused. The derived tip Z, like a measured one, must be representable at the
+output precision. A machine whose M6 also moves X and Y to a fixed position is
+declared with `table`, each entry `(x, y, gauge line Z − gauge length)`.
+
+The decoder does not take the pose from the post: it places the tip from the
+same machine declaration at `M6` and refuses a `G43 H Z` block whose Z differs
+from it, and the posted-output check compares each decoded tool change with
+the planned one.
 
 Output uses G17/G90/G94/G40/G49/G80, explicit G52 zero, G54–G59, G61, and G1.
 Curves/helixes in any source plane are lowered with the existing adjustable
@@ -164,6 +213,9 @@ increment.
 
 - Literal output, physical compensation endpoints, mm/inch and both DPI meanings.
 - Alternate explicit OEM functions, two tools, stops and atomic output retry.
+- Two tools from a declared gauge-line pose (`z_home`) without measured
+  positions: the same file as the equivalent measured table, and refusal of a
+  disagreeing or missing declaration.
 - Hostile modes, units, WCS, H values, implicit moves and dimensional notation.
 - Bounded all-plane/multiturn lowering, source attribution and cancellation.
 - A complete synthetic pocket: independently decoded output and actual native

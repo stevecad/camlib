@@ -83,7 +83,10 @@ pub struct ToolSetting {
     pub number: u32,
     pub length_register: u32,
     pub gauge_length_mm: f64,
-    pub position_after_mm: Vec3,
+    /// The tip after this tool's change, in work coordinates. Required by
+    /// `tool_change_position_mode = "table"`; the other modes do not read it.
+    #[serde(default)]
+    pub position_after_mm: Option<Vec3>,
     #[serde(deserialize_with = "present")]
     pub diameter_register: Option<u32>,
 }
@@ -594,6 +597,14 @@ impl Machine {
             if self.dialect.length_activation == "tool_edge" {
                 return Err("tool_change_position_mode preserve_spindle is not modelled for cutting-edge (T/D) length selection; declare each tool's position (table)".into());
             }
+        }
+        if self.tool_change_position_mode == "table"
+            && let Some(t) = self.tools.iter().find(|t| t.position_after_mm.is_none())
+        {
+            return Err(format!(
+                "tool_change_position_mode \"table\" needs each ToolSetting.position_after_mm (the tip after that tool's change), and tool {:?} has none: state it, or declare where the tool change leaves the spindle (z_home with tool_change_home_z_mm)",
+                t.tool
+            ));
         }
         if (self.tool_change_position_mode == "z_home") != self.tool_change_home_z_mm.is_some()
             || self

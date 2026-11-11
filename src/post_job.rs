@@ -716,7 +716,7 @@ fn check_tool_change_pose(machine: &Machine, manifest: &StreamManifest) -> Resul
                 .tools
                 .iter()
                 .filter(|s| gauges.contains_key(s.tool.as_str()))
-                .map(|s| (s.tool.clone(), s.position_after_mm.map(Some)))
+                .filter_map(|s| Some((s.tool.clone(), s.position_after_mm?.map(Some))))
                 .collect();
             let missing: Vec<&&str> = used.iter().filter(|t| !tips.contains_key(**t)).collect();
             if !missing.is_empty() {
@@ -774,7 +774,13 @@ fn replay_tool_change(
                             t.id
                         )
                     })?;
-                tips.insert(t.id.clone(), s.position_after_mm);
+                let tip = s.position_after_mm.ok_or_else(|| {
+                    format!(
+                        "the machine's tool table entry for tool {:?} has no position_after_mm",
+                        t.id
+                    )
+                })?;
+                tips.insert(t.id.clone(), tip);
             }
             Some(ToolChangePose::Table(TablePose { tips_mm: tips }))
         }

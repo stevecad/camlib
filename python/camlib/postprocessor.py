@@ -604,7 +604,10 @@ class Machine:
             raise TypeError('motion_policy must be MotionPolicy')
         if not isinstance(self.tools, (list, tuple)):
             raise TypeError('machine tools must be a list or tuple (a finite collection)')
-        tools = tuple(replace(t, position_after_mm=tuple(t.position_after_mm)) for t in self.tools)
+        tools = tuple(
+            t if t.position_after_mm is None else replace(t, position_after_mm=tuple(t.position_after_mm))
+            for t in self.tools
+        )
         object.__setattr__(self, 'tools', tools)
         for name in ('frame', 'work_to_machine'):
             value = getattr(self, name)
@@ -638,6 +641,14 @@ class Machine:
                     'tool_change_position_mode preserve_spindle is not modelled for cutting-edge (T/D) length '
                     "selection; declare each tool's position (table)"
                 )
+        if self.tool_change_position_mode == 'table':
+            for t in tools:
+                if t.position_after_mm is None:
+                    raise ValueError(
+                        f'tool_change_position_mode "table" needs each ToolSetting.position_after_mm (the tip after '
+                        f"that tool's change), and tool {t.tool!r} has none: state it, or declare where the tool "
+                        'change leaves the spindle (z_home with tool_change_home_z_mm)'
+                    )
         if (self.tool_change_position_mode == 'z_home') != (self.tool_change_home_z_mm is not None) or (
             self.tool_change_home_z_mm is not None
             and not (math.isfinite(self.tool_change_home_z_mm) and abs(self.tool_change_home_z_mm) <= 1e6)

@@ -20,8 +20,12 @@ class Oracle:
         calculator_decimal=False,
         optional_stop_enabled=False,
         m_codes=None,
+        tool_change_gauge_z=None,
     ):
         self.tools = {t.number: t for t in tools}
+        # None: M06 leaves each tool at its measured table pose. A number: it
+        # leaves the spindle gauge line at this work Z, X and Y unmoved.
+        self.tool_change_gauge_z = tool_change_gauge_z
         self.position = tuple(initial_position)
         self.units = 1 if output_units == 'mm' else 25.4
         self.precision = 3 if output_units == 'mm' else 4
@@ -150,7 +154,11 @@ class Oracle:
                 if self.rpm or self.coolant != 'off' or self.selected is None or self.length is not None:
                     raise ValueError('oracle: ATC state')
                 self.active = self.tools[self.selected]
-                self.position = tuple(self.active.position_after_mm)
+                if self.tool_change_gauge_z is None:
+                    self.position = tuple(self.active.position_after_mm)
+                else:
+                    spindle_z = self.tool_change_gauge_z
+                    self.position = (*self.position[:2], spindle_z - self.active.gauge_length_mm)
             elif code in (0, 1):
                 if self.rpm or self.coolant != 'off' or code == 1 and not self.optional_stop_enabled:
                     raise ValueError('oracle: stop state')

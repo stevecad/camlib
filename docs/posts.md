@@ -56,7 +56,8 @@ checks the same limits. See
 Key settings:
 
 - **`tools`**: the machine tool table. `position_after_mm` is where the tool
-  tip is after a tool change (`tool_change_position_mode="table"`); the next
+  tip is after a tool change (`tool_change_position_mode="table"`, which
+  requires it; the other modes do not read it and it may be left out); the next
   operation travels at the higher of that height and its clearance before it
   descends (no rapid moves sideways while descending), so the declared pose
   must match the real machine. Plan a multi-tool job with

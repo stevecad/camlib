@@ -57,6 +57,11 @@ class Fanuc0iMBTest(unittest.TestCase):
             calculator_decimal=calculator,
             optional_stop_enabled=m.optional_stop_enabled,
             m_codes=dict(m.oem_m_codes),
+            tool_change_gauge_z=(
+                m.tool_change_home_z_mm - m.work_to_machine.origin_mm[2]
+                if m.tool_change_position_mode == 'z_home'
+                else None
+            ),
         )
         observed = []
         for chunk in chunks:
@@ -187,6 +192,98 @@ class Fanuc0iMBTest(unittest.TestCase):
         engine.post.bad = False
         engine.consume(p.events[1:])
         engine.finish()
+
+    def gauge_pose_job(self):
+        """Two tools on a machine whose M06 leaves the gauge line at machine
+        Z 380 (work Z 80: the work offset is Z 300), X and Y unmoved."""
+        base, _ = fixture()
+        first = base.tools[0]
+        second = replace(
+            first, id='second', gauge_length_mm=70, holders=tuple(replace(h, z_max_mm=70) for h in first.holders)
+        )
+        p = replace(
+            base,
+            tools=(first, second),
+            initial_position_mm=(5, 0, 20),
+            events=(
+                WorkOffset(),
+                ToolChange(first.id, 2, 7, (5, 0, 20)),
+                Spindle(12000),
+                Motion(1, 'pocket', first.id, Line((5, 0, 20), (10, 0, 20)), 1200),
+                Spindle(0),
+                ToolChange('second', 3, 8, (10, 0, 10)),
+                Spindle(1200),
+                Motion(2, 'second', 'second', Line((10, 0, 10), (15, 0, 10)), 600),
+                Spindle(0),
+            ),
+        )
+        return p, first, second
+
+    def test_two_tools_post_from_the_declared_gauge_pose_without_measured_positions(self):
+        p, first, second = self.gauge_pose_job()
+        declared = (
+            ToolSetting.for_tool(first, number=2, length_register=7),
+            ToolSetting.for_tool(second, number=3, length_register=8),
+        )
+        self.assertIsNone(declared[0].position_after_mm)
+        _, m = self.machine(tools=declared, tool_change_position_mode='z_home', tool_change_home_z_mm=380)
+        chunks = list(post_fanuc(p, m))
+        text = ''.join(c.text for c in chunks)
+        # Each tip is the gauge line (work Z 80) less its gauge length, and
+        # both compensation blocks of each tool keep the spindle there.
+        for block in ('G1 G43 H7 Z20. F3000.', 'G1 G49 Z80. F3000.', 'G1 G43 H8 Z10. F3000.'):
+            self.assertIn(block + '\n', text)
+        self.assertEqual(text.count('G1 G49 Z80. F3000.\n'), 2)
+        oracle = self.oracle(p, m, chunks)
+        self.assertEqual(oracle.transitions, [(43, 80.0, 80.0), (49, 80.0, 80.0), (43, 80.0, 80.0), (49, 80.0, 80.0)])
+        # The same machine declared by measured tip poses writes the same file.
+        measured = (
+            ToolSetting.for_tool(first, number=2, length_register=7, position_after_mm=(5, 0, 20)),
+            ToolSetting.for_tool(second, number=3, length_register=8, position_after_mm=(10, 0, 10)),
+        )
+        _, table = self.machine(tools=measured)
+        self.assertEqual(''.join(c.text for c in post_fanuc(p, table)), text)
+        # The decoder holds the G43 block to the derived pose, and the plan to it.
+        for broken in (
+            text.replace('G1 G43 H8 Z10. F3000.', 'G1 G43 H8 Z20. F3000.'),
+            text.replace('G1 G43 H8 Z10. F3000.', 'G1 G43 H7 Z10. F3000.'),
+            text.replace('G1 G49 Z80. F3000.', 'G1 G49 Z70. F3000.'),
+        ):
+            self.assertNotEqual(broken, text)
+            decoder = Fanuc0iMBDecoder(m, p)
+            with self.assertRaises(ValueError):
+                for line in broken.splitlines():
+                    decoder.read_line(line, dict(id=1, operation='file', kind='cut'))
+        # A plan that starts the second tool where the table pose of another
+        # machine would put it is not what this machine does.
+        moved = tuple(replace(e, position_after_mm=(10, 0, 20)) if e == p.events[5] else e for e in p.events)
+        with self.assertRaises(ValueError):
+            list(post_fanuc(replace(p, events=moved), m))
+
+    def test_gauge_pose_and_measured_positions_must_not_disagree(self):
+        p, first, second = self.gauge_pose_job()
+        one = ToolSetting.for_tool(first, number=2, length_register=7)
+        two = ToolSetting.for_tool(second, number=3, length_register=8)
+        z_home = dict(tool_change_position_mode='z_home', tool_change_home_z_mm=380)
+        # Neither declared: no measured positions and no gauge pose.
+        with self.assertRaisesRegex(ValueError, 'position_after_mm.*z_home with tool_change_home_z_mm'):
+            self.machine(tools=(one, two))
+        with self.assertRaisesRegex(ValueError, 'tool_change_home_z_mm'):
+            self.machine(tools=(one, two), tool_change_position_mode='z_home')
+        with self.assertRaisesRegex(ValueError, 'z_home.*tool_change_home_z_mm.*table.*position_after_mm'):
+            self.machine(tools=(one, two), tool_change_position_mode='preserve_tip')
+        # Both declared and disagreeing: the stated tip is not the gauge line
+        # less the gauge length (here a 70 mm tool entered as measured Z 20).
+        wrong = replace(two, position_after_mm=(10, 0, 20))
+        with self.assertRaisesRegex(ValueError, "'second'.*Z 20 .*gauge length 70.*Z 10"):
+            self.machine(tools=(one, wrong), **z_home)
+        # Both declared and agreeing: the same program.
+        _, derived = self.machine(tools=(one, two), **z_home)
+        _, both = self.machine(tools=(one, replace(two, position_after_mm=(10, 0, 10))), **z_home)
+        self.assertEqual(''.join(c.text for c in post_fanuc(p, both)), ''.join(c.text for c in post_fanuc(p, derived)))
+        # The derived tip must be on the output grid, as a measured one must.
+        with self.assertRaisesRegex(ValueError, 'representable'):
+            self.machine(tools=(one, two), tool_change_position_mode='z_home', tool_change_home_z_mm=380.0004)
 
     def test_allplane_multiturn_lowering_is_bounded_cancellable_and_attributed(self):
         p, m = self.machine()

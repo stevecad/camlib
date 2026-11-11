@@ -21,12 +21,15 @@ class ToolSetting:
     number: int
     length_register: int
     gauge_length_mm: float
-    position_after_mm: tuple
+    # The tip after this tool's change, in work coordinates. Required by
+    # Machine(tool_change_position_mode="table"); the other modes do not read
+    # it (the pose follows from the declared machine behaviour).
+    position_after_mm: tuple | None = None
     # D register holding this tool's wear for cutter compensation (G41/G42).
     diameter_register: int | None = None
 
     @classmethod
-    def for_tool(cls, tool, *, number, length_register, position_after_mm, diameter_register=None):
+    def for_tool(cls, tool, *, number, length_register, position_after_mm=None, diameter_register=None):
         return cls(tool.id, number, length_register, tool.gauge_length_mm, position_after_mm, diameter_register)
 
 

@@ -135,7 +135,7 @@ class ReferenceMachine(Machine):
         _check_coolant({names[c.effect]: c.code for c in self.dialect.commands if c.effect in names})
         if max(self.max_feed_mm_min, self.max_spindle_rpm) > _WORD_LIMIT_MM or self.max_sweep_rad > math.tau:
             raise ValueError('native reference exceeds documented feed/RPM or single-turn subset')
-        if any(not math.isfinite(v) or abs(v) > _WORD_LIMIT_MM for t in self.tools for v in t.position_after_mm):
+        if any(not math.isfinite(v) or abs(v) > _WORD_LIMIT_MM for t in self.tools for v in t.position_after_mm or ()):
             raise ValueError('reference tool/edge work poses exceed bounded software coordinate range')
         if self.dialect.work_offsets != ('G54', 'G55', 'G56', 'G57', 'G58', 'G59'):
             raise ValueError('native reference supports six explicit stored work offsets')

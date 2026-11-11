@@ -1539,7 +1539,11 @@ impl Decoder {
             .map(|t| (*t).clone())
             .ok_or("NC tool absent from machine table")?;
         match self.machine.tool_change_position_mode.as_str() {
-            "table" => self.position = active.position_after_mm,
+            "table" => {
+                self.position = active
+                    .position_after_mm
+                    .ok_or("the tool table entry has no position_after_mm")?
+            }
             "z_home" => {
                 // M6 sends the spindle to machine Z home; XY stays.
                 let gauge_z = self.machine.tool_change_home_z_mm.unwrap()
@@ -1598,7 +1602,9 @@ impl Decoder {
                 .cloned()
                 .ok_or("NC cutting edge absent from active tool table")?;
             if self.machine.tool_change_position_mode == "table" {
-                self.position = edge.position_after_mm;
+                self.position = edge
+                    .position_after_mm
+                    .ok_or("the tool table entry has no position_after_mm")?;
             }
             self.active = Some(edge);
         } else if number != f64::from(active.length_register) || !self.tool_pending {

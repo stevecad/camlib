@@ -159,6 +159,34 @@ fn the_decoder_reads_only_declared_words() {
 }
 
 #[test]
+fn only_a_table_machine_needs_measured_tip_positions() {
+    // #177: a tool table states the tip after each change only where the
+    // machine is declared by it ("table"); a z_home machine derives each tip
+    // from the gauge line's home Z and the tool's gauge length.
+    let mut machine = fixture()["machine"].clone();
+    for tool in machine["tools"].as_array_mut().unwrap() {
+        tool["position_after_mm"] = Value::Null;
+    }
+    machine["tool_change_position_mode"] = "table".into();
+    let error = Machine::from_json(machine.clone()).unwrap_err();
+    assert!(
+        error.contains("position_after_mm") && error.contains("z_home"),
+        "{error}"
+    );
+    machine["tool_change_position_mode"] = "z_home".into();
+    machine["tool_change_home_z_mm"] = 80.0.into();
+    let machine = Machine::from_json(machine).unwrap();
+    let gauge = machine.tools[0].gauge_length_mm;
+    let number = machine.tools[0].number;
+    let mut decoder = Decoder::new(&machine, [1., 2., 8.], Default::default()).unwrap();
+    decoder
+        .read(&[format!("T{number}"), "M6".to_string()], None)
+        .unwrap();
+    let z = 80. - machine.work_to_machine.origin_mm[2] - gauge;
+    assert_eq!(decoder.position, [1., 2., z]);
+}
+
+#[test]
 fn canned_cycles_are_refused_outside_g17() {
     // #183: in G18 LinuxCNC drills along Y; camlib's cycles drill along Z.
     let machine = Machine::from_json(fixture()["machine"].clone()).unwrap();

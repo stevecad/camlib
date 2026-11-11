@@ -133,8 +133,17 @@ class ReferenceMachine(Machine):
             raise ValueError('reference program number must be 1..7999')
         if self.traverse_feed_mm_min is None or self.arcs or self.helices or self.planes != ('xy',):
             raise ValueError('reference uses G17 and explicit G1 traverse/curve lowering')
-        if self.tool_change_position_mode != 'table':
-            raise ValueError('declare physical post-ATC tip poses in the tool table')
+        # M06 runs the machine tool builder's tool-change macro (B-63844EN/02
+        # pages 114-116: M functions are the builder's), so where it leaves
+        # the spindle is a declared premise: each tool's measured tip pose
+        # ("table"), or the gauge line's machine Z with X and Y unmoved
+        # ("z_home"), from which each tip follows by its gauge length.
+        if self.tool_change_position_mode not in ('table', 'z_home'):
+            raise ValueError(
+                'declare where M06 leaves the spindle: tool_change_position_mode="z_home" with '
+                "tool_change_home_z_mm (the gauge line's machine Z after M06; X and Y stay), or "
+                'tool_change_position_mode="table" with each ToolSetting.position_after_mm (the measured tip pose)'
+            )
         if self.decimals > (3 if self.output_units == 'mm' else 4):
             raise ValueError('reference emits at most IS-B precision')
         if self.max_tool_number > 200 or self.max_length_register > 200:
@@ -171,9 +180,27 @@ class ReferenceMachine(Machine):
         for tool in self.tools:
             # Explicit compensation blocks preserve the physical spindle-axis pose.
             # Require exact output-grid table values rather than hide a tiny move.
-            for value in (*tool.position_after_mm, tool.gauge_length_mm):
+            after_z = self.tip_z_after_change_mm(tool)
+            stated = tool.position_after_mm
+            if self.tool_change_position_mode == 'z_home' and stated is not None and abs(stated[2] - after_z) > 1e-9:
+                # Two declarations of the same tip: never pick one.
+                raise ValueError(
+                    f'tool {tool.tool!r}: position_after_mm states the tip at Z {stated[2]} after M06, but '
+                    f'tool_change_home_z_mm {self.tool_change_home_z_mm} (work Z '
+                    f'{after_z + tool.gauge_length_mm}) less its gauge length {tool.gauge_length_mm} is Z '
+                    f'{after_z}: correct the gauge length or the home Z, or leave position_after_mm out '
+                    '(z_home derives it)'
+                )
+            for value in (*(stated or ()), after_z, tool.gauge_length_mm):
                 if abs(round(value / scale, self.decimals) * scale - value) > 1e-9:
                     raise ValueError('tool table poses and gauge lengths must be representable at output precision')
+
+    def tip_z_after_change_mm(self, tool):
+        """Work Z of ``tool``'s tip after M06: its measured table pose, or
+        (z_home) the gauge line's declared Z less the tool's gauge length."""
+        if self.tool_change_position_mode == 'z_home':
+            return self.tool_change_home_z_mm - self.work_to_machine.origin_mm[2] - tool.gauge_length_mm
+        return tool.position_after_mm[2]
 
 
 def define_machine(
@@ -199,7 +226,11 @@ def define_machine(
 
     startup_standard_modes means length-offset A, G49, Cartesian, no scaling,
     rotation, mirror, macro/AI modes. H values equal declared physical gauge lengths.
-    OEM ATC routes are external; table entries state actual tip poses after M6.
+    OEM ATC routes are external. Declare where M6 leaves the spindle:
+    tool_change_position_mode="table" (each ToolSetting.position_after_mm is
+    the measured tip pose), or "z_home" with tool_change_home_z_mm (the gauge
+    line's machine Z after M6, X and Y unmoved): each tip is then that Z less
+    the tool's gauge length, and position_after_mm is left out.
     rigid_tapping declares parameter No. 5200#0 = 1 (G84/G74 alone are rigid);
     rigid_tapping_m29 declares 5200#0 = 0 with rigid mode selected by M29 S.
     """
@@ -271,7 +302,10 @@ class Fanuc0iMBPost(GCodePost):
         self.emit(
             'G1 G43',
             'H' + str(event.length_register),
-            *self.words(('Z', 'F'), (self.active_tool.position_after_mm[2], self.machine.traverse_feed_mm_min)),
+            *self.words(
+                ('Z', 'F'),
+                (self.machine.tip_z_after_change_mm(self.active_tool), self.machine.traverse_feed_mm_min),
+            ),
         )
 
     def tap(self, motion):
