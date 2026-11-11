@@ -40,8 +40,6 @@ is ordered by real dependency, not by size:
 
 Refused-but-valid programs first, the most common setups first.
 
-- #183 Canned cycles are posted in the plane the last arc left (G81 under G18 drills along Y on LinuxCNC)
-- #166 Machine travel: a move starting exactly on the travel limit is uncertain
 - #167 Roughing with AdaptiveClearing: no entry found, or the posted journal grows past 1 GB
 - #160 Roughing: the shank/holder guard can't prove clearance cleared by earlier layers unless a move exactly repeats one
 - #168 Tool change: no mode for a controller whose M6 doesn't move (LinuxCNC T M6 G43 H)
@@ -94,6 +92,10 @@ use: 2D, holes, 3D), turning and thermal.
 - #24 Optimize Facing
 - #25 Optimize Pocket and RestPocket
 - #26 Optimize AdaptivePocket and adaptive clearing
+- #190 AdaptivePocket: plan from the stock (engagement_front), then remove disk_front
+- #191 Retire the stock_front development strategy
+- #192 engagement_front: planning time and time to the first move
+- #193 engagement_front: multi-resolution steering grid for small cutters on large stock
 - #28 Optimize Contour (and Tabs)
 - #34 Optimize TrochoidalSlot
 - #35 Optimize Chamfer
@@ -133,8 +135,9 @@ These can run in parallel with any phase.
 
 - #20 Validate every controller post on real machines (start with the LinuxCNC simulator in CI)
 - #21 Release: PyPI distribution name and published wheels
+- #188 Checking retracts to the top of Z travel: exact setup values, or a bound?
+- #194 CI: the Windows Rust test job takes about an hour, twice per merge
 - #95 Siemens 808D posts: tapping (CYCLE84 / G331, ISO G84/G74)
 - #97 Haas NGC post: G86 needs a source for spindle restart
 - #169 Arc radius check at zero tolerance depends on the platform's hypot
 - #177 FANUC 0i-MB post with several tools needs measured tip positions
-- #182 LNC milling post (A-LNC milling series): reference post with independent decoder
