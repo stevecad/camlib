@@ -249,13 +249,150 @@ fn deep_roughing_checks_layer_depth_and_preserves_shank_and_holder_clearance() {
             assert!(stock.volume().removed_lower_mm3 > 400_000.);
         } else {
             let error = outcome.unwrap_err();
-            assert!(
-                error.contains("roughing layer") && error.contains("clearance"),
-                "{error}"
+            assert!(error.contains("roughing layer"), "{error}");
+            // A typed refusal naming the section and the stock it would
+            // meet (#160), not prose about the original stock.
+            let refusal = camlib::reach::ReachRefusal::parse(&error).expect(&error);
+            assert_eq!(
+                refusal.limit,
+                if shank_radius > 6. {
+                    camlib::reach::ReachLimit::Shank
+                } else {
+                    camlib::reach::ReachLimit::Holder
+                }
             );
-            assert!(error.contains("tip Z must exceed"), "{error}");
+            assert_eq!(
+                (refusal.operation.as_str(), refusal.tool.as_str()),
+                ("rough", "em12")
+            );
+            assert!(refusal.top_z_mm <= 0. && refusal.top_z_mm > refusal.z_mm);
+            assert_eq!(
+                refusal.depth_available_mm,
+                if shank_radius > 6. { 75. } else { 76. }
+            );
+            assert!(error.contains("would meet remaining stock"), "{error}");
+            assert!(!error.contains("original stock"), "{error}");
         }
     }
+}
+
+/// #160: a part whose outline changes with depth. Each layer's passes differ
+/// from the layers above, so no move repeats an earlier one, and the part
+/// stands inside the bounding box of every pass round it. The shank and
+/// holder are clear all the same: the upper layers cut closer to the part
+/// than the lower ones do. The guard used to accept a move only if its whole
+/// padded bounding box was clear or it lay exactly on one earlier sweep, and
+/// refused this at the first layer deeper than the flutes.
+#[test]
+fn deep_roughing_of_a_tapered_part_is_cleared_by_the_stock_its_upper_layers_cut() {
+    let cancel = AtomicBool::new(false);
+    let mut m: StreamManifest = serde_json::from_str(include_str!(
+        "../fixtures/operations/roughing-layer-depth.json"
+    ))
+    .unwrap();
+    let Operation::Roughing(op) = &mut m.operations[0] else {
+        panic!("fixture")
+    };
+    // Contour-parallel passes go round the part.
+    op.clearing = camlib::roughing::RoughingClearing::Offset {
+        stepover_mm: 6.,
+        coverage_margin_mm: 0.01,
+    };
+    op.omit_empty_cuts = false;
+    // The 20 mm square boss becomes a diamond frustum: the square turned 45
+    // degrees, 20 mm across the flats at the top (Z0) and 40 mm at its foot
+    // (Z-78). Its walls are diagonal, so the bounding box of a pass along
+    // one holds the part.
+    for tri in std::sync::Arc::make_mut(&mut op.target.triangles) {
+        for p in tri {
+            if (p[0] == 30. || p[0] == 50.) && (p[1] == 30. || p[1] == 50.) {
+                let scale = if p[2] == 0. { 1. } else { 2. };
+                let (x, y) = (p[0] - 40., p[1] - 40.);
+                let h = std::f64::consts::FRAC_1_SQRT_2 * scale;
+                p[0] = 40. + (x - y) * h;
+                p[1] = 40. + (x + y) * h;
+            }
+        }
+    }
+    m.validate().unwrap();
+    let prepared = m.tools[0].prepare().unwrap();
+    let mut stock = Stock::new(m.stock.height().unwrap().clone()).unwrap();
+    let mut plan = OperationPlan::prepare_with_stock(
+        m.operations[0].clone(),
+        &m.tools[0],
+        &stock,
+        m.initial_position_mm,
+        1,
+        &cancel,
+    )
+    .unwrap();
+    let mut minimum_z = 0_f64;
+    let mut deep = 0;
+    while let Some(motion) = plan.next_motion_with_stock(&stock, &cancel).unwrap() {
+        let z = motion.curve.start()[2].min(motion.curve.end()[2]);
+        minimum_z = minimum_z.min(z);
+        if z <= 0. {
+            // Independent of the planner: the cutter (radius 6) stays off
+            // the diamond |x - 40| + |y - 40| <= d, whose d at height z is
+            // sqrt(2) (10 - 10 z / 78).
+            let d = std::f64::consts::SQRT_2 * (10. - 10. * z / 78.);
+            let corners = [[d, 0.], [0., d], [-d, 0.], [0., -d]];
+            for i in 0..=64 {
+                let p = position(&motion.curve, i as f64 / 64.);
+                let q = [p[0] - 40., p[1] - 40.];
+                assert!(
+                    q[0].abs() + q[1].abs() > d,
+                    "cutter centre in the part at {p:?}"
+                );
+                let away = (0..4)
+                    .map(|k| {
+                        let (a, b) = (corners[k], corners[(k + 1) % 4]);
+                        let e = [b[0] - a[0], b[1] - a[1]];
+                        let t = (((q[0] - a[0]) * e[0] + (q[1] - a[1]) * e[1])
+                            / (e[0] * e[0] + e[1] * e[1]))
+                            .clamp(0., 1.);
+                        (q[0] - a[0] - t * e[0]).hypot(q[1] - a[1] - t * e[1])
+                    })
+                    .fold(f64::INFINITY, f64::min);
+                assert!(away >= 6. - 1e-6, "cutter in the part at {p:?}: {away}");
+            }
+        }
+        if z < -75. && motion.kind == MoveKind::Cut {
+            // Deeper than the flutes: the shank (radius 6, from 75 mm above
+            // the tip) is inside the stock's height range here. The stock
+            // left within its radius of the path is below it.
+            deep += 1;
+            let shank_bottom = z + 75.;
+            for t in [0., 0.5, 1.] {
+                let p = position(&motion.curve, t);
+                for i in 0..12 {
+                    let a = TAU * i as f64 / 12.;
+                    let q = [p[0] + 5.5 * a.cos(), p[1] + 5.5 * a.sin()];
+                    let cell = stock
+                        .cells()
+                        .iter()
+                        .enumerate()
+                        .find(|(k, _)| {
+                            let c = stock.cell_center(*k).unwrap();
+                            (c[0] - q[0]).abs() <= 0.25 && (c[1] - q[1]).abs() <= 0.25
+                        })
+                        .map(|(_, c)| c.upper_mm);
+                    if let Some(upper) = cell {
+                        assert!(upper <= shank_bottom + 1e-6, "stock at {q:?} up to {upper}");
+                    }
+                }
+            }
+        }
+        let delta = stock
+            .preview_sweep(&prepared, &motion, 1., m.sweep, &cancel)
+            .unwrap();
+        stock.apply_delta(&delta).unwrap();
+    }
+    assert!(
+        minimum_z < -77.,
+        "did not reach the final layer: {minimum_z}"
+    );
+    assert!(deep > 10, "{deep} cuts deeper than the flutes");
 }
 
 fn circle(c: &Curve) -> Option<([f64; 3], f64)> {

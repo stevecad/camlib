@@ -964,6 +964,106 @@ impl EngagementScene {
         }
         Ok(true)
     }
+    /// Whole swept-disk containment in committed empty columns, along the XY
+    /// path of any line, XY arc or helix: every point within `radius` of the
+    /// path is empty from `z` up through the original stock top. As
+    /// `clear_line`, with the distance to the path in place of the distance
+    /// to a segment: tiles outside a Lipschitz enclosure of the path are
+    /// discarded and every retained tile needs a full cleared-box witness.
+    ///
+    /// Tiles are refined down to `shell` across; one that small which still
+    /// has no witness is admitted only if it lies wholly within `shell` of
+    /// the swept disk's edge, so the proof is of the section less `shell`
+    /// (a numeric allowance, far below any machining tolerance). The work
+    /// grows as the path length over the clearance the section really has:
+    /// a section with a margin is proven quickly, and one whose edge lies on
+    /// the cleared boundary (a shank as wide as the cutter, where the cutter
+    /// ran) exhausts `work` and is not proven here. `ClearedSweep::repeats`
+    /// admits that case when the move repeats one earlier sweep.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn clear_path(
+        &self,
+        motion: &Motion,
+        radius: f64,
+        z: f64,
+        shell: f64,
+        tolerance: f64,
+        work: &mut u64,
+        cancel: &impl CancelSignal,
+    ) -> Result<bool, String> {
+        let path = motion.curve.prepare(tolerance)?;
+        let Some(axis) = crate::verification::AxisSpan::new(motion, &path, [0., 1.]) else {
+            return Ok(false);
+        };
+        let error = crate::verification::path_error(motion, tolerance);
+        let b = path.bounds();
+        let reach = radius + error;
+        let numeric = 4096.
+            * f64::EPSILON
+            * (1.
+                + b.min[0].abs().max(b.max[0].abs())
+                + b.min[1].abs().max(b.max[1].abs())
+                + reach);
+        let mut stack = vec![(
+            [
+                [b.min[0] - reach, b.min[1] - reach],
+                [b.max[0] + reach, b.max[1] + reach],
+            ],
+            0u8,
+        )];
+        while let Some((bounds, depth)) = stack.pop() {
+            if cancel.is_cancelled() {
+                return Err("swept clearance proof cancelled".into());
+            }
+            if *work == 0 {
+                return Ok(false);
+            }
+            *work -= 1;
+            let mid: Point = std::array::from_fn(|k| (bounds[0][k] + bounds[1][k]) / 2.);
+            let extent = distance(bounds[0], bounds[1]) / 2.;
+            let from_path = axis.distance(mid);
+            if from_path > reach + extent + numeric {
+                continue;
+            }
+            match self.clear_box(bounds, z, work, cancel) {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(_) if !cancel.is_cancelled() => return Ok(false),
+                Err(error) => return Err(error),
+            }
+            if 2. * extent <= shell {
+                if from_path - extent >= reach - shell {
+                    continue;
+                }
+                return Ok(false);
+            }
+            if depth >= 48 {
+                return Ok(false);
+            }
+            for q in 0..4 {
+                stack.push((
+                    [
+                        std::array::from_fn(|k| {
+                            if q & (1 << k) == 0 {
+                                bounds[0][k]
+                            } else {
+                                mid[k]
+                            }
+                        }),
+                        std::array::from_fn(|k| {
+                            if q & (1 << k) == 0 {
+                                mid[k]
+                            } else {
+                                bounds[1][k]
+                            }
+                        }),
+                    ],
+                    depth + 1,
+                ));
+            }
+        }
+        Ok(true)
+    }
     /// Cheap rejection only. A positive result does not prove disk clearance;
     /// callers must still use clear_disk before admitting a descent.
     pub(crate) fn disk_may_be_clear(
@@ -2484,6 +2584,81 @@ fn shape_distance(shape: &Shape, p: Point) -> f64 {
                 end
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod swept_clearance_tests {
+    use super::*;
+    use crate::motion::{Curve, Motion, MoveKind};
+
+    fn motion(curve: Curve) -> Motion {
+        Motion {
+            id: 1,
+            operation: "op".into(),
+            tool: "t".into(),
+            kind: MoveKind::Cut,
+            curve,
+            feed_mm_min: Some(600.),
+        }
+    }
+    fn line(a: [f64; 2], b: [f64; 2], z: f64) -> Motion {
+        motion(Curve::Line {
+            start: [a[0], a[1], z],
+            end: [b[0], b[1], z],
+        })
+    }
+    fn scene(sweeps: &[(Motion, f64)]) -> EngagementScene {
+        EngagementScene::new(
+            StockSpec {
+                version: 1,
+                units: "mm".into(),
+                min_mm: [0., 0., 0.],
+                max_mm: [200., 100., 10.],
+                cell_size_mm: 1.,
+                max_cells: 100_000,
+            },
+            sweeps
+                .iter()
+                .map(|(m, r)| ClearedSweep::from_motion(m, *r, 1e-5).unwrap())
+                .collect(),
+        )
+        .unwrap()
+    }
+    fn clear(s: &EngagementScene, m: &Motion, radius: f64, z: f64) -> bool {
+        s.clear_path(m, radius, z, 3.2e-4, 1e-5, &mut 1_000_000, &|| false)
+            .unwrap()
+    }
+
+    /// #160: a section is proven against the union of the committed sweeps
+    /// along the move's own path, not against one sweep it repeats.
+    #[test]
+    fn a_swept_section_is_proven_by_the_union_of_committed_sweeps() {
+        // Two overlapping diagonal passes at Z5, cutter radius 5.
+        let a = line([20., 20.], [80., 60.], 5.);
+        let b = line([70., 55.], [150., 30.], 5.);
+        let s = scene(&[(a.clone(), 5.), (b.clone(), 5.)]);
+        // A section a little slimmer than the cutter along part of one pass.
+        let along = line([30., 26.666666666666668], [60., 46.666666666666664], 5.);
+        assert!(clear(&s, &along, 4.9, 5.));
+        // A path from one pass into the other: the first sweep alone does
+        // not hold it, the union does.
+        let across = line([74., 56.], [78., 52.5], 5.);
+        assert!(!clear(&scene(&[(a.clone(), 5.)]), &across, 2., 5.));
+        assert!(clear(&s, &across, 2., 5.));
+        assert!(clear(&s, &across, 2., 7.));
+        // Below the floor the sweeps cleared, nothing is proven.
+        assert!(!clear(&s, &across, 2., 4.9));
+        // Wider than what was cut, or off the cut: refused.
+        assert!(!clear(&s, &along, 5.01, 5.));
+        assert!(!clear(&s, &line([30., 30.], [60., 50.], 5.), 5., 5.));
+        // Outside the stock everything is air.
+        assert!(clear(&s, &line([-30., -20.], [-10., -20.], 5.), 5., 0.));
+        // No work, no proof.
+        assert!(
+            !s.clear_path(&a, 5., 5., 3.2e-4, 1e-5, &mut 3, &|| false)
+                .unwrap()
+        );
     }
 }
 

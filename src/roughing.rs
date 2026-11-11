@@ -896,6 +896,14 @@ impl FrontProgress {
 }
 pub struct RoughingPlan {
     depth_parts: Vec<(crate::verification::ToolPart, f64, f64)>,
+    /// The per-move reach check for the sections above the flutes, when the
+    /// stock stands higher above the floor than the cutting length.
+    move_depth: Option<crate::reach::MoveDepth>,
+    /// Committed cleared sweeps, for `swept_clear`.
+    clearance: Option<(
+        crate::engagement::EngagementScene,
+        crate::stock::ClearanceCursor,
+    )>,
     no_op_stock_identity: Option<u64>,
     part_depth_limit: Option<f64>,
     depth_policy_checked: bool,
@@ -1618,6 +1626,10 @@ impl RoughingPlan {
             } else {
                 vec![]
             },
+            clearance: None,
+            move_depth: (material_spec.max_mm[2] - floor > tool.cutter.cutting_length_mm)
+                .then(|| crate::reach::MoveDepth::new(&op.id, tool, op.tolerance_mm))
+                .transpose()?,
             no_op_stock_identity,
             part_depth_limit,
             depth_policy_checked: stock.is_some() || !op.require_part_at_first_depth,
@@ -1731,33 +1743,52 @@ impl RoughingPlan {
             })? {
                 let bounds = m.curve.prepare(self.height_guard_mm / 16.)?.bounds();
                 let mut clearance_work = u64::MAX;
-                for &(part, height, radius) in &self.depth_parts {
+                let mut unproven = false;
+                for &(_, height, radius) in &self.depth_parts {
                     let pad = radius + self.height_guard_mm;
                     let rect = [
                         [bounds.min[0] - pad, bounds.min[1] - pad],
                         [bounds.max[0] + pad, bounds.max[1] + pad],
                     ];
-                    if !stock.bounds_clear(
-                        rect,
-                        bounds.min[2] + height - self.height_guard_mm,
-                        &mut clearance_work,
-                        cancel,
-                    )? && !stock.repeated_clearance(
-                        &m,
-                        radius,
-                        height,
-                        &mut clearance_work,
-                        cancel,
-                    )? {
-                        return Err(format!(
-                            "roughing layer {} at Z{}: {:?} clearance is not proven, {} mm above the tip; to keep it above the original stock, tip Z must exceed {} mm; remove obstructing stock first or use a longer tool assembly",
+                    // Cheap first: nothing in the move's whole padded box
+                    // stands as high as this section.
+                    let floor = bounds.min[2] + height - self.height_guard_mm;
+                    if stock.bounds_clear(rect, floor, &mut clearance_work, cancel)?
+                        // One earlier sweep the move repeats exactly.
+                        || stock.repeated_clearance(&m, radius, height, &mut clearance_work, cancel)?
+                        // The union of every committed sweep, along the
+                        // move's own path (#160).
+                        || Self::swept_clear(
+                            &mut self.clearance,
+                            self.height_guard_mm,
+                            stock,
+                            &m,
+                            radius,
+                            floor,
+                            cancel,
+                        )?
+                    {
+                        continue;
+                    }
+                    unproven = true;
+                    break;
+                }
+                // Otherwise against the stock's whole-cell bounds along the
+                // move (#160): stock that earlier operations or non-flat
+                // moves removed counts too, and a section that does meet
+                // stock is refused with a typed reach refusal naming it.
+                if unproven && let Some(depth) = &self.move_depth {
+                    depth.check(&m, stock, cancel).map_err(|error| {
+                        let (message, marker) = error
+                            .split_once('\n')
+                            .map_or((error.as_str(), ""), |(a, b)| (a, b));
+                        format!(
+                            "roughing layer {} at Z{}: {message}{}{marker}",
                             self.report.active_layer,
                             self.report.layers[self.report.active_layer].tip_z_mm,
-                            part,
-                            height,
-                            stock.spec().max_mm[2] - height + self.height_guard_mm
-                        ));
-                    }
+                            if marker.is_empty() { "" } else { "\n" }
+                        )
+                    })?;
                 }
                 let new = plan.entries();
                 self.report.stock_edge_entries += new.0 - old.0;
@@ -1786,6 +1817,67 @@ impl RoughingPlan {
                 next.give_memory(memory);
             }
             self.activated = false;
+        }
+    }
+    /// Whether the committed sweeps prove everything within `radius` of the
+    /// move's path empty from `floor` up (`EngagementScene::clear_path`).
+    /// Work exhaustion or any uncertainty proves nothing.
+    fn swept_clear(
+        clearance: &mut Option<(
+            crate::engagement::EngagementScene,
+            crate::stock::ClearanceCursor,
+        )>,
+        guard: f64,
+        stock: &Stock,
+        motion: &Motion,
+        radius: f64,
+        floor: f64,
+        cancel: &impl CancelSignal,
+    ) -> Result<bool, String> {
+        if floor > stock.spec().max_mm[2] {
+            return Ok(true);
+        }
+        let tolerance = guard / 16.;
+        let (mut scene, mut cursor) = match clearance.take() {
+            Some(held) if held.0.stock_spec() == stock.spec() => held,
+            _ => (
+                crate::engagement::EngagementScene::new_with_cancel(
+                    stock.spec().clone(),
+                    vec![],
+                    cancel,
+                )?,
+                crate::stock::ClearanceCursor::default(),
+            ),
+        };
+        let (rebuild, sweeps) = stock.committed_clearance_since(&mut cursor, tolerance, cancel)?;
+        if rebuild {
+            scene = crate::engagement::EngagementScene::new_with_cancel(
+                stock.spec().clone(),
+                sweeps,
+                cancel,
+            )?;
+        } else {
+            for sweep in sweeps {
+                scene.append(sweep)?;
+            }
+        }
+        // Enough for a section with any real margin; one with none is
+        // left to the checks that follow.
+        let mut work = 50_000;
+        let proven = scene.clear_path(
+            motion,
+            radius,
+            floor,
+            2. * guard,
+            tolerance,
+            &mut work,
+            cancel,
+        );
+        *clearance = Some((scene, cursor));
+        match proven {
+            Ok(clear) => Ok(clear),
+            Err(_) if !cancel.is_cancelled() => Ok(false),
+            Err(error) => Err(error),
         }
     }
     pub fn finish_report(&mut self, cancel: &impl CancelSignal) -> Result<(), String> {

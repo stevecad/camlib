@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from camlib.simulation import OperationUpdate, Simulation, SimulationError, VerificationUpdate
+from camlib.simulation import OperationUpdate, ReachRefused, Simulation, VerificationUpdate
 
 
 def config():
@@ -58,5 +58,14 @@ class DeepRoughingTest(unittest.TestCase):
         c['tools'][0]['holders'][0]['z_min_mm'] = 76
         c['tools'][0]['stickout_mm'] = 76
         with Simulation(**c) as sim:
-            with self.assertRaisesRegex(SimulationError, 'roughing layer .*Holder clearance.*tip Z must exceed'):
+            # A typed refusal naming the section and the stock it would meet (#160).
+            with self.assertRaisesRegex(
+                ReachRefused, 'roughing layer .*holder section 0 .*would meet remaining stock up to Z'
+            ) as refused:
                 list(sim.run_operations())
+            refusal = refused.exception.refusal
+            self.assertEqual(
+                (refusal.operation, refusal.tool, refusal.limit, refusal.holder_section), ('rough', 'em12', 'holder', 0)
+            )
+            self.assertEqual(refusal.depth_available_mm, 76)
+            self.assertGreater(refusal.top_z_mm, refusal.z_mm)
