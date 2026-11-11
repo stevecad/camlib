@@ -540,7 +540,8 @@ for it is refused, since its middle needs a flat clearing tool.
 
 Required: `paths`, `top_z_mm`, `depth_z_mm`, `stepdown_mm`, `clearance_z_mm`.
 The tool center follows each path with no radius offset (text and logo
-engraving with a chamfer tool, edge breaks, slots along a path). Depth passes
+engraving with a chamfer tool, edge breaks, slots along a path), or runs
+beside it with `side_offset` (below). Depth passes
 run from `top_z_mm` (at most the stock top) to the tool tip at `depth_z_mm`.
 
 ```python
@@ -558,6 +559,51 @@ is closed when its last segment ends on its start. Arcs stay native G2/G3
 where the controller and precision allow. Nothing protects the part except the
 configured checks, since the path is the programmer's. Supports
 `retract_z_mm`/`feed_z_mm`.
+
+### Cutter on one side of an open path: `side_offset`
+
+`side_offset=TraceSideOffset(side, radial_allowance_mm=0)` keeps a flat end
+mill beside each path instead of on it: the tool centre runs at the cutter
+radius plus the allowance to the `"left"` or `"right"` of the direction of
+travel. This is a contour along an open chain of edges (an open edge, a step),
+which `Contour` cannot take because it needs a closed region. It is the
+sideways compensation of commercial CAM: Autodesk Fusion's Trace offsets "to
+the left and right of the selected contours" as its 2D Contour does ("Trace
+milling strategy" and "Side Compensation with Trace reference" in the Fusion
+help), and FreeCAD CAM's Profile cuts beside open edges, stopping at their
+ends.
+
+```python
+from camlib import Trace, TracePath, TraceLine, TraceArc, TraceSideOffset
+
+edge = TracePath((6, 10), (TraceLine((20, 10)), TraceLine((20, 18)), TraceArc((24, 18), -90)))
+op = Trace("step", tool, (edge,), top_z_mm=10, depth_z_mm=8.5,
+           stepdown_mm=0.5, clearance_z_mm=12, feed_mm_min=400, plunge_mm_min=100,
+           spindle_rpm=12000, coolant="off", tool_number=1, length_register=1,
+           side_offset=TraceSideOffset("left", radial_allowance_mm=0.2))
+```
+
+- The offset path is exact: lines move parallel, arcs keep their centre, a
+  joint that turns away from the cutter is rounded by an arc about it (the
+  cutter rolls around the corner, staying in contact), and a joint that turns
+  towards the cutter is trimmed where the neighbouring offsets meet. Arcs stay
+  arcs.
+- The path starts and ends on the normals through the path's two ends: the
+  cutter does not wrap around them. Extend the path if the cut should run past
+  an end.
+- With a clockwise spindle (M3), `"left"` is climb milling and `"right"`
+  conventional, as with G41 and G42.
+- Refused, with the path and segment named, rather than cut differently: an
+  arc curving towards the cutter that is not larger than the offset; a segment
+  the cutter cannot reach at this offset (a notch or corner tighter than the
+  cutter); a path that folds back on itself or passes closer to itself than
+  the offset; a closed path (use `Contour`); a cutter that is not a flat end
+  mill; a negative allowance. Use a smaller tool or allowance, or split the
+  path.
+- The run's report gives `side` and `side_offset_mm` (radius plus allowance).
+  Without `side_offset` the operation and its serialisation are unchanged.
+- Controller wear compensation (G41/G42) is not available on Trace; `Contour`
+  has it for closed profiles.
 
 ## Undercut: `Undercut`
 

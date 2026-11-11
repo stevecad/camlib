@@ -1751,12 +1751,33 @@ class ThermalCut:
 
 
 @dataclass(frozen=True)
+class TraceSideOffset:
+    """Keep the cutter on one side of a Trace's open paths: the tool centre
+    runs at the cutter radius plus ``radial_allowance_mm`` to the ``side``
+    ("left" or "right") of the direction of travel."""
+
+    side: str
+    radial_allowance_mm: float = 0.0
+
+    def __post_init__(self):
+        if self.side not in ("left", "right"):
+            raise ValueError(f"side must be 'left' or 'right', not {self.side!r}")
+
+    def to_dict(self):
+        return {"side": self.side, "radial_allowance_mm": float(self.radial_allowance_mm)}
+
+
+@dataclass(frozen=True)
 class Trace:
     """Trace/engrave: the tool center follows paths at depth, no radius offset.
 
     Depth passes run from ``top_z_mm`` (at most the stock top) down to the
     tool tip at ``depth_z_mm``. Use a chamfer (V) tool for engraving, or an end
     mill for slots along a path. Heights as for the other operations.
+
+    With ``side_offset`` (a ``TraceSideOffset``) a flat end mill runs beside
+    each open path instead, on the given side of the direction of travel:
+    a contour along an open chain of edges (an open edge, a step).
     """
 
     id: str
@@ -1776,6 +1797,7 @@ class Trace:
     coolant: str = field(kw_only=True)
     retract_z_mm: float | None = None
     feed_z_mm: float | None = None
+    side_offset: object | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "paths", tuple(self.paths))
@@ -1787,9 +1809,11 @@ class Trace:
             tool=getattr(self.tool, "id", self.tool),
             paths=[path.to_dict() if hasattr(path, "to_dict") else path for path in self.paths],
         )
-        for key in ('retract_z_mm', 'feed_z_mm'):
+        for key in ('retract_z_mm', 'feed_z_mm', 'side_offset'):
             if result[key] is None:
                 result.pop(key)
+        if hasattr(self.side_offset, "to_dict"):
+            result["side_offset"] = self.side_offset.to_dict()
         return result
 
 

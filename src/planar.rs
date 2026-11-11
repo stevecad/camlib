@@ -10,6 +10,7 @@ use cavalier_contours::{
 };
 use clipper2_rust::{ClipType, Clipper64, FillRule, Paths64, Point64};
 use serde::{Deserialize, Serialize};
+pub(crate) mod chain;
 mod components;
 mod constructed;
 mod difference;

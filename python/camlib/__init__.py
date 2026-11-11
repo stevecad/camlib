@@ -64,6 +64,7 @@ _EXPORTS = {
             "TracePath",
             "TraceLine",
             "TraceArc",
+            "TraceSideOffset",
             "Spiral",
             "Radial",
             "Project",

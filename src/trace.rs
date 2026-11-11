@@ -6,6 +6,16 @@
 //! arcs. An arc is given by its center and sweep, so its end point follows
 //! exactly and no radius mismatch can occur. Linking uses the shared profile
 //! motion (clearance, retract and feed heights).
+//!
+//! With a `side_offset` the tool centre runs beside an open path instead: to
+//! the left or right of the direction of travel by the cutter radius plus an
+//! allowance, the sideways compensation of commercial CAM (Autodesk Fusion,
+//! "Trace milling strategy" and "Side Compensation with Trace reference":
+//! "Compensation allows you to offset the toolpath to the left and right of
+//! the selected contours", as on 2D Contour). The offset is exact
+//! (`planar::chain`) and stops at the normals through the path's ends, as
+//! FreeCAD CAM's Profile stops an open-edge profile at the ends of the edge
+//! (`Path/Op/Profile.py`, `_makeStop`).
 use crate::{
     motion::{Coolant, Motion, Vec3},
     pocket::{ResidualStatus, Stroke},
@@ -33,6 +43,24 @@ pub enum TraceSegment {
 pub struct TracePath {
     pub start_mm: [f64; 2],
     pub segments: Vec<TraceSegment>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TraceSide {
+    Left,
+    Right,
+}
+
+/// Keep the cutter on one side of each (open) path: the tool centre runs at
+/// the cutter radius plus `radial_allowance_mm` to the `side` of the
+/// direction of travel.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TraceSideOffset {
+    pub side: TraceSide,
+    /// Material left between the cutter and the path (not negative).
+    pub radial_allowance_mm: f64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -65,6 +93,9 @@ pub struct TraceOperation {
     /// Containment and avoid areas (clamps, fixtures, features to leave alone).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limits: Option<crate::limits::Limits>,
+    /// Cutter beside the paths instead of centred on them. Default: centred.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side_offset: Option<TraceSideOffset>,
 }
 
 #[derive(Debug, Serialize)]
@@ -78,6 +109,12 @@ pub struct TraceReport {
     pub tip_target_z_mm: f64,
     pub cut_segments_emitted: usize,
     pub machining_scope: &'static str,
+    /// With a side offset: the side, and the distance from the paths to the
+    /// tool centre (cutter radius plus allowance).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub side: Option<TraceSide>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub side_offset_mm: Option<f64>,
 }
 
 pub struct TracePlan {
@@ -207,6 +244,17 @@ impl TracePlan {
                 ),
                 (!op.paths.is_empty(), "at least one path is needed".into()),
                 (
+                    op.side_offset.is_none_or(|s| {
+                        s.radial_allowance_mm.is_finite()
+                            && (0. ..=1e6).contains(&s.radial_allowance_mm)
+                    }),
+                    "side_offset radial_allowance_mm must be finite and not negative".into(),
+                ),
+                (
+                    op.side_offset.is_none() || matches!(cutter.shape, CutterShape::Flat),
+                    "a side offset needs a flat end mill (the offset is its radius); trace other cutters on their centre".into(),
+                ),
+                (
                     op.top_z_mm <= spec.max_mm[2],
                     format!(
                         "top_z_mm {} must not be above the stock top {}",
@@ -285,14 +333,38 @@ impl TracePlan {
             spec.max_mm[2],
             guard,
         )?;
+        let side_offset = op.side_offset.map(|s| {
+            (
+                s.side,
+                assembly.cutter.diameter_mm / 2. + s.radial_allowance_mm,
+            )
+        });
         let mut loops = Vec::with_capacity(op.paths.len());
         let (mut segments, mut closed_paths) = (0, 0);
         for (i, path) in op.paths.iter().enumerate() {
             if cancel.is_cancelled() {
                 return Err("trace planning cancelled".into());
             }
-            let (path_strokes, closed) = strokes(path, guard)
+            let (mut path_strokes, closed) = strokes(path, guard)
                 .map_err(|e| format!("invalid trace parameters: path {i}, {e}"))?;
+            if let Some((side, distance)) = side_offset {
+                if closed {
+                    return Err(format!(
+                        "invalid trace parameters: path {i} is closed; a side offset is for open paths: use Contour for a closed profile, or leave the path open"
+                    ));
+                }
+                let signed = match side {
+                    TraceSide::Left => distance,
+                    TraceSide::Right => -distance,
+                };
+                path_strokes = crate::planar::chain::offset_open_chain(
+                    &path_strokes,
+                    signed,
+                    (op.tolerance_mm / 32.).max(1e-9),
+                    guard,
+                )
+                .map_err(|e| format!("invalid trace parameters: path {i}, {e}"))?;
+            }
             for stroke in &path_strokes {
                 stroke
                     .curve(op.depth_z_mm)
@@ -313,7 +385,13 @@ impl TracePlan {
             depth_passes: passes,
             tip_target_z_mm: op.depth_z_mm,
             cut_segments_emitted: 0,
-            machining_scope: "tool center on the given paths, no radius offset; part protection only through configured checks",
+            machining_scope: if side_offset.is_some() {
+                "tool center beside the given open paths at the cutter radius plus allowance; part protection only through configured checks"
+            } else {
+                "tool center on the given paths, no radius offset; part protection only through configured checks"
+            },
+            side: side_offset.map(|s| s.0),
+            side_offset_mm: side_offset.map(|s| s.1),
         };
         let settings = ProfileSettings {
             id: op.id,
