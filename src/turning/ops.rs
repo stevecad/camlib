@@ -5,13 +5,21 @@
 //! poses, and must not reach into the part; the holder must not reach into
 //! the current stock; a rapid must not touch the stock at all. Each cutting
 //! move then updates the axisymmetric stock.
+//!
+//! Finishing follows the arcs of its path (the profile's arcs offset by the
+//! nose radius, the nose rolling round a sharp corner) with arc moves, which
+//! controllers interpolate natively in G18 (G2/G3; LinuxCNC G-code
+//! reference, FANUC and Centroid lathe manuals). An arc move is checked in
+//! pieces, each inside the triangle of its two ends and the corner of their
+//! tangents: the same hulls, checks and stock steps as the chords it
+//! replaces (`arc_steps`).
 use super::{
     profile::{Envelope, Seg, TurnProfile},
     stock::{TurnChange, TurnSide, TurnStock, TurnStockSpec},
     tool::{Hand, TurningTool},
 };
 use crate::{
-    motion::{CompensationSide, Coolant, Curve, Event, Motion, MoveKind, SpindleDirection},
+    motion::{CompensationSide, Coolant, Curve, Event, Motion, MoveKind, Plane, SpindleDirection},
     stock::CancelSignal,
     tool::{Cutter, CutterShape, HolderSection, ToolAssembly},
 };
@@ -709,7 +717,7 @@ impl Planner<'_> {
         tool_geometry(t, self.job.controlled_point)
     }
 
-    /// Check and emit one line (or XZ arc as chords) of the nose center.
+    /// Check and emit one straight move of the nose center.
     fn emit(
         &mut self,
         tool: &ToolGeom,
@@ -719,256 +727,372 @@ impl Planner<'_> {
         feed: Option<f64>,
         report: &mut TurnReport,
     ) -> Result<(), String> {
+        self.travel(tool, op, None, to, kind, feed, report)
+    }
+
+    /// Check and emit one XZ arc of the nose center (#14): about `center`
+    /// through `sweep` (radians from +z toward +r, positive = G3) to `to`.
+    /// The program gets one G2/G3 block; the checks run on pieces of the arc
+    /// no coarser than the chords it replaces (see `arc_steps`), each
+    /// against the stock the pieces before it leave.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_arc(
+        &mut self,
+        tool: &ToolGeom,
+        op: &str,
+        center: [f64; 2],
+        sweep: f64,
+        to: [f64; 2],
+        kind: MoveKind,
+        feed: Option<f64>,
+        report: &mut TurnReport,
+    ) -> Result<(), String> {
+        self.travel(tool, op, Some((center, sweep)), to, kind, feed, report)
+    }
+
+    /// The move kernel: one line (`arc` None) or one XZ arc of the nose
+    /// center, checked piece by piece and emitted as one motion with its
+    /// stock change. Nothing is committed unless every piece passes.
+    #[allow(clippy::too_many_arguments)]
+    fn travel(
+        &mut self,
+        tool: &ToolGeom,
+        op: &str,
+        arc: Option<([f64; 2], f64)>,
+        to: [f64; 2],
+        kind: MoveKind,
+        feed: Option<f64>,
+        report: &mut TurnReport,
+    ) -> Result<(), String> {
         if self.cancel.is_cancelled() {
             return Err(CANCELLED.into());
         }
         let from = self.position;
-        if from == to {
+        if from == to && arc.is_none() {
             return Ok(());
         }
+        let xz = |p: [f64; 2]| [p[1], 0., p[0]];
+        let steps = match arc {
+            None => vec![Step {
+                points: vec![from, to],
+                curves: vec![Curve::Line {
+                    start: xz(from),
+                    end: xz(to),
+                }],
+                sag: 0.,
+                slack: 0.,
+            }],
+            Some((center, sweep)) => {
+                // One nose following the arc while cutting: a grooving
+                // blade's flat, a drill and a thread are swept as lines only.
+                if matches!(kind, MoveKind::Rapid | MoveKind::Thread)
+                    || tool.blade != 0.
+                    || tool.axial
+                    || tool.drill.is_some()
+                {
+                    return Err(format!(
+                        "{op}: a lathe arc is a cutting move of a single-nose insert (not a rapid, a thread, a grooving blade or a drill); write this move as lines"
+                    ));
+                }
+                arc_steps(from, to, center, sweep, self.job.tolerance_mm)
+                    .map_err(|e| format!("{op}: {e}"))?
+            }
+        };
         let at = |shape: &[[f64; 2]], p: [f64; 2]| {
             shape
                 .iter()
                 .map(|q| [q[0] + p[0], q[1] + p[1]])
                 .collect::<Vec<_>>()
         };
-        let swept = |pieces: &[Vec<[f64; 2]>]| {
-            pieces
-                .iter()
-                .map(|piece| hull([at(piece, from), at(piece, to)].concat()))
-                .collect::<Vec<_>>()
+        // A convex shape carried along a step stays in the hull of its
+        // poses at the step's points (the nose center stays in theirs).
+        let carried = |shape: &[[f64; 2]], points: &[[f64; 2]]| {
+            hull(points.iter().flat_map(|p| at(shape, *p)).collect())
         };
-        // The bodies' images over the move (each piece swept into the hull
-        // of its two ends, then imaged): the XZ projection bounds what lies
-        // outside the tool's radius (a point's radius is at least its |v|);
-        // the radial image (u, √(v² + y²)) of the vertices bounds what lies
-        // beyond it (the radius is convex: exact at vertices, never under).
-        let image = |pieces: &[Vec<[f64; 3]>], radial: bool| {
-            pieces
-                .iter()
-                .map(|piece| {
-                    let ends = piece.iter().flat_map(|p| {
-                        [from, to].map(|c| {
-                            let v = c[1] + p[1];
-                            [c[0] + p[0], if radial { v.hypot(p[2]) } else { v }]
-                        })
-                    });
-                    hull(ends.collect())
-                })
-                .collect::<Vec<_>>()
-        };
-        let face = swept(&tool.insert);
-        let insert_proj = image(&tool.insert_body, false);
-        let insert_rad = image(&tool.insert_body, true);
-        let holder_proj = image(&tool.holder_body, false);
-        let holder_rad = image(&tool.holder_body, true);
-        // Drills and boring tools work in a bore: material lies beyond them.
-        let (insert, holder) = if tool.inner {
-            (insert_rad.clone(), holder_rad.clone())
-        } else {
-            (insert_proj.clone(), holder_proj.clone())
-        };
-        // No tool part below the chuck face.
-        let chuck = self.job.chuck_z_mm + self.guard;
-        if insert.iter().chain(&holder).flatten().any(|p| p[0] < chuck) {
-            return Err(format!(
-                "{op}: the tool would reach the chuck (z below {:.3}) moving to r {:.3}, z {:.3}",
-                self.job.chuck_z_mm, to[1], to[0]
-            ));
-        }
-        // Drills and boring tools work inside the part's bore (clear of both
-        // walls); every other tool outside the part.
-        let face_z = self.job.part.z_range()[1];
-        // How far tool pieces reach into the part (outside tools) or out
-        // of its bore (drills and boring tools).
-        let into_part = |pieces: &[Vec<[f64; 2]>],
-                         radial: &[Vec<[f64; 2]>]|
-         -> Result<f64, String> {
-            let mut worst = f64::NEG_INFINITY;
-            for (piece, far) in pieces.iter().zip(radial) {
-                let below_face = piece.iter().any(|p| p[0] < face_z - self.guard);
-                worst = worst.max(if tool.axial && below_face {
-                    // A face grooving blade below the face: inside a
-                    // declared groove (its inner wall against the
-                    // projection, its outer wall against the radial image).
-                    in_face_groove(piece, face_z, &self.job.face_grooves, self.guard, Some(far))
-                } else if tool.inner {
-                    let bore = self.bore.as_ref().ok_or_else(|| {
-                        format!("{op}: drilling and boring need the part's bore (TurningJob.bore): the hole's half-section from the front face to its deepest point")
-                    })?;
-                    outside(bore, piece, self.guard)
-                } else {
-                    self.part.penetration(piece, self.guard)
-                });
-            }
-            Ok(worst)
-        };
-        let part = into_part(&insert, &insert_rad)?;
-        if part > 0. {
-            return Err(format!(
-                "{op}: the insert would cut {part:.4} mm into the part moving to r {:.3}, z {:.3}; check the insert's angles against the profile",
-                to[1], to[0]
-            ));
-        }
-        report.min_part_clearance_mm = report.min_part_clearance_mm.min(-part - self.guard);
-        // The holder (and bar) against the part and its bore, wherever it
-        // is relative to the insert (a face grooving blade's arm stays out
-        // of the groove: its holder is checked like an outside tool's).
-        let holder_part = if tool.axial {
-            holder
-                .iter()
-                .map(|piece| self.part.penetration(piece, self.guard))
-                .fold(f64::NEG_INFINITY, f64::max)
-        } else {
-            into_part(&holder, &holder_rad)?
-        };
-        if holder_part > 0. {
-            return Err(format!(
-                "{op}: the holder would hit the part ({holder_part:.4} mm) moving to r {:.3}, z {:.3}",
-                to[1], to[0]
-            ));
-        }
-        let curve = Curve::Line {
-            start: [from[1], 0., from[0]],
-            end: [to[1], 0., to[0]],
-        };
-        // The holder trails the insert through the space the insert clears
-        // ahead of it: check it against the stock after this move's cut.
         let mut after = self.stock.clone();
-        if kind != MoveKind::Rapid {
-            // One nose; a grooving blade sweeps both corner noses and its
-            // flat bottom (at both ends of the move).
-            let line = |a: [f64; 2], b: [f64; 2]| Curve::Line {
-                start: [a[1], 0., a[0]],
-                end: [b[1], 0., b[0]],
+        let mut touches = false;
+        for step in &steps {
+            let points = &step.points;
+            let swept = |pieces: &[Vec<[f64; 2]>]| {
+                pieces
+                    .iter()
+                    .map(|piece| carried(piece, points))
+                    .collect::<Vec<_>>()
             };
-            let shift = |p: [f64; 2]| [p[0] + tool.blade, p[1]];
-            let mut sweeps = vec![curve.clone()];
-            if tool.blade != 0. {
-                sweeps.push(line(shift(from), shift(to)));
-                sweeps.push(line(from, shift(from)));
-                sweeps.push(line(to, shift(to)));
+            // The bodies' images over the step (each piece swept into the
+            // hull of its poses, then imaged): the XZ projection bounds what
+            // lies outside the tool's radius (a point's radius is at least
+            // its |v|); the radial image (u, √(v² + y²)) of the vertices
+            // bounds what lies beyond it (the radius is convex: exact at
+            // vertices, never under).
+            let image = |pieces: &[Vec<[f64; 3]>], radial: bool| {
+                pieces
+                    .iter()
+                    .map(|piece| {
+                        let ends = piece.iter().flat_map(|p| {
+                            points.iter().map(move |c| {
+                                let v = c[1] + p[1];
+                                [c[0] + p[0], if radial { v.hypot(p[2]) } else { v }]
+                            })
+                        });
+                        hull(ends.collect())
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let face = swept(&tool.insert);
+            let insert_proj = image(&tool.insert_body, false);
+            let insert_rad = image(&tool.insert_body, true);
+            let holder_proj = image(&tool.holder_body, false);
+            let holder_rad = image(&tool.holder_body, true);
+            // Drills and boring tools work in a bore: material lies beyond
+            // them.
+            let (insert, holder) = if tool.inner {
+                (insert_rad.clone(), holder_rad.clone())
+            } else {
+                (insert_proj.clone(), holder_proj.clone())
+            };
+            // No tool part below the chuck face.
+            let chuck = self.job.chuck_z_mm + self.guard;
+            if insert.iter().chain(&holder).flatten().any(|p| p[0] < chuck) {
+                return Err(format!(
+                    "{op}: the tool would reach the chuck (z below {:.3}) moving to r {:.3}, z {:.3}",
+                    self.job.chuck_z_mm, to[1], to[0]
+                ));
             }
-            if tool.axial {
-                // The blade's certain removal: between its nose centers down
-                // to the lower nose, and the noses' full width above their
-                // centers (a ring the radius bounds cannot hold).
-                let (top, low) = (from[0].max(to[0]), from[0].min(to[0]));
-                let (v0, v1) = (from[1].min(to[1]), from[1].max(to[1]) + tool.blade);
-                after.remove_ring([low - tool.rn, top], [v0, v1]);
-                after.remove_ring([low, top], [v0 - tool.rn, v1 + tool.rn]);
-            } else if let Some((radius, cone)) = tool.drill {
-                let changes = after.drill(from[0].min(to[0]), radius, cone);
-                after.apply(&changes)?;
-            } else if kind == MoveKind::Thread {
-                // A helical thread leaves its crests: only the solid bound
-                // moves, to the insert tip's radius.
-                let changes = if tool.inner {
-                    after.thread_cut_inner(from[0], to[0], to[1].max(from[1]) + tool.rn)
-                } else {
-                    after.thread_cut(from[0], to[0], to[1].min(from[1]) - tool.rn)
-                };
-                after.apply(&changes)?;
-            } else if let Some(back) = &tool.back {
-                // An insert moving straight meets material only through the
-                // part of its outline facing the motion. Where a non-cutting
-                // side faces forward it may meet stock first: its sweep must
-                // then stay clear of the stock there may still be. Trailing,
-                // it meets only what the cutting edges have already cut.
-                let mut reach = f64::NEG_INFINITY;
-                for (piece, normal) in back {
-                    let leads = normal[0] * (to[0] - from[0]) + normal[1] * (to[1] - from[1]) > 0.;
-                    if !leads {
-                        continue;
-                    }
-                    let swept = hull([at(piece, from), at(piece, to)].concat());
-                    reach = reach.max(if tool.inner {
-                        outside(&stock_bore(&self.stock), &swept, self.guard)
+            // Drills and boring tools work inside the part's bore (clear of
+            // both walls); every other tool outside the part.
+            let face_z = self.job.part.z_range()[1];
+            // How far tool pieces reach into the part (outside tools) or out
+            // of its bore (drills and boring tools).
+            let into_part = |pieces: &[Vec<[f64; 2]>],
+                             radial: &[Vec<[f64; 2]>]|
+             -> Result<f64, String> {
+                let mut worst = f64::NEG_INFINITY;
+                for (piece, far) in pieces.iter().zip(radial) {
+                    let below_face = piece.iter().any(|p| p[0] < face_z - self.guard);
+                    worst = worst.max(if tool.axial && below_face {
+                        // A face grooving blade below the face: inside a
+                        // declared groove (its inner wall against the
+                        // projection, its outer wall against the radial
+                        // image).
+                        in_face_groove(piece, face_z, &self.job.face_grooves, self.guard, Some(far))
+                    } else if tool.inner {
+                        let bore = self.bore.as_ref().ok_or_else(|| {
+                            format!("{op}: drilling and boring need the part's bore (TurningJob.bore): the hole's half-section from the front face to its deepest point")
+                        })?;
+                        outside(bore, piece, self.guard)
                     } else {
-                        stock_envelope(&self.stock).penetration(&swept, self.guard)
+                        self.part.penetration(piece, self.guard)
                     });
                 }
-                if reach > 0. {
-                    return Err(format!(
-                        "{op}: the depth of cut reaches the insert's back, beyond its cutting edges ({reach:.4} mm) moving to r {:.3}, z {:.3}; take less per pass",
-                        to[1], to[0]
-                    ));
-                }
-                let side = if tool.inner {
-                    TurnSide::Inner
-                } else {
-                    TurnSide::Outer
-                };
-                // The region the insert sweeps: its nose (or noses) exactly,
-                // and each straight side's parallelogram, exactly.
-                for c in sweeps {
-                    let changes = after.preview(&c, tool.rn, side, self.job.tolerance_mm)?;
-                    after.apply(&changes)?;
-                }
-                for e in &tool.edges {
-                    let piece = hull([at(e, from), at(e, to)].concat());
-                    let changes = after.preview_polygon(&piece, side, 0.);
-                    after.apply(&changes)?;
-                }
+                Ok(worst)
+            };
+            let part = into_part(&insert, &insert_rad)?;
+            if part > 0. {
+                return Err(format!(
+                    "{op}: the insert would cut {part:.4} mm into the part moving to r {:.3}, z {:.3}; check the insert's angles against the profile",
+                    to[1], to[0]
+                ));
+            }
+            report.min_part_clearance_mm = report.min_part_clearance_mm.min(-part - self.guard);
+            // The holder (and bar) against the part and its bore, wherever
+            // it is relative to the insert (a face grooving blade's arm
+            // stays out of the groove: its holder is checked like an outside
+            // tool's).
+            let holder_part = if tool.axial {
+                holder
+                    .iter()
+                    .map(|piece| self.part.penetration(piece, self.guard))
+                    .fold(f64::NEG_INFINITY, f64::max)
             } else {
-                let side = if tool.inner {
-                    TurnSide::Inner
-                } else {
-                    TurnSide::Outer
+                into_part(&holder, &holder_rad)?
+            };
+            if holder_part > 0. {
+                return Err(format!(
+                    "{op}: the holder would hit the part ({holder_part:.4} mm) moving to r {:.3}, z {:.3}",
+                    to[1], to[0]
+                ));
+            }
+            // The holder trails the insert through the space the insert
+            // clears ahead of it: check it against the stock after this
+            // step's cut.
+            if kind != MoveKind::Rapid {
+                // One nose; a grooving blade sweeps both corner noses and
+                // its flat bottom (at both ends of the move).
+                let line = |a: [f64; 2], b: [f64; 2]| Curve::Line {
+                    start: xz(a),
+                    end: xz(b),
                 };
-                for c in sweeps {
-                    let changes = after.preview(&c, tool.rn, side, self.job.tolerance_mm)?;
+                let shift = |p: [f64; 2]| [p[0] + tool.blade, p[1]];
+                let mut sweeps = step.curves.clone();
+                if tool.blade != 0. {
+                    sweeps.push(line(shift(from), shift(to)));
+                    sweeps.push(line(from, shift(from)));
+                    sweeps.push(line(to, shift(to)));
+                }
+                if tool.axial {
+                    // The blade's certain removal: between its nose centers
+                    // down to the lower nose, and the noses' full width
+                    // above their centers (a ring the radius bounds cannot
+                    // hold).
+                    let (top, low) = (from[0].max(to[0]), from[0].min(to[0]));
+                    let (v0, v1) = (from[1].min(to[1]), from[1].max(to[1]) + tool.blade);
+                    after.remove_ring([low - tool.rn, top], [v0, v1]);
+                    after.remove_ring([low, top], [v0 - tool.rn, v1 + tool.rn]);
+                } else if let Some((radius, cone)) = tool.drill {
+                    let changes = after.drill(from[0].min(to[0]), radius, cone);
                     after.apply(&changes)?;
+                } else if kind == MoveKind::Thread {
+                    // A helical thread leaves its crests: only the solid
+                    // bound moves, to the insert tip's radius.
+                    let changes = if tool.inner {
+                        after.thread_cut_inner(from[0], to[0], to[1].max(from[1]) + tool.rn)
+                    } else {
+                        after.thread_cut(from[0], to[0], to[1].min(from[1]) - tool.rn)
+                    };
+                    after.apply(&changes)?;
+                } else if let Some(back) = &tool.back {
+                    // An insert moving straight meets material only through
+                    // the part of its outline facing the motion. Where a
+                    // non-cutting side faces forward it may meet stock
+                    // first: its sweep must then stay clear of the stock
+                    // there may still be. Trailing, it meets only what the
+                    // cutting edges have already cut. (Along an arc piece
+                    // the motion turns between its end tangents: a side that
+                    // faces neither faces no direction between them.)
+                    let mut reach = f64::NEG_INFINITY;
+                    for (piece, normal) in back {
+                        let leads = points.windows(2).any(|w| {
+                            normal[0] * (w[1][0] - w[0][0]) + normal[1] * (w[1][1] - w[0][1]) > 0.
+                        });
+                        if !leads {
+                            continue;
+                        }
+                        let swept = carried(piece, points);
+                        reach = reach.max(if tool.inner {
+                            outside(&stock_bore(&after), &swept, self.guard)
+                        } else {
+                            stock_envelope(&after).penetration(&swept, self.guard)
+                        });
+                    }
+                    if reach > 0. {
+                        return Err(format!(
+                            "{op}: the depth of cut reaches the insert's back, beyond its cutting edges ({reach:.4} mm) moving to r {:.3}, z {:.3}; take less per pass",
+                            to[1], to[0]
+                        ));
+                    }
+                    let side = if tool.inner {
+                        TurnSide::Inner
+                    } else {
+                        TurnSide::Outer
+                    };
+                    // The region the insert sweeps: its nose (or noses)
+                    // exactly, and each straight side's parallelogram,
+                    // exactly.
+                    for c in sweeps {
+                        let changes = after.preview_within(
+                            &c,
+                            tool.rn,
+                            side,
+                            self.job.tolerance_mm,
+                            step.slack,
+                        )?;
+                        after.apply(&changes)?;
+                    }
+                    for e in &tool.edges {
+                        if step.sag == 0. {
+                            let piece = carried(e, points);
+                            let changes = after.preview_polygon(&piece, side, 0.);
+                            after.apply(&changes)?;
+                            continue;
+                        }
+                        // Along an arc piece a side sweeps a curved band:
+                        // material may be gone anywhere in the hull of its
+                        // poses (nothing certain: infinite excess), and is
+                        // certainly gone inside the band (`certain_band`).
+                        let changes =
+                            after.preview_polygon(&carried(e, points), side, f64::INFINITY);
+                        after.apply(&changes)?;
+                        if let Some(band) = certain_band(e, points, step.sag, step.slack) {
+                            let changes = after.preview_polygon(&band, side, 0.);
+                            after.apply(&changes)?;
+                        }
+                    }
+                } else {
+                    let side = if tool.inner {
+                        TurnSide::Inner
+                    } else {
+                        TurnSide::Outer
+                    };
+                    for c in sweeps {
+                        let changes = after.preview_within(
+                            &c,
+                            tool.rn,
+                            side,
+                            self.job.tolerance_mm,
+                            step.slack,
+                        )?;
+                        after.apply(&changes)?;
+                    }
                 }
             }
-        }
-        let stock = stock_envelope(&after);
-        let open = stock_bore(&after);
-        let holder_hit = holder
-            .iter()
-            .map(|piece| {
-                if tool.inner {
-                    // The bar or drill body inside the bore the stock has
-                    // opened.
-                    outside(&open, piece, self.guard)
-                } else {
-                    stock.penetration(piece, self.guard)
-                }
-            })
-            .fold(f64::NEG_INFINITY, f64::max);
-        if holder_hit > 0. {
-            return Err(format!(
-                "{op}: the holder would hit the stock ({holder_hit:.4} mm) moving to r {:.3}, z {:.3}",
-                to[1], to[0]
-            ));
-        }
-        report.min_holder_clearance_mm =
-            report.min_holder_clearance_mm.min(-holder_hit - self.guard);
-        // The insert's body below its cutting face against the stock this
-        // move leaves (#103): it must reach the stock no farther than the
-        // cutting face itself does (the face's own reach is the cut, judged
-        // by the rules above). Beyond it, the heel rubs the wall just cut: a
-        // too thick or too little cleared insert for this radius or seat.
-        let reach = |pieces: &[Vec<[f64; 2]>]| {
-            pieces
+            let stock = stock_envelope(&after);
+            let open = stock_bore(&after);
+            let holder_hit = holder
                 .iter()
                 .map(|piece| {
                     if tool.inner {
+                        // The bar or drill body inside the bore the stock
+                        // has opened.
                         outside(&open, piece, self.guard)
                     } else {
                         stock.penetration(piece, self.guard)
                     }
                 })
-                .fold(f64::NEG_INFINITY, f64::max)
-        };
-        let (body_reach, face_reach) = (reach(&insert), reach(&face));
-        if kind != MoveKind::Rapid && body_reach > face_reach.max(0.) + self.guard {
-            return Err(format!(
-                "{op}: the insert's body below its cutting face would rub the stock ({:.4} mm beyond the cutting face) moving to r {:.3}, z {:.3}; it needs more clearance here (a thinner or more positive insert, or a different seat)",
-                body_reach - face_reach.max(0.),
-                to[1],
-                to[0]
-            ));
+                .fold(f64::NEG_INFINITY, f64::max);
+            if holder_hit > 0. {
+                return Err(format!(
+                    "{op}: the holder would hit the stock ({holder_hit:.4} mm) moving to r {:.3}, z {:.3}",
+                    to[1], to[0]
+                ));
+            }
+            report.min_holder_clearance_mm =
+                report.min_holder_clearance_mm.min(-holder_hit - self.guard);
+            // The insert's body below its cutting face against the stock
+            // this step leaves (#103): it must reach the stock no farther
+            // than the cutting face itself does (the face's own reach is the
+            // cut, judged by the rules above). Beyond it, the heel rubs the
+            // wall just cut: a too thick or too little cleared insert for
+            // this radius or seat.
+            let reach = |pieces: &[Vec<[f64; 2]>]| {
+                pieces
+                    .iter()
+                    .map(|piece| {
+                        if tool.inner {
+                            outside(&open, piece, self.guard)
+                        } else {
+                            stock.penetration(piece, self.guard)
+                        }
+                    })
+                    .fold(f64::NEG_INFINITY, f64::max)
+            };
+            let (body_reach, face_reach) = (reach(&insert), reach(&face));
+            if kind != MoveKind::Rapid && body_reach > face_reach.max(0.) + self.guard {
+                return Err(format!(
+                    "{op}: the insert's body below its cutting face would rub the stock ({:.4} mm beyond the cutting face) moving to r {:.3}, z {:.3}; it needs more clearance here (a thinner or more positive insert, or a different seat)",
+                    body_reach - face_reach.max(0.),
+                    to[1],
+                    to[0]
+                ));
+            }
+            touches |= insert.iter().any(|piece| {
+                if tool.inner {
+                    // Inside the bore the stock certainly has open.
+                    outside(&open, piece, self.guard) > 0.
+                } else {
+                    stock.penetration(piece, self.guard) > 0.
+                }
+            });
         }
         // A rapid straight back along the last cutting move's line (out of a
         // groove or plunge) passes only through space that move's insert
@@ -993,21 +1117,14 @@ impl Planner<'_> {
             } else {
                 to[1] > from[1]
             };
-        let touches = insert.iter().any(|piece| {
-            if tool.inner {
-                // Inside the bore the stock certainly has open.
-                outside(&open, piece, self.guard) > 0.
-            } else {
-                stock.penetration(piece, self.guard) > 0.
-            }
-        });
         if kind == MoveKind::Rapid && !retraces && !pullout && touches {
             return Err(format!(
                 "{op}: a rapid would touch the stock moving to r {:.3}, z {:.3}",
                 to[1], to[0]
             ));
         }
-        self.last_cut = (kind != MoveKind::Rapid).then_some((from, to));
+        // Only a straight cut's line can be retraced by a rapid.
+        self.last_cut = (kind != MoveKind::Rapid && arc.is_none()).then_some((from, to));
         self.last_thread = (kind == MoveKind::Thread).then_some(to);
         let delta = TurnDelta {
             motion_id: self.next_id,
@@ -1024,17 +1141,31 @@ impl Planner<'_> {
         };
         if kind != MoveKind::Rapid {
             self.stock = after;
-            report.cut_length_mm += (to[0] - from[0]).hypot(to[1] - from[1]);
+            report.cut_length_mm += match arc {
+                None => (to[0] - from[0]).hypot(to[1] - from[1]),
+                Some((c, sweep)) => (from[0] - c[0]).hypot(from[1] - c[1]) * sweep.abs(),
+            };
         }
         self.deltas.push(delta);
         // `feed` is per revolution: per minute at the highest spindle speed
         // along the move (constant surface speed turns faster inward).
         // The program moves the controlled point (the controller's CSS
-        // follows its X).
+        // follows its X): the nose center's path translated by the tip
+        // offset, so an arc stays an arc of the same radius and sweep.
         let t = tool.tip;
-        let curve = Curve::Line {
-            start: [from[1] + t[1], 0., from[0] + t[0]],
-            end: [to[1] + t[1], 0., to[0] + t[0]],
+        let tip = |p: [f64; 2]| [p[1] + t[1], 0., p[0] + t[0]];
+        let curve = match arc {
+            None => Curve::Line {
+                start: tip(from),
+                end: tip(to),
+            },
+            Some((c, sweep)) => Curve::Arc {
+                start: tip(from),
+                end: tip(to),
+                center: tip(c),
+                plane: Plane::Xz,
+                sweep_rad: sweep,
+            },
         };
         let top = match self.spindle {
             Spin::Rpm(r) => r,
@@ -1055,6 +1186,161 @@ impl Planner<'_> {
         self.position = to;
         Ok(())
     }
+}
+
+/// One checked piece of a move.
+struct Step {
+    /// The nose center stays in the hull of these: a line's two ends; an arc
+    /// piece's two ends and the corner of its end tangents between them
+    /// (the first three points).
+    points: Vec<[f64; 2]>,
+    /// The nose center's path over the piece (the stock's cut).
+    curves: Vec<Curve>,
+    /// An arc piece's sagitta: how far it bulges from its chord (0: a line).
+    sag: f64,
+    /// How far the actual path may stray from `curves` (an arc whose end is
+    /// not exactly on its circle; 0 for a line).
+    slack: f64,
+}
+
+/// The pieces an arc of the nose center is checked in: from `from` about
+/// `center` through `sweep` (radians from +z toward +r) to `to`.
+///
+/// Each piece's hull is its two ends and the corner of the tangents at them
+/// (the arc lies inside that triangle, so a convex shape carried along the
+/// piece stays inside the hull of its three poses). The pieces are those
+/// `chain` approximates the same arc with (sagitta at most `tolerance / 4`;
+/// more only where that would leave a piece over a quarter turn). `chain`'s
+/// chords run from tangent corner to tangent corner through the piece ends,
+/// so everything they swept lies in these hulls: a check passes on the arc
+/// only where it passed on the chords.
+///
+/// An end off the start's circle (within `tolerance`: an arc read back from
+/// rounded words; a planned one is off by rounding errors only) is what a
+/// controller reaches by blending the radius from the start's to the end's
+/// (LinuxCNC interp_arc.cc: a spiral; docs/posts.md). Every piece's hull
+/// then also holds its triangle at the end's radius (any path between the
+/// two circles stays inside), the stock allows for a path that far from the
+/// start's circle (`slack`), and the last piece ends on `to`.
+fn arc_steps(
+    from: [f64; 2],
+    to: [f64; 2],
+    center: [f64; 2],
+    sweep: f64,
+    tolerance: f64,
+) -> Result<Vec<Step>, String> {
+    use std::f64::consts::{FRAC_PI_2, TAU};
+    let r = (from[0] - center[0]).hypot(from[1] - center[1]);
+    if !(r.is_finite() && r >= 1e-6 && sweep.is_finite() && (1e-12..=TAU).contains(&sweep.abs())) {
+        return Err(
+            "a lathe arc needs a radius of at least 1e-6 mm and a sweep of at most one turn".into(),
+        );
+    }
+    let a0 = (from[1] - center[1]).atan2(from[0] - center[0]);
+    let on = |a: f64, radius: f64| [center[0] + radius * a.cos(), center[1] + radius * a.sin()];
+    let nominal = on(a0 + sweep, r);
+    let slack = (nominal[0] - to[0]).hypot(nominal[1] - to[1]);
+    if !matches!(
+        slack.partial_cmp(&tolerance),
+        Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+    ) {
+        return Err(format!(
+            "the arc's end (r {:.4}, z {:.4}) is not on its circle and sweep within the tolerance {tolerance}",
+            to[1], to[0]
+        ));
+    }
+    let r_end = (to[0] - center[0]).hypot(to[1] - center[1]);
+    // At most a quarter turn per piece: its tangents meet at a corner.
+    let n = ((sweep.abs() * (r / (2. * tolerance)).sqrt()).ceil() as usize)
+        .max((sweep.abs() / FRAC_PI_2).ceil() as usize)
+        .clamp(1, 4096);
+    let step = sweep / n as f64;
+    let grow = 1. / (step.abs() / 2.).cos();
+    let xz = |p: [f64; 2]| [p[1], 0., p[0]];
+    Ok((0..n)
+        .map(|k| {
+            let (a, b) = (a0 + step * k as f64, a0 + step * (k + 1) as f64);
+            let p = if k == 0 { from } else { on(a, r) };
+            let q = on(b, r);
+            let mut points = vec![p, on((a + b) / 2., r * grow), q];
+            let mut curves = vec![Curve::Arc {
+                start: xz(p),
+                end: xz(q),
+                center: xz(center),
+                plane: Plane::Xz,
+                sweep_rad: step,
+            }];
+            if r_end != r {
+                points.extend([on(a, r_end), on((a + b) / 2., r_end * grow), on(b, r_end)]);
+            }
+            if k + 1 == n && q != to {
+                points.push(to);
+                curves.push(Curve::Line {
+                    start: xz(q),
+                    end: xz(to),
+                });
+            }
+            Step {
+                points,
+                curves,
+                sag: r * (1. - (step.abs() / 2.).cos()),
+                slack,
+            }
+        })
+        .collect())
+}
+
+/// A convex region certainly swept by the straight side `e` of an insert
+/// (relative to the nose center) while the nose center follows an arc piece
+/// from near `points[0]` to near `points[2]`: a path that starts and ends
+/// within `slack` of those and stays within `sag + slack` of their chord.
+///
+/// The side carried along the chord sweeps a parallelogram; along the path
+/// each pose is a chord pose shifted by h·n (n the chord's normal,
+/// |h| <= H = sag + slack). With n = α·ê + β·ĉ (ê along the side, ĉ along
+/// the chord; α = 1 / (ê·n), β = -α (ê·ĉ)), the path's pose at chord
+/// position a is the side at a + β·h along the chord, shifted α·h along
+/// itself. a + β·h runs continuously from within slack·(1 + |β|) of the
+/// chord's start to within that of its end, so it takes every value τ in
+/// between; there the side's point s - α·h is at the parallelogram's point
+/// (s, τ), and it is on the side whenever s is at least |α|·H from both of
+/// its ends. So the side shortened by H / |ê·n| at each end, carried along
+/// the chord shortened by slack·(1 + |β|) at each end, is swept.
+fn certain_band(
+    e: &[[f64; 2]; 2],
+    points: &[[f64; 2]],
+    sag: f64,
+    slack: f64,
+) -> Option<Vec<[f64; 2]>> {
+    let (p, q) = (points[0], points[2]);
+    let d = [e[1][0] - e[0][0], e[1][1] - e[0][1]];
+    let chord = [q[0] - p[0], q[1] - p[1]];
+    let (l, c) = (d[0].hypot(d[1]), chord[0].hypot(chord[1]));
+    if !(l > 0. && c > 0.) {
+        return None;
+    }
+    let (ue, uc) = ([d[0] / l, d[1] / l], [chord[0] / c, chord[1] / c]);
+    let alpha = 1. / (-ue[0] * uc[1] + ue[1] * uc[0]);
+    let beta = -alpha * (ue[0] * uc[0] + ue[1] * uc[1]);
+    let trim = alpha.abs() * (sag + slack);
+    let cut = slack * (1. + beta.abs());
+    if !(trim.is_finite() && cut.is_finite() && 2. * trim < l && 2. * cut < c) {
+        return None;
+    }
+    let (a, b) = (
+        [e[0][0] + trim * ue[0], e[0][1] + trim * ue[1]],
+        [e[1][0] - trim * ue[0], e[1][1] - trim * ue[1]],
+    );
+    let (p, q) = (
+        [p[0] + cut * uc[0], p[1] + cut * uc[1]],
+        [q[0] - cut * uc[0], q[1] - cut * uc[1]],
+    );
+    Some(hull(vec![
+        [a[0] + p[0], a[1] + p[1]],
+        [b[0] + p[0], b[1] + p[1]],
+        [a[0] + q[0], a[1] + q[1]],
+        [b[0] + q[0], b[1] + q[1]],
+    ]))
 }
 
 /// Chain points of an offset path (arcs as chords within `sag`, pushed
@@ -1089,6 +1375,46 @@ fn chain(path: &[Seg], sag: f64) -> Vec<[f64; 2]> {
         }
     }
     points
+}
+
+/// Whether a finishing path's segment is cut as one native arc (G2/G3,
+/// #14) rather than as `chain`'s chords: an arc that `chain` would need
+/// more than one step for at the chord sagitta `sag` (a flatter one is a
+/// straight move within the tolerance already), followed by a single nose
+/// (a grooving blade's flat bottom does not follow an arc).
+fn native_arc(tool: &ToolGeom, seg: &Seg, sag: f64) -> bool {
+    let Seg::Arc { a, c, sweep, .. } = *seg else {
+        return false;
+    };
+    let r = (a[0] - c[0]).hypot(a[1] - c[1]);
+    tool.blade == 0.
+        && !tool.axial
+        && tool.drill.is_none()
+        && r >= 1e-6
+        && sweep.abs() <= std::f64::consts::TAU
+        && sweep.abs() * (r / (8. * sag)).sqrt() > 1.
+}
+
+/// The least coordinate (`axis` 0: z, 1: r) along a segment.
+fn seg_low(seg: &Seg, axis: usize) -> f64 {
+    let ends = seg.start()[axis].min(seg.end()[axis]);
+    let Seg::Arc { a, c, sweep, .. } = *seg else {
+        return ends;
+    };
+    use std::f64::consts::{FRAC_PI_2, PI, TAU};
+    // The circle's lowest point along the axis, if the arc passes it.
+    let lowest = if axis == 0 { PI } else { -FRAC_PI_2 };
+    let a0 = (a[1] - c[1]).atan2(a[0] - c[0]);
+    let travel = if sweep > 0. {
+        (lowest - a0).rem_euclid(TAU)
+    } else {
+        (a0 - lowest).rem_euclid(TAU)
+    };
+    if travel <= sweep.abs() {
+        ends.min(c[axis] - (a[0] - c[0]).hypot(a[1] - c[1]))
+    } else {
+        ends
+    }
 }
 
 /// The largest z (u) at which the offset chain reaches radius v.
@@ -1971,8 +2297,8 @@ impl<'a> TurnSession<'a> {
                         "{id}: inside finishing needs a boring tool (side inner)"
                     ));
                 }
-                let points = chain(&bore.bore_path(rn + allowance_mm)?, tol / 4.);
-                let first = points[0];
+                let path = bore.bore_path(rn + allowance_mm)?;
+                let first = path[0].start();
                 approach(&mut *planner, &mut report, [z_start, first[1]])?;
                 // Wear compensation: inside, the tool is on the left of the
                 // path cutting toward the chuck (G41).
@@ -1989,21 +2315,48 @@ impl<'a> TurnSession<'a> {
                 }
                 // Along the bore to z_end (the last segment cut short there);
                 // out again inside the least radius passed.
+                // An arc of the path wholly before z_end is one arc move
+                // (G2/G3, #14); any other as its chords.
                 let mut low = first[1];
-                for w in points.windows(2) {
-                    let (a, b) = (w[0], w[1]);
-                    let p = if b[0] < *z_end_mm {
-                        let t = (a[0] - z_end_mm) / (a[0] - b[0]);
-                        [*z_end_mm, a[1] + t * (b[1] - a[1])]
-                    } else {
-                        b
-                    };
-                    if p != a {
-                        planner.emit(&geom, &id, p, MoveKind::Cut, feed, &mut report)?;
+                'path: for seg in &path {
+                    let start = seg.start();
+                    if planner.position != start {
+                        planner.emit(&geom, &id, start, MoveKind::Cut, feed, &mut report)?;
+                        low = low.min(start[1]);
                     }
-                    low = low.min(p[1]);
-                    if b[0] <= *z_end_mm {
-                        break;
+                    if let Seg::Arc { b, c, sweep, .. } = *seg
+                        && native_arc(&geom, seg, tol / 4.)
+                        && seg_low(seg, 0) > *z_end_mm
+                    {
+                        planner.emit_arc(
+                            &geom,
+                            &id,
+                            c,
+                            sweep,
+                            b,
+                            MoveKind::Cut,
+                            feed,
+                            &mut report,
+                        )?;
+                        low = low.min(seg_low(seg, 1));
+                        continue;
+                    }
+                    let points = chain(std::slice::from_ref(seg), tol / 4.);
+                    for w in points.windows(2) {
+                        let (a, b) = (w[0], w[1]);
+                        let p = if b[0] < *z_end_mm {
+                            let t = (a[0] - z_end_mm) / (a[0] - b[0]);
+                            [*z_end_mm, a[1] + t * (b[1] - a[1])]
+                        } else {
+                            b
+                        };
+                        if p != a {
+                            planner.emit(&geom, &id, p, MoveKind::Cut, feed, &mut report)?;
+                        }
+                        low = low.min(p[1]);
+                        if b[0] <= *z_end_mm {
+                            break 'path;
+                        }
                     }
                 }
                 let pos = planner.position;
@@ -2265,8 +2618,7 @@ impl<'a> TurnSession<'a> {
             } => {
                 let feed = feed_of(*feed_mm_rev)?;
                 let path = job.part.offset(rn + allowance_mm)?;
-                let points = chain(&path, tol / 4.);
-                let first = points[0];
+                let first = path[0].start();
                 approach(&mut *planner, &mut report, [z_start, first[1]])?;
                 // Wear compensation: on over the straight entry, the tool on
                 // the right of the path outside (G42, cutting toward the
@@ -2279,11 +2631,38 @@ impl<'a> TurnSession<'a> {
                     });
                 }
                 planner.emit(&geom, &id, first, MoveKind::Plunge, feed, &mut report)?;
-                for &p in &points[1..] {
-                    if p[0] < job.chuck_z_mm + job.clearance_mm {
-                        break;
+                // Along the path to the clearance in front of the chuck. An
+                // arc of the path (a fillet, a ball end, the nose rolling
+                // round a corner) wholly in front of it is one arc move
+                // (G2/G3, #14); any other as its chords.
+                let limit = job.chuck_z_mm + job.clearance_mm;
+                'path: for seg in &path {
+                    if let Seg::Arc { a, b, c, sweep } = *seg
+                        && native_arc(&geom, seg, tol / 4.)
+                        && seg_low(seg, 0) >= limit
+                    {
+                        planner.emit(&geom, &id, a, MoveKind::Cut, feed, &mut report)?;
+                        planner.emit_arc(
+                            &geom,
+                            &id,
+                            c,
+                            sweep,
+                            b,
+                            MoveKind::Cut,
+                            feed,
+                            &mut report,
+                        )?;
+                        continue;
                     }
-                    planner.emit(&geom, &id, p, MoveKind::Cut, feed, &mut report)?;
+                    for p in chain(std::slice::from_ref(seg), tol / 4.) {
+                        if p == planner.position {
+                            continue;
+                        }
+                        if p[0] < limit {
+                            break 'path;
+                        }
+                        planner.emit(&geom, &id, p, MoveKind::Cut, feed, &mut report)?;
+                    }
                 }
                 let pos = planner.position;
                 if wear {
@@ -2510,13 +2889,24 @@ impl TurnReplay {
         Ok(self)
     }
 
-    /// Check one move (a line in the XZ plane, in program coordinates) and
-    /// return its stock change; the stock advances only when it passes.
+    /// Check one move (a line or an arc in the XZ plane, in program
+    /// coordinates) and return its stock change; the stock advances only
+    /// when it passes.
     pub fn motion(&mut self, motion: &Motion) -> Result<TurnDelta, String> {
-        let Curve::Line { start, end } = motion.curve else {
-            return Err("lathe moves are replayed as lines in the XZ plane".into());
+        let (start, end, arc) = match motion.curve {
+            Curve::Line { start, end } => (start, end, None),
+            Curve::Arc {
+                start,
+                end,
+                center,
+                plane: Plane::Xz,
+                sweep_rad,
+            } => (start, end, Some((center, sweep_rad))),
+            _ => {
+                return Err("lathe moves are replayed as lines and arcs in the XZ plane".into());
+            }
         };
-        if start[1] != 0. || end[1] != 0. {
+        if start[1] != 0. || end[1] != 0. || arc.is_some_and(|(c, _)| c[1] != 0.) {
             return Err("lathe moves lie in the XZ plane (y 0)".into());
         }
         let setting = self
@@ -2580,7 +2970,18 @@ impl TurnReplay {
                 min_part_clearance_mm: f64::INFINITY,
                 min_holder_clearance_mm: f64::INFINITY,
             };
-            planner.emit(&geom, &motion.operation, to, motion.kind, feed, &mut report)
+            // Program point to nose center: a translation, the arc's center
+            // with it.
+            let arc = arc.map(|(c, sweep)| ([c[2] - t[0], c[0] - t[1]], sweep));
+            planner.travel(
+                &geom,
+                &motion.operation,
+                arc,
+                to,
+                motion.kind,
+                feed,
+                &mut report,
+            )
         })();
         let delta = planner.deltas.pop();
         // The plain part and bore for the next move (the relief belongs to
@@ -4352,5 +4753,506 @@ test_tool("groove_in".into(), Insert::Groove { width_mm: 3.,
         let reach = s.insert.iter().map(|p| p[0]).fold(0., f64::max);
         assert_eq!(s.holder[0], [reach, 0.]);
         assert_eq!(s.holder[2], [reach + 100., 20.]);
+    }
+
+    /// A ball end (radius 6), a concave fillet (radius 3) into a shoulder
+    /// and a sharp outer corner: (r, z, bulge).
+    fn rounded_job() -> TurningJob {
+        let b = std::f64::consts::FRAC_PI_8.tan();
+        let mut j = job();
+        j.part.points = vec![
+            [0., 0., b],
+            [6., -6., 0.],
+            [6., -20., -b],
+            [9., -23., 0.],
+            [14., -23., 0.],
+            [14., -40., 0.],
+        ];
+        j
+    }
+    /// The distance from (z, r) to `rounded_job`'s profile, from its
+    /// drawing (nothing of the planner's).
+    fn rounded_distance(z: f64, r: f64) -> f64 {
+        let segment = |a: [f64; 2], b: [f64; 2]| {
+            let (d, w) = ([b[0] - a[0], b[1] - a[1]], [z - a[0], r - a[1]]);
+            let t = ((w[0] * d[0] + w[1] * d[1]) / (d[0] * d[0] + d[1] * d[1])).clamp(0., 1.);
+            (w[0] - t * d[0]).hypot(w[1] - t * d[1])
+        };
+        // A quarter circle about c from angle a0 to a0 + 90 degrees
+        // (angles from +z toward +r); its ends belong to the lines too.
+        let quarter = |c: [f64; 2], radius: f64, a0: f64| {
+            let a = (r - c[1]).atan2(z - c[0]);
+            let within = (a - a0).rem_euclid(std::f64::consts::TAU) <= std::f64::consts::FRAC_PI_2;
+            if within {
+                ((z - c[0]).hypot(r - c[1]) - radius).abs()
+            } else {
+                f64::INFINITY
+            }
+        };
+        [
+            quarter([-6., 0.], 6., 0.),
+            segment([-6., 6.], [-20., 6.]),
+            quarter([-20., 9.], 3., std::f64::consts::PI),
+            segment([-23., 9.], [-23., 14.]),
+            segment([-23., 14.], [-40., 14.]),
+            (z + 0.).hypot(r),
+        ]
+        .into_iter()
+        .fold(f64::INFINITY, f64::min)
+    }
+    /// The finished radius of `rounded_job`'s part at z (the wall at z -23
+    /// spans 9..14).
+    fn rounded_radius(z: f64) -> f64 {
+        if z > 0. {
+            0.
+        } else if z >= -6. {
+            (36. - (z + 6.).powi(2)).sqrt()
+        } else if z >= -20. {
+            6.
+        } else if z > -23. {
+            9. - (9. - (z + 20.).powi(2)).sqrt()
+        } else {
+            14.
+        }
+    }
+    fn arcs_of<'a>(plan: &'a TurnPlan, op: &str) -> Vec<&'a Motion> {
+        plan.events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Motion { motion }
+                    if motion.operation == op && matches!(motion.curve, Curve::Arc { .. }) =>
+                {
+                    Some(motion)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+    /// Points along an XZ arc from its own words (G18: angles from +Z
+    /// toward +X), as (z, x).
+    fn arc_samples(curve: &Curve, n: usize) -> Vec<[f64; 2]> {
+        let Curve::Arc {
+            start,
+            center,
+            plane: Plane::Xz,
+            sweep_rad,
+            ..
+        } = *curve
+        else {
+            panic!("not an XZ arc: {curve:?}")
+        };
+        let radius = (start[0] - center[0]).hypot(start[2] - center[2]);
+        let a0 = (start[0] - center[0]).atan2(start[2] - center[2]);
+        (0..=n)
+            .map(|k| {
+                let a = a0 + sweep_rad * k as f64 / n as f64;
+                [center[2] + radius * a.cos(), center[0] + radius * a.sin()]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn finishing_follows_a_ball_end_a_fillet_and_a_corner_with_arcs() {
+        use std::f64::consts::FRAC_PI_2;
+        let mut j = rounded_job();
+        // The program moves the nose center: the profile offset by rn.
+        j.controlled_point = ControlledPoint::NoseCenter;
+        let finished = plan(&j).unwrap();
+        let arcs = arcs_of(&finished, "finish");
+        // The ball end (rn outside it, G3), the fillet (rn inside it, G2)
+        // and the nose rolling round the sharp corner at r 14 (G3).
+        let shape: Vec<(f64, f64)> = arcs
+            .iter()
+            .map(|m| {
+                let Curve::Arc {
+                    start,
+                    center,
+                    sweep_rad,
+                    ..
+                } = m.curve
+                else {
+                    unreachable!()
+                };
+                (
+                    (start[0] - center[0]).hypot(start[2] - center[2]),
+                    sweep_rad,
+                )
+            })
+            .collect();
+        assert_eq!(shape.len(), 3, "{shape:?}");
+        for (got, want) in shape
+            .iter()
+            .zip([(6.8, FRAC_PI_2), (2.2, -FRAC_PI_2), (0.8, FRAC_PI_2)])
+        {
+            assert!(
+                (got.0 - want.0).abs() < 1e-9 && (got.1 - want.1).abs() < 1e-9,
+                "{shape:?}"
+            );
+        }
+        // Independently of the planner: every arc lies on the profile's
+        // offset by the nose radius, end to end.
+        for m in &arcs {
+            assert_eq!(m.kind, MoveKind::Cut);
+            let points = arc_samples(&m.curve, 200);
+            let end = m.curve.end();
+            let last = points[200];
+            assert!((last[0] - end[2]).hypot(last[1] - end[0]) < 1e-9, "{m:?}");
+            for p in points {
+                let d = rounded_distance(p[0], p[1]);
+                assert!((d - 0.8).abs() < 1e-9, "{p:?} is {d} from the profile");
+            }
+        }
+        // Every finishing move joins the next, and the arcs replace the
+        // chords: far fewer blocks than the chord chain of the same path.
+        let moves: Vec<&Motion> = finished
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Motion { motion } if motion.operation == "finish" => Some(motion),
+                _ => None,
+            })
+            .collect();
+        for w in moves.windows(2) {
+            assert_eq!(w[0].curve.end(), w[1].curve.start());
+        }
+        let chords = chain(&j.part.offset(0.8).unwrap(), j.tolerance_mm / 4.).len();
+        assert!(chords > 100 && moves.len() < 15, "{} {chords}", moves.len());
+        // The stock, against the drawing: each bin's bounds enclose the
+        // finished radius within the tolerance (nothing cut below it, all
+        // of the allowance above it gone). The tolerance is a distance from
+        // the surface: along z too, which matters where the surface is
+        // steep (the ball's tip, the fillet's end at the wall).
+        let tol = j.tolerance_mm;
+        for (i, c) in finished.stock.cells().iter().enumerate() {
+            let [za, zb] = finished.stock.bin(i);
+            if za < -39. || zb > 0. {
+                continue;
+            }
+            let mut at: Vec<f64> = [za - tol, za, zb, (zb + tol).min(0.)]
+                .into_iter()
+                .map(rounded_radius)
+                .collect();
+            if (za - tol..=zb + tol).contains(&-23.) {
+                // The wall at z -23, from the fillet's end up.
+                at.extend([9., 14.]);
+            }
+            let lo = at.iter().copied().fold(f64::INFINITY, f64::min);
+            let hi = at.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            // Nothing below the surface beyond the move checks' guard.
+            assert!(c.outer.lower_mm >= lo - 2. * tol, "{za} {zb} {c:?} {lo}");
+            // Removal is certain per piece of a move (one nose position's
+            // disc across the whole bin, as for chords): on a curved
+            // surface it stays above the surface by up to the disc's rise
+            // over half a bin.
+            let half = j.stock.cell_mm / 2.;
+            let rise = 0.8 - (0.64 - half * half).sqrt();
+            assert!(c.outer.upper_mm <= hi + tol + rise, "{za} {zb} {c:?} {hi}");
+        }
+        let report = material_report(&j, &finished.stock).unwrap();
+        assert_eq!(report["gouge"]["assessment"], "within_tolerance");
+        assert_eq!(report["residual"]["definite_cells"], 0, "{report}");
+        // The posted moves replayed (arcs through the same kernel) leave
+        // exactly the planned stock.
+        let mut replay = TurnReplay::new(j.clone()).unwrap();
+        let mut stock = TurnStock::new(j.stock.clone()).unwrap();
+        for e in &finished.events {
+            if let Event::Motion { motion } = e {
+                let d = replay.motion(motion).unwrap();
+                stock.apply_move(&d.changes, &d.rings).unwrap();
+            }
+        }
+        assert_eq!(stock.cells(), finished.stock.cells());
+    }
+
+    #[test]
+    fn an_arc_of_the_imaginary_tip_is_the_nose_arc_translated() {
+        let mut j = rounded_job();
+        let tip = plan(&j).unwrap();
+        j.controlled_point = ControlledPoint::NoseCenter;
+        let nose = plan(&j).unwrap();
+        let (tip, nose) = (arcs_of(&tip, "finish"), arcs_of(&nose, "finish"));
+        assert_eq!(tip.len(), 3);
+        for (t, n) in tip.iter().zip(&nose) {
+            let (
+                Curve::Arc {
+                    start: ts,
+                    end: te,
+                    center: tc,
+                    sweep_rad: tw,
+                    ..
+                },
+                Curve::Arc {
+                    start: ns,
+                    end: ne,
+                    center: nc,
+                    sweep_rad: nw,
+                    ..
+                },
+            ) = (&t.curve, &n.curve)
+            else {
+                unreachable!()
+            };
+            assert_eq!(tw, nw);
+            // One nose radius toward the axis and toward -z.
+            for (a, b) in [(ts, ns), (te, ne), (tc, nc)] {
+                assert!((a[0] - (b[0] - 0.8)).abs() < 1e-12 && (a[2] - (b[2] - 0.8)).abs() < 1e-12);
+                assert_eq!(a[1], 0.);
+            }
+        }
+    }
+
+    #[test]
+    fn bore_finishing_rolls_round_a_step_with_an_arc() {
+        let plan = plan(&bore_job()).unwrap();
+        let arcs = arcs_of(&plan, "bore_finish");
+        // The 0.4 mm nose round the step's corner (r 9, z -20); the tip is
+        // one nose radius outward and toward -z of the nose center.
+        assert_eq!(arcs.len(), 1, "{arcs:?}");
+        let Curve::Arc {
+            start,
+            end,
+            center,
+            sweep_rad,
+            ..
+        } = arcs[0].curve
+        else {
+            unreachable!()
+        };
+        assert!((center[0] - 9.4).abs() < 1e-9 && (center[2] + 20.4).abs() < 1e-9);
+        for p in [start, end] {
+            assert!(((p[0] - center[0]).hypot(p[2] - center[2]) - 0.4).abs() < 1e-9);
+        }
+        // From the step's face round to the r 9 wall: a quarter turn.
+        assert!((sweep_rad.abs() - std::f64::consts::FRAC_PI_2).abs() < 1e-9);
+        for p in arc_samples(&arcs[0].curve, 50) {
+            // Nose center: the tip less its offset; rn from the corner.
+            let (z, r) = (p[0] + 0.4, p[1] - 0.4);
+            assert!(((z + 20.).hypot(r - 9.) - 0.4).abs() < 1e-9, "{p:?}");
+            assert!(r <= 9. + 1e-9 || z >= -20. - 1e-9);
+        }
+    }
+
+    #[test]
+    fn arcs_are_checked_like_the_chords_they_replace() {
+        // A lathe arc is one nose cutting: never a rapid.
+        let j = rounded_job();
+        let mut replay = TurnReplay::new(j.clone()).unwrap();
+        let tool = j.tools[0].tool.id.clone();
+        let arc = |kind, start: [f64; 3], end: [f64; 3], center: [f64; 3], sweep_rad| Motion {
+            id: 1,
+            operation: "finish".into(),
+            tool: tool.clone(),
+            curve: Curve::Arc {
+                start,
+                end,
+                center,
+                plane: Plane::Xz,
+                sweep_rad,
+            },
+            kind,
+            feed_mm_min: Some(100.),
+        };
+        let quarter = std::f64::consts::FRAC_PI_2;
+        let rapid = arc(
+            MoveKind::Rapid,
+            [25., 0., 10.],
+            [27., 0., 8.],
+            [25., 0., 8.],
+            quarter,
+        );
+        assert!(replay.motion(&rapid).unwrap_err().contains("lathe arc"));
+        // An arc whose ends are clear of the part but which bulges into it
+        // (the tip from just above the r 14 diameter down to r 9.05 at
+        // z -30 and back) is refused, and the stock is unchanged.
+        let into = arc(
+            MoveKind::Cut,
+            [14.05, 0., -25.],
+            [14.05, 0., -35.],
+            [14.05, 0., -30.],
+            -2. * quarter,
+        );
+        assert!(replay.motion(&into).unwrap_err().contains("into the part"));
+        // An end off the arc's circle beyond the tolerance is refused.
+        let open = arc(
+            MoveKind::Cut,
+            [25., 0., 10.],
+            [27.1, 0., 8.],
+            [25., 0., 8.],
+            quarter,
+        );
+        assert!(
+            replay
+                .motion(&open)
+                .unwrap_err()
+                .contains("not on its circle")
+        );
+        assert_eq!(
+            replay.stock.as_ref().unwrap().cells(),
+            TurnStock::new(j.stock.clone()).unwrap().cells()
+        );
+    }
+
+    #[test]
+    fn the_certain_band_of_a_side_is_swept_by_the_arc() {
+        // A straight side carried along an arc piece: every point of the
+        // band claimed as certainly swept is on the side at some pose along
+        // the arc (found by brute force, not by the band's own algebra).
+        let (c, r) = ([1., -2.], 5.);
+        let from = [c[0] + r * 0.3f64.cos(), c[1] + r * 0.3f64.sin()];
+        let to = [c[0] + r * 0.9f64.cos(), c[1] + r * 0.9f64.sin()];
+        // A coarse tolerance: pieces with a visible sagitta.
+        let steps = arc_steps(from, to, c, 0.6, 0.2).unwrap();
+        assert!(steps.len() >= 2 && steps[0].sag > 0.01, "{}", steps.len());
+        let on_side = |e: &[[f64; 2]; 2], x: [f64; 2], a: f64| {
+            // The distance from x to the side at the arc's pose at angle a.
+            let p = [c[0] + r * a.cos(), c[1] + r * a.sin()];
+            let (s, t) = (
+                [e[0][0] + p[0], e[0][1] + p[1]],
+                [e[1][0] + p[0], e[1][1] + p[1]],
+            );
+            let d = [t[0] - s[0], t[1] - s[1]];
+            let k = (((x[0] - s[0]) * d[0] + (x[1] - s[1]) * d[1]) / (d[0] * d[0] + d[1] * d[1]))
+                .clamp(0., 1.);
+            (x[0] - s[0] - k * d[0]).hypot(x[1] - s[1] - k * d[1])
+        };
+        let mut bands = 0;
+        for e in [
+            [[0.2, 0.1], [1.5, 2.]],
+            [[-0.4, 0.3], [-2., 0.5]],
+            [[0., 0.5], [0.3, 3.]],
+        ] {
+            for (k, step) in steps.iter().enumerate() {
+                let Some(band) = certain_band(&e, &step.points, step.sag, step.slack) else {
+                    continue;
+                };
+                bands += 1;
+                let (a, b) = (
+                    0.3 + 0.6 * k as f64 / steps.len() as f64,
+                    0.3 + 0.6 * (k + 1) as f64 / steps.len() as f64,
+                );
+                // The band's corners and points inside it.
+                let n = band.len();
+                let centre = band.iter().fold([0., 0.], |m, p| {
+                    [m[0] + p[0] / n as f64, m[1] + p[1] / n as f64]
+                });
+                let mut probes = band.clone();
+                probes.extend(
+                    band.iter()
+                        .map(|p| [(p[0] + centre[0]) / 2., (p[1] + centre[1]) / 2.]),
+                );
+                for x in probes {
+                    let nearest = (0..=20_000)
+                        .map(|i| on_side(&e, x, a + (b - a) * i as f64 / 20_000.))
+                        .fold(f64::INFINITY, f64::min);
+                    assert!(nearest < 1e-4, "{e:?} piece {k}: {x:?} is {nearest} off");
+                }
+                // The side's own end carried along the chord is not swept
+                // where the arc bulges away from it: the trim is needed.
+                let chord_end = [
+                    e[0][0] + (step.points[0][0] + step.points[2][0]) / 2.,
+                    e[0][1] + (step.points[0][1] + step.points[2][1]) / 2.,
+                ];
+                let other_end = [
+                    e[1][0] + (step.points[0][0] + step.points[2][0]) / 2.,
+                    e[1][1] + (step.points[0][1] + step.points[2][1]) / 2.,
+                ];
+                let miss = [chord_end, other_end]
+                    .into_iter()
+                    .map(|x| {
+                        (0..=20_000)
+                            .map(|i| on_side(&e, x, a + (b - a) * i as f64 / 20_000.))
+                            .fold(f64::INFINITY, f64::min)
+                    })
+                    .fold(0., f64::max);
+                assert!(miss > 1e-3, "{e:?} piece {k}: {miss}");
+            }
+        }
+        assert!(bands >= 4, "{bands}");
+    }
+
+    #[test]
+    fn an_arc_read_back_with_rounded_words_is_checked_between_its_radii() {
+        // The fillet of `rounded_job` as a controller reads it from words
+        // rounded to 3 decimals in a way that leaves the end 0.8 um off the
+        // start's circle: accepted within the tolerance (1 um), with the
+        // stock bounds still enclosing the drawn surface.
+        let mut j = rounded_job();
+        j.controlled_point = ControlledPoint::NoseCenter;
+        let finished = plan(&j).unwrap();
+        let mut replay = TurnReplay::new(j.clone()).unwrap();
+        let mut stock = TurnStock::new(j.stock.clone()).unwrap();
+        let fillet = arcs_of(&finished, "finish")[1].id;
+        let mut position: Option<[f64; 3]> = None;
+        for e in &finished.events {
+            let Event::Motion { motion } = e else {
+                continue;
+            };
+            let mut m = motion.clone();
+            // Keep the path continuous from a moved end.
+            if let Some(p) = position.take() {
+                match &mut m.curve {
+                    Curve::Line { start, .. } | Curve::Arc { start, .. } => *start = p,
+                    Curve::Helix { .. } => unreachable!(),
+                }
+            }
+            if m.id == fillet {
+                let Curve::Arc { end, .. } = &mut m.curve else {
+                    unreachable!()
+                };
+                // Toward +z: the end's radius about the centre (r 9, z -20)
+                // is 0.8 um less than the start's.
+                end[2] += 0.0008;
+                position = Some(*end);
+            }
+            let d = replay.motion(&m).unwrap();
+            stock.apply_move(&d.changes, &d.rings).unwrap();
+        }
+        let tol = j.tolerance_mm;
+        let mut differs = false;
+        for (i, (c, planned)) in stock.cells().iter().zip(finished.stock.cells()).enumerate() {
+            let [za, zb] = stock.bin(i);
+            if za < -22.5 || zb > -20. {
+                continue;
+            }
+            differs |= c != planned;
+            // The fillet's bins: the bounds still enclose the surface the
+            // planned arc leaves, and stay within the moved end's distance
+            // of the planned bounds.
+            let at = [za, zb].map(rounded_radius);
+            assert!(c.outer.lower_mm <= at[0].min(at[1]) + 1e-9, "{za} {c:?}");
+            assert!(
+                c.outer.lower_mm >= planned.outer.lower_mm - 2. * tol,
+                "{za} {c:?}"
+            );
+            assert!(
+                c.outer.upper_mm >= planned.outer.upper_mm - 1e-12,
+                "{za} {c:?}"
+            );
+            assert!(
+                c.outer.upper_mm <= planned.outer.upper_mm + 2. * tol,
+                "{za} {c:?}"
+            );
+        }
+        assert!(differs);
+        // Farther off than the tolerance, the arc is refused.
+        let mut replay = TurnReplay::new(j.clone()).unwrap();
+        let mut refused = false;
+        for e in &finished.events {
+            let Event::Motion { motion } = e else {
+                continue;
+            };
+            let mut m = motion.clone();
+            if m.id == fillet {
+                let Curve::Arc { end, .. } = &mut m.curve else {
+                    unreachable!()
+                };
+                end[2] += 0.002;
+                assert!(replay.motion(&m).unwrap_err().contains("not on its circle"));
+                refused = true;
+                break;
+            }
+            replay.motion(&m).unwrap();
+        }
+        assert!(refused);
     }
 }

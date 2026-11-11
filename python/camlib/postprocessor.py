@@ -1647,33 +1647,46 @@ class GCodePost(PostProcessor):
         Custom circular block layouts can use this with ``words``. Selection
         keeps the configured precision and complete-curve error budget. The
         independent decoder still reads actual emitted words. Overridden numeric
-        formatters retain control and remain subject to those same checks.
+        formatters retain control and remain subject to those same checks; a
+        post whose formatter keeps every word's standard value (it only
+        appends a decimal point, say) overrides this to return
+        ``exact_circular_values(curve)``.
         """
         if (
             getattr(self.number, '__func__', None) is PostProcessor.number
             and getattr(self.word, '__func__', None) is PostProcessor.word
         ):
-            try:
-                end, offsets = native.round_circular_words(
-                    _json(curve.to_dict()),
-                    tuple(self.position_mm),
-                    25.4 if self.machine.output_units == 'inch' else 1,
-                    self.machine.decimals,
-                    self.geometry_tolerance_mm,
-                    self.machine.tolerance_mm,
-                    self.machine.dialect.radius_tolerance_mm,
-                    self.machine.dialect.radius_relative_tolerance,
-                )
-            except ValueError as error:
-                raise ValueError(
-                    f'{error}. Arc {curve.start} -> {curve.end} cannot be written as G2/G3 at '
-                    f'{self.machine.decimals} decimals ({self.machine.output_units}). Use '
-                    f'lowering=LoweringOptions(native_arcs=True) to emit checked line segments for '
-                    f'only such arcs, or Machine(decimals={self.machine.decimals + 1}) if the controller '
-                    f'accepts that precision.'
-                ) from error
-            return tuple(end), tuple(offsets)
+            return self.exact_circular_values(curve)
         return curve.end, tuple(c - s for c, s in zip(curve.center, self.position_mm))
+
+    def exact_circular_values(self, curve):
+        """The endpoint and IJK values the standard formatter can write for
+        ``curve`` from the current position with start and end radius
+        consistent within the dialect's radius tolerance (exactly, at 0), and
+        the written arc within the posting tolerance of ``curve``. Raises
+        ``ValueError`` naming the arc when no such words exist at the
+        machine's decimals. Only valid for a formatter that writes these
+        values as the standard one does."""
+        try:
+            end, offsets = native.round_circular_words(
+                _json(curve.to_dict()),
+                tuple(self.position_mm),
+                25.4 if self.machine.output_units == 'inch' else 1,
+                self.machine.decimals,
+                self.geometry_tolerance_mm,
+                self.machine.tolerance_mm,
+                self.machine.dialect.radius_tolerance_mm,
+                self.machine.dialect.radius_relative_tolerance,
+            )
+        except ValueError as error:
+            raise ValueError(
+                f'{error}. Arc {curve.start} -> {curve.end} cannot be written as G2/G3 at '
+                f'{self.machine.decimals} decimals ({self.machine.output_units}). Use '
+                f'lowering=LoweringOptions(native_arcs=True) to emit checked line segments for '
+                f'only such arcs, or Machine(decimals={self.machine.decimals + 1}) if the controller '
+                f'accepts that precision.'
+            ) from error
+        return tuple(end), tuple(offsets)
 
     def on_finish(self):
         d = self.machine.dialect

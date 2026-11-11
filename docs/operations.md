@@ -1282,14 +1282,28 @@ roughing setup its allowance.
   cut, with a pass at every bore diameter, each from the front to where the
   bore less the allowance is reached or `z_end_mm`, retracting at 45 degrees
   toward the axis. `TurnBoreFinish(z_end_mm, allowance_mm=0)`: along the
-  bore from the front face to `z_end_mm`, then out at 45 degrees and along
-  the axis. Posted as `G33 Z… K<lead>` (LinuxCNC)
+  bore from the front face to `z_end_mm` (arcs as arcs, like `TurnFinish`),
+  then out at 45 degrees and along the axis. Posted as `G33 Z… K<lead>` (LinuxCNC)
   or `G32 Z… F<lead>` where the dialect declares `thread_synchronized` and
   `thread_lead_word`; dialects without them refuse it.
 - `TurnFinish(allowance_mm)`: the profile from the front face, the nose
   center a nose radius (plus allowance) outside it: rounded at convex
   corners, trimmed at concave ones. A feature too small for the nose is
-  refused. `compensation="wear"` (also on `TurnBoreFinish`) posts the same
+  refused (a concave arc no larger than the nose radius plus allowance
+  included). Arcs of that path are planned as arcs and posted as one G2/G3
+  block each (G18): the profile's own arcs, offset by the nose radius (a
+  fillet of radius R is followed at R - nose radius, a ball end or convex
+  radius at R + nose radius), and the nose rolling round each sharp convex
+  corner. The program's point (the imaginary tip) is the nose center moved
+  by a fixed offset, so its arcs have the same radius and sweep. An arc move
+  is checked like the chords it replaces: in pieces within a quarter of the
+  setup tolerance of the arc, each piece's insert, holder and body against
+  the part, the chuck and the stock left by the pieces before it, and the
+  stock is bounded on both sides of the arc. These stay chords within a
+  quarter of the tolerance, as lines: an arc flatter than that over its
+  whole length, an arc crossing the end of the cut (the chuck clearance, or
+  `z_end_mm` in a bore), and any arc followed with a grooving blade.
+  Roughing passes are straight and unchanged. `compensation="wear"` (also on `TurnBoreFinish`) posts the same
   path with tool-nose radius compensation on (G42 outside, G41 inside,
   cutting toward the chuck), turned on over the straight entry and off
   over the retract, so the control applies only the wear in its offset's
@@ -1396,7 +1410,25 @@ roughing setup its allowance.
 A lathe setup posts (`job.post_nc`, `job.post`) with any `Machine` whose `planes` include `"xz"`: arcs
 are written in G18. `GCodeDialect(x_diameter=True)` writes X as a diameter
 (arc I stays a radius, as on FANUC and Centroid lathes); for LinuxCNC declare
-`lathe_radius_mode="G8"` (radius X) with `with_commands`. The [Centroid CNC12 lathe post](centroid-lathe-post.md)
+`lathe_radius_mode="G8"` (radius X) with `with_commands`.
+Arc direction follows the coordinates, not the picture: camlib's x is the
+radius on the tool's side of the axis, and an arc turning from +Z toward +X
+is `G3`, the other way `G2` (counterclockwise and clockwise seen from +Y of
+a right-handed X, Y, Z: LinuxCNC G-code reference, G2/G3; FANUC operator's
+manual, circular interpolation in the ZpXp plane). A front-turret machine
+drawn with X downward shows the same arcs mirrored, with the same words.
+Premise: the machine's X+ points from the spindle axis toward the tool; a
+machine cutting at negative X is not modelled. Finishing a profile with arcs
+therefore needs a machine with `arcs=True` and exactly writable arc words,
+or an explicit `lowering=` choice ([Arcs that cannot be written
+exactly](posts.md#arcs-that-cannot-be-written-exactly)):
+`LoweringOptions(native_arcs=True)` keeps the writable arcs and turns the
+rest into checked line segments, `LoweringOptions()` every arc. A chord of
+an arc round a convex feature passes inside the arc, toward the part, by up
+to `chord_tolerance_mm` (0.0025), and the posted program's replay checks
+the insert against the part with the setup's `tolerance_mm`: keep the chord
+tolerance below it, or the lowered program is refused as cutting into the
+part. The [Centroid CNC12 lathe post](centroid-lathe-post.md)
 is a complete controller example (diameter X, T0101, G96/G50, G99, G32), as
 is the [FANUC lathe post](fanuc-lathe-post.md) (G-code system A).
 

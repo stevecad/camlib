@@ -48,6 +48,18 @@ nc = job.post_nc("lathe", machine=machine, post=c.CentroidLathePost,
 | Nose compensation | `TurnFinish(compensation="wear")`: `G42 T<oo>` (outside; `G41` inside) on its own line before the entry, `G40` after the cut | Manual 9.15: the T word names the Offset Library row whose nose radius applies (the active offset); that row's radius holds only the wear |
 
 The planner switches coolant off before each tool change and on again after
-it. Arcs need exactly consistent words (`radius_tolerance_mm=0`): post with
-`LoweringOptions(native_arcs=True)` if an arc is refused. No controller
+it.
+
+Finishing follows the profile's arcs, and the nose rolling round sharp
+corners, with `G2`/`G3` blocks (`TurnFinish`, `TurnBoreFinish`). An arc
+turning from +Z toward +X is `G3`, the other way `G2` (counterclockwise and
+clockwise seen from +Y of the right-handed X, Y, Z system; CNC12 lathe
+manual chapter 9, G2 and G3). X is a diameter and `I`, `K` are radius values
+from the start to the centre. Premise: X+ points from the spindle axis
+toward the tool. Check the direction on your machine before cutting.
+
+Arcs need exactly consistent words (`radius_tolerance_mm=0`): post with
+`LoweringOptions(native_arcs=True)` if an arc is refused (the arcs that
+cannot be written exactly at the machine's decimals become checked line
+segments), or `LoweringOptions()` for lines only. No controller
 connection; verify on the machine before cutting.

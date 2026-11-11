@@ -99,9 +99,12 @@ can say clear, violation or uncertain honestly.
 - **Turning** (`src/turning/stock.rs`, `TurnStock`): per z bin, bounds of the
   outer radius and of the bore radius, plus rings certainly removed inside the
   material (face grooves). Lathe moves carry their changes computed by the
-  turning planner's move kernel (`Planner::emit`), which also checks the insert
-  against the part, bore and chuck, and the holder and rapids against the
-  stock.
+  turning planner's move kernel (`Planner::emit` for a line, `emit_arc` for
+  an XZ arc), which also checks the insert against the part, bore and chuck,
+  and the holder and rapids against the stock. An arc is checked in pieces
+  (each inside the triangle of its ends and their tangents' corner, within a
+  quarter of the tolerance), each against the stock the pieces before it
+  leave, and committed as one move.
 
 - **Tri-dexel** (`src/dexel.rs`, `DexelStock`; issue #1): three grids of rays
   along X, Y and Z, each ray a prism (its cell's rectangle times its line)

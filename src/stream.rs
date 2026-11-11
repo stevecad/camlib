@@ -2083,8 +2083,51 @@ impl StreamReceiver {
         if next.kind == MoveKind::Rapid || fraction == 0. {
             return Ok(stock.clone());
         }
-        let Curve::Line { start, end } = next.curve else {
-            return Err("lathe moves are lines in the XZ plane".into());
+        // The move's first `fraction`: a line to the point that far along,
+        // an arc through that part of its sweep.
+        let partial_curve = match next.curve {
+            Curve::Line { start, end } => {
+                let at = |k: usize| start[k] + fraction * (end[k] - start[k]);
+                Curve::Line {
+                    start,
+                    end: [at(0), at(1), at(2)],
+                }
+            }
+            Curve::Arc {
+                start,
+                end,
+                center,
+                plane: crate::motion::Plane::Xz,
+                sweep_rad,
+            } => {
+                // XZ arcs (G18): angles from +Z toward +X.
+                let sweep = fraction * sweep_rad;
+                let radius = (start[0] - center[0]).hypot(start[2] - center[2]);
+                let angle = (start[0] - center[0]).atan2(start[2] - center[2]) + sweep;
+                let end = if fraction == 1. {
+                    end
+                } else {
+                    [
+                        center[0] + radius * angle.sin(),
+                        start[1],
+                        center[2] + radius * angle.cos(),
+                    ]
+                };
+                if sweep.abs() < 1e-12 {
+                    // Below the least sweep an arc can have: its chord (the
+                    // two differ by less than r x 1e-25).
+                    Curve::Line { start, end }
+                } else {
+                    Curve::Arc {
+                        start,
+                        end,
+                        center,
+                        plane: crate::motion::Plane::Xz,
+                        sweep_rad: sweep,
+                    }
+                }
+            }
+            _ => return Err("lathe moves are lines and arcs in the XZ plane".into()),
         };
         let m = &self.manifest;
         let turning = m
@@ -2097,11 +2140,7 @@ impl StreamReceiver {
             crate::turning::ops::TurnReplay::new(turning.job(&m.run.id, spec, [p[0], p[2]]))?
                 .with_stock(stock.clone())?;
         let mut partial = next.clone();
-        let at = |k: usize| start[k] + fraction * (end[k] - start[k]);
-        partial.curve = Curve::Line {
-            start,
-            end: [at(0), at(1), at(2)],
-        };
+        partial.curve = partial_curve;
         let delta = replay.motion(&partial)?;
         let mut shown = stock.clone();
         shown.apply_move(&delta.changes, &delta.rings)?;

@@ -437,8 +437,27 @@ impl TurnStock {
         side: TurnSide,
         tolerance: f64,
     ) -> Result<Vec<TurnChange>, String> {
+        self.preview_within(curve, rn, side, tolerance, 0.)
+    }
+
+    /// `preview` for a nose whose actual path stays within `slack` of
+    /// `curve` (an arc read back with slightly different start and end
+    /// radii, which a controller blends): the solid bound allows for the
+    /// nose that much nearer, the removal only for what it cuts if that
+    /// much farther.
+    pub fn preview_within(
+        &self,
+        curve: &Curve,
+        rn: f64,
+        side: TurnSide,
+        tolerance: f64,
+        slack: f64,
+    ) -> Result<Vec<TurnChange>, String> {
         if !(rn.is_finite() && rn >= 0.) {
             return Err("nose radius must be finite and not negative".into());
+        }
+        if !(slack.is_finite() && slack >= 0.) {
+            return Err("path slack must be finite and not negative".into());
         }
         let rz = |p: Vec3| [p[0], p[2]];
         // Segments with the swept radius used for each bound: a chord of an
@@ -446,7 +465,7 @@ impl TurnStock {
         // grown radius and the removal (upper) bound the shrunk one.
         let mut segments: Vec<([f64; 2], [f64; 2], f64)> = vec![];
         match *curve {
-            Curve::Line { start, end } => segments.push((rz(start), rz(end), 0.)),
+            Curve::Line { start, end } => segments.push((rz(start), rz(end), slack)),
             Curve::Arc {
                 start,
                 center,
@@ -459,13 +478,15 @@ impl TurnStock {
                 let s = rz(start);
                 let radius = (s[0] - c[0]).hypot(s[1] - c[1]);
                 let a0 = (s[0] - c[0]).atan2(s[1] - c[1]);
-                let n = ((sweep_rad.abs() * radius / (8. * tolerance.max(1e-6)).sqrt()).ceil()
+                // Chords within `tolerance` of the arc: a chord over the
+                // angle θ strays r(1 - cos(θ/2)) <= rθ²/8.
+                let n = ((sweep_rad.abs() * (radius / (8. * tolerance.max(1e-6))).sqrt()).ceil()
                     as usize)
                     // A multi-turn arc must not collapse to a chord whose
                     // cosine-based sagitta aliases one or more full circles.
                     .max((sweep_rad.abs() / std::f64::consts::PI).ceil() as usize)
                     .clamp(1, 4096);
-                let sag = radius * (1. - (sweep_rad.abs() / (2. * n as f64)).cos());
+                let sag = radius * (1. - (sweep_rad.abs() / (2. * n as f64)).cos()) + slack;
                 let point = |k: usize| {
                     let a = a0 + sweep_rad * k as f64 / n as f64;
                     [c[0] + radius * a.sin(), c[1] + radius * a.cos()]
@@ -1113,5 +1134,56 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_small_arc_is_bounded_within_the_tolerance() {
+        // The nose (0.5) round a quarter circle of radius 0.4: the chords
+        // the arc is swept as stray from it by no more than the tolerance,
+        // whatever the radius (#14: a nose rolling round a sharp corner).
+        let tol = 1e-3;
+        let mut s = TurnStock::new(TurnStockSpec {
+            z_min_mm: -11.,
+            z_max_mm: -9.,
+            cell_mm: 0.02,
+            ..spec()
+        })
+        .unwrap();
+        let arc = Curve::Arc {
+            start: [15.4, 0., -10.],
+            end: [15., 0., -10.4],
+            center: [15., 0., -10.],
+            plane: Plane::Xz,
+            sweep_rad: std::f64::consts::FRAC_PI_2,
+        };
+        let c = s.preview(&arc, 0.5, TurnSide::Outer, tol).unwrap();
+        s.apply(&c).unwrap();
+        let truth = |z: f64| {
+            (0..=20_000)
+                .filter_map(|k| {
+                    let a = -std::f64::consts::FRAC_PI_2 * k as f64 / 20_000.;
+                    let (r, zc) = (15. + 0.4 * a.cos(), -10. + 0.4 * a.sin());
+                    let dz = z - zc;
+                    (dz.abs() <= 0.5).then(|| r - (0.25 - dz * dz).sqrt())
+                })
+                .fold(f64::INFINITY, f64::min)
+        };
+        let mut checked = 0;
+        for (i, cell) in s.cells().iter().enumerate() {
+            let [za, zb] = s.bin(i);
+            // Around the arc's end, where the swept boundary is flat: the
+            // bounds differ from it by the chords' sagitta itself.
+            if za < -10.45 || zb > -10.35 {
+                continue;
+            }
+            let ends = [truth(za), truth(zb)];
+            let (lo, hi) = (ends[0].min(ends[1]), ends[0].max(ends[1]));
+            assert!(cell.outer.lower_mm <= lo + 1e-6, "{za} {cell:?} {lo}");
+            assert!(cell.outer.lower_mm >= lo - tol - 1e-6, "{za} {cell:?} {lo}");
+            assert!(cell.outer.upper_mm >= hi - 1e-6, "{za} {cell:?} {hi}");
+            assert!(cell.outer.upper_mm <= hi + tol + 1e-6, "{za} {cell:?} {hi}");
+            checked += 1;
+        }
+        assert!(checked > 3);
     }
 }

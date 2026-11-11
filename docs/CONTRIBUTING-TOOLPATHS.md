@@ -42,9 +42,10 @@ below is done.
 
 Lathe operations are variants of `turning::ops::TurnOperation`
 (`src/turning/ops.rs`), planned by `TurnSession::operation`. Every move goes
-through `Planner::emit`, which checks the insert against the part, bore and
-chuck and the holder and rapids against the stock, and records the move's exact
-stock change. Never bypass `emit`.
+through `Planner::emit` (a line) or `Planner::emit_arc` (an XZ arc of a
+single nose, posted as G2/G3), which check the insert against the part, bore
+and chuck and the holder and rapids against the stock, and record the move's
+exact stock change. Never bypass them.
 
 ## 3. Stock and verification
 

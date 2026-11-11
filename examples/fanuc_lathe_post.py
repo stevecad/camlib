@@ -144,6 +144,14 @@ class FanucLathePost(GCodePost):
         result = super().words(addresses, values, dimensional=dimensional)
         return [w if not dimensional or "." in w else w + "." for w in result]
 
+    def circular_values(self, curve):
+        # The decimal point this post appends leaves every word's value as
+        # the standard formatter writes it: arcs get the standard search for
+        # exactly consistent end and I/K words (radius_tolerance_mm=0), and
+        # an arc without such words is refused (or lowered to lines with
+        # LoweringOptions(native_arcs=True)) instead of written inconsistent.
+        return self.exact_circular_values(curve)
+
     def on_begin(self, program):
         d = self.machine.dialect
         self.geometry_tolerance_mm = program.tolerance_mm

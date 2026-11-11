@@ -617,10 +617,28 @@ class TurningTest(unittest.TestCase):
                 camlib.TurnFinish("finish", "cnmg", feed_mm_rev=0.1016, **{'rpm': 1200, **css}),
             ),
         ).plan()
-        # Actual posted-stock replay now refuses this coarse output: a rounded
-        # finishing path reaches the part beyond its declared tolerance.
+        # Actual posted-stock replay refuses coarse output whose rounded
+        # finishing path reaches the part beyond its declared tolerance
+        # (0.001 mm). This part's corners are now followed with arcs (#14)
+        # whose 4-decimal inch words happen to stay within it (the chords
+        # that used to round the corners did not), so the refusal is shown
+        # on a diameter that rounds 0.00115 mm into the part at 4 decimals
+        # (X0.3940 for 10.00875 mm).
+        text(inch, machine(linuxcnc, output_units="inch", decimals=4))
+        radius = 3940 * 0.00254 + 0.00115
+        coarse = job(
+            feed_per_rev=True,
+            tools=plan_tools,
+            profile=((0, 0, 0), (radius, 0, 0), (radius, -20, 0), (15, -20, 0), (15, -40, 0)),
+            operations=(
+                camlib.TurnFace("face", "cnmg", 0, feed_mm_rev=0.254, **{'rpm': 1000, **css}),
+                camlib.TurnRough("rough", "cnmg", feed_mm_rev=0.254, **{'rpm': 1000, **css}),
+                camlib.TurnFinish("finish", "cnmg", feed_mm_rev=0.1016, **{'rpm': 1200, **css}),
+            ),
+        ).plan()
         with self.assertRaisesRegex(camlib.SimulationError, "insert would cut"):
-            text(inch, machine(linuxcnc, output_units="inch", decimals=4))
+            text(coarse, machine(linuxcnc, output_units="inch", decimals=4))
+        text(coarse, machine(linuxcnc, output_units="inch", decimals=5))
         nc = text(inch, machine(linuxcnc, output_units="inch", decimals=5))
         self.assertIn("G96 D3000 S656.16798 M3", nc)
         self.assertIn("G95 F0.01", nc)

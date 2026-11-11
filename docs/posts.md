@@ -280,6 +280,15 @@ Hooks: `on_begin(program)`, `on_work_offset`, `on_tool_change`,
 with the time in seconds in `dwell_word` (P), rounded up to
 `dwell_resolution_s` and limited to `dwell_max_s`.
 
+Arc words come from `circular_values(curve)`: with the standard `number` and
+`word` it searches the representable end and centre words for ones whose
+start and end radius agree within the dialect's radius tolerance. A post
+that overrides `word` or `number` gets the arc's plain rounded values
+instead (its own formatter is in control), which at `radius_tolerance_mm=0`
+its decoder will usually refuse. If the override keeps every word's value
+(it only appends a decimal point, as the FANUC lathe post does), also
+override `circular_values` to return `self.exact_circular_values(curve)`.
+
 Canned drilling cycles (`Drilling(canned_cycle=True)`) are written by
 `on_cycle`: `G98` once, then `G81`/`G82`/`G83`/`G73 X Y Z R [Q] [P] F` per
 hole and `G80` before the next other block. The dialect declares the codes
