@@ -60,6 +60,7 @@ modules! {
     rust_haas_post,
     rust_post,
     shared_geometry,
+    silhouette,
     slot,
     stock,
     stock_contact,

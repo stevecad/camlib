@@ -57,6 +57,13 @@ pub enum Request {
     QueryRegion {
         points: Vec<Point>,
     },
+    SilhouetteRegion {
+        surface: crate::surface::SurfaceMesh,
+        z_mm: f64,
+        max_error_mm: f64,
+        #[serde(default)]
+        options: ConstructionOptions,
+    },
     PrepareVerification {
         scene: crate::verification::Scene,
         #[serde(default)]
@@ -125,6 +132,21 @@ fn execute(session: &mut Session, request: Request) -> Result<Value, String> {
             options,
         } => Ok(json!(session.boolean_planar(&other, operation, options)?)),
         Request::QueryRegion { points } => Ok(json!({"results":session.query_planar(&points)?})),
+        Request::SilhouetteRegion {
+            surface,
+            z_mm,
+            max_error_mm,
+            options,
+        } => {
+            let silhouette = crate::silhouette::silhouette_region(
+                &surface,
+                z_mm,
+                max_error_mm,
+                options,
+                &AtomicBool::new(false),
+            )?;
+            Ok(json!({"region":silhouette.region,"report":silhouette.report}))
+        }
         Request::PrepareVerification { scene, options } => {
             session.prepare_verification(&scene, options)?;
             Ok(

@@ -101,6 +101,7 @@ pub mod regeneration;
 pub mod requests;
 pub mod resources;
 pub mod session;
+pub mod silhouette;
 pub mod slot;
 pub mod stock;
 pub mod stock_contact;

@@ -488,6 +488,60 @@ than `stepdown_mm` per lap, followed by one lap at the floor. Not combined with
 tabs or with limits that block part of a loop (both refused before any
 motion).
 
+### A mesh part's outline: `Engine.silhouette_region`
+
+`Contour` takes a planar region. For a part given as a `SurfaceMesh`,
+`camlib.Engine().silhouette_region(surface, z_mm, max_error_mm=...)` returns
+its **silhouette at a depth** as such a region: the plan-view shadow of
+everything at or above `z_mm`. That is the area a flat end mill with its tip
+at `z_mm` must stay beside, since the cutter stands over its tip; it is not
+the cross-section at `z_mm` (an overhang above the depth is in it).
+
+```python
+with camlib.Engine() as engine:
+    out = engine.silhouette_region(mesh, z_mm=5, max_error_mm=0.0025)
+region = camlib.PlanarRegion.from_dict(out["region"])
+wall = camlib.Contour("wall-z5", tool, region, floor_z_mm=5, stepdown_mm=2, clearance_z_mm=15, ...)
+```
+
+- At or below the part's lowest point it is the whole part's outline, the
+  "silhouette" selection of commercial CAM (Autodesk Fusion: "the boundary of
+  the part when viewed from the Z axis of the work coordinate system", also
+  for mesh bodies; FreeCAD CAM's Profile of a whole model uses the same
+  projected outline). One `Contour` then cuts around the part at every depth.
+- Where the outline changes with depth (steps, drafted walls, bosses), make
+  one `Contour` per depth, each with that depth's silhouette and floor. A
+  silhouette contains the silhouettes of all higher depths, so every pass of
+  such a contour, from the stock top down to its floor, stays beside the part.
+- To *finish* walls that change with depth, use [`Waterline`](#waterline-finishing-waterline)
+  with a flat end mill: its level contours are offsets of the part's shadow
+  above each level (the constant-Z "Contour" finishing of commercial CAM).
+  `silhouette_region` is for the 2D operations and what only they have: wear
+  compensation, tabs, leads, or the outline as a pocket or limit region.
+
+**What it guarantees.** The region is conservative. Facets at or above
+`z_mm − surface_error_mm − ` a numerical reserve are projected (the report's
+`protected_from_z_mm`), facets seen edge-on (vertical walls) are enclosed
+rather than dropped, and the pieces are joined by the exact planar kernel. The
+region's `boundary_error_mm` (also in the report) states how far the intended
+surface at or above `z_mm` may lie outside the region: the mesh's declared
+error, the numerical reserve and the enclosure, about 0.0008 mm more than
+`surface_error_mm` at the default `tolerance_mm`. `Contour` adds a region's
+error to its clearance and refuses a region whose error its
+`boundary_tolerance_mm` cannot hold. Its edges are straight (the mesh's
+facets); the outline is as fine as the mesh.
+
+A horizontal face within that reserve of `z_mm` is at the depth, so it is in
+the silhouette: for the outline of a boss standing on a face at Z3, ask a
+little above the face (`z_mm=3.01` with a 0.001 mm mesh) and cut the face
+itself with `Flat` or a pocket.
+
+**Refused:** a silhouette whose error exceeds `max_error_mm` (the message
+gives its parts; supply a finer mesh), a depth with nothing at or above it,
+an invalid mesh, and a mesh whose facets' projections touch within the
+construction tolerance without sharing vertices (not watertight), as for
+`Roughing`. `max_error_mm` has no default.
+
 ## Drilling: `Drilling`
 
 Required: `centers_mm` (list of (x, y)), `depth_z_mm`, `clearance_z_mm`.

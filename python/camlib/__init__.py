@@ -254,6 +254,27 @@ class Engine:
     def query_region(self, points):
         return self._request("query_region", points=points)["results"]
 
+    def silhouette_region(self, surface, z_mm, *, max_error_mm, tolerance_mm=1e-5):
+        """The plan-view silhouette of a ``SurfaceMesh`` at a depth: the shadow
+        of everything at or above ``z_mm``, as a planar region for 2D operations
+        (``Contour(region=...)`` at that floor).
+
+        Returns ``{"region": ..., "report": ...}``. The region's
+        ``boundary_error_mm`` (the report's too) bounds how far the intended
+        surface at or above ``z_mm`` may lie outside it: the mesh's declared
+        error, a numerical reserve and the enclosure of vertical walls.
+        Operations add it to their clearance. Refused when that bound exceeds
+        ``max_error_mm``, when nothing is at or above ``z_mm``, or when the
+        facets' projections cannot be joined unambiguously."""
+        data = surface.to_dict() if hasattr(surface, "to_dict") else surface
+        return self._request(
+            "silhouette_region",
+            surface=data,
+            z_mm=z_mm,
+            max_error_mm=max_error_mm,
+            options={"tolerance_mm": tolerance_mm},
+        )
+
     def close(self):
         self._session = None
 

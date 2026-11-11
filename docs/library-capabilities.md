@@ -26,6 +26,7 @@ See [Operations](operations.md) for parameters. Summary:
 | Adaptive pocket | Engagement-limited clearing of the same regions |
 | 3D roughing / rest roughing | Layered clearing above a mesh part: raster, offset, adaptive; air passes can be omitted |
 | Contour | Outer walls and/or hole walls of a part: climb (default) or conventional, tangent leads, wear compensation (G41/G42), holding tabs (triangle or rectangle; spread evenly or at given points), ramp entry around the loop |
+| Silhouette of a mesh part | `Engine.silhouette_region`: the part's plan-view outline at or above a depth as a planar region with a stated error bound, for `Contour` and the other 2D operations |
 | 3D finishing cutters | Ball (all patterns, certified error), flat and bull-nose (raster, spiral, radial, project, waterline; exact contacts, proven no-gouge moves, sampled error) |
 | Parallel / spiral / radial / project / pencil / scallop finishing | Mesh surfaces; zigzag or one-way parallel rows; slope (contact-angle) limits; rest finishing from the stock model |
 | Waterline, ramp finishing | Constant-Z contours, or one continuous descent per level (`ramp=True`); steep-and-shallow pairs waterline with parallel or spiral |
