@@ -255,6 +255,12 @@ pub enum ToolChangePose {
     /// Each tool's tip after its change, declared per tool (a tool table:
     /// posts with `tool_change_position_mode="table"`).
     Table(TablePose),
+    /// The spindle does not move at a tool change (a machine whose M6
+    /// changes the tool where it stands: machines with
+    /// `tool_change_position_mode="preserve_spindle"`). The gauge line
+    /// stays, so the new tip is the old tip moved along Z by the old gauge
+    /// length minus the new one.
+    InPlace(InPlacePose),
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -263,11 +269,28 @@ pub struct GaugePose {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub xy_mm: Option<[f64; 2]>,
 }
+/// `{"in_place": true}`: the tool is changed where the spindle stands.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InPlacePose {
+    pub in_place: bool,
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TablePose {
     /// Tool assembly id -> tip position after the change to it.
     pub tips_mm: std::collections::BTreeMap<String, Vec3>,
+}
+/// The tip after a tool change in place: the spindle gauge line stays, so
+/// the tip moves along Z by the old gauge length minus the new one (a longer
+/// tool reaches further down). Every consumer uses this one expression, so
+/// producer and receiver agree exactly.
+pub fn in_place_tip(position: Vec3, old_gauge_mm: f64, new_gauge_mm: f64) -> Vec3 {
+    [
+        position[0],
+        position[1],
+        position[2] + (old_gauge_mm - new_gauge_mm),
+    ]
 }
 impl StreamManifest {
     /// With `rapid_retracts`, a plan's straight-up retract becomes a rapid,
@@ -297,7 +320,14 @@ impl StreamManifest {
     }
     /// The tip position after changing to `tool` at `position`, or None when
     /// the manifest declares no tool-change pose (the tip stays put).
-    pub fn tool_change_tip(&self, tool: &str, position: Vec3) -> Result<Option<Vec3>, String> {
+    /// `previous`: the tool in the spindle before the change (None: no tool
+    /// has moved yet), which a change in place measures from.
+    pub fn tool_change_tip(
+        &self,
+        tool: &str,
+        position: Vec3,
+        previous: Option<&str>,
+    ) -> Result<Option<Vec3>, String> {
         if self.turning.is_some() {
             // A lathe indexes the turret at the start position: every tool's
             // controlled point arrives there.
@@ -326,7 +356,28 @@ impl StreamManifest {
                     )
                 })
             }
+            ToolChangePose::InPlace(_) => {
+                // The run's first tool starts at the declared initial
+                // position; no earlier tool defines a gauge line.
+                let Some(previous) = previous else {
+                    return Ok(Some(position));
+                };
+                let old = self
+                    .tools
+                    .iter()
+                    .find(|t| t.id == previous)
+                    .ok_or("tool change from an undeclared tool")?;
+                Ok(Some(in_place_tip(
+                    position,
+                    old.gauge_length_mm,
+                    t.gauge_length_mm,
+                )))
+            }
         }
+    }
+    /// The manifest's tool changes leave the spindle where it stands.
+    pub fn tool_change_in_place(&self) -> bool {
+        matches!(self.tool_change, Some(ToolChangePose::InPlace(_)))
     }
     pub fn validate(&self) -> Result<(), String> {
         if ![1, 2].contains(&self.version)
@@ -441,6 +492,7 @@ impl StreamManifest {
                                 !tip.iter().all(finite) || !self.tools.iter().any(|a| &a.id == tool)
                             })
                     }
+                    ToolChangePose::InPlace(p) => !p.in_place,
                 })
         {
             return Err(
@@ -702,6 +754,12 @@ pub struct StreamProducer {
     /// A lathe run given its moves (a posted program read back): the
     /// planner's move kernel computes and checks each move's stock change.
     turn_replay: Option<crate::turning::ops::TurnReplay>,
+    /// The tool the last `change_tool` put in the spindle (None before the
+    /// first change and after a restore).
+    spindle_tool: Option<String>,
+    /// The last tool change was in place and lowered the tip: what it did
+    /// (for the refusal of an operation that cannot start there).
+    lowered_tip: Option<String>,
 }
 #[derive(Clone)]
 pub struct StreamReceiver {
@@ -810,6 +868,8 @@ impl StreamProducer {
             checks,
             read_only,
             turn_replay: None,
+            spindle_tool: None,
+            lowered_tip: None,
         })
     }
     /// The committed height-field stock (milling and thermal runs).
@@ -961,17 +1021,61 @@ impl StreamProducer {
     /// consumer recomputes it). Returns the position after the change.
     pub fn change_tool(&mut self, tool: &str) -> Result<Vec3, String> {
         self.writable()?;
-        if let Some(tip) = self
-            .state
-            .manifest
-            .tool_change_tip(tool, self.state.position)?
+        let mut previous = None;
+        if self.state.manifest.tool_change_in_place() {
+            // The gauge line is known from the tool that made the last
+            // move. A tool that never moved leaves no committed pose the
+            // consumer could measure the next change from, and a restored
+            // run does not retain its tool: refuse both, never guess.
+            let spindle = self
+                .spindle_tool
+                .as_deref()
+                .or(self.state.last_tool.as_deref());
+            match spindle {
+                None if self.state.sequence != 0 => {
+                    return Err(format!(
+                        "tool change to {tool} in place: the tool in the spindle is unknown after a restored checkpoint; run the operations from the start"
+                    ));
+                }
+                Some(old) if old != tool && self.state.last_tool.as_deref() != Some(old) => {
+                    return Err(format!(
+                        "tool change to {tool} in place: tool {old} made no move since its own change, so the spindle position it leaves is not part of the run; remove the operation that makes no move, or declare a tool-change pose (ToolChangePosition or ToolChangeTable)"
+                    ));
+                }
+                _ => previous = spindle.map(str::to_string),
+            }
+        }
+        let tip =
+            self.state
+                .manifest
+                .tool_change_tip(tool, self.state.position, previous.as_deref())?;
+        self.spindle_tool = Some(tool.to_string());
+        self.lowered_tip = None;
+        if let (Some(old), Some(tip)) = (&previous, tip)
+            && tip[2] < self.state.position[2]
         {
+            self.lowered_tip = Some(format!(
+                "the tool change from {old} to {tool} leaves the spindle where it stands, so the longer tool's tip is at Z {}, {} mm below the Z {} where {old} stopped: retract {old} at least that much higher before the change, or use the longer tool first",
+                tip[2],
+                self.state.position[2] - tip[2],
+                self.state.position[2],
+            ));
+        }
+        if let Some(tip) = tip {
             if !point_valid(tip) {
                 return Err("tool change pose out of range".into());
             }
             self.state.position = tip;
         }
         Ok(self.state.position)
+    }
+    /// A refusal to plan the operation that follows a tool change, naming
+    /// a change in place that lowered the tip (the likely cause and its fix).
+    pub fn explain_tool_change(&self, error: String) -> String {
+        match &self.lowered_tip {
+            Some(note) => format!("{error} ({note})"),
+            None => error,
+        }
     }
     /// Both frames are prepared before stock commits. Publish the chunk first,
     /// then its optional passive check record before producing another motion.
@@ -1545,11 +1649,32 @@ impl StreamReceiver {
     /// The first motion with a new tool may start at the manifest's declared
     /// tool-change pose instead of the previous end.
     fn tool_change_start(&self, motion: &Motion) -> Result<bool, String> {
-        Ok(self.last_tool.as_deref() != Some(motion.tool.as_str())
-            && self
-                .manifest
-                .tool_change_tip(&motion.tool, self.position)?
-                .is_some_and(|tip| tip == motion.curve.start()))
+        if self.last_tool.as_deref() == Some(motion.tool.as_str()) {
+            return Ok(false);
+        }
+        let start = motion.curve.start();
+        if self.last_tool.is_none()
+            && self.restored_from_checkpoint
+            && self.manifest.tool_change_in_place()
+        {
+            // A checkpoint does not retain the last tool: the start must be
+            // the pose a change in place gives from one of the declared
+            // tools. (Unrestored, the previous tool is known and exact.)
+            for old in &self.manifest.tools {
+                if self
+                    .manifest
+                    .tool_change_tip(&motion.tool, self.position, Some(&old.id))?
+                    == Some(start)
+                {
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
+        }
+        Ok(self
+            .manifest
+            .tool_change_tip(&motion.tool, self.position, self.last_tool.as_deref())?
+            .is_some_and(|tip| tip == start))
     }
     fn commit_chunk(&mut self, chunk: MotionChunk) -> Result<Motion, String> {
         check_chunk_header(&self.manifest, &chunk)?;

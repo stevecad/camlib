@@ -302,4 +302,5 @@ whose old value doesn't match its own stock.
 | Intent session | The native posting state machine that tracks modal state and source moves |
 | Wear compensation | Controller cutter compensation (G41/G42) carrying only the wear; camlib still plans the exact tool-centre path |
 | Turret pose | A lathe's tool-change position; every tool's controlled point starts there |
+| Tool change in place | A mill's tool change that moves no axis (`tool_change_position_mode="preserve_spindle"`, `ToolChangeInPlace`): the spindle gauge line stays, so the tip moves along Z by the old gauge length minus the new one |
 | Export gate | Refusing to write a program while unaccepted check results remain |

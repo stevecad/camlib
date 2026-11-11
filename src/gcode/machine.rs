@@ -568,8 +568,27 @@ impl Machine {
         if self.tools.is_empty() {
             return Err("machine needs at least one tool and a declared dialect".into());
         }
-        if !["table", "preserve_tip", "z_home"].contains(&self.tool_change_position_mode.as_str()) {
-            return Err("tool_change_position_mode must be table, preserve_tip or z_home".into());
+        if !["table", "preserve_tip", "preserve_spindle", "z_home"]
+            .contains(&self.tool_change_position_mode.as_str())
+        {
+            return Err(
+                "tool_change_position_mode must be table, preserve_tip, preserve_spindle or z_home"
+                    .into(),
+            );
+        }
+        if self.tool_change_position_mode == "preserve_spindle" {
+            // The tip moves along the spindle axis by the difference of the
+            // gauge lengths: the tool axis must be work Z, and the tool must
+            // be changed by a spindle tool change (not a lathe turret index).
+            if self.work_to_machine.z != [0., 0., 1.] {
+                return Err("tool_change_position_mode preserve_spindle needs the work Z axis along machine Z".into());
+            }
+            if self.dialect.tool_change == "lathe_t" {
+                return Err("tool_change_position_mode preserve_spindle is a spindle tool change; a lathe turret declares each tool's position (table)".into());
+            }
+            if self.dialect.length_activation == "tool_edge" {
+                return Err("tool_change_position_mode preserve_spindle is not modelled for cutting-edge (T/D) length selection; declare each tool's position (table)".into());
+            }
         }
         if (self.tool_change_position_mode == "z_home") != self.tool_change_home_z_mm.is_some()
             || self

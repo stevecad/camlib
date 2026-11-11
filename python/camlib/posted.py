@@ -93,6 +93,10 @@ def check_tool_change_pose(machine, config):
             return initial if first else None
         if 'tips_mm' in change:
             return tuple(change['tips_mm'][tool]) if tool in change['tips_mm'] else None
+        if 'in_place' in change:
+            # Each later pose depends on where the previous tool stops: the
+            # posted output check compares every actual change.
+            return initial if first else None
         xy = change.get('xy_mm') or (initial[:2] if first else (None, None))
         return (*xy, change['gauge_z_mm'] - gauges[tool])
 
@@ -101,10 +105,27 @@ def check_tool_change_pose(machine, config):
             return 'Setup.tool_change is None: the tip stays where it was'
         if 'tips_mm' in change:
             return 'Setup.tool_change is a ToolChangeTable'
+        if 'in_place' in change:
+            return 'Setup.tool_change is ToolChangeInPlace: the spindle stays where it was'
         return (
             f'Setup.tool_change is ToolChangePosition(gauge_z_mm={change["gauge_z_mm"]}, xy_mm={change.get("xy_mm")})'
         )
 
+    if (change is not None and 'in_place' in change) != (mode == 'preserve_spindle'):
+        if mode == 'preserve_spindle':
+            raise ValueError(
+                'the machine changes tools where the spindle stands '
+                f'(tool_change_position_mode="preserve_spindle"), but {describe()}: '
+                'plan with Setup(tool_change=ToolChangeInPlace())'
+            )
+        raise ValueError(
+            f'{describe()}, but the machine\'s tool_change_position_mode is "{mode}": declare '
+            'tool_change_position_mode="preserve_spindle" if its tool change does not move the spindle, '
+            "or plan with the machine's tool-change pose"
+        )
+    if mode == 'preserve_spindle':
+        # Checked above: the setup plans its changes in place too.
+        return
     if mode == 'preserve_tip':
         if change is not None:
             raise ValueError(
@@ -343,6 +364,12 @@ class PostedRun(RecordedRun):
             options['tool_change'] = ToolChangePosition(
                 machine.tool_change_home_z_mm - machine.work_to_machine.origin_mm[2]
             )
+        elif machine.tool_change_position_mode == 'preserve_spindle':
+            # Each decoded tool change leaves the spindle where it stands:
+            # the replay stock run accepts exactly the shifted tip.
+            from .simulation import ToolChangeInPlace
+
+            options['tool_change'] = ToolChangeInPlace()
         elif machine.tool_change_position_mode == 'table' and 'turning' not in options:
             # Each decoded tool change puts the tool at its table pose: the
             # replay stock run accepts exactly those poses.

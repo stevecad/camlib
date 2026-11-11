@@ -439,6 +439,21 @@ class ToolChangePosition:
 
 
 @dataclass(frozen=True)
+class ToolChangeInPlace:
+    """The machine changes the tool where the spindle stands: no axis moves
+    at the tool change. The spindle gauge line stays, so the new tool's tip
+    is the old tip moved along Z by the old gauge length minus the new one (a
+    longer tool reaches further down, and is checked there against stock and
+    fixtures). The first tool starts at the setup's initial position.
+    Declare it only for a machine that behaves so (for LinuxCNC: an M6 with
+    no configured tool-change move); posts must declare the same
+    (``Machine(tool_change_position_mode="preserve_spindle")``)."""
+
+    def to_dict(self):
+        return {"in_place": True}
+
+
+@dataclass(frozen=True)
 class ToolChangeTable:
     """Where a tool change leaves each tool: its tip in work coordinates, per
     tool assembly id. This is the machine behaviour of posts with
@@ -957,7 +972,9 @@ class StockState:
         self._gauges = {t["id"]: t["gauge_length_mm"] for t in m["tools"]}
         change = m.get("tool_change")
         if change is not None and (
-            m["version"] != 1
+            (m["version"] != 1 or change != {"in_place": True})
+            if "in_place" in change
+            else m["version"] != 1
             or (
                 set(change) != {"tips_mm"}
                 or not change["tips_mm"]
@@ -969,16 +986,28 @@ class StockState:
         ):
             raise ProtocolError("invalid tool change pose")
         self._tool_change = change
+        # A checkpoint does not retain the last tool (set by a restore).
+        self._last_tool_lost = False
         # Fresh native-initialized cells match the manifest's initial premise.
         # Restoring any checkpoint resets this flag, even at move zero.
         self._token, self._initial_full_stock = object(), True
 
-    def tool_change_tip(self, tool, position=None):
+    def tool_change_tip(self, tool, position=None, previous=None):
         """The tip position after a change to ``tool`` (the manifest's
-        tool-change pose), or None when the tip stays where it is."""
+        tool-change pose), or None when the tip stays where it is.
+        ``previous``: the tool in the spindle before the change, which a
+        change in place measures from (default: the last move's tool)."""
         change = self._tool_change
         if change is None:
             return None
+        if "in_place" in change:
+            # The spindle stays: the tip moves along Z by the old gauge
+            # length minus the new one. The first tool starts where the run does.
+            position = tuple(self.position if position is None else position)
+            previous = self._last_tool if previous is None else previous
+            if previous is None:
+                return position
+            return (position[0], position[1], position[2] + (self._gauges[previous] - self._gauges[tool]))
         if "tips_mm" in change:
             if tool not in change["tips_mm"]:
                 raise ProtocolError(f"the tool-change table declares no position after a change to tool {tool}")
@@ -1066,7 +1095,16 @@ class StockState:
         if (
             start != self.position
             and motion["tool"] != self._last_tool
-            and start == self.tool_change_tip(motion["tool"])
+            and (
+                start == self.tool_change_tip(motion["tool"])
+                # A change in place after a restore, which does not retain
+                # the last tool: the pose from one of the declared tools.
+                or self._last_tool is None
+                and self._last_tool_lost
+                and self._tool_change is not None
+                and "in_place" in self._tool_change
+                and any(start == self.tool_change_tip(motion["tool"], previous=old) for old in self._gauges)
+            )
         ):
             # The first motion with a new tool: the declared tool-change pose.
             self.position = start
@@ -1203,7 +1241,7 @@ class StockState:
                 last_motion,
                 limit,
                 None
-                if self._tool_change is None or "tips_mm" in self._tool_change
+                if self._tool_change is None or "tips_mm" in self._tool_change or "in_place" in self._tool_change
                 else (
                     float(self._tool_change["gauge_z_mm"]),
                     None if self._tool_change.get("xy_mm") is None else tuple(self._tool_change["xy_mm"]),
@@ -1213,6 +1251,9 @@ class StockState:
                 None
                 if self._tool_change is None or "tips_mm" not in self._tool_change
                 else {k: tuple(map(float, v)) for k, v in self._tool_change["tips_mm"].items()},
+                None
+                if self._tool_change is None or "in_place" not in self._tool_change
+                else (self._gauges, self._last_tool_lost),
             )
         except (ValueError, TypeError) as error:
             raise ProtocolError(str(error)) from error
@@ -1427,6 +1468,8 @@ class StockState:
         self._heights, self.completed, self.position = heights, complete, (x, y, z)
         self._control_context, self._control_wire = candidate, wire
         self.last_motion_id, self.fraction, self.finished = last if has_last else None, 0.0, False
+        # The checkpoint does not say which tool made its last move.
+        self._last_tool, self._last_tool_lost = None, True
         self._token, self._initial_full_stock = object(), False
 
 
@@ -1979,7 +2022,7 @@ class Simulation:
                     if tool != active_tool:
                         # The declared tool-change pose (recomputed here); the
                         # operation's tool change must state the same.
-                        tip = self.state.tool_change_tip(tool)
+                        tip = self.state.tool_change_tip(tool, previous=active_tool)
                         if tip is not None:
                             stated = [
                                 tuple(e["position_after_mm"]) for e in data["events"] if e["kind"] == "tool_change"

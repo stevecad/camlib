@@ -60,8 +60,13 @@ Key settings:
   job with the matching `Setup(tool_change=ToolChangePosition(gauge_z_mm=...))`
   (the same height in work coordinates: home Z minus the work offset Z), so
   each new tool's first move comes down from there and is checked like any
-  other rapid. `job.post` and `job.post_nc` refuse a setup whose tool-change
-  pose disagrees with the machine's, before planning.
+  other rapid. With `tool_change_position_mode="preserve_spindle"` no axis
+  moves at the tool change: the spindle gauge line stays, so the new tip is
+  the old tip moved along Z by the old gauge length minus the new one. Plan
+  with `Setup(tool_change=ToolChangeInPlace())` (see
+  [LinuxCNC tool changes](#linuxcnc-tool-changes)). `job.post` and
+  `job.post_nc` refuse a setup whose tool-change pose disagrees with the
+  machine's, before planning.
 - **`diameter_register`** (per `ToolSetting`): the D register holding the
   tool's wear, written with `G41`/`G42` for `Contour(compensation="wear")`.
 - **`decimals`**: output precision. 3 mm / 4 inch is what FANUC/Haas-class
@@ -305,6 +310,43 @@ them against your machine before use:
 
 Add `examples` to `PYTHONPATH`, or copy the file next to your code. The
 controller examples write curves as checked line segments by default.
+
+### LinuxCNC tool changes
+
+`GCodeDialect.linuxcnc()` writes a tool change as `T<n> M6` and then
+`G43 H<n>`. What the machine does at `M6` is not fixed by the G-code: it is
+the machine's configuration, so camlib assumes none and you declare it in
+`tool_change_position_mode`. From the LinuxCNC documentation:
+
+- [`M6`](https://linuxcnc.org/docs/stable/html/gcode/m-code.html#mcode:m6):
+  "The tool change may include axis motion", "If configured in the INI file
+  some axis positions may move when a M6 is issued", and "The tool length
+  offset is not changed by M6, use G43 after the M6 to change the tool length
+  offset."
+- [`[EMCIO]`](https://linuxcnc.org/docs/stable/html/config/ini-config.html):
+  `TOOL_CHANGE_POSITION` ("the XYZ location to move to when performing a tool
+  change"), `TOOL_CHANGE_QUILL_UP = 1` ("The Z axis will be moved to machine
+  zero prior to the tool change") and `TOOL_CHANGE_AT_G30 = 1` move the
+  machine at `M6`.
+- [`G43`](https://linuxcnc.org/docs/stable/html/gcode/g-code.html#gcode:g43):
+  "G43 does not cause any motion. The next time a compensated axis is moved,
+  that axis's endpoint is the compensated location."
+
+| Your machine at `M6` | `tool_change_position_mode` | Setup |
+|---|---|---|
+| None of the `[EMCIO]` moves is set and the tool is changed where the spindle stands (a manual change, or a changer that comes to the spindle) | `"preserve_spindle"` | `ToolChangeInPlace()` |
+| `TOOL_CHANGE_QUILL_UP = 1` only: Z goes to machine zero, X and Y stay | `"z_home"` with `tool_change_home_z_mm` (the gauge line's machine Z there) | `ToolChangePosition(gauge_z_mm=...)` |
+| `TOOL_CHANGE_POSITION`, `TOOL_CHANGE_AT_G30`, or a remapped `M6` that ends at a fixed pose | `"table"`: each tool's tip at that pose in `position_after_mm` | `ToolChangeTable.from_machine(machine)` |
+
+With `"preserve_spindle"` the spindle stays and only the tool differs, so the
+tip moves by the difference of the gauge lengths (`ToolSetting.gauge_length_mm`,
+the lengths in the controller's tool table): changing a 75 mm tool for a
+115 mm one puts the tip 40 mm lower, and `G43 H` then makes the controller's
+Z agree with it without moving. camlib plans, checks and decodes the program
+with that pose: an operation whose tool would arrive below its clearance
+height is refused with the change named, and the new tool's first moves are
+checked against stock and fixtures like any others. The mode needs the work Z axis along machine Z, and is refused
+for lathe turrets and for controllers that select a cutting edge with `T`/`D`.
 
 ## Posting without Python (Rust, WebAssembly)
 

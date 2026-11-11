@@ -99,7 +99,7 @@ class TurnStockState:
     def control_cursor(self):
         return None
 
-    def tool_change_tip(self, tool, position=None):
+    def tool_change_tip(self, tool, position=None, previous=None):
         """A lathe indexes the turret at the start position: every tool's
         controlled point arrives there."""
         if tool not in self._tools:

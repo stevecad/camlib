@@ -688,7 +688,8 @@ pub fn run_uncached(
     let manifest = producer.manifest().clone();
     let mut active: Option<&str> = None;
     for operation in &manifest.operations {
-        if active != Some(operation.tool()) {
+        let changed = active != Some(operation.tool());
+        if changed {
             producer.change_tool(operation.tool())?;
             active = Some(operation.tool());
         }
@@ -707,7 +708,14 @@ pub fn run_uncached(
                 .checked_add(1)
                 .ok_or("motion ID overflow")?,
             cancel,
-        )?;
+        )
+        .map_err(|e| {
+            if changed {
+                producer.explain_tool_change(e)
+            } else {
+                e
+            }
+        })?;
         send(&encode_operation_control(
             &manifest,
             &OperationControl {
@@ -832,7 +840,8 @@ pub fn run(
             return Err("job regeneration cancelled".into());
         }
         // Before the cache key: the operation starts from the tool-change pose.
-        if active.as_deref() != Some(op.tool()) {
+        let changed = active.as_deref() != Some(op.tool());
+        if changed {
             producer.change_tool(op.tool())?;
             active = Some(op.tool().to_string());
         }
@@ -931,7 +940,14 @@ pub fn run(
                     producer.position(),
                     base.checked_add(1).ok_or("motion ID overflow")?,
                     cancel,
-                )?
+                )
+                .map_err(|e| {
+                    if changed {
+                        producer.explain_tool_change(e)
+                    } else {
+                        e
+                    }
+                })?
             };
             let begin = serde_json::to_value(plan.report()).map_err(|e| e.to_string())?;
             let header = Header {

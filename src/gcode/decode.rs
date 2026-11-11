@@ -1542,6 +1542,19 @@ impl Decoder {
                     gauge_z - active.gauge_length_mm,
                 ];
             }
+            "preserve_spindle" => {
+                // The tool is changed where the spindle stands (LinuxCNC M6
+                // without a configured tool-change move): the gauge line
+                // stays, the tip moves by the gauge-length difference. The
+                // first tool starts at the program's declared position.
+                if let Some(old) = &self.active {
+                    self.position = crate::stream::in_place_tip(
+                        self.position,
+                        old.gauge_length_mm,
+                        active.gauge_length_mm,
+                    );
+                }
+            }
             _ => {}
         }
         self.active = Some(active);

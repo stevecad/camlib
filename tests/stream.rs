@@ -2245,3 +2245,131 @@ fn checkpoint_restores_never_promote_bounded_cells_into_raw_stock_proof_history(
         .unwrap();
     check(&mut inplace, false, true, 0);
 }
+
+/// Two tools of 75 and 115 mm gauge length on a machine whose tool change
+/// leaves the spindle where it stands (#168).
+fn in_place_manifest() -> StreamManifest {
+    let mut m = manifest();
+    m.tools[0].id = "short".into();
+    m.tools[0].gauge_length_mm = 75.;
+    m.tools[0].holders[0].z_max_mm = 75.;
+    let mut long = m.tools[0].clone();
+    long.id = "long".into();
+    long.gauge_length_mm = 115.;
+    long.holders[0].z_max_mm = 115.;
+    m.tools.push(long);
+    m.initial_position_mm = [3., 5., 60.];
+    m.tool_change = Some(ToolChangePose::InPlace(InPlacePose { in_place: true }));
+    m
+}
+fn rapid(id: u64, tool: &str, start: Vec3, end: Vec3) -> Motion {
+    Motion {
+        id,
+        operation: "op".into(),
+        tool: tool.into(),
+        kind: MoveKind::Rapid,
+        curve: Curve::Line { start, end },
+        feed_mm_min: None,
+    }
+}
+
+#[test]
+fn a_tool_change_in_place_keeps_the_gauge_line() {
+    let m = in_place_manifest();
+    m.validate().unwrap();
+    let cancel = AtomicBool::new(false);
+    let mut p = StreamProducer::new(m.clone()).unwrap();
+    let mut r = StreamReceiver::new(m.clone()).unwrap();
+    // The first tool starts where the run does.
+    assert_eq!(p.change_tool("short").unwrap(), [3., 5., 60.]);
+    let a = p
+        .push_motion(
+            rapid(1, "short", [3., 5., 60.], [10., 5., 50.]),
+            DEFAULT_FRAME_LIMIT,
+            &cancel,
+        )
+        .unwrap();
+    // The spindle stays: the 115 mm tool's tip is 40 mm below the 75 mm one's.
+    assert_eq!(p.change_tool("long").unwrap(), [10., 5., 10.]);
+    let b = p
+        .push_motion(
+            rapid(2, "long", [10., 5., 10.], [10., 5., 30.]),
+            DEFAULT_FRAME_LIMIT,
+            &cancel,
+        )
+        .unwrap();
+    // And back: 40 mm higher again.
+    assert_eq!(p.change_tool("short").unwrap(), [10., 5., 70.]);
+    let c = p
+        .push_motion(
+            rapid(3, "short", [10., 5., 70.], [10., 5., 71.]),
+            DEFAULT_FRAME_LIMIT,
+            &cancel,
+        )
+        .unwrap();
+    // The consumer recomputes each pose from the tools' gauge lengths.
+    r.accept(&a, DEFAULT_FRAME_LIMIT).unwrap();
+    let before = r.checkpoint(DEFAULT_FRAME_LIMIT).unwrap();
+    r.accept(&b, DEFAULT_FRAME_LIMIT).unwrap();
+    r.accept(&c, DEFAULT_FRAME_LIMIT).unwrap();
+    // A restored consumer (which does not retain the last tool) takes the
+    // same frames.
+    let mut restored = StreamReceiver::from_checkpoint(m.clone(), &before, DEFAULT_FRAME_LIMIT).unwrap();
+    restored.accept(&b, DEFAULT_FRAME_LIMIT).unwrap();
+    restored.accept(&c, DEFAULT_FRAME_LIMIT).unwrap();
+
+    // A new tool anywhere but the old tip or the gauge-line pose is refused:
+    // here where a tip-preserving change plus 1 mm would put it.
+    let mut p = StreamProducer::new(m.clone()).unwrap();
+    p.change_tool("short").unwrap();
+    p.push_motion(
+        rapid(1, "short", [3., 5., 60.], [10., 5., 50.]),
+        DEFAULT_FRAME_LIMIT,
+        &cancel,
+    )
+    .unwrap();
+    assert!(
+        p.push_motion(
+            rapid(2, "long", [10., 5., 11.], [10., 5., 30.]),
+            DEFAULT_FRAME_LIMIT,
+            &cancel,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn a_tool_change_in_place_refuses_what_it_cannot_place() {
+    let m = in_place_manifest();
+    // A tool that never moved leaves no committed pose to measure from.
+    let mut p = StreamProducer::new(m.clone()).unwrap();
+    p.change_tool("short").unwrap();
+    let error = p.change_tool("long").unwrap_err();
+    assert!(error.contains("made no move"), "{error}");
+    // The same tool again is no change.
+    let mut p = StreamProducer::new(m.clone()).unwrap();
+    p.change_tool("short").unwrap();
+    assert_eq!(p.change_tool("short").unwrap(), [3., 5., 60.]);
+    // The declaration is `{"in_place": true}` and nothing else.
+    let json = serde_json::to_value(m.tool_change.as_ref().unwrap()).unwrap();
+    assert_eq!(json, serde_json::json!({"in_place": true}));
+    assert_eq!(
+        serde_json::from_value::<ToolChangePose>(json).unwrap(),
+        m.tool_change.clone().unwrap()
+    );
+    let mut off = m.clone();
+    off.tool_change = Some(ToolChangePose::InPlace(InPlacePose { in_place: false }));
+    assert!(off.validate().is_err());
+    // Without the declaration the tip stays where it was.
+    let mut none = m;
+    none.tool_change = None;
+    let mut p = StreamProducer::new(none).unwrap();
+    assert_eq!(p.change_tool("short").unwrap(), [3., 5., 60.]);
+    p.push_motion(
+        rapid(1, "short", [3., 5., 60.], [10., 5., 50.]),
+        DEFAULT_FRAME_LIMIT,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(p.change_tool("long").unwrap(), [10., 5., 50.]);
+}

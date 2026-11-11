@@ -147,6 +147,18 @@ thing. Choose the pair that matches your controller:
 | `"table"`: each `ToolSetting.position_after_mm` is the tip after its change | `ToolChangeTable.from_machine(machine)` |
 | `"z_home"`: M6 sends the gauge line to `tool_change_home_z_mm`, XY stays | `ToolChangePosition(gauge_z_mm=<home Z minus work offset Z>)` |
 | `"preserve_tip"`: the tip stays where it was | `None` (the default) |
+| `"preserve_spindle"`: no axis moves, so the spindle gauge line stays where it was | `ToolChangeInPlace()` |
+
+With `"preserve_spindle"` the new tool's tip is the old tip moved along Z by
+the old gauge length minus the new one: after a 75 mm tool, a 115 mm tool
+reaches 40 mm further down. The planner starts the new tool there, and the
+stock, fixture and machine-travel checks and the posted-program check all use
+that pose. An operation whose longer tool would arrive below its clearance
+height (in or close above the part) is refused, naming the change: retract
+higher before the change, or put the longer tool first. The first
+tool starts at the setup's `initial_position_mm`. This is what a LinuxCNC
+machine does when its `M6` is not configured to move (see
+[Posts](posts.md#linuxcnc-tool-changes)); declare it only if yours behaves so.
 
 ```python
 from camlib import Drill, Drilling, ToolChangeTable

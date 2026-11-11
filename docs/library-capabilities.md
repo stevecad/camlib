@@ -61,8 +61,9 @@ combinations and impossible dimensions are rejected before any motion.
   the cut left the tool (`Setup(rapid_retracts=False)` keeps them fed).
 - Pocket links stay at depth only through stock proven cleared, when faster
   than leaving, or up to `max_stay_down_mm`.
-- `Setup(tool_change=ToolChangePosition(...))` or `ToolChangeTable(...)`
-  declares where a new tool arrives (M6 to Z home, or each tool's table pose);
+- `Setup(tool_change=ToolChangePosition(...))`, `ToolChangeTable(...)` or
+  `ToolChangeInPlace()` declares where a new tool arrives (M6 to Z home, each
+  tool's table pose, or the spindle staying where it was);
   its first move is checked like any rapid, and posting refuses a setup that
   disagrees with the machine.
 - Avoid areas and containment regions apply to every operation and to every
@@ -204,7 +205,7 @@ controller parameters, real offsets) is outside what camlib can check.
 | Probing | LinuxCNC `G38.3` (protected, with a trip check) and `G38.2` with `#5061`-`#5063` into `G10 L2`/`L10`/`L1`; or Renishaw Inspection Plus `G65 P9810`/`P9811`/`P9812`/`P9814`/`P9815` (FANUC); decoded back into moves and checked |
 | Beam on/off, power | Plasma `M3 S1`/`M5`, laser `M4 S<power>` (GRBL laser mode) or `M3 S`, from the declared S at full power |
 | Torch height control | Declared on/off codes (e.g. `M63 P2`/`M62 P2`) |
-| Tool changes | Table poses, preserved tip, or Z home |
+| Tool changes | Table poses, preserved tip, preserved spindle position (the tip moves by the gauge-length difference), or Z home |
 | Redundant codes | Omitted only where the tracked state proves them redundant |
 
 LinuxCNC is the `GCodeDialect.linuxcnc()` dialect of an ordinary `Machine`.

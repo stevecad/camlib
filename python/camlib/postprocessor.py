@@ -527,8 +527,10 @@ class Machine:
     mist: bool = field(kw_only=True)
     revision: str = '1'
     # Tip pose after a tool change: 'table' (each ToolSetting states it),
-    # 'preserve_tip' (it stays where it was), or 'z_home' (M6 sends the
-    # spindle gauge line to machine Z tool_change_home_z_mm, XY unchanged).
+    # 'preserve_tip' (it stays where it was), 'preserve_spindle' (the
+    # spindle stays where it was: the tip moves along Z by the old gauge
+    # length minus the new one), or 'z_home' (M6 sends the spindle gauge line
+    # to machine Z tool_change_home_z_mm, XY unchanged).
     tool_change_position_mode: str = field(kw_only=True)
     tool_change_home_z_mm: float | None = None
     # The machine's rapid traverse rate: nominal time of G0 moves in playback.
@@ -569,8 +571,24 @@ class Machine:
             raise ValueError('machine needs bounded name/revision')
         if not tools or not isinstance(self.dialect, GCodeDialect):
             raise ValueError('machine needs at least one tool and a declared dialect')
-        if self.tool_change_position_mode not in ('table', 'preserve_tip', 'z_home'):
-            raise ValueError('tool_change_position_mode must be table, preserve_tip or z_home')
+        if self.tool_change_position_mode not in ('table', 'preserve_tip', 'preserve_spindle', 'z_home'):
+            raise ValueError('tool_change_position_mode must be table, preserve_tip, preserve_spindle or z_home')
+        if self.tool_change_position_mode == 'preserve_spindle':
+            # The tip moves along the spindle axis by the difference of the
+            # gauge lengths: the tool axis must be work Z, and the tool must
+            # be changed by a spindle tool change (not a lathe turret index).
+            if tuple(self.work_to_machine.z) != (0, 0, 1):
+                raise ValueError('tool_change_position_mode preserve_spindle needs the work Z axis along machine Z')
+            if self.dialect.tool_change == 'lathe_t':
+                raise ValueError(
+                    'tool_change_position_mode preserve_spindle is a spindle tool change; '
+                    "a lathe turret declares each tool's position (table)"
+                )
+            if self.dialect.length_activation == 'tool_edge':
+                raise ValueError(
+                    'tool_change_position_mode preserve_spindle is not modelled for cutting-edge (T/D) length '
+                    "selection; declare each tool's position (table)"
+                )
         if (self.tool_change_position_mode == 'z_home') != (self.tool_change_home_z_mm is not None) or (
             self.tool_change_home_z_mm is not None
             and not (math.isfinite(self.tool_change_home_z_mm) and abs(self.tool_change_home_z_mm) <= 1e6)
@@ -2643,9 +2661,19 @@ class GCodeDecoder(_TransactionCopy):
         if self.rpm != 0:
             raise ValueError('stop spindle before selecting tool')
         choices = [t for t in self.machine.tools if t.number == number]
+        old = self.active
         self.active = next((t for t in choices if t.length_register == 1), choices[0] if choices else None)
         if self.active is None:
             raise ValueError('NC tool absent from machine table')
+        if self.machine.tool_change_position_mode == 'preserve_spindle' and old is not None:
+            # The tool is changed where the spindle stands (LinuxCNC M6
+            # without a configured tool-change move, M-code reference
+            # "M6": "If configured in the INI file some axis positions may
+            # move when a M6 is issued"): the gauge line stays, the tip moves
+            # by the gauge-length difference. The first tool starts at the
+            # program's declared position.
+            x, y, z = self.position
+            self.position = (x, y, z + (old.gauge_length_mm - self.active.gauge_length_mm))
         if self.machine.tool_change_position_mode == 'table':
             self.position = tuple(self.active.position_after_mm)
         elif self.machine.tool_change_position_mode == 'z_home':

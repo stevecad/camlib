@@ -143,8 +143,9 @@ class Setup:
     frame: WorkFrame = WorkFrame()
     sweep: SweepOptions = SweepOptions()
     verification: object | None = None
-    # Where a tool change leaves the new tool (ToolChangePosition); None:
-    # the tip stays where the previous operation ended.
+    # Where a tool change leaves the new tool (ToolChangePosition,
+    # ToolChangeTable, or ToolChangeInPlace: the spindle stays); None: the
+    # tip stays where the previous operation ended.
     tool_change: object | None = None
     # Limits for every operation: avoid areas (camlib.AvoidArea: clamps,
     # fixtures) and a containment region (the cutter stays inside).

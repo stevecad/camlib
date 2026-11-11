@@ -47,8 +47,11 @@ to one operation; see [Operations](operations.md#machining-limits-avoid-areas-an
 where the machine leaves a new tool (in work coordinates; `xy_mm=None` keeps X
 and Y). `Setup(tool_change=ToolChangeTable({tool_id: (x, y, z), ...}))` gives
 each tool's tip after its change instead (`ToolChangeTable.from_machine(machine)`
-takes them from a `"table"` machine's `position_after_mm`). Without either,
-each tool starts where the previous operation ended. See
+takes them from a `"table"` machine's `position_after_mm`).
+`Setup(tool_change=ToolChangeInPlace())` is a machine that changes the tool
+where the spindle stands: the tip moves along Z by the old gauge length minus
+the new one. Without any of them, each tool's tip starts where the previous
+operation ended. See
 [Posts](posts.md) for the matching machine setting.
 
 `job.regenerate(cache)` yields motion, stock and operation updates as they are

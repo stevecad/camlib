@@ -231,7 +231,7 @@ fn decode_committed_chunk<'py>(
 /// Items: (1, raw, motion, end, changed count, changes offset) or
 /// (8, raw, completed, progress JSON, check JSON).
 #[pyfunction]
-#[pyo3(signature = (buffer, offset, run_id, revision, digest, control_wire, tolerance, cells, completed, position, last_id, tools, expect=None, control=None, verification=None, last_motion=None, limit=4096, tool_change=None, last_tool=None, tool_change_tips=None))]
+#[pyo3(signature = (buffer, offset, run_id, revision, digest, control_wire, tolerance, cells, completed, position, last_id, tools, expect=None, control=None, verification=None, last_motion=None, limit=4096, tool_change=None, last_tool=None, tool_change_tips=None, tool_change_in_place=None))]
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn accept_motion_frames<'py>(
     py: Python<'py>,
@@ -261,6 +261,9 @@ fn accept_motion_frames<'py>(
     mut last_tool: Option<String>,
     // A tool-change table instead: each tool's tip after its change.
     tool_change_tips: Option<std::collections::HashMap<String, (f64, f64, f64)>>,
+    // A tool change in place instead: (gauge length per tool, the last tool
+    // is not retained: a restored checkpoint).
+    tool_change_in_place: Option<(std::collections::HashMap<String, f64>, bool)>,
 ) -> PyResult<(usize, Vec<Bound<'py, pyo3::types::PyTuple>>, Option<String>)> {
     let mut items = vec![];
     let mut motions = 0;
@@ -369,7 +372,30 @@ fn accept_motion_frames<'py>(
                     gauges.get(&tool).is_some_and(|g| start == (x, y, z - g))
                 }) || tool_change_tips
                     .as_ref()
-                    .is_some_and(|tips| tips.get(&tool) == Some(&start)));
+                    .is_some_and(|tips| tips.get(&tool) == Some(&start))
+                    || tool_change_in_place
+                        .as_ref()
+                        .is_some_and(|(gauges, restored)| {
+                            // The spindle stays: the tip moves by the old
+                            // gauge length minus the new (as the stream
+                            // state allows; any declared tool after a
+                            // restore, which does not retain the last one).
+                            let Some(new) = gauges.get(&tool) else {
+                                return false;
+                            };
+                            let from = |old: &f64| {
+                                let p = camlib::stream::in_place_tip(
+                                    [position.0, position.1, position.2],
+                                    *old,
+                                    *new,
+                                );
+                                start == (p[0], p[1], p[2])
+                            };
+                            match &last_tool {
+                                Some(last) => gauges.get(last).is_some_and(from),
+                                None => *restored && gauges.values().any(from),
+                            }
+                        }));
             if (start != position && !changed) || last_id.is_some_and(|l| identifier <= l) {
                 return Err(PyValueError::new_err(
                     "motion continuity or ID order mismatch",

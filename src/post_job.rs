@@ -23,8 +23,8 @@ use crate::motion::{Coolant, Event, Motion, Program, Vec3, WorkFrame};
 use crate::post_intent::Output;
 use crate::stock::CancelSignal;
 use crate::stream::{
-    DEFAULT_FRAME_LIMIT, GaugePose, RunIdentity, StreamManifest, StreamProducer, TablePose,
-    ToolChangePose,
+    DEFAULT_FRAME_LIMIT, GaugePose, InPlacePose, RunIdentity, StreamManifest, StreamProducer,
+    TablePose, ToolChangePose,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -625,6 +625,9 @@ fn check_tool_change_pose(machine: &Machine, manifest: &StreamManifest) -> Resul
         match change {
             None => first.then_some(initial.map(Some)),
             Some(ToolChangePose::Table(t)) => t.tips_mm.get(tool).map(|p| p.map(Some)),
+            // Each later pose depends on where the previous tool stops: the
+            // posted output check compares every actual change.
+            Some(ToolChangePose::InPlace(_)) => first.then_some(initial.map(Some)),
             Some(ToolChangePose::Gauge(g)) => {
                 let xy = match g.xy_mm {
                     Some(xy) => [Some(xy[0]), Some(xy[1])],
@@ -642,12 +645,30 @@ fn check_tool_change_pose(machine: &Machine, manifest: &StreamManifest) -> Resul
     let describe = || match change {
         None => "Setup.tool_change is None: the tip stays where it was".to_string(),
         Some(ToolChangePose::Table(_)) => "Setup.tool_change is a ToolChangeTable".to_string(),
+        Some(ToolChangePose::InPlace(_)) => {
+            "Setup.tool_change is ToolChangeInPlace: the spindle stays where it was".to_string()
+        }
         Some(ToolChangePose::Gauge(g)) => format!(
             "Setup.tool_change is ToolChangePosition(gauge_z_mm={}, xy_mm={:?})",
             g.gauge_z_mm, g.xy_mm
         ),
     };
+    if matches!(change, Some(ToolChangePose::InPlace(_))) != (mode == "preserve_spindle") {
+        return Err(if mode == "preserve_spindle" {
+            format!(
+                "the machine changes tools where the spindle stands (tool_change_position_mode=\"preserve_spindle\"), but {}: plan with Setup(tool_change=ToolChangeInPlace())",
+                describe()
+            )
+        } else {
+            format!(
+                "{}, but the machine's tool_change_position_mode is \"{mode}\": declare tool_change_position_mode=\"preserve_spindle\" if its tool change does not move the spindle, or plan with the machine's tool-change pose",
+                describe()
+            )
+        });
+    }
     let (tips, source, fix): (BTreeMap<String, Tip>, String, String) = match mode {
+        // Checked above: the setup plans its changes in place too.
+        "preserve_spindle" => return Ok(()),
         "preserve_tip" => {
             if change.is_some() {
                 return Err(format!(
@@ -666,6 +687,8 @@ fn check_tool_change_pose(machine: &Machine, manifest: &StreamManifest) -> Resul
                 && match c {
                     ToolChangePose::Table(_) => true,
                     ToolChangePose::Gauge(g) => g.xy_mm.is_some(),
+                    // Refused above for every machine but preserve_spindle.
+                    ToolChangePose::InPlace(_) => true,
                 }
             {
                 return Err(format!(
@@ -755,6 +778,7 @@ fn replay_tool_change(
             }
             Some(ToolChangePose::Table(TablePose { tips_mm: tips }))
         }
+        "preserve_spindle" => Some(ToolChangePose::InPlace(InPlacePose { in_place: true })),
         _ => None,
     })
 }

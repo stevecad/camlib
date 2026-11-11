@@ -208,3 +208,138 @@ fn cam_post_command_reports_on_stdout() {
         .unwrap();
     assert_eq!(failed.status.code(), Some(1));
 }
+
+/// The fixture's two-tool job on a machine whose tool change leaves the
+/// spindle where it stands (#168): `first`/`second` are the gauge lengths of
+/// the first and second tool used.
+fn in_place(first: f64, second: f64) -> Value {
+    let mut input = fixture();
+    input["machine"]["tool_change_position_mode"] = "preserve_spindle".into();
+    input["manifest"]["tool_change"] = serde_json::json!({"in_place": true});
+    for (tool, gauge) in [("mill4", first), ("mill2", second)] {
+        for t in input["manifest"]["tools"].as_array_mut().unwrap() {
+            if t["id"] == tool {
+                t["gauge_length_mm"] = gauge.into();
+                t["holders"][0]["z_max_mm"] = gauge.into();
+            }
+        }
+        for t in input["machine"]["tools"].as_array_mut().unwrap() {
+            if t["tool"] == tool {
+                t["gauge_length_mm"] = gauge.into();
+            }
+        }
+    }
+    input
+}
+
+#[test]
+fn a_tool_change_in_place_moves_the_tip_by_the_gauge_length_difference() {
+    // 115 mm then 75 mm: the spindle stays, so the shorter tool's tip is
+    // 40 mm higher. The program posts, decodes and replays with that pose.
+    let input = in_place(115., 75.);
+    let report = post(&input).unwrap();
+    assert_eq!(report["released"], true, "{report}");
+    assert_eq!(report["motions"], report["posting"]["checked_motions"]);
+    let program = report["program"].as_str().unwrap();
+    // The first tool stops at X6 Y6 Z8; the second comes down from Z48.
+    let after: Vec<&str> = program
+        .lines()
+        .skip_while(|l| *l != "T8")
+        .take(7)
+        .collect();
+    assert_eq!(
+        after,
+        [
+            "T8",
+            "M6",
+            "G43 H10",
+            "M3 S12000",
+            "M8",
+            "G0 X5 Y5.375 Z48",
+            "G0 X5 Y5.375 Z6.5"
+        ]
+    );
+    // The decoder places each tool from the machine's declaration alone.
+    let poses = |mode: &str| {
+        let mut machine = input["machine"].clone();
+        machine["tool_change_position_mode"] = mode.into();
+        let machine = Machine::from_json(machine).unwrap();
+        let mut decoder = Decoder::new(&machine, [0., 0., 8.], Default::default()).unwrap();
+        let mut poses = vec![];
+        for line in program.lines() {
+            let context = Context {
+                id: 1,
+                operation: "op".into(),
+                kind: MoveKind::Rapid,
+            };
+            if line == "T8" {
+                // Where the first tool stopped.
+                assert_eq!(decoder.position, [6., 6., 8.]);
+            }
+            for e in decoder.read(&[line.to_string()], Some(&context)).unwrap() {
+                if let camlib::motion::Event::ToolChange {
+                    tool,
+                    position_after_mm,
+                    ..
+                } = e
+                {
+                    poses.push((tool, position_after_mm));
+                }
+            }
+            if poses.len() == 2 {
+                break;
+            }
+        }
+        poses
+    };
+    assert_eq!(
+        poses("preserve_spindle"),
+        [
+            ("mill4".to_string(), [0., 0., 8.]),
+            ("mill2".to_string(), [6., 6., 48.])
+        ]
+    );
+    assert_eq!(poses("preserve_tip")[1].1, [6., 6., 8.]);
+    // The same plan on a machine that keeps the tip is refused before posting.
+    let mut other = input.clone();
+    other["machine"]["tool_change_position_mode"] = "preserve_tip".into();
+    let error = post(&other).unwrap_err();
+    assert!(
+        error.contains("ToolChangeInPlace") && error.contains("preserve_spindle"),
+        "{error}"
+    );
+    // And a plan that keeps the tip is refused on this machine.
+    let mut other = input.clone();
+    other["manifest"]
+        .as_object_mut()
+        .unwrap()
+        .remove("tool_change");
+    let error = post(&other).unwrap_err();
+    assert!(
+        error.contains("plan with Setup(tool_change=ToolChangeInPlace())"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_longer_tool_changed_in_place_into_the_stock_is_found() {
+    // 75 mm then 115 mm: the first tool stops at Z8, 2 mm above the stock,
+    // so the longer tool changed in there would reach 32 mm below Z0.
+    let error = post(&in_place(75., 115.)).unwrap_err();
+    assert!(
+        error.contains("start Z -32 is below clearance_z_mm 8")
+            && error.contains("leaves the spindle where it stands")
+            && error.contains("40 mm below the Z 8 where mill4 stopped"),
+        "{error}"
+    );
+}
+
+#[test]
+fn preserve_spindle_is_refused_where_it_is_not_modelled() {
+    let mut machine = in_place(115., 75.)["machine"].clone();
+    Machine::from_json(machine.clone()).unwrap();
+    machine["work_to_machine"]["z"] = serde_json::json!([0, 1, 0]);
+    machine["work_to_machine"]["y"] = serde_json::json!([0, 0, -1]);
+    let error = Machine::from_json(machine).unwrap_err();
+    assert!(error.contains("work Z axis along machine Z"), "{error}");
+}

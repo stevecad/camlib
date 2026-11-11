@@ -6,7 +6,7 @@ refused before posting with both poses and the fix named."""
 import unittest
 
 import camlib
-from camlib import GCodeDialect, Machine, ToolChangePosition, ToolChangeTable, ToolSetting
+from camlib import GCodeDialect, Machine, ToolChangeInPlace, ToolChangePosition, ToolChangeTable, ToolSetting
 from camlib.motion import WorkFrame
 
 HOLES = ((8, 8), (20, 8))
@@ -60,13 +60,14 @@ def job(tool_change):
     return camlib.Job("tool-change", "1", (setup,))
 
 
-def machine(table, mode="table", **settings):
+def machine(table, mode="table", tool_table=None, **settings):
     drill, spot = tools()
     by_id = {"drill5": drill, "drill3": spot}
     numbers = {"drill3": 1, "drill5": 2}
     return Machine(
         "Three-axis mill",
-        tuple(
+        tool_table
+        or tuple(
             ToolSetting.for_tool(by_id[t], number=numbers[t], length_register=numbers[t], position_after_mm=tip)
             for t, tip in table.items()
         ),
@@ -196,6 +197,246 @@ class TableValueTest(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "tool change pose needs finite work coordinates, for declared tools"):
             with job(ToolChangeTable({**TABLE, "ghost": (0, 0, 50)})).regenerate() as run:
                 list(run)
+
+
+def gauge_tools():
+    """Tools of 75 and 115 mm gauge length (#168)."""
+    short = camlib.ToolAssembly(
+        "short",
+        camlib.Drill("short", diameter=3, point_angle=118, flute_length=12, overall_length=50),
+        30,
+        75,
+        (camlib.HolderSection(30, 75, 10, 10),),
+    )
+    long = camlib.ToolAssembly(
+        "long",
+        camlib.Drill("long", diameter=5, point_angle=118, flute_length=20, overall_length=60),
+        40,
+        115,
+        (camlib.HolderSection(40, 115, 10, 10),),
+    )
+    return short, long
+
+
+def in_place_job(order, clearance, tool_change=ToolChangeInPlace()):
+    """Two drilling operations, one per tool in ``order``; ``clearance`` is
+    each operation's clearance height (one value: the same for both)."""
+    by_id = {t.id: t for t in gauge_tools()}
+    clearances = clearance if isinstance(clearance, tuple) else (clearance, clearance)
+    ops = tuple(
+        camlib.Drilling(
+            f"drill{k}",
+            by_id[tool],
+            HOLES,
+            12.0 - 4.0 * k,
+            clearances[k - 1],
+            tool_number=k,
+            length_register=k,
+            feed_mm_min=150,
+            retract_feed_mm_min=600,
+            spindle_rpm=6000,
+            coolant="flood",
+        )
+        for k, tool in enumerate(order, 1)
+    )
+    setup = camlib.Setup(
+        "top",
+        stock=camlib.StockSpec((0, 0, 0), (28, 16, 10), 0.1),
+        tools=tuple(by_id.values()),
+        operations=tuple(camlib.OperationNode(op, sources=()) for op in ops),
+        initial_position_mm=(0, 0, 70),
+        verification=camlib.StreamChecks(stock_contact=camlib.StockContactOptions()),
+        tool_change=tool_change,
+    )
+    return camlib.Job("tool-change-in-place", "1", (setup,))
+
+
+def in_place_machine(order, mode="preserve_spindle", **settings):
+    by_id = {t.id: t for t in gauge_tools()}
+    table = tuple(
+        ToolSetting.for_tool(by_id[t], number=k, length_register=k, position_after_mm=(0, 0, 70))
+        for k, t in enumerate(order, 1)
+    )
+    return machine({}, mode=mode, tool_table=table, **settings)
+
+
+def planned(j):
+    """(tool-change poses, each tool's motions) of a regenerated job."""
+    from camlib.simulation import OperationUpdate
+
+    poses, moves = [], {}
+    with j.regenerate() as run:
+        for event in run:
+            update = event.update
+            if isinstance(update, OperationUpdate):
+                if update.stage == "begin":
+                    poses += [
+                        (e["tool"], tuple(e["position_after_mm"])) for e in update.events if e["kind"] == "tool_change"
+                    ]
+            elif hasattr(update, "motion"):
+                moves.setdefault(update.motion["tool"], []).append(update.motion)
+    return poses, moves
+
+
+class ToolChangeInPlaceTest(unittest.TestCase):
+    """A machine whose tool change does not move the spindle (LinuxCNC M6
+    with no configured tool-change move, #168): the gauge line stays, so the
+    tip moves by the difference of the gauge lengths."""
+
+    def test_planner_moves_the_tip_by_the_gauge_length_difference(self):
+        for order, shift in ((("short", "long"), -40.0), (("long", "short"), 40.0)):
+            with self.subTest(order=order):
+                poses, moves = planned(in_place_job(order, clearance=(60, 12)))
+                first, second = order
+                end = tuple(moves[first][-1]["curve"]["end"])
+                self.assertEqual(poses[0], (first, (0.0, 0.0, 70.0)))
+                # The spindle stays over the last hole; only the tip height differs.
+                self.assertEqual(poses[1], (second, (end[0], end[1], end[2] + shift)))
+                self.assertEqual(tuple(moves[second][0]["curve"]["start"]), poses[1][1])
+
+    def test_two_tool_linuxcnc_program_posts_decodes_and_replays(self):
+        for order in (("short", "long"), ("long", "short")):
+            with self.subTest(order=order):
+                m = in_place_machine(order)
+                self.assertEqual(m.dialect, GCodeDialect.linuxcnc())
+                j = in_place_job(order, clearance=(60, 12))
+                # The posted program is decoded with the machine's tool-change
+                # behaviour and compared with the plan, then replayed on stock.
+                nc = posted(j, m)
+                self.assertEqual(sum("M6" in line.split() for line in nc), 2)
+                self.assertEqual(sum(line.split()[0] == "G43" for line in nc if line.split()), 2)
+                released = j.post_nc("top", machine=m, accept={"unchecked_machine"})
+                self.assertEqual(released.text.splitlines(), nc)
+                self.assertEqual(tuple(released.findings), ())
+                # The Rust post (its own decoder and replay) writes the same program.
+                from camlib.post import post_job, post_job_input
+
+                rust = post_job(post_job_input(j, "top", machine=m, accept={"unchecked_machine"}))
+                self.assertTrue(rust["released"])
+                self.assertEqual(rust["program"], released.text)
+
+    def test_playback_seeks_across_the_change_from_every_checkpoint(self):
+        # A checkpoint does not retain the tool of its last move: a seek that
+        # resumes right at the change still takes the new tool's first move.
+        from camlib.playback import Cursor, Player
+
+        for order in (("short", "long"), ("long", "short")):
+            with self.subTest(order=order):
+                j = in_place_job(order, clearance=(60, 12))
+                with j.post("top", machine=in_place_machine(order), checkpoint_every=1) as run:
+                    run.wait()
+                    count = run.status()["available"]
+                    player = Player(run, compact=True)
+                    for cursor in (*range(count, -1, -1), *range(count + 1)):
+                        player.seek(Cursor(cursor))
+                    self.assertEqual(run.status()["error"], None)
+
+    def test_stock_state_takes_only_the_gauge_line_pose_also_after_a_restore(self):
+        import tempfile
+        from pathlib import Path
+
+        from camlib.motion import Line, Motion
+        from camlib.simulation import Simulation, StockState
+
+        def simulation():
+            return Simulation(
+                camlib.StockSpec((0, 0, 0), (28, 16, 10), 0.5),
+                gauge_tools(),
+                revision="1",
+                initial_position_mm=(0, 0, 70),
+                tool_change=ToolChangeInPlace(),
+            )
+
+        first = Motion(1, "a", "short", Line((0, 0, 70), (5, 5, 60)), None, "rapid")
+        # The 115 mm tool's tip is 40 mm below where the 75 mm tool stopped.
+        second = Motion(2, "b", "long", Line((5, 5, 20), (5, 5, 30)), None, "rapid")
+        with simulation() as sim, tempfile.TemporaryDirectory() as directory:
+            frames = [u.frame for u in sim.motions([first, second])]
+            for many in (False, True):
+                state = StockState(sim.manifest_frame)
+                state.accept(frames[0])
+                path = Path(directory) / "after-first.bin"
+                state.write_checkpoint(path)
+                for restored in (False, True):
+                    if restored:
+                        # The checkpoint does not say which tool made its last move.
+                        state = StockState(sim.manifest_frame)
+                        state.restore_checkpoint(path)
+                    if many:
+                        _, updates = state.accept_many(frames[1].raw, 0)
+                        list(updates)
+                    else:
+                        state.accept(frames[1])
+                    self.assertEqual(state.position, (5, 5, 30))
+        # A start that is neither the old tip nor the gauge-line pose is refused.
+        for z in (21, 100):
+            wrong = Motion(2, "b", "long", Line((5, 5, z), (5, 5, 30)), None, "rapid")
+            with simulation() as sim:
+                with self.assertRaisesRegex(Exception, "continuity"):
+                    list(sim.motions([first, wrong]))
+
+    def test_decoder_places_the_tip_from_the_gauge_lengths_alone(self):
+        # The decoder knows only the machine: the same blocks read with a
+        # tip-preserving machine leave the second tool 40 mm away.
+        from camlib.motion import Program
+        from camlib.post import GCodeDecoder
+
+        order = ("short", "long")
+        tips = {}
+        for mode in ("preserve_spindle", "preserve_tip"):
+            m = in_place_machine(order, mode=mode)
+            program = Program("p", "1", gauge_tools(), (0, 0, 70), ())
+            decoder = GCodeDecoder(m, program)
+            decoder.position = (20.0, 8.0, 60.0)
+            decoder._activate(1)
+            first = decoder._length(1).position_after_mm
+            decoder._activate(2)
+            tips[mode] = (first, decoder._length(2).position_after_mm)
+        self.assertEqual(tips["preserve_spindle"], ((20.0, 8.0, 60.0), (20.0, 8.0, 20.0)))
+        self.assertEqual(tips["preserve_tip"], ((20.0, 8.0, 60.0), (20.0, 8.0, 60.0)))
+
+    def test_longer_tool_changed_in_into_the_stock_is_found(self):
+        # The 75 mm tool stops 2 mm above the stock; the 115 mm tool changed
+        # in there reaches 38 mm into it.
+        order = ("short", "long")
+        found = (
+            "start Z -28 is below clearance_z_mm 12.*leaves the spindle where it stands.*"
+            "tip is at Z -28, 40 mm below the Z 12 where short stopped"
+        )
+        with self.assertRaisesRegex(Exception, found):
+            in_place_job(order, clearance=12).post_nc(
+                "top", machine=in_place_machine(order), accept={"unchecked_machine"}
+            )
+        with self.assertRaisesRegex(Exception, found):
+            with in_place_job(order, clearance=12).regenerate() as run:
+                list(run)
+        # The other way round the shorter tool arrives 40 mm higher: clean.
+        order = ("long", "short")
+        released = in_place_job(order, clearance=12).post_nc(
+            "top", machine=in_place_machine(order), accept={"unchecked_machine"}
+        )
+        self.assertEqual(tuple(released.findings), ())
+
+    def test_setup_and_machine_must_both_declare_it(self):
+        order = ("short", "long")
+        spindle = in_place_machine(order)
+        for change in (None, ToolChangePosition(gauge_z_mm=150), ToolChangeTable({"short": (0, 0, 70)})):
+            with self.assertRaisesRegex(ValueError, r"preserve_spindle.*ToolChangeInPlace\(\)"):
+                in_place_job(order, (60, 12), change).post_nc("top", machine=spindle, accept={"unchecked_machine"})
+            with self.assertRaisesRegex(ValueError, "ToolChangeInPlace"):
+                in_place_job(order, (60, 12), change).post("top", machine=spindle)
+        for mode, extra in (("preserve_tip", {}), ("table", {}), ("z_home", {"tool_change_home_z_mm": 200})):
+            with self.assertRaisesRegex(ValueError, f'ToolChangeInPlace.*"{mode}".*preserve_spindle'):
+                in_place_job(order, (60, 12)).post_nc(
+                    "top", machine=in_place_machine(order, mode=mode, **extra), accept={"unchecked_machine"}
+                )
+
+    def test_machine_refuses_the_mode_where_it_is_not_modelled(self):
+        with self.assertRaisesRegex(ValueError, "work Z axis along machine Z"):
+            in_place_machine(("short", "long"), work_to_machine=WorkFrame(x=(1, 0, 0), y=(0, 0, 1), z=(0, -1, 0)))
+        with self.assertRaisesRegex(ValueError, "must be table, preserve_tip, preserve_spindle or z_home"):
+            in_place_machine(("short", "long"), mode="in_place")
+        self.assertEqual(ToolChangeInPlace().to_dict(), {"in_place": True})
 
 
 if __name__ == "__main__":
