@@ -281,6 +281,8 @@ pub struct TablePose {
     /// Tool assembly id -> tip position after the change to it.
     pub tips_mm: std::collections::BTreeMap<String, Vec3>,
 }
+/// Why a tool change in place is refused after an old checkpoint.
+pub const UNKNOWN_SPINDLE_TOOL: &str = "the restored checkpoint does not record the tool in the spindle (it was written by an older camlib), so a tool change in place cannot be placed; replay the run from its start";
 /// The tip after a tool change in place: the spindle gauge line stays, so
 /// the tip moves along Z by the old gauge length minus the new one (a longer
 /// tool reaches further down). Every consumer uses this one expression, so
@@ -684,14 +686,30 @@ struct CheckpointFields {
     last: u64,
     generation: u64,
     count: usize,
+    /// The tool in the spindle at the checkpoint's position: its index in
+    /// the manifest's tools, `NO_TOOL` for none yet, or None for a
+    /// checkpoint that does not record it (written before #168).
+    spindle: Option<u32>,
     controls: Option<ControlState>,
 }
+/// A checkpoint's flags byte: it has a last motion ID, and it records the
+/// spindle tool (a u32 after the cell count and any control state).
+const HAS_LAST: u8 = 1;
+const HAS_SPINDLE: u8 = 2;
+/// The recorded spindle tool of a run that has not moved a tool yet.
+const NO_TOOL: u32 = u32::MAX;
 impl CheckpointFields {
     fn read(body: &mut Decoder<'_>, manifest: &StreamManifest) -> Result<Self, String> {
+        let sequence = body.u64()?;
+        let position = body.vec3()?;
+        let flags = body.u8()?;
+        if flags > (HAS_LAST | HAS_SPINDLE) {
+            return Err("invalid stock checkpoint cursor/shape/position".into());
+        }
         Ok(Self {
-            sequence: body.u64()?,
-            position: body.vec3()?,
-            has_last: body.u8()?,
+            sequence,
+            position,
+            has_last: flags & HAS_LAST,
             last: body.u64()?,
             generation: body.u64()?,
             count: body.u32()? as usize,
@@ -700,7 +718,20 @@ impl CheckpointFields {
             } else {
                 None
             },
+            spindle: if flags & HAS_SPINDLE != 0 {
+                Some(body.u32()?)
+            } else {
+                None
+            },
         })
+    }
+    /// (the spindle tool, whether the checkpoint records it).
+    fn spindle_tool(&self, manifest: &StreamManifest) -> (Option<String>, bool) {
+        match self.spindle {
+            // A run that has not moved has no tool to forget.
+            None => (None, self.sequence == 0),
+            Some(t) => (manifest.tools.get(t as usize).map(|t| t.id.clone()), true),
+        }
     }
     fn validate(&self, manifest: &StreamManifest, cell_bytes: usize) -> Result<(), String> {
         // Height cells: 16 bytes. Turning cells: 32 bytes, then a u32 ring
@@ -731,6 +762,15 @@ impl CheckpointFields {
             || (self.has_last == 0) != (self.sequence == 0)
             || !shape
             || self.sequence == 0 && self.last != 0
+            // A recorded spindle tool is a declared one; only a run that
+            // has not moved may record none.
+            || self.spindle.is_some_and(|t| {
+                if t == NO_TOOL {
+                    self.sequence != 0
+                } else {
+                    t as usize >= manifest.tools.len()
+                }
+            })
             || self.sequence == 0
                 && manifest.version == 1
                 && self.position != manifest.initial_position_mm
@@ -771,8 +811,12 @@ pub struct StreamReceiver {
     last_motion_id: Option<u64>,
     finished: bool,
     controls: Option<ControlState>,
-    /// The last committed motion's tool (None after a restore).
+    /// The tool in the spindle at `position`: the last committed motion's,
+    /// or the one a restored checkpoint records (None: no tool has moved).
     last_tool: Option<String>,
+    /// False only after restoring a checkpoint that does not record its
+    /// spindle tool (written before #168): the tool is then unknown.
+    last_tool_known: bool,
     /// Retained cells are not evidence of raw stock, even at cursor zero.
     restored_from_checkpoint: bool,
     /// The per-move proof states a producer checkpoint kept (#108), until
@@ -937,7 +981,13 @@ impl StreamProducer {
             .checks
             .as_ref()
             .and_then(crate::stream_verification::Runtime::proof_states);
-        self.state.checkpoint_with(limit, proofs.as_deref())
+        // The tool the last change put in the spindle, moved or not.
+        let spindle = self
+            .spindle_tool
+            .as_deref()
+            .or(self.state.last_tool.as_deref());
+        self.state
+            .checkpoint_with(limit, proofs.as_deref(), spindle)
     }
     /// Synchronize a disposable query cache from an already committed source
     /// chunk. This reuses receiver CRC/identity/sequence/old-value checks and does
@@ -1032,9 +1082,9 @@ impl StreamProducer {
                 .as_deref()
                 .or(self.state.last_tool.as_deref());
             match spindle {
-                None if self.state.sequence != 0 => {
+                None if !self.state.last_tool_known => {
                     return Err(format!(
-                        "tool change to {tool} in place: the tool in the spindle is unknown after a restored checkpoint; run the operations from the start"
+                        "tool change to {tool} in place: {UNKNOWN_SPINDLE_TOOL}"
                     ));
                 }
                 Some(old) if old != tool && self.state.last_tool.as_deref() != Some(old) => {
@@ -1473,6 +1523,7 @@ impl StreamReceiver {
             last_motion_id: None,
             finished: false,
             last_tool: None,
+            last_tool_known: true,
             restored_from_checkpoint: false,
             restored_proofs: None,
         })
@@ -1653,23 +1704,13 @@ impl StreamReceiver {
             return Ok(false);
         }
         let start = motion.curve.start();
-        if self.last_tool.is_none()
-            && self.restored_from_checkpoint
-            && self.manifest.tool_change_in_place()
-        {
-            // A checkpoint does not retain the last tool: the start must be
-            // the pose a change in place gives from one of the declared
-            // tools. (Unrestored, the previous tool is known and exact.)
-            for old in &self.manifest.tools {
-                if self
-                    .manifest
-                    .tool_change_tip(&motion.tool, self.position, Some(&old.id))?
-                    == Some(start)
-                {
-                    return Ok(true);
-                }
-            }
-            return Ok(false);
+        if !self.last_tool_known && self.manifest.tool_change_in_place() {
+            // A change in place is measured from exactly the tool in the
+            // spindle; a checkpoint that does not record it cannot place it.
+            return Err(format!(
+                "tool {} starts away from the last position: {UNKNOWN_SPINDLE_TOOL}",
+                motion.tool
+            ));
         }
         Ok(self
             .manifest
@@ -1690,13 +1731,47 @@ impl StreamReceiver {
         Ok(chunk.motion)
     }
     pub fn checkpoint(&self, limit: usize) -> Result<Vec<u8>, String> {
-        self.checkpoint_with(limit, None)
+        self.checkpoint_with(limit, None, self.last_tool.as_deref())
     }
-    fn checkpoint_with(&self, limit: usize, proofs: Option<&[Vec<u8>]>) -> Result<Vec<u8>, String> {
+    /// The tool in the spindle at the current position.
+    pub fn last_tool(&self) -> Option<&str> {
+        self.last_tool.as_deref()
+    }
+    /// `spindle`: the tool in the spindle at the checkpointed position (a
+    /// producer's last tool change, else the last motion's tool).
+    fn checkpoint_with(
+        &self,
+        limit: usize,
+        proofs: Option<&[Vec<u8>]>,
+        spindle: Option<&str>,
+    ) -> Result<Vec<u8>, String> {
         let mut body = self.identity.clone();
         put_u64(&mut body, self.sequence);
         put_vec3(&mut body, self.position);
-        put_u8(&mut body, u8::from(self.last_motion_id.is_some()));
+        // The spindle tool is recorded whenever it is known (#168): a
+        // restored consumer checks a tool change in place against exactly it.
+        let recorded = if self.last_tool_known {
+            Some(match spindle {
+                None => NO_TOOL,
+                Some(tool) => self
+                    .manifest
+                    .tools
+                    .iter()
+                    .position(|t| t.id == tool)
+                    .ok_or("checkpoint of an undeclared spindle tool")?
+                    as u32,
+            })
+        } else {
+            None
+        };
+        if recorded == Some(NO_TOOL) && self.sequence != 0 {
+            return Err("checkpoint of a moved run without its spindle tool".into());
+        }
+        put_u8(
+            &mut body,
+            (u8::from(self.last_motion_id.is_some()) * HAS_LAST)
+                | (u8::from(recorded.is_some()) * HAS_SPINDLE),
+        );
         put_u64(&mut body, self.last_motion_id.unwrap_or(0));
         match &self.stock {
             RunStock::Height(stock) => {
@@ -1704,6 +1779,9 @@ impl StreamReceiver {
                 put_u32(&mut body, stock.cells().len() as u32);
                 if let Some(controls) = &self.controls {
                     put_control_json(&mut body, controls)?;
+                }
+                if let Some(t) = recorded {
+                    put_u32(&mut body, t);
                 }
                 let section = proofs
                     .map(|states| proof_section(states, &cells_digest(stock.cells())))
@@ -1719,6 +1797,9 @@ impl StreamReceiver {
                 // One stock generation per committed move, as in a height field.
                 put_u64(&mut body, self.sequence);
                 put_u32(&mut body, stock.cells().len() as u32);
+                if let Some(t) = recorded {
+                    put_u32(&mut body, t);
+                }
                 let bytes = stock.cells().len() * 32 + 4 + stock.rings().len() * 32;
                 check_size(body.len() + bytes, limit)?;
                 body.reserve(bytes);
@@ -1737,6 +1818,9 @@ impl StreamReceiver {
                 put_u32(&mut body, stock.grid().total_rays() as u32);
                 if let Some(controls) = &self.controls {
                     put_control_json(&mut body, controls)?;
+                }
+                if let Some(t) = recorded {
+                    put_u32(&mut body, t);
                 }
                 let bytes = stock.grid().total_rays() * 8 + stock.intervals() * 16;
                 check_size(body.len() + bytes, limit)?;
@@ -1800,6 +1884,7 @@ impl StreamReceiver {
             rings.push([body.f64()?, body.f64()?, body.f64()?, body.f64()?]);
         }
         let stock = TurnStock::from_parts(spec.clone(), cells, rings)?;
+        let (last_tool, last_tool_known) = fields.spindle_tool(&manifest);
         Ok(Self {
             identity: identity_bytes(&manifest)?,
             manifest,
@@ -1809,7 +1894,8 @@ impl StreamReceiver {
             last_motion_id: (fields.has_last == 1).then_some(fields.last),
             finished: false,
             controls: fields.controls,
-            last_tool: None,
+            last_tool,
+            last_tool_known,
             restored_from_checkpoint: true,
             restored_proofs: None,
         })
@@ -1835,6 +1921,7 @@ impl StreamReceiver {
             return Err("trailing tri-dexel checkpoint data".into());
         }
         let stock = DexelStock::from_parts(spec.clone(), fields.generation, rays)?;
+        let (last_tool, last_tool_known) = fields.spindle_tool(&manifest);
         Ok(Self {
             identity: identity_bytes(&manifest)?,
             manifest,
@@ -1844,7 +1931,8 @@ impl StreamReceiver {
             last_motion_id: (fields.has_last == 1).then_some(fields.last),
             finished: false,
             controls: fields.controls,
-            last_tool: None,
+            last_tool,
+            last_tool_known,
             // A retained snapshot, with no kept proof states (tri-dexel
             // checkpoints carry none): the history before it is unseen.
             restored_from_checkpoint: true,
@@ -1889,6 +1977,7 @@ impl StreamReceiver {
             read_prefix(reader, &mut prefix, count, length)?;
         }
         read_prefix(reader, &mut prefix, 32 + 8 + 24 + 1 + 8 + 8 + 4, length)?;
+        let flags = prefix[prefix.len() - (1 + 8 + 8 + 4)];
         if manifest.version == 2 {
             read_prefix(reader, &mut prefix, 4, length)?;
             let n = prefix.len();
@@ -1897,6 +1986,10 @@ impl StreamReceiver {
                 return Err("control checkpoint state exceeds bounded size".into());
             }
             read_prefix(reader, &mut prefix, count, length)?;
+        }
+        // The flags byte says whether the spindle tool follows.
+        if flags & HAS_SPINDLE != 0 {
+            read_prefix(reader, &mut prefix, 4, length)?;
         }
         let mut meta = Decoder {
             bytes: &prefix,
@@ -1962,6 +2055,7 @@ impl StreamReceiver {
         if let Some(initial) = &manifest.initial_stock {
             stock.initial_volume(initial)?;
         }
+        let (last_tool, last_tool_known) = fields.spindle_tool(&manifest);
         Ok(Self {
             manifest,
             identity,
@@ -1971,7 +2065,8 @@ impl StreamReceiver {
             last_motion_id: (fields.has_last == 1).then_some(fields.last),
             finished: false,
             controls: fields.controls,
-            last_tool: None,
+            last_tool,
+            last_tool_known,
             restored_from_checkpoint: true,
             restored_proofs,
         })

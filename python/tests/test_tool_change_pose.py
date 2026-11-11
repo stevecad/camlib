@@ -331,49 +331,156 @@ class ToolChangeInPlaceTest(unittest.TestCase):
                         player.seek(Cursor(cursor))
                     self.assertEqual(run.status()["error"], None)
 
-    def test_stock_state_takes_only_the_gauge_line_pose_also_after_a_restore(self):
+    def consumer_frames(self, stock, first_tool):
+        """(manifest frame, [first move by ``first_tool``, the 115 mm tool's
+        first move after its change in place]) of one run; every call gives
+        the same run (id, revision, manifest), so its frames and checkpoints
+        fit a consumer of any other call."""
+        from camlib.motion import Line, Motion
+        from camlib.simulation import Simulation
+
+        mid = camlib.ToolAssembly(
+            "mid",
+            camlib.Drill("mid", diameter=4, point_angle=118, flute_length=16, overall_length=55),
+            35,
+            95,
+            (camlib.HolderSection(35, 95, 10, 10),),
+        )
+        gauge = {"short": 75, "mid": 95}[first_tool]
+        moves = [
+            Motion(1, "a", first_tool, Line((0, 0, 70), (5, 5, 60)), None, "rapid"),
+            # The spindle stays: the 115 mm tool's tip is lower by the difference.
+            Motion(2, "b", "long", Line((5, 5, 60 + gauge - 115), (5, 5, 30)), None, "rapid"),
+        ]
+        with Simulation(
+            stock,
+            (*gauge_tools(), mid),
+            revision="1",
+            run_id="in-place",
+            initial_position_mm=(0, 0, 70),
+            tool_change=ToolChangeInPlace(),
+        ) as sim:
+            frames = [u.frame for u in sim.motions(moves)]
+            return sim.manifest_frame, frames
+
+    def test_consumers_measure_the_change_from_exactly_the_spindle_tool_also_after_a_restore(self):
+        # After the 75 mm tool the 115 mm tool's tip is at Z20; after the
+        # 95 mm tool it would be at Z40. A consumer takes only the pose
+        # measured from the tool that is in the spindle, live or restored
+        # from a checkpoint (which records that tool), on both stock models.
         import tempfile
         from pathlib import Path
 
-        from camlib.motion import Line, Motion
-        from camlib.simulation import Simulation, StockState
+        from camlib.dexel_state import DexelStockState
+        from camlib.simulation import ProtocolError, StockState, stock_state
 
-        def simulation():
-            return Simulation(
-                camlib.StockSpec((0, 0, 0), (28, 16, 10), 0.5),
-                gauge_tools(),
-                revision="1",
-                initial_position_mm=(0, 0, 70),
-                tool_change=ToolChangeInPlace(),
-            )
+        stocks = {
+            StockState: camlib.StockSpec((0, 0, 0), (28, 16, 10), 0.5),
+            DexelStockState: camlib.DexelStockSpec((0, 0, 0), (28, 16, 10), cell_size_mm=0.5),
+        }
+        for kind, stock in stocks.items():
+            manifest, (short_first, after_short) = self.consumer_frames(stock, "short")
+            other, (mid_first, after_mid) = self.consumer_frames(stock, "mid")
+            self.assertEqual(manifest.raw, other.raw)
+            for first, right, wrong in ((short_first, after_short, after_mid), (mid_first, after_mid, after_short)):
+                with self.subTest(kind=kind.__name__, first=first), tempfile.TemporaryDirectory() as directory:
+                    live = stock_state(manifest)
+                    self.assertIsInstance(live, kind)
+                    live.accept(first)
+                    path = Path(directory) / "after-first.bin"
+                    live.write_checkpoint(path)
 
-        first = Motion(1, "a", "short", Line((0, 0, 70), (5, 5, 60)), None, "rapid")
-        # The 115 mm tool's tip is 40 mm below where the 75 mm tool stopped.
-        second = Motion(2, "b", "long", Line((5, 5, 20), (5, 5, 30)), None, "rapid")
-        with simulation() as sim, tempfile.TemporaryDirectory() as directory:
-            frames = [u.frame for u in sim.motions([first, second])]
+                    def consumer(restored):
+                        state = stock_state(manifest)
+                        if restored:
+                            state.restore_checkpoint(path)
+                        else:
+                            state.accept(first)
+                        return state
+
+                    for restored in (False, True):
+                        for many in (False, True):
+                            if many and kind is DexelStockState:
+                                continue
+                            state = consumer(restored)
+                            with self.assertRaisesRegex(ProtocolError, "continuity"):
+                                if many:
+                                    list(state.accept_many(wrong.raw, 0)[1])
+                                else:
+                                    state.accept(wrong)
+                            self.assertEqual(state.completed, 1)
+                            if many:
+                                list(state.accept_many(right.raw, 0)[1])
+                            else:
+                                state.accept(right)
+                            self.assertEqual(tuple(state.position), (5, 5, 30))
+                        # The pose a consumer computes for the change, and
+                        # the only position it lets the run be given.
+                        state = consumer(restored)
+                        tool = "short" if first is short_first else "mid"
+                        tip = state.tool_change_tip("long", previous=tool)
+                        self.assertEqual(tip, (5, 5, 60 + {"short": 75, "mid": 95}[tool] - 115))
+                        if kind is DexelStockState:
+                            # The tri-dexel state lets the run be given only a
+                            # pose some tool has after a change from the tool
+                            # in the spindle (its receiver then checks the
+                            # move's own tool exactly, as above).
+                            gauges = {"short": 75, "mid": 95, "long": 115}
+                            valid = {(5, 5, 60 + gauges[tool] - g) for g in gauges.values()}
+                            state.position = tip
+                            other = {"short": "mid", "mid": "short"}[tool]
+                            for wrong_tip in ((5, 5, tip[2] + 1), (5, 5, 60 + gauges[other] - 115)):
+                                if wrong_tip in valid:
+                                    # The 115 mm tool's pose after the 95 mm
+                                    # tool is the 95 mm tool's after the 75 mm one.
+                                    self.assertEqual((tool, wrong_tip), ("short", (5, 5, 40)))
+                                    continue
+                                with self.assertRaisesRegex(ProtocolError, "declared tool-change pose"):
+                                    state.position = wrong_tip
+
+    def test_checkpoint_without_the_spindle_tool_restores_and_refuses_a_change_in_place(self):
+        # A checkpoint written before the spindle tool was recorded: flag
+        # cleared, its four bytes removed, length and checksum recomputed.
+        import struct
+        import tempfile
+        import zlib
+        from pathlib import Path
+
+        from camlib.simulation import ProtocolError, StockState
+
+        def older(raw, run_id="in-place", revision="1"):
+            flags = 20 + 2 + len(run_id) + 2 + len(revision) + 32 + 8 + 24
+            tool = flags + 1 + 8 + 8 + 4
+            self.assertEqual(raw[flags], 3)
+            old = bytearray(raw[:tool] + raw[tool + 4 :])
+            old[flags] = 1
+            old[12:16] = struct.pack("<I", len(old) - 20)
+            old[16:20] = struct.pack("<I", zlib.crc32(memoryview(old)[20:], zlib.crc32(memoryview(old)[:16])))
+            return bytes(old)
+
+        stock = camlib.StockSpec((0, 0, 0), (28, 16, 10), 0.5)
+        manifest, (first, second) = self.consumer_frames(stock, "short")
+        with tempfile.TemporaryDirectory() as directory:
+            state = StockState(manifest)
+            state.accept(first)
+            path = Path(directory) / "new.bin"
+            state.write_checkpoint(path)
+            old = Path(directory) / "old.bin"
+            old.write_bytes(older(path.read_bytes()))
             for many in (False, True):
-                state = StockState(sim.manifest_frame)
-                state.accept(frames[0])
-                path = Path(directory) / "after-first.bin"
-                state.write_checkpoint(path)
-                for restored in (False, True):
-                    if restored:
-                        # The checkpoint does not say which tool made its last move.
-                        state = StockState(sim.manifest_frame)
-                        state.restore_checkpoint(path)
+                restored = StockState(manifest)
+                restored.restore_checkpoint(old)
+                self.assertEqual((restored.completed, restored.position), (1, (5, 5, 60)))
+                with self.assertRaisesRegex(ProtocolError, "does not record the tool in the spindle.*replay the run"):
                     if many:
-                        _, updates = state.accept_many(frames[1].raw, 0)
-                        list(updates)
+                        list(restored.accept_many(second.raw, 0)[1])
                     else:
-                        state.accept(frames[1])
-                    self.assertEqual(state.position, (5, 5, 30))
-        # A start that is neither the old tip nor the gauge-line pose is refused.
-        for z in (21, 100):
-            wrong = Motion(2, "b", "long", Line((5, 5, z), (5, 5, 30)), None, "rapid")
-            with simulation() as sim:
-                with self.assertRaisesRegex(Exception, "continuity"):
-                    list(sim.motions([first, wrong]))
+                        restored.accept(second)
+                self.assertEqual(restored.completed, 1)
+                # It stays unknown in the checkpoints this state writes.
+                again = Path(directory) / "again.bin"
+                restored.write_checkpoint(again)
+                self.assertEqual(again.read_bytes(), old.read_bytes())
 
     def test_decoder_places_the_tip_from_the_gauge_lengths_alone(self):
         # The decoder knows only the machine: the same blocks read with a

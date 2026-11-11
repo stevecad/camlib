@@ -161,13 +161,11 @@ class DexelStockState(DexelView):
         # A tool change puts the tip at the manifest's tool-change pose; the
         # receiver accepts the next tool's first move from there itself.
         value = tuple(value)
-        in_place = self._tool_change is not None and "in_place" in self._tool_change
         if value != tuple(self._receiver.position) and not any(
-            self.tool_change_tip(tool, self._receiver.position, previous=old) == value
+            # A change in place measures from the tool in the spindle (the
+            # receiver's, which also checks the next move itself).
+            self.tool_change_tip(tool, self._receiver.position, previous=self._receiver.last_tool) == value
             for tool in self._tools
-            # A change in place measures from the tool in the spindle, which
-            # the receiver checks exactly when it takes the next move.
-            for old in (self._tools if in_place else (None,))
         ):
             raise ProtocolError("position change is neither the cursor nor a declared tool-change pose")
 

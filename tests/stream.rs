@@ -2312,11 +2312,14 @@ fn a_tool_change_in_place_keeps_the_gauge_line() {
     let before = r.checkpoint(DEFAULT_FRAME_LIMIT).unwrap();
     r.accept(&b, DEFAULT_FRAME_LIMIT).unwrap();
     r.accept(&c, DEFAULT_FRAME_LIMIT).unwrap();
-    // A restored consumer (which does not retain the last tool) takes the
-    // same frames.
-    let mut restored = StreamReceiver::from_checkpoint(m.clone(), &before, DEFAULT_FRAME_LIMIT).unwrap();
+    // The checkpoint records the tool in the spindle: a restored consumer
+    // takes the same frames, measured from exactly that tool.
+    let mut restored =
+        StreamReceiver::from_checkpoint(m.clone(), &before, DEFAULT_FRAME_LIMIT).unwrap();
+    assert_eq!(restored.last_tool(), Some("short"));
     restored.accept(&b, DEFAULT_FRAME_LIMIT).unwrap();
     restored.accept(&c, DEFAULT_FRAME_LIMIT).unwrap();
+
 
     // A new tool anywhere but the old tip or the gauge-line pose is refused:
     // here where a tip-preserving change plus 1 mm would put it.
@@ -2372,4 +2375,150 @@ fn a_tool_change_in_place_refuses_what_it_cannot_place() {
     )
     .unwrap();
     assert_eq!(p.change_tool("long").unwrap(), [10., 5., 50.]);
+}
+
+/// A third tool whose gauge length makes a pose measured from the wrong
+/// tool: 95 mm, between the 75 and 115 mm tools.
+fn three_tool_manifest() -> StreamManifest {
+    let mut m = in_place_manifest();
+    let mut mid = m.tools[0].clone();
+    mid.id = "mid".into();
+    mid.gauge_length_mm = 95.;
+    mid.holders[0].z_max_mm = 95.;
+    m.tools.push(mid);
+    m
+}
+/// The checkpoint as a camlib before #168 wrote it: without the spindle
+/// tool (its flag cleared, its four bytes removed, length and checksum
+/// recomputed).
+fn without_spindle_tool(checkpoint: &[u8], m: &StreamManifest) -> Vec<u8> {
+    // Header (20), run id and revision (u16 length each), digest (32),
+    // cursor (8), position (24), then the flags byte.
+    let flags = 20 + 2 + m.run.id.len() + 2 + m.run.revision.len() + 32 + 8 + 24;
+    let tool = flags + 1 + 8 + 8 + 4;
+    let mut old = checkpoint.to_vec();
+    assert_eq!(old[flags] & 2, 2);
+    old[flags] &= 1;
+    old.drain(tool..tool + 4);
+    let length = (old.len() - 20) as u32;
+    old[12..16].copy_from_slice(&length.to_le_bytes());
+    let mut crc = crc32fast::Hasher::new();
+    crc.update(&old[..16]);
+    crc.update(&old[20..]);
+    old[16..20].copy_from_slice(&crc.finalize().to_le_bytes());
+    old
+}
+
+#[test]
+fn a_restored_consumer_measures_a_change_in_place_from_exactly_the_spindle_tool() {
+    let m = three_tool_manifest();
+    let cancel = AtomicBool::new(false);
+    // Two producers stop the same way but with different tools, then change
+    // to the 115 mm tool: 40 mm lower after the 75 mm one, 20 mm after the
+    // 95 mm one.
+    let run = |first: &str| {
+        let mut p = StreamProducer::new(m.clone()).unwrap();
+        p.change_tool(first).unwrap();
+        let a = p
+            .push_motion(
+                rapid(1, first, [3., 5., 60.], [10., 5., 50.]),
+                DEFAULT_FRAME_LIMIT,
+                &cancel,
+            )
+            .unwrap();
+        let tip = p.change_tool("long").unwrap();
+        let b = p
+            .push_motion(
+                rapid(2, "long", tip, [10., 5., 40.]),
+                DEFAULT_FRAME_LIMIT,
+                &cancel,
+            )
+            .unwrap();
+        (a, tip, b)
+    };
+    let (short_a, short_tip, short_b) = run("short");
+    let (_, mid_tip, _) = run("mid");
+    assert_eq!((short_tip, mid_tip), ([10., 5., 10.], [10., 5., 30.]));
+    // The same move from the pose measured from the 95 mm tool.
+    let from_mid = rapid(2, "long", mid_tip, [10., 5., 40.]);
+
+    let mut live = StreamReceiver::new(m.clone()).unwrap();
+    live.accept(&short_a, DEFAULT_FRAME_LIMIT).unwrap();
+    let checkpoint = live.checkpoint(DEFAULT_FRAME_LIMIT).unwrap();
+    for restored in [false, true] {
+        let consumer = || {
+            if restored {
+                StreamReceiver::from_checkpoint(m.clone(), &checkpoint, DEFAULT_FRAME_LIMIT)
+                    .unwrap()
+            } else {
+                live.clone()
+            }
+        };
+        // The right tool's pose is taken.
+        consumer().accept(&short_b, DEFAULT_FRAME_LIMIT).unwrap();
+        // The wrong tool's pose is refused, restored or not: a producer
+        // continuing from the same state cannot commit it either.
+        let mut p = if restored {
+            StreamProducer::from_checkpoint(m.clone(), &checkpoint, DEFAULT_FRAME_LIMIT).unwrap()
+        } else {
+            let mut p = StreamProducer::new(m.clone()).unwrap();
+            p.push_motion(
+                rapid(1, "short", [3., 5., 60.], [10., 5., 50.]),
+                DEFAULT_FRAME_LIMIT,
+                &cancel,
+            )
+            .unwrap();
+            p
+        };
+        let error = p
+            .push_motion(from_mid.clone(), DEFAULT_FRAME_LIMIT, &cancel)
+            .unwrap_err();
+        assert!(error.contains("continuity"), "{restored}: {error}");
+        // And it places the change itself from the recorded tool.
+        assert_eq!(p.change_tool("long").unwrap(), short_tip);
+    }
+
+    // A checkpoint without the spindle tool (an older camlib's) still
+    // restores, with the tool unknown: a change in place is then refused,
+    // by the consumer and by a producer, and never guessed.
+    let old = without_spindle_tool(&checkpoint, &m);
+    let mut consumer = StreamReceiver::from_checkpoint(m.clone(), &old, DEFAULT_FRAME_LIMIT).unwrap();
+    assert_eq!(consumer.last_tool(), None);
+    let error = consumer.accept(&short_b, DEFAULT_FRAME_LIMIT).unwrap_err();
+    assert!(
+        error.contains("does not record the tool in the spindle"),
+        "{error}"
+    );
+    let mut p = StreamProducer::from_checkpoint(m.clone(), &old, DEFAULT_FRAME_LIMIT).unwrap();
+    let error = p.change_tool("long").unwrap_err();
+    assert!(
+        error.contains("does not record the tool in the spindle"),
+        "{error}"
+    );
+    // It writes its own checkpoints the same way (the tool stays unknown).
+    assert_eq!(consumer.checkpoint(DEFAULT_FRAME_LIMIT).unwrap(), old);
+    // The same old checkpoint of a run that keeps the tip restores and
+    // continues as before.
+    let mut none = m.clone();
+    none.tool_change = None;
+    let mut p = StreamProducer::new(none.clone()).unwrap();
+    let a = p
+        .push_motion(
+            rapid(1, "short", [3., 5., 60.], [10., 5., 50.]),
+            DEFAULT_FRAME_LIMIT,
+            &cancel,
+        )
+        .unwrap();
+    let b = p
+        .push_motion(
+            rapid(2, "long", [10., 5., 50.], [10., 5., 40.]),
+            DEFAULT_FRAME_LIMIT,
+            &cancel,
+        )
+        .unwrap();
+    let mut r = StreamReceiver::new(none.clone()).unwrap();
+    r.accept(&a, DEFAULT_FRAME_LIMIT).unwrap();
+    let old = without_spindle_tool(&r.checkpoint(DEFAULT_FRAME_LIMIT).unwrap(), &none);
+    let mut r = StreamReceiver::from_checkpoint(none, &old, DEFAULT_FRAME_LIMIT).unwrap();
+    r.accept(&b, DEFAULT_FRAME_LIMIT).unwrap();
 }

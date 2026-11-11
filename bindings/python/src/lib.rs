@@ -261,8 +261,8 @@ fn accept_motion_frames<'py>(
     mut last_tool: Option<String>,
     // A tool-change table instead: each tool's tip after its change.
     tool_change_tips: Option<std::collections::HashMap<String, (f64, f64, f64)>>,
-    // A tool change in place instead: (gauge length per tool, the last tool
-    // is not retained: a restored checkpoint).
+    // A tool change in place instead: (gauge length per tool, the spindle
+    // tool is unknown: restored from a checkpoint that does not record it).
     tool_change_in_place: Option<(std::collections::HashMap<String, f64>, bool)>,
 ) -> PyResult<(usize, Vec<Bound<'py, pyo3::types::PyTuple>>, Option<String>)> {
     let mut items = vec![];
@@ -366,6 +366,17 @@ fn accept_motion_frames<'py>(
             let finish: (f64, f64, f64) = curve.get_item("end")?.extract()?;
             // The first motion with a new tool may start at the declared
             // tool-change pose (as the stream state allows).
+            if start != position
+                && last_tool.as_deref() != Some(tool.as_str())
+                && tool_change_in_place
+                    .as_ref()
+                    .is_some_and(|(_, unknown)| *unknown)
+            {
+                return Err(PyValueError::new_err(format!(
+                    "tool {tool} starts away from the last position: {}",
+                    camlib::stream::UNKNOWN_SPINDLE_TOOL
+                )));
+            }
             let changed = last_tool.as_deref() != Some(tool.as_str())
                 && (tool_change.as_ref().is_some_and(|(z, xy, gauges)| {
                     let (x, y) = xy.unwrap_or((position.0, position.1));
@@ -373,29 +384,29 @@ fn accept_motion_frames<'py>(
                 }) || tool_change_tips
                     .as_ref()
                     .is_some_and(|tips| tips.get(&tool) == Some(&start))
-                    || tool_change_in_place
-                        .as_ref()
-                        .is_some_and(|(gauges, restored)| {
-                            // The spindle stays: the tip moves by the old
-                            // gauge length minus the new (as the stream
-                            // state allows; any declared tool after a
-                            // restore, which does not retain the last one).
-                            let Some(new) = gauges.get(&tool) else {
-                                return false;
-                            };
-                            let from = |old: &f64| {
-                                let p = camlib::stream::in_place_tip(
-                                    [position.0, position.1, position.2],
-                                    *old,
-                                    *new,
-                                );
-                                start == (p[0], p[1], p[2])
-                            };
-                            match &last_tool {
-                                Some(last) => gauges.get(last).is_some_and(from),
-                                None => *restored && gauges.values().any(from),
-                            }
-                        }));
+                    || tool_change_in_place.as_ref().is_some_and(|(gauges, _)| {
+                        // The spindle stays: the tip moves by the old
+                        // gauge length minus the new, measured from
+                        // exactly the tool in the spindle (as the stream
+                        // state allows).
+                        let Some(new) = gauges.get(&tool) else {
+                            return false;
+                        };
+                        let from = |old: &f64| {
+                            let p = camlib::stream::in_place_tip(
+                                [position.0, position.1, position.2],
+                                *old,
+                                *new,
+                            );
+                            start == (p[0], p[1], p[2])
+                        };
+                        match &last_tool {
+                            Some(last) => gauges.get(last).is_some_and(from),
+                            // No tool has moved: the run's first tool
+                            // starts where the run does.
+                            None => false,
+                        }
+                    }));
             if (start != position && !changed) || last_id.is_some_and(|l| identifier <= l) {
                 return Err(PyValueError::new_err(
                     "motion continuity or ID order mismatch",
@@ -1526,6 +1537,11 @@ impl DexelReceiver {
     fn position(&self) -> (f64, f64, f64) {
         let p = self.inner.position();
         (p[0], p[1], p[2])
+    }
+    /// The tool in the spindle at the current position (None: none yet).
+    #[getter]
+    fn last_tool(&self) -> Option<String> {
+        self.inner.last_tool().map(str::to_string)
     }
     fn volume_json(&self) -> PyResult<String> {
         dexel_volume_json(self.stock()?)
