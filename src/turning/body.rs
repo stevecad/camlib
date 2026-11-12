@@ -264,6 +264,7 @@ pub fn iso_insert_body(code: &str) -> Result<(f64, f64), String> {
 /// A convex polygon eroded by `d` (each side moved inward by d): the
 /// intersection of the inward half-planes, by clipping. None when nothing
 /// is left.
+#[cfg(test)]
 fn erode_convex(polygon: &[[f64; 2]], d: f64) -> Option<Vec<[f64; 2]>> {
     erode_convex_by(polygon, &vec![d; polygon.len()])
 }
@@ -513,17 +514,11 @@ pub fn body(tool: &TurningTool) -> Result<Body, String> {
                 angle_of(flank).to_radians().tan()
             })
             .collect();
-        let vertices: Vec<[f64; 3]> = if body.blade_clearance.is_some() {
-            tapered_vertices(polygon, &rate, s).ok_or_else(no_bottom)?
-        } else {
-            let bottom = erode_convex(polygon, s * body.insert_clearance_deg.to_radians().tan())
-                .ok_or_else(no_bottom)?;
-            polygon
-                .iter()
-                .map(|p| [p[0], p[1], 0.])
-                .chain(bottom.iter().map(|p| [p[0], p[1], -s]))
-                .collect()
-        };
+        // Every vertex of the tapering body, those where a side runs out
+        // below the face included (a nose arc does wherever the taper
+        // exceeds its radius): the hull of the face and the bottom alone is
+        // thinner than the body there.
+        let vertices = tapered_vertices(polygon, &rate, s).ok_or_else(no_bottom)?;
         if blade {
             // Each flank: the body's vertices on its planes, with a point
             // inside the body (its vertices' mean) so that a flank seen
@@ -1086,6 +1081,47 @@ mod tests {
         let json = serde_json::to_string(&declared).unwrap();
         assert!(json.contains(r#""blade_clearance":{"front_deg":10.0,"side_deg":[3.0,5.0]}"#));
         assert_eq!(serde_json::from_str::<ToolBody>(&json).unwrap(), declared);
+    }
+
+    /// Where the taper exceeds the nose radius the nose arc runs out below
+    /// the face: at depth rn / tan(clearance) every side has receded by rn,
+    /// so the nose center itself is a point of the body (its flank's cone
+    /// ends there). The hull of the face and the bottom alone passes inside
+    /// it.
+    #[test]
+    fn a_taper_past_the_nose_radius_keeps_the_point_where_the_nose_runs_out() {
+        for (code, clearance) in [("CCMT09T304", 7.), ("VCMT160404", 7.), ("TPGN160304", 11.)] {
+            let (insert, rn) = Insert::iso_code(code, 95.).unwrap();
+            let s = 3.97;
+            let depth = rn / f64::to_radians(clearance).tan();
+            assert!(depth < s);
+            let t = tool(insert, rn, TurnSide::Outer, body(s, clearance, 0., 0., 5.));
+            // In the declared body, by the polygon's sides themselves: no
+            // side nearer than the taper at that depth.
+            let poly = t.shape().unwrap().insert;
+            let n = poly.len();
+            let nearest = (0..n)
+                .filter_map(|i| {
+                    let (a, b) = (poly[i], poly[(i + 1) % n]);
+                    let (ex, ez) = (b[0] - a[0], b[1] - a[1]);
+                    let len = ex.hypot(ez);
+                    (len > 0.).then(|| ((ex * -a[1] - ez * -a[0]) / len).abs())
+                })
+                .fold(f64::INFINITY, f64::min);
+            assert!((nearest - rn).abs() < 1e-9, "{code}: {nearest}");
+            let point = [0., 0., -depth];
+            let (pieces, _) = body_pieces(&t).unwrap();
+            let short = (0..20_000)
+                .map(|k| {
+                    let z = 1. - 2. * (k as f64 + 0.5) / 20_000.;
+                    let a = k as f64 * 2.399963229728653;
+                    let r = (1. - z * z).sqrt();
+                    let dir = [r * a.cos(), r * a.sin(), z];
+                    support(&[point], dir) - support(&pieces[0], dir)
+                })
+                .fold(f64::NEG_INFINITY, f64::max);
+            assert!(short <= 1e-9, "{code}: the body misses it by {short} mm");
+        }
     }
 
     #[test]
