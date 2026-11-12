@@ -445,10 +445,27 @@ narrow a gap the cutter still fits until no entry reaches it; that layer then
 keeps the exact shadow, as it would with `contour_tolerance_mm` 0, and
 `shadow.simplified.reason` says so with the entry refusal it avoided. Holes in that projection smaller than a
 disk of half the cutter's radius are protected too, since the cutter cannot
-enter them (the layer report's `shadow.filled_holes`). A target mesh whose faces
-were tessellated separately leaves such slivers between neighbouring faces; a
-gap that still makes the layer's topology ambiguous is refused with its
-location. `clearing` is one of:
+enter them (the layer report's `shadow.filled_holes`).
+
+A target mesh whose faces were tessellated separately has hairline seams
+between neighbouring faces (their shared edge is subdivided differently on
+each side). A mesh declares how far the part's surface may be from its facets
+(`surface_error_mm`), so two facet edges that should be one may lie up to
+twice that error apart, and a gap that narrow says nothing about the part.
+Every shadow is therefore closed by the mesh's declared error: gaps, channels
+and notches narrower than twice the error are protected, concave corners are
+rounded to the error, and nothing is removed (the closed shadow contains the
+exact one). Its boundary is then simplified at the scale of eight times
+`tolerance_mm`, again only by adding area: shorter edges are absorbed (a seam
+leaves the two faces' vertices a hair apart along the outline), and a concave
+vertex that stands out by less than that is dropped. The layer report's
+`shadow.seam_closing` gives the distance and the area it added. Roughing keeps at least the error clear of the shadow
+anyway, so its cutter positions are the same as from the exact shadow. A
+seam wider than twice the declared error, and any seam of a mesh declaring an
+error of 0 (an exact mesh), still makes the layer's topology ambiguous and is
+refused with its location: export the mesh with shared edge vertices
+(`camlib.cadquery.export_surface_mesh` does), or declare its real error.
+`clearing` is one of:
 
 - `RasterClearing(stepover_mm, routing=None)`: parallel passes;
   `routing="economical"` orders and joins the rows to shorten links,
@@ -705,8 +722,13 @@ itself with `Flat` or a pocket.
 **Refused:** a silhouette whose error exceeds `max_error_mm` (the message
 gives its parts; supply a finer mesh), a depth with nothing at or above it,
 an invalid mesh, and a mesh whose facets' projections touch within the
-construction tolerance without sharing vertices (not watertight), as for
-`Roughing`. `max_error_mm` has no default.
+construction tolerance without sharing vertices (not watertight) across a
+seam wider than twice its declared `surface_error_mm`, as for `Roughing`.
+Narrower seams are closed, as for every shadow (see `Roughing`): channels
+narrower than twice the declared error are part of the silhouette and its
+concave corners are rounded to the error, which the operations' clearance
+(they add the region's `boundary_error_mm`) already covers. `max_error_mm`
+has no default.
 
 ## Drilling: `Drilling`
 

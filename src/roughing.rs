@@ -7,7 +7,7 @@ use crate::{
     motion::{Coolant, Event, Motion, Vec3},
     planar::{
         Boolean, Boundary, Component, ConstructionOptions, FilledHoles, PlanarRegion,
-        PreparedRegion,
+        PreparedRegion, SeamClosing,
     },
     pocket::{
         HelicalEntry, PocketEntry, PocketOperation, PocketPlan, RasterRouting, ResidualStatus,
@@ -40,6 +40,12 @@ pub struct ShadowReport {
     /// (protected): `PreparedRoughingTarget::shadow_for_cutter`.
     pub filled_holes: usize,
     pub filled_hole_area_mm2: f64,
+    /// The projected union closed by the mesh's declared surface error
+    /// (None: an error of 0, or a single facet): seams between facets that
+    /// do not share their edge vertices, which are below that error, are
+    /// bridged instead of making the shadow's topology ambiguous.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seam_closing: Option<SeamClosing>,
     /// The shadow simplified within a tolerance and grown by it (None: the
     /// exact shadow).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -366,6 +372,24 @@ impl PreparedRoughingTarget {
     }
     /// Protect every retained point above the lowest cutter tip, including all
     /// higher geometry. Degenerate projections are enclosed, never discarded.
+    ///
+    /// The projected union is closed by the mesh's declared `surface_error_mm`
+    /// (`planar::close_protectively`), for every consumer (roughing and rest
+    /// roughing layers, the waterline's flat levels, `silhouette_region`). A
+    /// mesh states that the part's surface is within that error of its
+    /// facets, so two facet edges that should be one edge may lie up to twice
+    /// the error apart: a gap between facets narrower than that says nothing
+    /// about the part, and a cutter path through it would be inside the
+    /// error band. The closed shadow contains the exact one, so protection
+    /// only grows; and every consumer that keeps at least the error clear of
+    /// the shadow (roughing does: its cutter region is eroded by the shadow's
+    /// `boundary_error_mm`, which includes it; so do the 2D operations given
+    /// a silhouette, and the waterline's flat levels, whose reach includes
+    /// it) gets the same cutter positions as from the exact shadow. A
+    /// bull-nose waterline band near the tip, whose reach is below the error,
+    /// stays up to that error farther out of a sharp concave corner. An
+    /// error of 0 claims an exact mesh: nothing is closed, and seams are
+    /// refused.
     pub fn shadow(
         &self,
         tip_z_mm: f64,
@@ -515,19 +539,27 @@ impl PreparedRoughingTarget {
         check(cancel)?;
         let unions = usize::from(regions.len() > 1);
         let mut filled = FilledHoles::default();
+        let mut seam_closing = None;
         let mut region = if regions.len() > 1 {
-            let (union, holes) = PreparedRegion::union_linear_filling(&regions, fill_below_mm2)
-                .map_err(|e| {
-                    format!(
-                        "{e}. The target mesh's facets above Z{level} project to boundaries \
-                         that touch within the construction tolerance {} mm. This usually means \
-                         the mesh is not watertight (faces tessellated separately, so neighbouring \
-                         faces do not share their edge vertices): export the target with shared \
-                         edge vertices",
-                        self.tolerance
-                    )
-                })?;
+            let (union, holes, closing) = PreparedRegion::union_linear_filling(
+                &regions,
+                fill_below_mm2,
+                self.mesh.surface_error_mm,
+            )
+            .map_err(|e| {
+                format!(
+                    "{e}. The target mesh's facets above Z{level} project to boundaries \
+                     that touch within the construction tolerance {} mm. This usually means \
+                     the mesh is not watertight (faces tessellated separately, so neighbouring \
+                     faces do not share their edge vertices) and its seams are wider than twice \
+                     its declared surface_error_mm {}, below which they are closed: export the \
+                     target with shared edge vertices, or declare a surface error of at least \
+                     half the widest seam",
+                    self.tolerance, self.mesh.surface_error_mm
+                )
+            })?;
             filled = holes;
+            seam_closing = closing;
             union.region
         } else if let Some(p) = regions.pop() {
             p.definition().clone()
@@ -593,6 +625,7 @@ impl PreparedRoughingTarget {
             enclosed_degenerate_projections: degenerate,
             filled_holes: filled.holes,
             filled_hole_area_mm2: filled.area_mm2,
+            seam_closing,
             simplified,
             projection_enclosure_mm: if degenerate > 0 {
                 32. * self.tolerance * 2f64.sqrt()

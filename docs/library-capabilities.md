@@ -241,6 +241,12 @@ decoded G-code.
 
 - Planar regions from faces (`export_floor_region`), surface meshes from
   solids with a stated error (`export_surface_mesh`), `Roughing.from_solid`.
+  The mesh of a solid is watertight: every facet edge is shared by two
+  facets with identical end points, within a face and across the faces of a
+  CAD edge (nodes on a CAD edge are points of the edge curve, and an edge is
+  bisected in all its facets at once), with no zero-area facet. The stated
+  error covers the distance between the edge curves and each face
+  (`edge_weld_mm` per face in the mesh's `source`).
 - `export_stock_mesh(solid)`: a planar-faced solid (blank, casting envelope) as
   a `StockMesh` for `StockSpec.from_mesh`.
 - `flow_paths(face, ...)`: a face's parameter lines as XY passes for flow

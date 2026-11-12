@@ -159,16 +159,42 @@ class GeodesicCadTest(unittest.TestCase):
         self.assertEqual(material["gouge"]["definite_cells"], 0)
 
     def test_degenerate_tessellation_is_refused(self):
-        # A sphere tessellated with its pole on the surface: the tessellator
+        # A sphere tessellated with its pole on the surface: a tessellator
         # fans slivers there far thinner than the mesh's own accuracy, across
         # which no distance is reliable. Geodesic refuses it, naming the
         # problem, instead of planning on it.
         from camlib.cadquery import export_surface_mesh
         from camlib.simulation import SimulationError
+        from camlib.surface import SurfaceMesh
 
         block = cq.Workplane("XY").box(44, 44, 12, centered=False)
         polar = block.cut(cq.Workplane("XY").sphere(25).translate((22, 22, 28)))
-        surface = export_surface_mesh(polar, max_error_mm=0.05)
+        exported = export_surface_mesh(polar, max_error_mm=0.05)
+
+        def thinnest(triangles):
+            def height(t):
+                u = [b - a for a, b in zip(t[0], t[1])]
+                v = [b - a for a, b in zip(t[0], t[2])]
+                cross = (u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0])
+                return math.hypot(*cross) / max(math.dist(t[i], t[(i + 1) % 3]) for i in range(3))
+
+            return min(map(height, triangles))
+
+        # camlib's own exporter used to make that fan (the pole and two nodes
+        # of one meridian, in line, moved a micron apart to have an area); its
+        # mesh is watertight now and the pole is one vertex (#241), so the fan
+        # is written here: the pole (22, 22, 3) and two points 0.025 and
+        # 0.05 mm down three meridians of the sphere, the second 20 nm aside.
+        limit = exported.surface_error_mm / 1000
+        self.assertGreater(thinnest(exported.triangles), limit)
+
+        def on_sphere(polar, heading):
+            r = 25 * math.sin(polar)
+            return (22 + r * math.cos(heading), 22 + r * math.sin(heading), 28 - 25 * math.cos(polar))
+
+        fan = [((22.0, 22.0, 3.0), on_sphere(0.001, a), on_sphere(0.002, a + 0.0004)) for a in (0.0, 2.1, 4.2)]
+        self.assertLess(thinnest(fan), limit)
+        surface = SurfaceMesh((*exported.triangles, *fan), exported.surface_error_mm, exported.source)
         op = camlib.Geodesic(
             "geodesic",
             BALL,

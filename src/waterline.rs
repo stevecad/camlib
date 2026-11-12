@@ -1349,7 +1349,13 @@ impl WaterlinePlan {
 /// `boundary_error_mm` states beyond the mesh's declared error (already in
 /// `radius`) as well, as `Contour` adds a region's error to its clearance.
 /// Holes of a shadow too small for a disk of half its reach are filled: its
-/// growth by the whole reach closes them anyway.
+/// growth by the whole reach closes them anyway. The shadow is closed by the
+/// mesh's declared error (seams below it are bridged, see
+/// `PreparedRoughingTarget::shadow`): growing by a reach of at least that
+/// error gives the same region as from the exact shadow, and `radius`
+/// includes the error. Only a bull-nose band near the tip, whose reach is
+/// smaller than the error, can stand up to the error farther out of a sharp
+/// concave corner than the exact shadow would put it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn flat_level_loops(
     target: &PreparedRoughingTarget,

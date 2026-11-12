@@ -61,6 +61,7 @@ modules! {
     rust_carvera_post,
     rust_haas_post,
     rust_post,
+    shadow_closing,
     shared_geometry,
     silhouette,
     slot,

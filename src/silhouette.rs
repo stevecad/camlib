@@ -25,6 +25,14 @@
 //! `boundary_error_mm` states how far the intended surface at or above `z_mm`
 //! may lie outside the region. Operations add that error to their clearance
 //! (`Contour` cuts at radius + allowance + error + margin).
+//!
+//! Like every shadow, the silhouette is closed by the mesh's declared surface
+//! error (`PreparedRoughingTarget::shadow`, issue #241): seams between facets
+//! that do not share their edge vertices are bridged when they are narrower
+//! than twice that error, a channel that narrow is part of the silhouette and
+//! a concave corner is rounded to the error. It only grows the region, by
+//! less than the error the operations already keep clear, so their cutter
+//! positions are those of the exact silhouette.
 use crate::{
     planar::{ConstructionOptions, PlanarRegion},
     roughing::PreparedRoughingTarget,
@@ -65,8 +73,9 @@ pub struct Silhouette {
 ///
 /// Refused, never approximated: an invalid mesh or level, no target at or
 /// above `z_mm`, facets whose projections the planar kernel cannot join
-/// unambiguously (a mesh that is not watertight), and a result whose stated
-/// error exceeds `max_error_mm`.
+/// unambiguously (a mesh that is not watertight, with seams wider than twice
+/// its declared error), and a result whose stated error exceeds
+/// `max_error_mm`.
 pub fn silhouette_region(
     mesh: &SurfaceMesh,
     z_mm: f64,
