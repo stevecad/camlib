@@ -19,7 +19,7 @@ class MessageSpacingTest(unittest.TestCase):
             for path in sorted((ROOT / base).rglob("*")):
                 if path.suffix not in (".rs", ".py"):
                     continue
-                for number, line in enumerate(path.read_text().splitlines(), 1):
+                for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
                     # Rust lifetimes ('a) are not string literals.
                     literals = (
                         LITERAL.finditer(line) if path.suffix == ".py" else re.finditer(r'"(?:[^"\\]|\\.)*"', line)
