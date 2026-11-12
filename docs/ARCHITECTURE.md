@@ -148,7 +148,12 @@ can say clear, violation or uncertain honestly.
   material (face grooves). Lathe moves carry their changes computed by the
   turning planner's move kernel (`Planner::emit` for a line, `emit_arc` for
   an XZ arc), which also checks the insert against the part, bore and chuck,
-  and the holder and rapids against the stock. An arc is checked in pieces
+  and the holder and rapids against the stock. During a cutting move every
+  part of the tool but its cutting face is held to the stock as it is at
+  each instant: the stock the move found, less what the face has swept by
+  then, so a part ahead of or beside the face cannot pass through material
+  the same move removes later (`src/turning/rub.rs` states the condition
+  and its closed form for a straight move). An arc is checked in pieces
   (each inside the triangle of its ends and their tangents' corner, within a
   quarter of the tolerance), each against the stock the pieces before it
   leave, and committed as one move. The insert that is checked is its body

@@ -1773,9 +1773,39 @@ roughing setup its allowance.
     material outside the tool's radius (outside turning: a point's radius
     is at least its |x|), and the radial image (z, √(x² + y²)) of their
     vertices against material beyond it (in a bore; the radius is convex, so
-    exact at the vertices and never under-reporting). The insert's body
-    must also reach the stock left by a cut no farther than its cutting
-    face does: a heel rubbing the wall just cut is refused.
+    exact at the vertices and never under-reporting).
+
+    During a cutting move only the insert's cutting face (its nose and
+    edges, on the centre plane) may be where stock is. Every other part of
+    the tool, the insert's body below its face, the holder and the bar,
+    must at every instant of the move be clear of the stock as it is at
+    that instant: the stock the move found, less what the cutting face has
+    swept by then (#220). Material the same move cuts later is still there
+    when another part of the tool arrives first. So a part may be where
+    the move found stock only while it is in the space the face has
+    cleared: where the face is or has been on this move, and from there
+    toward the open side (outward outside; toward the axis in a bore),
+    because turning stock is a radius over z. Everything else must be out
+    of the stock the move found, within `tolerance_mm`. A straight move is
+    decided exactly, in closed form, with nothing sampled along it. On an
+    arc piece and on a threading pass only the space under the face where
+    it is at that instant counts as cleared. Refused, for example:
+    - a heel ahead of or beside its cutting edge (a seat whose rake or
+      inclination swings the body past the insert's clearance): "the
+      insert's body below its cutting face would rub the stock";
+    - a head or bar ahead of or beside the insert, lower than the uncut
+      stock: "the holder would hit stock the cutting edge has not yet cut
+      away", however completely the pass removes that stock afterwards;
+    - a solid boring bar's head away from its cutting edge, where the hole
+      is not yet open.
+
+    Each refusal names the part and the move (`moving to r, z`: the nose
+    center's end) and gives the depth in the stock as the move found it.
+    A bar or shank that follows its insert through what the pass has
+    already cut is admitted. The stock a move finds keeps, per z bin
+    (`cell_mm`), the most material the bin can still hold: where an
+    earlier move ended inside a bin, a part of the tool beside the face
+    there is still checked against that bin's material.
   - The insert's in-plane size tolerance (#113). An insert is not exactly
     its nominal size: its ISO 1832 tolerance class (the code's third
     letter) bounds its inscribed circle d and its corner dimension m, as

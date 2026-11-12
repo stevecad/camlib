@@ -437,7 +437,8 @@ fn proxy(t: &TurningTool) -> ToolAssembly {
     }
 }
 
-fn hull(mut points: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
+/// The convex hull of `points`, counter-clockwise.
+pub(super) fn hull(mut points: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
     points.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
     points.dedup();
     if points.len() < 3 {
@@ -589,9 +590,34 @@ pub(crate) struct ToolGeom {
     solid_bar: Option<[f64; 2]>,
 }
 
-/// How far a flank's images (the one the checks use, and the radial one)
-/// reach into material.
-type FlankMeasure<'a> = dyn Fn(&[Vec<[f64; 2]>], &[Vec<[f64; 2]>]) -> Result<f64, String> + 'a;
+/// How far a flank (its body's vertices, as one piece) reaches into
+/// material (None: it has no image to measure).
+type FlankMeasure<'a> = dyn Fn(&[Vec<[f64; 3]>]) -> Option<f64> + 'a;
+
+/// The convex pieces of the tool's cutting face that are certainly there,
+/// in its frame: what keeps the space it is in, and has swept, clear of
+/// stock (`rub.rs`). The insert's outline; with a size tolerance (#113,
+/// where the outline is the largest insert), what every insert of the
+/// tolerance has: the nose and the two edges at it as far as the least
+/// insert's reach (an ISO-form insert is convex, so it contains their
+/// hull).
+fn cutting_face(tool: &ToolGeom) -> Vec<Vec<[f64; 2]>> {
+    if tool.nominal_body.is_none() {
+        return tool.insert.clone();
+    }
+    // The nose's vertices in the outline: within its circumscribed polygon
+    // (`tool::circumscribed`: steps of at most 2 degrees).
+    let nose = tool.rn / 1f64.to_radians().cos() * (1. + 1e-9) + 1e-12;
+    let points = tool
+        .insert
+        .iter()
+        .flatten()
+        .copied()
+        .filter(|p| p[0].hypot(p[1]) <= nose)
+        .chain(tool.edges.iter().flatten().copied())
+        .collect();
+    vec![hull(points)]
+}
 
 /// The polygon mirrored across the spindle axis.
 fn mirrored(polygon: &[[f64; 2]]) -> Vec<[f64; 2]> {
@@ -899,6 +925,18 @@ impl Planner<'_> {
         };
         let mut after = self.stock.clone();
         let mut touches = false;
+        // What the cutting face keeps clear of stock while it cuts
+        // (`rub.rs`): where it is and has been, and from there toward the
+        // open side (outward outside, toward the axis in a bore).
+        let shields: Vec<super::rub::Shield> = if kind == MoveKind::Rapid {
+            vec![]
+        } else {
+            let open = if tool.inner { [0., -1.] } else { [0., 1.] };
+            cutting_face(tool)
+                .iter()
+                .filter_map(|face| super::rub::Shield::new(face, open, self.guard))
+                .collect()
+        };
         // A solid boring bar's catalogue premises (#114). Its maximum bore
         // depth: the head's front end goes no deeper than that behind the
         // front of the stock that is left.
@@ -1032,17 +1070,7 @@ impl Planner<'_> {
                         if name.starts_with("corner") != corner {
                             continue;
                         }
-                        let piece = std::slice::from_ref(points);
-                        let far = image(piece, true);
-                        let near = if tool.inner {
-                            far.clone()
-                        } else {
-                            image(piece, false)
-                        };
-                        if far[0].len() < 3 || near[0].len() < 3 {
-                            continue;
-                        }
-                        let Ok(reach) = measure(&near, &far) else {
+                        let Some(reach) = measure(std::slice::from_ref(points)) else {
                             continue;
                         };
                         if reach > best + 1e-9 {
@@ -1062,12 +1090,26 @@ impl Planner<'_> {
                     )
                 }
             };
+            // A flank against the part: its image the checks use, and its
+            // radial image.
+            let flank_into_part = |piece: &[Vec<[f64; 3]>]| -> Option<f64> {
+                let far = image(piece, true);
+                let near = if tool.inner {
+                    far.clone()
+                } else {
+                    image(piece, false)
+                };
+                if far[0].len() < 3 || near[0].len() < 3 {
+                    return None;
+                }
+                into_part(&near, &far).ok()
+            };
             let part = into_part(&insert, &insert_rad)?;
             if part > 0. {
                 // Name a flank only when the body, not the cutting face
                 // itself, is what reaches the part.
                 let note = if into_part(&face, &face)? < part - 1e-9 {
-                    flank_note(0., &into_part)
+                    flank_note(0., &flank_into_part)
                 } else {
                     String::new()
                 };
@@ -1115,9 +1157,16 @@ impl Planner<'_> {
                     to[1], to[0]
                 ));
             }
-            // The holder trails the insert through the space the insert
-            // clears ahead of it: check it against the stock after this
-            // step's cut.
+            // The stock this step finds, on the tool's side: what every
+            // part of the tool but its cutting face must be clear of until
+            // the face has swept there (below).
+            let found = (kind != MoveKind::Rapid).then(|| {
+                if tool.inner {
+                    stock_bore(&after)
+                } else {
+                    stock_envelope(&after)
+                }
+            });
             if kind != MoveKind::Rapid {
                 // One nose; a grooving blade sweeps both corner noses and
                 // its flat bottom (at both ends of the move).
@@ -1250,6 +1299,9 @@ impl Planner<'_> {
                     }
                 }
             }
+            // The holder against the stock this step leaves (a rapid: the
+            // stock as it is). Where it is while the step cuts is checked
+            // further down.
             let stock = stock_envelope(&after);
             let open = stock_bore(&after);
             let holder_hit = holder
@@ -1272,34 +1324,6 @@ impl Planner<'_> {
             }
             report.min_holder_clearance_mm =
                 report.min_holder_clearance_mm.min(-holder_hit - self.guard);
-            // The insert's body below its cutting face against the stock
-            // this step leaves (#103): it must reach the stock no farther
-            // than the cutting face itself does (the face's own reach is the
-            // cut, judged by the rules above). Beyond it, the heel rubs the
-            // wall just cut: a too thick or too little cleared insert for
-            // this radius or seat.
-            let reach = |pieces: &[Vec<[f64; 2]>]| {
-                pieces
-                    .iter()
-                    .map(|piece| {
-                        if tool.inner {
-                            outside(&open, piece, self.guard)
-                        } else {
-                            stock.penetration(piece, self.guard)
-                        }
-                    })
-                    .fold(f64::NEG_INFINITY, f64::max)
-            };
-            let (body_reach, face_reach) = (reach(&insert), reach(&face));
-            if kind != MoveKind::Rapid && body_reach > face_reach.max(0.) + self.guard {
-                let note = flank_note(face_reach.max(0.) + self.guard, &|near, _| Ok(reach(near)));
-                return Err(format!(
-                    "{op}: the insert's body below its cutting face would rub the stock ({:.4} mm beyond the cutting face) moving to r {:.3}, z {:.3}; it needs more clearance here (a thinner or more positive insert, or a different seat){note}",
-                    body_reach - face_reach.max(0.),
-                    to[1],
-                    to[0]
-                ));
-            }
             // A solid boring bar's minimum bore (#114), a catalogue premise
             // held besides the geometry above: where its corner cuts, the
             // bore this step leaves (as far as the stock may be open there)
@@ -1322,6 +1346,132 @@ impl Planner<'_> {
                             tool.id, c[0], to[1], to[0]
                         ));
                     }
+                }
+            }
+            // Every part of the tool but its cutting face, at every instant
+            // of the step, against the stock as it is at that instant
+            // (#220; `rub.rs` states the condition and its closed form): a
+            // piece may be where the step found stock only while it is in
+            // the space the face has swept by then (a straight step) or
+            // under the face where it is (an arc piece, a thread). What is
+            // exposed otherwise must be out of the stock the step found:
+            // the heel beside or ahead of the edge, a head leading the
+            // insert, a bar's far side before the cut has opened the bore
+            // there. (The holder's check above, against the stock the step
+            // leaves, stays as it was and gives the report its clearance.)
+            if let Some(found) = &found {
+                let into = |polygon: &[[f64; 2]]| {
+                    if tool.inner {
+                        outside(found, polygon, self.guard)
+                    } else {
+                        found.penetration(polygon, self.guard)
+                    }
+                };
+                // How far a piece (its 3D vertices; `swept`: its image over
+                // the whole step) reaches into the stock the step found
+                // while exposed.
+                let exposed = |piece: &[[f64; 3]], swept: &[[f64; 2]]| -> f64 {
+                    let whole = into(swept);
+                    if whole <= 0. {
+                        return whole;
+                    }
+                    let pose = |c: [f64; 2]| {
+                        piece
+                            .iter()
+                            .map(|p| {
+                                let v = c[1] + p[1];
+                                [c[0] + p[0], if tool.inner { v.hypot(p[2]) } else { v }]
+                            })
+                            .collect::<Vec<_>>()
+                    };
+                    let parts = if let [a, b] = points[..] {
+                        // Outside, and in a bore at one radius, the image
+                        // moves as it is.
+                        let by = [b[0] - a[0], b[1] - a[1]];
+                        let start = hull(pose(a));
+                        let end = if !tool.inner || by[1] == 0. {
+                            start.iter().map(|p| [p[0] + by[0], p[1] + by[1]]).collect()
+                        } else {
+                            hull(pose(b))
+                        };
+                        super::rub::exposed_line(
+                            &start,
+                            &end,
+                            &shields,
+                            a,
+                            by,
+                            // A thread's crests stay where the insert has
+                            // passed.
+                            kind != MoveKind::Thread,
+                        )
+                    } else {
+                        // An arc piece: the piece in the tool's frame at
+                        // any of its poses (a point's image relative to the
+                        // nose is a convex function of the nose's radius:
+                        // highest at one of the step's points), less the
+                        // face, carried along the step.
+                        let local = points
+                            .iter()
+                            .flat_map(|c| pose(*c).into_iter().map(|q| [q[0] - c[0], q[1] - c[1]]))
+                            .collect::<Vec<_>>();
+                        super::rub::exposed_fixed(&local, &shields)
+                            .iter()
+                            .map(|part| carried(part, points))
+                            .collect()
+                    };
+                    parts
+                        .iter()
+                        .map(|part| into(part))
+                        .fold(f64::NEG_INFINITY, f64::max)
+                };
+                let reach = |pieces: &[Vec<[f64; 3]>], swept: &[Vec<[f64; 2]>]| {
+                    pieces
+                        .iter()
+                        .zip(swept)
+                        .map(|(piece, swept)| exposed(piece, swept))
+                        .fold(f64::NEG_INFINITY, f64::max)
+                };
+                let holder_rub = reach(&tool.holder_body, &holder);
+                if holder_rub > 0. {
+                    return Err(format!(
+                        "{op}: the holder would hit stock the cutting edge has not yet cut away ({holder_rub:.4} mm into the stock as this move finds it) moving to r {:.3}, z {:.3}: that part of it is ahead of or beside the insert's cutting face, not behind it; take less per pass, or use a holder that stays behind its insert here",
+                        to[1], to[0]
+                    ));
+                }
+                let body_rub = reach(&tool.insert_body, &insert);
+                if body_rub > 0. {
+                    let flank_rub = |piece: &[Vec<[f64; 3]>]| -> Option<f64> {
+                        let swept = image(piece, tool.inner);
+                        (swept[0].len() >= 3).then(|| exposed(&piece[0], &swept[0]))
+                    };
+                    let note = flank_note(0., &flank_rub);
+                    // With a size tolerance (#113): say so when the insert
+                    // at its nominal size would have cleared.
+                    let size = match &tool.nominal_body {
+                        Some((nominal, [d, m]))
+                            if reach(nominal, &image(nominal, tool.inner)) <= 0. =>
+                        {
+                            format!(
+                                "; at its nominal size the insert clears: this is the reach of the largest insert its size tolerance allows (inscribed circle ±{d} mm, corner dimension m ±{m} mm), relative to its measured nose"
+                            )
+                        }
+                        _ => String::new(),
+                    };
+                    let (what, fix) = if tool.solid_bar.is_some() {
+                        (
+                            "the solid boring bar's head away from its cutting edge",
+                            "a smaller bar, or a larger hole first",
+                        )
+                    } else {
+                        (
+                            "the insert's body below its cutting face",
+                            "a thinner or more positive insert, or a different seat",
+                        )
+                    };
+                    return Err(format!(
+                        "{op}: {what} would rub the stock ({body_rub:.4} mm into stock the cutting edge has not cut away at that moment, measured in the stock as this move finds it) moving to r {:.3}, z {:.3}; it needs more clearance here ({fix}){note}{size}",
+                        to[1], to[0]
+                    ));
                 }
             }
             touches |= insert.iter().any(|piece| {
@@ -6143,6 +6293,272 @@ test_tool("groove_in".into(), Insert::Groove { width_mm: 3.,
         plan(&deep).unwrap();
     }
 
+    // Every part of the tool but its cutting face against the stock as it
+    // is at each instant (#220).
+
+    /// The first cut along -z longer than 10 mm of operation `op`: the
+    /// stock as it finds it (the plan's recorded stock changes up to it)
+    /// and the nose center's ends (z, r), for a job that moves the nose
+    /// center.
+    fn first_pass(j: &TurningJob, op: &str) -> (TurnStock, [f64; 2], [f64; 2]) {
+        assert_eq!(j.controlled_point, ControlledPoint::NoseCenter);
+        let never = std::sync::atomic::AtomicBool::new(false);
+        let mut session = TurnSession::new(j, &never).unwrap();
+        let mut stock = TurnStock::new(j.stock.clone()).unwrap();
+        for (i, o) in j.operations.iter().enumerate() {
+            session
+                .operation(o, j.operations.get(i + 1).map(|o| o.tool()))
+                .unwrap();
+            let events = session.take_events();
+            let deltas = session.take_deltas();
+            let motions = events.iter().filter_map(|e| match e {
+                Event::Motion { motion } => Some(motion),
+                _ => None,
+            });
+            for (m, d) in motions.zip(&deltas) {
+                assert_eq!(m.id, d.motion_id);
+                let (a, b) = (m.curve.start(), m.curve.end());
+                if m.operation == op && m.kind == MoveKind::Cut && a[0] == b[0] && a[2] - b[2] > 10.
+                {
+                    return (stock, [a[2], a[0]], [b[2], b[0]]);
+                }
+                stock.apply_move(&d.changes, &d.rings).unwrap();
+            }
+        }
+        panic!("{op} has no pass");
+    }
+
+    /// Whether (z, radius) is inside material `stock` certainly holds, by
+    /// more than `margin` (its bins' solid bounds).
+    fn in_material(stock: &TurnStock, z: f64, radius: f64, margin: f64) -> bool {
+        let spec = stock.spec();
+        if z <= spec.z_min_mm + margin || z >= spec.z_max_mm - margin {
+            return false;
+        }
+        let c = stock.cells()[((z - spec.z_min_mm) / spec.cell_mm) as usize];
+        radius < c.outer.lower_mm - margin && radius > c.inner.upper_mm + margin
+    }
+
+    /// Roughing a plain r 15 shaft from faced r 20 stock, the passes running
+    /// off the stock's far end (z -45; they end 2 mm before the chuck at
+    /// z -50), the program moving the nose center.
+    fn plain_rough() -> TurningJob {
+        let mut j = job();
+        j.stock.z_max_mm = 0.;
+        j.stock.z_min_mm = -45.;
+        j.part.points = vec![[0., 0., 0.], [15., 0., 0.], [15., -40., 0.]];
+        j.operations
+            .retain(|o| matches!(o, TurnOperation::Rough { .. }));
+        j.controlled_point = ControlledPoint::NoseCenter;
+        j
+    }
+
+    /// The insert's leading extreme along z from its nose center (tool
+    /// frame): nothing of the cutting face is ever ahead of it.
+    fn face_lead(tool: &TurningTool) -> f64 {
+        tool.shape()
+            .unwrap()
+            .insert
+            .iter()
+            .map(|p| p[1])
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    #[test]
+    fn a_head_ahead_of_the_insert_meets_the_stock_its_pass_has_not_cut() {
+        let with = |holder: Holder| {
+            let mut j = plain_rough();
+            j.tools[0].tool.holder = holder;
+            j
+        };
+        // The first pass, from a plan with a head high above the stock.
+        let (stock, from, to) = first_pass(&with(head_ahead(1.5, 6.)), "rough");
+        assert!(from[1] == to[1] && from[0] > 0. && to[0] < -45.);
+        // A head 1.5 mm ahead of the nose center whose underside is 0.2 mm
+        // below the stock's r 20: it runs into the uncut bar ahead of the
+        // insert. The pass leaves every bin it crosses cut (it runs off the
+        // far end), so the stock after the move shows nothing.
+        let above = 20. - from[1] - 0.2;
+        assert!(above > 0.5, "{above}");
+        let low = with(head_ahead(1.5, above));
+        // Independent of the move checks: points of the head's leading
+        // lower corner (on the centre plane, inside the holder's y range)
+        // at instants of the pass. Each is ahead of everything the cutting
+        // face has reached on this pass (the nose's front at -0.8 from its
+        // center), where the stock is as the pass found it: solid to r 20.
+        let lead = face_lead(&low.tools[0].tool);
+        assert!((lead + 0.8).abs() < 1e-3, "{lead}");
+        let mut inside = 0;
+        for k in 1..20 {
+            let z = from[0] + (to[0] - from[0]) * k as f64 / 20.;
+            for (dz, dr) in [(-1.45, 0.03), (-1.2, 0.08), (-0.9, 0.01)] {
+                assert!(dz < lead - 0.05);
+                inside += usize::from(in_material(&stock, z + dz, from[1] + above + dr, 0.05));
+            }
+        }
+        assert!(inside >= 45, "{inside}");
+        let err = plan_err(&low);
+        assert!(
+            err.contains("rough: the holder would hit stock the cutting edge has not yet cut away")
+                && err.contains(&format!("moving to r {:.3}, z {:.3}", to[1], to[0])),
+            "{err}"
+        );
+        // 0.2 mm into the r 20 bar, less the guard.
+        let depth: f64 = err
+            .split_once(" (")
+            .and_then(|(_, rest)| rest.split_once(" mm"))
+            .unwrap()
+            .0
+            .parse()
+            .unwrap();
+        assert!((depth - (0.2 - low.tolerance_mm)).abs() < 1e-3, "{err}");
+        // The same underside behind the insert follows it through the
+        // space the pass has cut: admitted.
+        plan(&with(head_ahead(-1., above))).unwrap();
+    }
+
+    #[test]
+    fn a_heel_ahead_of_the_cutting_edge_rubs_however_deep_the_cut() {
+        // A 3 mm insert with 7 degrees of clearance on a seat with rake:
+        // rake turns the insert about its major edge (through the nose
+        // center), which runs almost radially on this 95 degree tool, so
+        // it moves the body below the edge along z. Positive rake beyond
+        // the clearance puts the heel ahead of the edge, into the shoulder
+        // the edge is about to cut. It reaches no deeper (radially) than
+        // the nose does, which was the old check's measure.
+        let seated = |rake: f64| {
+            let mut j = plain_rough();
+            let body = j.tools[0].tool.body.as_mut().unwrap();
+            body.insert.as_mut().unwrap().rake_deg = rake;
+            j
+        };
+        plan(&seated(0.)).unwrap();
+        plan(&seated(-6.)).unwrap();
+        let (stock, from, to) = first_pass(&seated(0.), "rough");
+        let rubbing = seated(15.);
+        // Independent of the move checks and of the body's pieces: points
+        // of the insert's bottom below its straight major edge, from the
+        // declared values (`InsertBody`: "negative rake tilts the face up
+        // away from the edge (the flank below the edge backs off)"). With
+        // e the edge's direction (5 degrees from +x toward +z), q across
+        // it into the insert, the edge is the line -rn along q; `s` below
+        // it the side has receded s·tan(clearance); the rake γ turns
+        // (q, y) about e: q' = q·cos γ + y·sin γ, y' = -q·sin γ + y·cos γ.
+        let (s, clearance, rake, rn, edge) = (
+            3.,
+            7f64.to_radians(),
+            15f64.to_radians(),
+            0.8,
+            5f64.to_radians(),
+        );
+        let across = -rn + s * clearance.tan();
+        let (q, y) = (
+            across * rake.cos() - s * rake.sin(),
+            -across * rake.sin() - s * rake.cos(),
+        );
+        // The backing off of a negative rake, by the same formula.
+        assert!(across * (-rake).cos() - s * (-rake).sin() > across);
+        let lead = face_lead(&rubbing.tools[0].tool);
+        assert!((lead + rn).abs() < 1e-3, "{lead}");
+        let mut inside = 0;
+        for k in 1..20 {
+            let nose_z = from[0] + (to[0] - from[0]) * k as f64 / 20.;
+            for along in [0.1, 0.3, 0.5] {
+                // Tool frame (x radial, z axial): along·e + q·(-sin, cos).
+                let (x, z) = (
+                    along * edge.cos() - q * edge.sin(),
+                    along * edge.sin() + q * edge.cos(),
+                );
+                // Ahead of everything the face has reached on this pass.
+                assert!(z < lead - 0.2, "{z}");
+                let radius = (from[1] + x).hypot(y);
+                inside += usize::from(in_material(&stock, nose_z + z, radius, 0.05));
+            }
+        }
+        assert!(inside >= 45, "{inside}");
+        let err = plan_err(&rubbing);
+        assert!(
+            err.contains("rough: the insert's body below its cutting face would rub the stock")
+                && err.contains(&format!("moving to r {:.3}, z {:.3}", to[1], to[0])),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_bar_follows_its_insert_through_the_bore_the_pass_opens() {
+        // Rough a Ø16 hole out to Ø21.6 with a bar whose far side is at
+        // r 8.3 on the first pass: outside the hole as the pass finds it,
+        // inside the Ø19 the pass opens ahead of it.
+        let mut j = bore_job();
+        j.bore = Some(TurnProfile {
+            points: vec![[11., 0., 0.], [11., -35., 0.]],
+        });
+        j.operations.truncate(1);
+        j.controlled_point = ControlledPoint::NoseCenter;
+        let (width, top, low, high) = (16.3, 1., -1.5, 1.);
+        rebuild_holder(&mut j.tools.last_mut().unwrap().tool, width, 80., top);
+        let rn = 0.4;
+        // Independent of the move checks: the bar's far edge (its corners
+        // across the centre plane) at instants of every move is in front of
+        // the stock, inside the hole the move found, or - on a pass - behind
+        // the nose inside the bore the nose has opened by then.
+        let never = std::sync::atomic::AtomicBool::new(false);
+        let mut session = TurnSession::new(&j, &never).unwrap();
+        session.operation(&j.operations[0], None).unwrap();
+        let mut stock = TurnStock::new(j.stock.clone()).unwrap();
+        let (mut needed_the_cut, mut samples) = (0, 0);
+        let events = session.take_events();
+        let motions = events.iter().filter_map(|e| match e {
+            Event::Motion { motion } => Some(motion),
+            _ => None,
+        });
+        for (m, d) in motions.zip(session.take_deltas()) {
+            let (a, b) = (m.curve.start(), m.curve.end());
+            let pass = m.kind == MoveKind::Cut && a[0] == b[0] && b[2] < a[2];
+            for k in 0..=50 {
+                let t = k as f64 / 50.;
+                let (r, z) = (a[0] + t * (b[0] - a[0]), a[2] + t * (b[2] - a[2]));
+                for behind in [0., 0.7, 3., 20., 79.] {
+                    for y in [low, 0., high] {
+                        // A boring tool is its drawing mirrored in x.
+                        let radius = (r - top - width).hypot(y);
+                        let at = z + behind;
+                        samples += 1;
+                        let open = at >= 0.
+                            || stock.envelope_at(at).is_none_or(|(bore, _)| radius <= bore);
+                        if !open {
+                            assert!(pass && radius <= r + rn - 0.1, "{m:?} {t} {behind} {y}");
+                            needed_the_cut += 1;
+                        }
+                    }
+                }
+            }
+            stock.apply_move(&d.changes, &d.rings).unwrap();
+        }
+        assert!(needed_the_cut > 100 && samples > 5 * needed_the_cut);
+        // And a bar reaching 1 mm ahead of the nose center, 0.6 mm ahead
+        // of the nose itself, is there before the cut: refused.
+        let tool = &mut j.tools.last_mut().unwrap().tool;
+        tool.holder = Holder {
+            outline: crate::turning::tool::Outline {
+                start_mm: [top, -1.],
+                segments: vec![
+                    crate::turning::tool::Segment::Line {
+                        to_mm: [top + width, -1.],
+                    },
+                    crate::turning::tool::Segment::Line {
+                        to_mm: [top + width, 80.],
+                    },
+                    crate::turning::tool::Segment::Line { to_mm: [top, 80.] },
+                    crate::turning::tool::Segment::Line { to_mm: [top, -1.] },
+                ],
+            },
+            bar: None,
+        };
+        let err = plan_err(&j);
+        assert!(err.contains("the holder would hit"), "{err}");
+    }
+
     /// Tool bodies from supplied models (#110).
     mod model_bodies {
         use super::*;
@@ -6321,10 +6737,21 @@ test_tool("groove_in".into(), Insert::Groove { width_mm: 3.,
             // in-plane direction across it, both about the nose centre.
             // The checks' frame is (u, v) = (z, x).
             let e = [5f64.to_radians().cos(), 5f64.to_radians().sin()];
+            // Across the edge into the insert: toward its centroid (of
+            // its area; the mean of the face polygon's vertices is not
+            // inside this wedge's side of the nose center, its nose arc
+            // having some fifty of them).
             let face = &geometry(tool).insert[0];
-            let middle = face
-                .iter()
-                .fold([0., 0.], |m, p| [m[0] + p[1], m[1] + p[0]]);
+            let middle = (0..face.len()).fold([0., 0.], |m, i| {
+                let (p, n) = (face[i], face[(i + 1) % face.len()]);
+                let w = p[0] * n[1] - n[0] * p[1];
+                [m[0] + w * (p[1] + n[1]), m[1] + w * (p[0] + n[0])]
+            });
+            let area = (0..face.len()).fold(0., |a, i| {
+                let (p, n) = (face[i], face[(i + 1) % face.len()]);
+                a + p[0] * n[1] - n[0] * p[1]
+            });
+            let middle = [middle[0] / area, middle[1] / area];
             let mut q = [-e[1], e[0]];
             if q[0] * middle[0] + q[1] * middle[1] < 0. {
                 q = [-q[0], -q[1]];

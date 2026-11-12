@@ -774,11 +774,20 @@ fn insert_pieces(
         body.edge_deg.to_radians().cos(),
         body.edge_deg.to_radians().sin(),
     ];
-    let centroid = polygon
-        .iter()
-        .fold([0., 0.], |c, p| [c[0] + p[0], c[1] + p[1]]);
+    // Across the edge, into the insert: beyond its major edge (tangent to
+    // the nose) an insert reaches only its nose radius from the nose
+    // center, into itself farther. (Not the side of its vertices' mean: a
+    // circumscribed nose arc has some fifty vertices, which pull the mean
+    // of a wedge with two far corners past the nose center, and the rake
+    // then turned the wrong way.)
+    let reach = |d: [f64; 2]| {
+        polygon
+            .iter()
+            .map(|p| d[0] * p[0] + d[1] * p[1])
+            .fold(f64::NEG_INFINITY, f64::max)
+    };
     let mut q = [-e[1], e[0]];
-    if q[0] * centroid[0] + q[1] * centroid[1] < 0. {
+    if reach([-q[0], -q[1]]) > reach(q) {
         q = [-q[0], -q[1]];
     }
     let lambda = body.inclination_deg.to_radians();
@@ -1650,6 +1659,35 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn rake_turns_a_wedge_the_same_way_whatever_its_nose_radius() {
+        // `InsertBody::rake_deg`: "negative rake tilts the face up away from
+        // the edge (the flank below the edge backs off)". A wedge insert
+        // (`Insert::iso_turning`: a nose and two far corners) on a 95
+        // degree holder, its major edge leading toward -z: with -6 degrees
+        // of rake its far side rises above the centre plane (12 mm from the
+        // edge: 1.25 mm) and the bottom of its straight sides, 3 mm below,
+        // stands 3·sin 6° = 0.31 mm behind the edge's line (z = -rn at the
+        // nose), for a small nose radius as for a large one.
+        for rn in [0.1, 0.4, 0.8, 1.6] {
+            let insert = Insert::iso_turning(80., 95., 12., rn).unwrap();
+            let t = tool(insert, rn, TurnSide::Outer, body(3., 0., -6., 0., 5.));
+            let (pieces, _) = body_pieces(&t).unwrap();
+            let vertices: Vec<[f64; 3]> = pieces.into_iter().flatten().collect();
+            let highest = vertices
+                .iter()
+                .map(|v| v[2])
+                .fold(f64::NEG_INFINITY, f64::max);
+            assert!((1.0..1.5).contains(&highest), "rn {rn}: {highest}");
+            let front = vertices
+                .iter()
+                .filter(|v| v[2] < -2.5)
+                .map(|v| v[1])
+                .fold(f64::INFINITY, f64::min);
+            assert!(front > -rn + 0.25, "rn {rn}: {front}");
+        }
     }
 
     #[test]
