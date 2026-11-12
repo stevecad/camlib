@@ -620,7 +620,61 @@ pub(crate) struct EngagementFrontPlan {
     walls_done: bool,
 }
 
+/// The entry and link options of an engagement_front clearing, as `Roughing`
+/// and `AdaptivePocket` both declare them (see the fields of
+/// `RoughingOperation`). None of them changes a cutting pass: they set
+/// where a descent may be rapid (and so where it comes down), where a helix
+/// starts, and the feed of stay-down links.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct FrontMotionOptions {
+    pub rapid_descent_clearance_mm: Option<f64>,
+    pub ramp_clearance_mm: Option<f64>,
+    pub link_feed_mm_min: Option<f64>,
+    pub link_chip_thinning: bool,
+}
+impl FrontMotionOptions {
+    /// `what` names the operation in messages ("roughing"). `other` is set
+    /// when the operation's strategy is not engagement_front: every option
+    /// is then refused by name, and `other` says what to do about it.
+    pub(crate) fn validate(&self, what: &str, other: Option<&str>) -> Result<(), String> {
+        for (name, value) in [
+            (
+                "rapid_descent_clearance_mm",
+                self.rapid_descent_clearance_mm,
+            ),
+            ("ramp_clearance_mm", self.ramp_clearance_mm),
+            ("link_feed_mm_min", self.link_feed_mm_min),
+        ] {
+            let Some(d) = value else { continue };
+            if let Some(other) = other {
+                return Err(format!(
+                    "{name} applies to engagement_front clearing only{other}"
+                ));
+            }
+            let max = if name == "link_feed_mm_min" { 1e6 } else { 1e3 };
+            if !d.is_finite() || d <= 0. || d > max {
+                return Err(format!("{what} {name} {d} must be positive and finite"));
+            }
+        }
+        if let (true, Some(other)) = (self.link_chip_thinning, other) {
+            return Err(format!(
+                "link_chip_thinning applies to engagement_front clearing only{other}"
+            ));
+        }
+        if self.link_chip_thinning && self.link_feed_mm_min.is_none() {
+            return Err("link_chip_thinning needs link_feed_mm_min: the thinned link feed is capped at the declared link feed".into());
+        }
+        Ok(())
+    }
+}
+
 impl EngagementFrontPlan {
+    /// Validated options (`FrontMotionOptions::validate`).
+    pub(crate) fn with_motion_options(self, options: FrontMotionOptions) -> Self {
+        self.with_rapid_descent(options.rapid_descent_clearance_mm)
+            .with_ramp_clearance(options.ramp_clearance_mm)
+            .with_link_feed(options.link_feed_mm_min, options.link_chip_thinning)
+    }
     pub(crate) fn prepare(
         op: PocketOperation,
         tool: &ToolAssembly,
@@ -699,7 +753,7 @@ impl EngagementFrontPlan {
             walls_done: false,
         })
     }
-    /// See `RoughingOperation::rapid_descent_clearance_mm` (validated there).
+    /// See `RoughingOperation::ramp_clearance_mm` (validated there).
     pub(crate) fn with_ramp_clearance(mut self, clearance: Option<f64>) -> Self {
         self.ramp_clearance = clearance;
         self
@@ -720,6 +774,7 @@ impl EngagementFrontPlan {
         self.wall_pass = on;
         self
     }
+    /// See `RoughingOperation::rapid_descent_clearance_mm` (validated there).
     pub(crate) fn with_rapid_descent(mut self, clearance: Option<f64>) -> Self {
         self.rapid_descent = clearance;
         self

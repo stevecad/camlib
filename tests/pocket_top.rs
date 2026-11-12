@@ -63,6 +63,10 @@ fn operation(top: f64, adaptive: bool) -> Operation {
             max_engagement_deg: 90.,
             boundary_tolerance_mm: 0.01,
             clockwise: true,
+            rapid_descent_clearance_mm: None,
+            ramp_clearance_mm: None,
+            link_feed_mm_min: None,
+            link_chip_thinning: false,
         })
     } else {
         Operation::Pocket(pocket)

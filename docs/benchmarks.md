@@ -18,6 +18,11 @@ optimization issue links here.
 - **Toolpath data** is deterministic for the same inputs:
   - *Cut / rapid mm*: path length of feed moves and of rapids.
   - *Air cut*: feed moves that removed no stock in the simulation (cutting air).
+    Every feed move counts, so this includes the stay-down links of adaptive
+    clearing: moves at depth that take the cutter to its next pass through
+    stock already cut. Those are repositioning, not a pass that missed;
+    results that record engagement (`bench/engagement.py`) show them
+    separately in an engagement table.
   - *Removed*: certain material removed by the operation (simulated stock).
     Tapping and single-point threading show none (and their moves count as air
     cutting): the stock model conservatively keeps thread flanks, the tap being

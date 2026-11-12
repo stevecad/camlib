@@ -48,6 +48,11 @@ def render(data):
         "- **Toolpath data** is deterministic for the same inputs:",
         "  - *Cut / rapid mm*: path length of feed moves and of rapids.",
         "  - *Air cut*: feed moves that removed no stock in the simulation (cutting air).",
+        "    Every feed move counts, so this includes the stay-down links of adaptive",
+        "    clearing: moves at depth that take the cutter to its next pass through",
+        "    stock already cut. Those are repositioning, not a pass that missed;",
+        "    results that record engagement (`bench/engagement.py`) show them",
+        "    separately in an engagement table.",
         "  - *Removed*: certain material removed by the operation (simulated stock).",
         "    Tapping and single-point threading show none (and their moves count as air",
         "    cutting): the stock model conservatively keeps thread flanks, the tap being",
@@ -100,6 +105,7 @@ def render(data):
             f" {o['retracts']} | {o['removed_mm3']:.0f} | {o['cycle_seconds_exact_stop']:.1f} /"
             f" {o['cycle_seconds_tangent']:.1f} | {o['engine_seconds']:.3f} |"
         )
+    lines += _engagement(data)
     lines += [
         "",
         "## Per workload",
@@ -131,6 +137,72 @@ def render(data):
         for name, message in data["failures"].items():
             lines.append(f"- `{name}`: {' '.join(message)}")
     return "\n".join(lines) + "\n"
+
+
+def _share(value):
+    return "–" if value is None else f"{100 * value:.1f}%"
+
+
+def _engagement(data):
+    """The contact-angle table, for results that record it (bench/engagement.py)."""
+    rows = []
+    for w in data["workloads"]:
+        for op_id, o in w["operations"].items():
+            if o.get("engagement"):
+                rows.append((o["issue"], o["toolpath"], w["name"], op_id, o["engagement"]))
+    if not rows:
+        return []
+    method = data.get("engagement_method", {})
+    sample, over, step = (method.get(k, float("nan")) for k in ("sample_deg", "over_deg", "step_per_radius"))
+    lines = [
+        "",
+        "## Engagement of adaptive clearing",
+        "",
+        "Adaptive clearing holds the cutter's *contact angle*: the part of its rim that is",
+        "in material. Each operation declares a limit, acos(1 − w/r) for its radial width",
+        "w, and proves every cutting stroke within it. This table shows how close to that",
+        "limit the cutter actually runs, measured from the streamed moves alone",
+        "(`bench/engagement.py`, which reads no plan and no planner report):",
+        "",
+        "- The contact angle at a point of the path is the part of the leading half of",
+        "  the rim (the 180° ahead of the direction of travel) that lies in material:",
+        "  inside the stock the operation started on, and not within the cutter radius of",
+        "  any earlier move's centre line where that move's tip was at or below this",
+        "  one's. Earlier moves are tested in closed form (lines, arcs, helices), not on",
+        "  a grid; the starting stock is the simulated stock when the operation began.",
+        f"- The rim's leading half is sampled every {sample:g}°, so one contact arc reads within",
+        f"  {sample:g}° of its true angle, without bias. The path is evaluated at steps of {step:g} of",
+        "  the cutter radius, each weighted by its length.",
+        "- *Cutting mm*: horizontal moves of kind `cut` (wall passes included). The",
+        f"  shares are of this length: *over* is more than {over:g}° above the limit, *within",
+        f"  10°* is from 10° under the limit to {over:g}° over it, then 10–20° under, more than",
+        "  20° under, and *nothing*: cutting moves whose rim touches no material.",
+        "- *Links*: stay-down moves at depth between passes, and the share of their",
+        "  length that touches nothing. *Entry feed*: horizontal moves made at the",
+        "  entry feed because their contact is not proven within the limit, with their",
+        "  mean contact angle. Helical entries are not measured (a helix cuts a full",
+        "  slot).",
+        "- The measure goes through the platform's sin/cos/atan2, so the last digit can",
+        "  differ between platforms. `bench/compare.py` lists differences without",
+        "  failing on them.",
+        "",
+        "| Toolpath | Issue | Workload | Limit ° | Cutting mm | Mean ° | Max ° | Over | Within 10° | 10–20° under |"
+        " >20° under | Nothing | Link mm (touching nothing) | Entry feed mm (mean °) |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for issue, toolpath, name, op_id, e in sorted(rows, key=lambda r: (r[0], r[2], r[3])):
+        mean = "–" if e["mean_deg"] is None else f"{e['mean_deg']:.1f}"
+        peak = "–" if e["max_deg"] is None else f"{e['max_deg']:.1f}"
+        entry = f"{e['entry_feed_mm']:.0f}"
+        if e["entry_feed_mean_deg"] is not None:
+            entry += f" ({e['entry_feed_mean_deg']:.1f})"
+        lines.append(
+            f"| {toolpath} | [#{issue}]({ISSUES}/{issue}) | `{name}` ({op_id}) | {e['limit_deg']:.1f} |"
+            f" {e['cut_mm']:.0f} | {mean} | {peak} | {_share(e['over_share'])} | {_share(e['within_10_share'])} |"
+            f" {_share(e['under_10_20_share'])} | {_share(e['under_20_share'])} | {_share(e['none_share'])} |"
+            f" {e['link_mm']:.0f} ({_share(e['link_none_share'])}) | {entry} |"
+        )
+    return lines
 
 
 def _repeats(data):

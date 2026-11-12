@@ -23,8 +23,8 @@ use std::{collections::VecDeque, sync::OnceLock};
 
 mod engagement_front;
 pub(crate) mod parallel;
-pub(crate) use engagement_front::EngagementFrontPlan;
 pub use engagement_front::EngagementFrontReport;
+pub(crate) use engagement_front::{EngagementFrontPlan, FrontMotionOptions};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ShadowReport {
@@ -1242,29 +1242,23 @@ impl RoughingPlan {
             feed_z_mm: op.feed_z_mm,
         };
         template.validate_authoring(tool, prepared_tool.cutter().definition(), initial, r)?;
-        for (name, value) in [
-            ("rapid_descent_clearance_mm", op.rapid_descent_clearance_mm),
-            ("ramp_clearance_mm", op.ramp_clearance_mm),
-            ("link_feed_mm_min", op.link_feed_mm_min),
-        ] {
-            let Some(d) = value else { continue };
-            if !matches!(
+        let front = FrontMotionOptions {
+            rapid_descent_clearance_mm: op.rapid_descent_clearance_mm,
+            ramp_clearance_mm: op.ramp_clearance_mm,
+            link_feed_mm_min: op.link_feed_mm_min,
+            link_chip_thinning: op.link_chip_thinning,
+        };
+        front.validate(
+            "roughing",
+            (!matches!(
                 op.clearing,
                 RoughingClearing::Adaptive {
                     path_strategy: AdaptivePathStrategy::EngagementFront,
                     ..
                 }
-            ) {
-                return Err(format!("{name} applies to engagement_front clearing only"));
-            }
-            let max = if name == "link_feed_mm_min" { 1e6 } else { 1e3 };
-            if !d.is_finite() || d <= 0. || d > max {
-                return Err(format!("roughing {name} {d} must be positive and finite"));
-            }
-        }
-        if op.link_chip_thinning && op.link_feed_mm_min.is_none() {
-            return Err("link_chip_thinning needs link_feed_mm_min: the thinned link feed is capped at the declared link feed".into());
-        }
+            ))
+            .then_some(""),
+        )?;
         match op.clearing {
             RoughingClearing::Offset {
                 coverage_margin_mm, ..
@@ -1323,6 +1317,10 @@ impl RoughingPlan {
                     boundary_tolerance_mm,
                     max_engagement_deg: engagement.unwrap(),
                     clockwise: op.clockwise,
+                    rapid_descent_clearance_mm: None,
+                    ramp_clearance_mm: None,
+                    link_feed_mm_min: None,
+                    link_chip_thinning: false,
                 }
                 .validate_parameters(r)?;
             }
@@ -1510,9 +1508,7 @@ impl RoughingPlan {
                                 cutting_sense.unwrap_or(CuttingSense::Climb) == CuttingSense::Climb,
                                 &cancel,
                             )?
-                            .with_rapid_descent(op.rapid_descent_clearance_mm)
-                            .with_ramp_clearance(op.ramp_clearance_mm)
-                            .with_link_feed(op.link_feed_mm_min, op.link_chip_thinning),
+                            .with_motion_options(front),
                         )),
                         RoughingClearing::Adaptive {
                             path_strategy,
@@ -1533,6 +1529,10 @@ impl RoughingPlan {
                                 boundary_tolerance_mm,
                                 max_engagement_deg: engagement.unwrap(),
                                 clockwise: op.clockwise,
+                                rapid_descent_clearance_mm: None,
+                                ramp_clearance_mm: None,
+                                link_feed_mm_min: None,
+                                link_chip_thinning: false,
                             },
                             tool,
                             &layer_spec,

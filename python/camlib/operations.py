@@ -1566,13 +1566,34 @@ class AdaptivePocket(Pocket):
     Orbit options, max_stay_down_mm and rest_tolerance_mm do not apply; the
     direction is cutting_sense ('climb' by default, or 'conventional').
 
+    engagement_front's entry and link options are the ones Roughing's
+    adaptive clearing has. All are unset by default. The link options change
+    feeds only; the entry options change descents, never a cutting pass:
+
+    - link_feed_mm_min: stay-down links at depth (the returns between passes)
+      feed at this rate wherever the committed stock bounds prove the whole
+      cutter footprint clear of stock; every other link stretch keeps
+      feed_mm_min. None: every link feeds at feed_mm_min.
+    - link_chip_thinning (with link_feed_mm_min): a link stretch that may
+      touch stock feeds faster than feed_mm_min by radial chip thinning, from
+      a proven bound on how close stock lies to its line, capped at
+      link_feed_mm_min.
+    - rapid_descent_clearance_mm: a descent into a column the committed cuts
+      prove clear for the whole tool (a level below one already cut) is rapid
+      down to this far above the proven height, then fed; an entry beside
+      the material it cuts descends a few stock cells back and feeds across at
+      depth. None: rapid descent stops at feed_z_mm.
+    - ramp_clearance_mm: each helical entry starts this far above the
+      material its bore meets (never above feed_z_mm). None: at that material.
+
     path_strategy='disk_front' is the earlier planner: it covers the region
     with orbits of orbit_radius_mm (None: half the cutter radius) whatever the
     stock holds, so its orbits overlap and it cuts far longer. With it,
     clockwise sets the orbit direction; set min_orbit_radius_mm below
     orbit_radius_mm and local_orbit_tolerance_mm (for example .05 mm) to size
     orbits from whole-guide clearance. path_strategy='stock_front' is a
-    development strategy that raises on unresolved steering/coverage.
+    development strategy that raises on unresolved steering/coverage. Both
+    refuse the four options above.
     """
 
     orbit_radius_mm: float | None = None
@@ -1584,6 +1605,11 @@ class AdaptivePocket(Pocket):
 
     path_strategy: str = "engagement_front"
     cutting_sense: str | None = None
+    # engagement_front only (see the class docstring); as on Roughing.
+    rapid_descent_clearance_mm: float | None = None
+    ramp_clearance_mm: float | None = None
+    link_feed_mm_min: float | None = None
+    link_chip_thinning: bool = False
 
     def to_dict(self):
         pocket = {field: getattr(self, field) for field in Pocket.__dataclass_fields__}
@@ -1616,6 +1642,14 @@ class AdaptivePocket(Pocket):
             result["min_orbit_radius_mm"] = self.min_orbit_radius_mm
         if self.local_orbit_tolerance_mm is not None:
             result["local_orbit_tolerance_mm"] = self.local_orbit_tolerance_mm
+        # Written only when set: a job without them is the job it was.
+        for key in ("rapid_descent_clearance_mm", "ramp_clearance_mm", "link_feed_mm_min"):
+            if getattr(self, key) is not None:
+                result[key] = getattr(self, key)
+        if type(self.link_chip_thinning) is not bool:
+            raise ValueError("link_chip_thinning must be a boolean")
+        if self.link_chip_thinning:
+            result["link_chip_thinning"] = True
         return result
 
 

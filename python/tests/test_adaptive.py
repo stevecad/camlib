@@ -449,6 +449,127 @@ class StockFrontDevelopmentTest(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "does not use orbits"):
             run(bad)
 
+    def test_link_and_entry_options_speed_up_links_that_are_clear_of_stock(self):
+        """#211: AdaptivePocket takes the link and entry options of Roughing's adaptive clearing. A link at the
+        link feed changes no stock cell and has no stock under the cutter (the stream's own heights and its
+        stock-contact check, not the planner's report); the path is unchanged; the options are absent from the
+        job unless set; the orbit planner refuses them. (Chip thinning on the pocket: tests/adaptive.rs.)"""
+        import math
+        from dataclasses import replace
+
+        from camlib.simulation import Simulation, Update, VerificationUpdate, curve_length
+        from camlib.verification import StockContactOptions, StreamChecks
+
+        base = example().adaptive_job()
+        op = base["operations"][0]
+        radius, cutting = 2.0, op.feed_mm_min
+        for key in ("link_feed_mm_min", "link_chip_thinning", "rapid_descent_clearance_mm", "ramp_clearance_mm"):
+            self.assertNotIn(key, op.to_dict())
+        full = replace(op, link_feed_mm_min=3000, link_chip_thinning=True, rapid_descent_clearance_mm=0.25)
+        self.assertEqual(
+            {k: full.to_dict()[k] for k in ("link_feed_mm_min", "link_chip_thinning", "rapid_descent_clearance_mm")},
+            dict(link_feed_mm_min=3000, link_chip_thinning=True, rapid_descent_clearance_mm=0.25),
+        )
+
+        def run(**options):
+            config = dict(base, operations=(replace(op, **options),))
+            moves, findings, checked, under = [], [], [], 0
+            with Simulation(**config, verification=StreamChecks(stock_contact=StockContactOptions())) as sim:
+                state = sim.state
+                for u in sim.run_operations():
+                    if isinstance(u, VerificationUpdate) and u.status not in (None, "clear"):
+                        findings.append((u.completed, u.status))
+                    if not isinstance(u, Update):
+                        continue
+                    m = u.motion
+                    moves.append(m)
+                    if m["kind"] != "link" or m["feed_mm_min"] != options.get("link_feed_mm_min"):
+                        continue
+                    # A link at the link feed: no stock cell changed, and every cell wholly under the cutter
+                    # (its centre more than the cell's half diagonal inside the rim) is already down at the
+                    # link's depth.
+                    self.assertEqual(u.changed_count, 0, m)
+                    (x0, y0, z), (x1, y1, _) = m["curve"]["start"], m["curve"]["end"]
+                    length2 = (x1 - x0) ** 2 + (y1 - y0) ** 2
+                    heights, inside = state.heights, radius - math.hypot(state.dx, state.dy) / 2
+                    columns = range(
+                        max(0, int((min(x0, x1) - radius - state.min_mm[0]) / state.dx)),
+                        min(state.nx, int((max(x0, x1) + radius - state.min_mm[0]) / state.dx) + 1),
+                    )
+                    rows = range(
+                        max(0, int((min(y0, y1) - radius - state.min_mm[1]) / state.dy)),
+                        min(state.ny, int((max(y0, y1) + radius - state.min_mm[1]) / state.dy) + 1),
+                    )
+                    for iy in rows:
+                        cy = state.min_mm[1] + (iy + 0.5) * state.dy
+                        for ix in columns:
+                            cx = state.min_mm[0] + (ix + 0.5) * state.dx
+                            t = max(0.0, min(1.0, ((cx - x0) * (x1 - x0) + (cy - y0) * (y1 - y0)) / length2))
+                            if math.hypot(cx - x0 - t * (x1 - x0), cy - y0 - t * (y1 - y0)) <= inside:
+                                self.assertLessEqual(heights[2 * (iy * state.nx + ix) + 1], z + 1e-3, m)
+                                under += 1
+                    checked.append(m["id"])
+                self.assertTrue(sim.state.finished)
+                removed = sim.state.volume()["removed_lower_mm3"]
+            self.assertEqual(findings, [])
+            seconds = sum(curve_length(m["curve"]) / m["feed_mm_min"] * 60 for m in moves if m["feed_mm_min"])
+            self.assertTrue(under > 100 or not checked)
+            return moves, seconds, removed, len(checked)
+
+        def joined(moves):
+            """The path with a link's collinear stretches as one move (a link is emitted one stretch per feed)."""
+            out = []
+            for m in moves:
+                c = m["curve"]
+                if out and m["kind"] == "link" and out[-1][0] == "link" and out[-1][1]["end"] == c["start"]:
+                    a, b, e = out[-1][1]["start"], c["start"], c["end"]
+                    cross = (b[0] - a[0]) * (e[1] - a[1]) - (b[1] - a[1]) * (e[0] - a[0])
+                    if abs(cross) < 1e-9 and (b[0] - a[0]) * (e[0] - b[0]) + (b[1] - a[1]) * (e[1] - b[1]) > 0:
+                        out[-1] = ("link", dict(out[-1][1], end=e))
+                        continue
+                out.append((m["kind"], c))
+            return out
+
+        plain, plain_seconds, plain_removed, _ = run()
+        fast, fast_seconds, fast_removed, checked = run(link_feed_mm_min=3000)
+        self.assertGreater(checked, 5)
+        link_feeds = {m["feed_mm_min"] for m in fast if m["kind"] == "link"}
+        # Links not proven clear keep the cutting feed; nothing else takes the link feed.
+        self.assertEqual(link_feeds, {cutting, 3000})
+        self.assertTrue(all(m["feed_mm_min"] != 3000 for m in fast if m["kind"] != "link"))
+        self.assertTrue(all(m["feed_mm_min"] != 3000 for m in plain))
+        self.assertEqual(joined(plain), joined(fast))
+        self.assertEqual(plain_removed, fast_removed)
+        self.assertLess(fast_seconds, plain_seconds - 1)
+        # Rapid descent: the second level is entered by a rapid into the first (the stock-contact check above
+        # passed on every rapid). The cutting passes are the same; an entry whose descent is moved back from the
+        # material adds a short link at depth.
+        quick, _, quick_removed, _ = run(rapid_descent_clearance_mm=0.25, ramp_clearance_mm=0.5)
+        lowest = lambda moves: min(m["curve"]["end"][2] for m in moves if m["kind"] == "rapid")  # noqa: E731
+        self.assertGreaterEqual(lowest(plain), 10)
+        self.assertLess(lowest(quick), 9.5)
+        curves = lambda moves, kind: [m["curve"] for m in moves if m["kind"] == kind]  # noqa: E731
+        self.assertEqual(curves(quick, "cut"), curves(plain, "cut"))
+        added = [c for c in curves(quick, "link") if c not in curves(plain, "link")]
+        self.assertTrue(all(c in curves(quick, "link") for c in curves(plain, "link")))
+        self.assertTrue(all(math.dist(c["start"], c["end"]) <= radius for c in added), added)
+        plunged = lambda moves: sum(c["start"][2] - c["end"][2] for c in curves(moves, "plunge"))  # noqa: E731
+        self.assertLess(plunged(quick), plunged(plain) / 2)
+        self.assertEqual(quick_removed, plain_removed)
+        # Validation and refusals.
+        with self.assertRaisesRegex(Exception, "link_chip_thinning needs link_feed_mm_min"):
+            run(link_chip_thinning=True)
+        with self.assertRaisesRegex(Exception, "link_feed_mm_min 0 must be positive"):
+            run(link_feed_mm_min=0)
+        for key, value in (
+            ("link_feed_mm_min", 3000),
+            ("link_chip_thinning", True),
+            ("rapid_descent_clearance_mm", 0.5),
+            ("ramp_clearance_mm", 0.5),
+        ):
+            with self.assertRaisesRegex(Exception, f"{key} applies to engagement_front clearing only"):
+                run(path_strategy="disk_front", **{key: value})
+
     def test_roughing_exposes_same_strategy_and_unknown_strategy_is_rejected(self):
         from camlib.operations import AdaptiveClearing
 

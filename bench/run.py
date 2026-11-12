@@ -11,6 +11,9 @@ Toolpath data (deterministic for the same inputs):
   cycle time from camlib.dynamics (exact-stop and tangent junctions, the
   benchmark machine's acceleration); posted G-code blocks; material removed;
   leftover material and over-cut against the workload's target.
+  For stock-following adaptive clearing, the cutter's contact angle along the
+  path and the link length at depth (bench/engagement.py: measured from the
+  streamed moves, independently of the planner).
 Engine performance (wall clock, median of --repeat runs):
   total run time (planning plus streamed simulation), time to the first move,
   each operation's time from its begin to its end in the stream, posting time,
@@ -132,6 +135,26 @@ def _material(workload, state):
     )
 
 
+def _engagement_limits(config):
+    """{operation id: (cutter radius, declared contact-angle limit)} for the
+    operations whose contact angle is measured: flat end mills with a
+    declared engagement limit (stock-following adaptive clearing)."""
+    from engagement import declared_limit_deg
+
+    tools = {t.id: t for t in config.get("tools", ())}
+    limits = {}
+    for op in config.get("operations", ()):
+        tool = tools.get(getattr(getattr(op, "tool", None), "id", getattr(op, "tool", None)))
+        cutter = getattr(tool, "cutter", None)
+        if cutter is None or dict(cutter.shape).get("kind") != "flat":
+            continue
+        radius = cutter.diameter_mm / 2
+        limit = declared_limit_deg(op, radius)
+        if limit is not None:
+            limits[op.id] = (radius, limit)
+    return limits
+
+
 def _run_once(workload):
     """One streamed run: toolpath data, per-operation wall times, final state."""
     from camlib.motion import Program
@@ -144,17 +167,26 @@ def _run_once(workload):
     ops = defaultdict(lambda: defaultdict(float))
     events, op_of = [], {}
     begin_at, removed_at = {}, {}
+    limits = _engagement_limits(config)
+    # What the contact-angle measure needs, kept for after the run: each
+    # measured operation's moves and the stock it started on. Copying that
+    # stock is not engine work, so its time is taken off the clock.
+    replay, paused = {}, 0.0
     start = time.perf_counter()
     first_motion = None
     with Simulation(**config) as sim:
         manifest = sim.state.manifest
         for u in sim.run_operations():
-            now = time.perf_counter() - start
+            now = time.perf_counter() - start - paused
             if isinstance(u, OperationUpdate):
                 events.extend(_typed(e) for e in u.events)
                 if u.stage == "begin":
                     begin_at[u.operation] = now
                     removed_at[u.operation] = sim.state.volume()["removed_lower_mm3"]
+                    if u.operation in limits:
+                        t = time.perf_counter()
+                        replay[u.operation] = (bytes(sim.state.heights.cast("B")), [])
+                        paused += time.perf_counter() - t
                 elif u.stage == "end":
                     o = ops[u.operation]
                     o["engine_seconds"] = now - begin_at[u.operation]
@@ -168,20 +200,52 @@ def _run_once(workload):
                 length = curve_length(m["curve"])
                 o = ops[m["operation"]]
                 o["moves"] += 1
+                if m["operation"] in replay:
+                    replay[m["operation"]][1].append(m)
                 if m["kind"] == "rapid":
                     o["rapid_mm"] += length
                 else:
                     o["cut_mm"] += length
+                    # Every feed move that changed no stock cell, links at
+                    # depth included (they are also counted as link_mm).
                     if not u.changed_count:
                         o["air_cut_mm"] += length
+                    if m["kind"] == "link":
+                        o["link_mm"] += length
                 o["plunges"] += m["kind"] == "plunge"
                 o["retracts"] += m["kind"] in ("retract", "rapid") and m["curve"]["end"][2] > m["curve"]["start"][2]
-        total = time.perf_counter() - start
+        total = time.perf_counter() - start - paused
         state = sim.state.clone()
         volume = sim.state.volume()
+        grid = (state.min_mm[0], state.min_mm[1], state.dx, state.dy, state.nx, state.ny)
     tools = tuple(ToolAssembly.from_dict(t) for t in manifest["tools"])
     program = Program(workload.name, "bench", tools, tuple(manifest["initial_position_mm"]), tuple(events))
-    return dict(total=total, first=first_motion, ops=ops, op_of=op_of, state=state, volume=volume, program=program)
+    return dict(
+        total=total,
+        first=first_motion,
+        ops=ops,
+        op_of=op_of,
+        state=state,
+        volume=volume,
+        program=program,
+        engagement=dict(limits=limits, replay=replay, grid=grid),
+    )
+
+
+def _engagement(run):
+    """{operation id: its engagement record}, and the seconds measuring took
+    (after the run: none of it is engine time)."""
+    import array
+
+    from engagement import summary
+
+    started = time.perf_counter()
+    e = run["engagement"]
+    records = {}
+    for op_id, (heights, motions) in e["replay"].items():
+        radius, limit = e["limits"][op_id]
+        records[op_id] = summary(motions, radius, e["grid"], array.array("d", heights), limit)
+    return records, time.perf_counter() - started
 
 
 def measure(name, repeat):
@@ -219,6 +283,7 @@ def measure(name, repeat):
         post_seconds.append(time.perf_counter() - t)
         blocks = text.count("\n")
 
+    engagement, engagement_seconds = _engagement(run)
     unknown = set(run["ops"]) - set(workload.toolpaths)
     if unknown:
         raise SystemExit(f"{name}: operations {sorted(unknown)} are not mapped to toolpaths")
@@ -234,6 +299,7 @@ def measure(name, repeat):
             cut_mm=round(o["cut_mm"], 3),
             rapid_mm=round(o["rapid_mm"], 3),
             air_cut_mm=round(o["air_cut_mm"], 3),
+            link_mm=round(o["link_mm"], 3),
             plunges=int(o["plunges"]),
             retracts=int(o["retracts"]),
             removed_mm3=round(o["removed_mm3"], 3),
@@ -241,6 +307,8 @@ def measure(name, repeat):
             cycle_seconds_tangent=round(timing["tangent"]["per_op"].get(op_id, 0.0), 3),
             engine_seconds=round(statistics.median(r["ops"][op_id]["engine_seconds"] for r in runs), 4),
         )
+        if op_id in engagement:
+            operations[op_id]["engagement"] = engagement[op_id]
     return dict(
         name=name,
         family=workload.family,
@@ -260,6 +328,9 @@ def measure(name, repeat):
             first_move_seconds=round(statistics.median(r["first"] for r in runs if r["first"] is not None), 4),
             post_seconds=round(statistics.median(post_seconds), 4) if post_seconds else None,
             repeats=repeat,
+            # Time spent on the contact-angle measure, outside every timed
+            # figure above.
+            engagement_measure_seconds=round(engagement_seconds, 3) if engagement else None,
         ),
     )
 
@@ -356,10 +427,17 @@ def main():
         results.append(json.loads(proc.stdout.strip().splitlines()[-1]))
     out = HERE / "results" / f"{args.label}.json"
     out.parent.mkdir(exist_ok=True)
-    out.write_text(
-        json.dumps(dict(label=args.label, environment=_environment(), workloads=results, failures=failures), indent=1)
-        + "\n"
-    )
+    data = dict(label=args.label, environment=_environment(), workloads=results, failures=failures)
+    if any("engagement" in o for w in results for o in w["operations"].values()):
+        import engagement
+
+        # How the contact angles were sampled (bench/engagement.py).
+        data["engagement_method"] = dict(
+            sample_deg=engagement.SAMPLE_DEG,
+            over_deg=engagement.OVER_DEG,
+            step_per_radius=engagement.STEP,
+        )
+    out.write_text(json.dumps(data, indent=1) + "\n")
     print(f"wrote {out} ({len(results)} workloads, {len(failures)} failed)", file=sys.stderr)
     return 1 if failures else 0
 

@@ -274,6 +274,36 @@ no full-width slotting, for hard materials and high-speed toolpaths.
   straight down only through stock the committed cuts prove is gone.
 - `cutting_sense`: `"climb"` (default) or `"conventional"` with a clockwise
   spindle.
+- **Links and entries** take the options `Roughing`'s adaptive clearing has
+  (described with their proofs under
+  [3D roughing](#3d-roughing-roughing-restroughing)). All four are unset by
+  default. The link options change feeds only: the path is the same, move
+  for move. The entry options change how the cutter comes down, never a
+  cutting pass.
+  - `link_feed_mm_min`: between passes the cutter returns at depth across
+    stock it has already cut (a stay-down link). Without this option those
+    links run at `feed_mm_min`. With it, each stretch of a link (at most
+    2 mm) whose whole cutter footprint the committed stock's cell bounds
+    prove clear of stock runs at this feed; a stretch that may touch stock
+    (beside a wall's skin, or entering the next pass) keeps `feed_mm_min`.
+    There is no default: declare the feed your machine should reposition at.
+    On a 50 x 30 x 8 mm pocket (10 mm cutter, 3 mm stepover, 600 mm/min) the
+    links are 705 mm against 1,333 mm of cutting; see
+    [benchmarks](benchmarks.md) for measured cycle times.
+  - `link_chip_thinning` (needs `link_feed_mm_min`): stretches that may touch
+    stock lightly feed between the two rates, by radial chip thinning from a
+    proven bound.
+  - `rapid_descent_clearance_mm`: a level below one already cut is entered
+    by a rapid down to this far above the height the committed cuts prove
+    clear for the whole tool (and above every stock cell bound under it),
+    then the plunge feed. Without it every descent feeds from `feed_z_mm`.
+    An entry beside the material it cuts comes down a few stock cells back
+    from it and feeds across at depth, which adds a short link.
+  - `ramp_clearance_mm`: each helix starts this far above the material it
+    meets, never above `feed_z_mm`.
+  The wall pass is entered by a plunge and its lead-in arc at `feed_mm_min`;
+  it has no stay-down link. `path_strategy="disk_front"` and `"stock_front"`
+  refuse all four by name.
 - Orbit options, `max_stay_down_mm` and `rest_tolerance_mm` do not apply and
   are refused. Corners the cutter cannot reach are left and reported as the
   level's residual area.

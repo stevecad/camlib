@@ -80,6 +80,9 @@ impl PocketFrontPlan {
         if pocket.max_stay_down_mm.is_some() || pocket.rest_tolerance_mm.is_some() {
             return Err("engagement_front links through its own proven-clear moves and plans from the committed stock; leave max_stay_down_mm and rest_tolerance_mm unset".into());
         }
+        // Entry and link options, by Roughing's rules (one validator).
+        let motion = op.front_motion_options();
+        motion.validate(&format!("adaptive pocket {}", pocket.id), None)?;
         let r = tool.prepare()?.cutter().definition().diameter_mm / 2.;
         // The radial width is the operation's stepover: how far each pass
         // steps into the material.
@@ -182,7 +185,12 @@ impl PocketFrontPlan {
             )
             .map_err(|e| format!("adaptive pocket level {level} at Z{z}: {e}"))?
             // A pocket's walls are finished surfaces.
-            .with_wall_pass(true);
+            .with_wall_pass(true)
+            // Each level proves its own rapid descents and fast links from
+            // the stock committed when it plans them, as a roughing layer
+            // does: the level's operation is built the same way (its top the
+            // stock top, or just above the level before it).
+            .with_motion_options(motion);
             layers.push(PocketFrontLayer {
                 tip_z_mm: z,
                 clearing: serde_json::to_value(plan.report()).unwrap(),

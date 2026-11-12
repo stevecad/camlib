@@ -1784,3 +1784,358 @@ fn engagement_front_pocket_clears_the_region_once_within_its_engagement() {
         "{error}"
     );
 }
+
+/// One run of an adaptive pocket on the L fixture: every motion with the
+/// stock's upper-bound volume before and after it, the stock cells as they
+/// were before it, and the nominal time of the feed moves.
+struct FrontRun {
+    motions: Vec<Motion>,
+    removed_mm3: Vec<f64>,
+    before: Vec<Vec<HeightBounds>>,
+    feed_seconds: f64,
+    centres: Vec<[f64; 2]>,
+}
+fn front_run(edit: impl FnOnce(&mut AdaptivePocketOperation)) -> Result<FrontRun, String> {
+    use camlib::operation::OperationPlan;
+    let cancel = AtomicBool::new(false);
+    let m = fixture();
+    let mut op = operation();
+    op.path_strategy = AdaptivePathStrategy::EngagementFront;
+    edit(&mut op);
+    // The wire format round-trips the options.
+    let wire = serde_json::to_value(op).unwrap();
+    let op: AdaptivePocketOperation = serde_json::from_value(wire).map_err(|e| e.to_string())?;
+    let op = Operation::AdaptivePocket(op);
+    let tool = m.tools[0].prepare().unwrap();
+    let mut stock = Stock::new(m.stock.height().unwrap().clone()).unwrap();
+    let mut plan = OperationPlan::prepare_with_stock(
+        op,
+        &m.tools[0],
+        &stock,
+        m.initial_position_mm,
+        1,
+        &cancel,
+    )?;
+    let centres = (0..stock.cells().len())
+        .map(|i| stock.cell_center(i).unwrap())
+        .collect();
+    let mut run = FrontRun {
+        motions: vec![],
+        removed_mm3: vec![],
+        before: vec![],
+        feed_seconds: 0.,
+        centres,
+    };
+    let mut at = m.initial_position_mm;
+    while let Some(motion) = plan.next_motion_with_stock(&stock, &cancel)? {
+        assert!(run.motions.len() < 100_000);
+        let start = motion.curve.start();
+        assert!(
+            (0..3).all(|k| (start[k] - at[k]).abs() < 1e-9),
+            "motion {} starts at {start:?}, tool at {at:?}",
+            motion.id
+        );
+        at = motion.curve.end();
+        if let Some(feed) = motion.feed_mm_min {
+            run.feed_seconds += motion.curve.prepare(1e-5).unwrap().length_mm() / feed * 60.;
+        }
+        let volume = stock.volume().remaining_upper_mm3;
+        run.before.push(stock.cells().to_vec());
+        let delta = stock
+            .preview_sweep(&tool, &motion, 1., m.sweep, &cancel)
+            .unwrap();
+        stock.apply_delta(&delta).unwrap();
+        run.removed_mm3
+            .push(volume - stock.volume().remaining_upper_mm3);
+        run.motions.push(motion);
+    }
+    // `before[i + 1]` is the stock after motion i.
+    run.before.push(stock.cells().to_vec());
+    Ok(run)
+}
+/// Straight links end to end on one line are one move: a link with a link
+/// feed is emitted in stretches, one per feed.
+fn joined(motions: &[Motion]) -> Vec<(MoveKind, Curve)> {
+    let mut out: Vec<(MoveKind, Curve)> = vec![];
+    for m in motions {
+        if m.kind == MoveKind::Link
+            && let Curve::Line { start: b, end: c } = m.curve
+            && let Some((MoveKind::Link, Curve::Line { start: a, end })) = out.last_mut()
+            && *end == b
+        {
+            let cross = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+            let dot = (b[0] - a[0]) * (c[0] - b[0]) + (b[1] - a[1]) * (c[1] - b[1]);
+            if cross.abs() <= 1e-9 * (1. + dist([a[0], a[1]], [c[0], c[1]])) && dot > 0. {
+                *end = c;
+                continue;
+            }
+        }
+        out.push((m.kind, m.curve.clone()));
+    }
+    out
+}
+
+/// #211: AdaptivePocket takes the link feed Roughing's adaptive clearing
+/// has. A stay-down link runs at it only where it meets no stock, checked
+/// here against the stock itself (the heights every earlier move left), not
+/// the planner's report; the path is the one planned without it.
+#[test]
+fn engagement_front_pocket_links_feed_fast_only_clear_of_stock() {
+    let plain = front_run(|_| ()).unwrap();
+    let fast = front_run(|op| op.link_feed_mm_min = Some(3000.)).unwrap();
+    let (r, cutting) = (2., 600.);
+    let (mut fast_mm, mut slow_mm) = (0f64, 0f64);
+    for (i, motion) in fast.motions.iter().enumerate() {
+        if motion.kind != MoveKind::Link {
+            // Only links take the link feed.
+            assert_ne!(motion.feed_mm_min, Some(3000.), "{motion:?}");
+            continue;
+        }
+        let Curve::Line { start, end } = motion.curve else {
+            panic!("a link is a straight move: {motion:?}")
+        };
+        let length = dist([start[0], start[1]], [end[0], end[1]]);
+        if motion.feed_mm_min != Some(3000.) {
+            // Not proven clear: the cutting feed.
+            assert_eq!(motion.feed_mm_min, Some(cutting), "{motion:?}");
+            slow_mm += length;
+            continue;
+        }
+        fast_mm += length;
+        // The stock loses nothing to a fast link: no cell changes.
+        assert_eq!(fast.removed_mm3[i], 0., "fast link {motion:?} cut stock");
+        assert!(
+            fast.before[i] == fast.before[i + 1],
+            "fast link {motion:?} changed the stock"
+        );
+        // Nothing stood in its way. Exactly: every point under the cutter
+        // anywhere along the link was swept, at this depth or lower, by an
+        // earlier feed move (its distance to that move's centre line, in
+        // closed form, is within the cutter radius).
+        let z = start[2];
+        let swept = |p: [f64; 2]| {
+            fast.motions[..i].iter().any(|old| {
+                let (a, b) = (old.curve.start(), old.curve.end());
+                let flat = a[2] == b[2] && !matches!(old.curve, Curve::Helix { .. });
+                let plunge = matches!(old.curve, Curve::Line { .. }) && a[0] == b[0] && a[1] == b[1];
+                !old.kind.is_rapid()
+                    && (flat || plunge)
+                    && a[2].min(b[2]) <= z + 1e-9
+                    && curve_distance(&old.curve, p, false) <= r + 1e-6
+            })
+        };
+        let n = (length / 0.1).ceil() as usize;
+        for k in 0..=n {
+            let t = k as f64 / n as f64;
+            let c = [
+                start[0] + (end[0] - start[0]) * t,
+                start[1] + (end[1] - start[1]) * t,
+            ];
+            for radial in [0., 0.25, 0.5, 0.75, 0.98] {
+                for a in 0..24 {
+                    let a = TAU * a as f64 / 24.;
+                    let p = [c[0] + radial * r * a.cos(), c[1] + radial * r * a.sin()];
+                    assert!(swept(p), "fast link {motion:?} over uncut stock at {p:?}");
+                }
+            }
+        }
+        // And in the stock itself: every cell wholly under the cutter (its
+        // centre more than the 0.4 mm cell's half diagonal inside the rim)
+        // is down at the link's depth.
+        for (cell, c) in fast.before[i].iter().zip(&fast.centres) {
+            if curve_distance(&motion.curve, *c, false) <= r - 0.29 {
+                assert!(
+                    cell.upper_mm <= z + 1e-3,
+                    "fast link {motion:?} over stock {cell:?} at {c:?}"
+                );
+            }
+        }
+    }
+    assert!(fast_mm > 10., "{fast_mm} mm of fast links");
+    // Some link stretches do run beside stock; they stay at the cutting feed.
+    assert!(slow_mm > 0., "no link stretch kept the cutting feed");
+    // The same path: only link feeds (and where a link is split) differ.
+    let (a, b) = (joined(&plain.motions), joined(&fast.motions));
+    assert_eq!(a.len(), b.len());
+    for (a, b) in a.iter().zip(&b) {
+        assert_eq!(a, b);
+    }
+    let others = |run: &FrontRun| -> Vec<(MoveKind, Curve, Option<f64>)> {
+        run.motions
+            .iter()
+            .filter(|m| m.kind != MoveKind::Link)
+            .map(|m| (m.kind, m.curve.clone(), m.feed_mm_min))
+            .collect()
+    };
+    assert!(others(&plain) == others(&fast));
+    assert!(plain.motions.iter().all(|m| m.feed_mm_min != Some(3000.)));
+    // The fast stretches take a fifth of the time (600 against 3000 mm/min).
+    let saved = fast_mm / cutting * 60. * (1. - cutting / 3000.);
+    assert!(
+        (plain.feed_seconds - fast.feed_seconds - saved).abs() < 1e-6 && saved > 1.,
+        "{} s without, {} s with, {fast_mm} mm fast",
+        plain.feed_seconds,
+        fast.feed_seconds
+    );
+    eprintln!(
+        "links: {fast_mm:.1} mm at the link feed, {slow_mm:.1} mm at the cutting feed; feed time {:.1} -> {:.1} s",
+        plain.feed_seconds, fast.feed_seconds
+    );
+
+    // Chip thinning: stretches beside stock run between the two feeds.
+    let thinned = front_run(|op| {
+        op.link_feed_mm_min = Some(3000.);
+        op.link_chip_thinning = true;
+    })
+    .unwrap();
+    assert_eq!(joined(&thinned.motions), joined(&fast.motions));
+    for (i, motion) in thinned.motions.iter().enumerate() {
+        let feed = motion.feed_mm_min;
+        if motion.kind == MoveKind::Link {
+            assert!(feed.is_some_and(|f| (cutting..=3000.).contains(&f)));
+            if feed == Some(3000.) {
+                assert_eq!(thinned.removed_mm3[i], 0.);
+            }
+        }
+    }
+    assert!(thinned.feed_seconds <= fast.feed_seconds);
+}
+
+/// #211: the entry options. With a rapid-descent clearance the second level
+/// is entered by a rapid through the level above it; no rapid touches stock
+/// (the stock's own heights under the whole cutter), and the cutting moves
+/// are the ones planned without the options.
+#[test]
+fn engagement_front_pocket_rapid_descent_stays_clear_of_stock() {
+    let plain = front_run(|_| ()).unwrap();
+    let quick = front_run(|op| {
+        op.rapid_descent_clearance_mm = Some(0.25);
+        op.ramp_clearance_mm = Some(0.5);
+    })
+    .unwrap();
+    let r = 2.;
+    let lowest = |run: &FrontRun| {
+        run.motions
+            .iter()
+            .filter(|m| m.kind == MoveKind::Rapid)
+            .map(|m| m.curve.end()[2])
+            .fold(f64::INFINITY, f64::min)
+    };
+    // Without the option every rapid stops at the feed height above the
+    // stock top (Z10); with it, rapids reach into the first level (floor Z9).
+    assert!(lowest(&plain) >= 10., "{}", lowest(&plain));
+    assert!(lowest(&quick) < 9.5, "{}", lowest(&quick));
+    for (i, motion) in quick.motions.iter().enumerate() {
+        if motion.kind != MoveKind::Rapid {
+            continue;
+        }
+        assert_eq!(quick.removed_mm3[i], 0., "rapid {motion:?} cut stock");
+        let (a, b) = (motion.curve.start(), motion.curve.end());
+        let low = a[2].min(b[2]);
+        let vertical = a[0] == b[0] && a[1] == b[1];
+        for (cell, c) in quick.before[i].iter().zip(&quick.centres) {
+            // Whole cells (0.4 mm): on a descent, every cell whose square
+            // the cutter's disk overlaps; on a traverse, any cell within
+            // half a cell diagonal of the swept disk.
+            let over = if vertical {
+                ((c[0] - a[0]).abs() - 0.2)
+                    .max(0.)
+                    .hypot(((c[1] - a[1]).abs() - 0.2).max(0.))
+                    <= r
+            } else {
+                curve_distance(&motion.curve, *c, false) <= r + 0.29
+            };
+            if over {
+                assert!(
+                    cell.upper_mm <= low,
+                    "rapid {motion:?} reaches stock {cell:?} at {c:?}"
+                );
+            }
+        }
+    }
+    // The plunges that remain are shorter in total.
+    let plunged = |run: &FrontRun| -> f64 {
+        run.motions
+            .iter()
+            .filter(|m| m.kind == MoveKind::Plunge)
+            .map(|m| m.curve.start()[2] - m.curve.end()[2])
+            .sum()
+    };
+    assert!(
+        plunged(&quick) < plunged(&plain),
+        "{} against {}",
+        plunged(&quick),
+        plunged(&plain)
+    );
+    // The cutting passes are the same moves. An entry whose descent is moved
+    // back from the material it cuts adds a short link at depth (less than
+    // the cutter radius); every other link is unchanged.
+    let of = |run: &FrontRun, kind: MoveKind| -> Vec<Curve> {
+        run.motions
+            .iter()
+            .filter(|m| m.kind == kind)
+            .map(|m| m.curve.clone())
+            .collect()
+    };
+    assert_eq!(of(&plain, MoveKind::Cut), of(&quick, MoveKind::Cut));
+    let (before, after) = (of(&plain, MoveKind::Link), of(&quick, MoveKind::Link));
+    assert!(before.iter().all(|c| after.contains(c)));
+    for c in after.iter().filter(|c| !before.contains(c)) {
+        let (a, b) = (c.start(), c.end());
+        assert!(dist([a[0], a[1]], [b[0], b[1]]) <= r, "added link {c:?}");
+    }
+}
+
+/// #211: the options are validated by Roughing's rules, and refused by name
+/// for the orbit planners, which do not link at depth.
+#[test]
+fn adaptive_pocket_front_options_are_validated_and_refused_for_orbits() {
+    type Edit = fn(&mut AdaptivePocketOperation);
+    let orbit: [(&str, Edit); 4] = [
+        ("link_feed_mm_min", |op| op.link_feed_mm_min = Some(3000.)),
+        ("link_chip_thinning", |op| op.link_chip_thinning = true),
+        ("rapid_descent_clearance_mm", |op| {
+            op.rapid_descent_clearance_mm = Some(0.5)
+        }),
+        ("ramp_clearance_mm", |op| op.ramp_clearance_mm = Some(0.5)),
+    ];
+    for (name, edit) in orbit {
+        let error = front_run(|op| {
+            op.path_strategy = AdaptivePathStrategy::DiskFront;
+            edit(op)
+        })
+        .err()
+        .unwrap();
+        assert!(
+            error.contains(name) && error.contains("engagement_front clearing only"),
+            "{name}: {error}"
+        );
+    }
+    let invalid: [(&str, Edit); 5] = [
+        ("link_feed_mm_min", |op| op.link_feed_mm_min = Some(0.)),
+        ("link_feed_mm_min", |op| {
+            op.link_feed_mm_min = Some(2e6)
+        }),
+        ("rapid_descent_clearance_mm", |op| {
+            op.rapid_descent_clearance_mm = Some(-1.)
+        }),
+        ("ramp_clearance_mm", |op| op.ramp_clearance_mm = Some(0.)),
+        ("link_chip_thinning needs link_feed_mm_min", |op| {
+            op.link_chip_thinning = true
+        }),
+    ];
+    for (name, edit) in invalid {
+        let error = front_run(edit).err().unwrap();
+        assert!(error.contains(name), "{name}: {error}");
+    }
+    // Unset, the wire format is what it was: no new keys.
+    let wire = serde_json::to_value(operation()).unwrap();
+    for name in [
+        "link_feed_mm_min",
+        "link_chip_thinning",
+        "rapid_descent_clearance_mm",
+        "ramp_clearance_mm",
+    ] {
+        assert!(wire.get(name).is_none(), "{name} written when unset");
+    }
+}
