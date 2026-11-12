@@ -239,8 +239,9 @@ diameter, or a part whose bottom stands at least `obstruction_top_mm -
 lowest_tip_z_mm` above the tip, clears that move's obstruction.
 
 Plans that are valid but probably wrong raise a `camlib.simulation.CamWarning`
-(for example an operation that produced no cutting motion because the region is
-smaller than the tool, or removed no stock because it lies outside the stock).
+(for example an operation that produced no cutting motion because its region
+is already cleared, or removed no stock because it lies outside the stock). A
+pocket whose cutter fits nowhere in its region is refused, not warned about.
 `warnings.simplefilter("error", CamWarning)` turns them into errors.
 
 ## Stock from a mesh, and back

@@ -1585,16 +1585,16 @@ class AdaptivePocket(Pocket):
     along a straight path (for a pocket too narrow for a helix), and every
     cutting stroke is proven within that
     contact angle against the committed cleared sweeps. Nothing is cut twice.
-    A pocket no entry reaches is refused (#250): where the cutter fits but
-    no helix does, nothing there is clear of material to enter from and the
-    level has cut nothing there (a slot barely wider than the cutter), and
-    so no level makes a motion, the run raises before any motion with the
-    place, the level and the options (a RampEntry, a smaller cutter, an
-    earlier operation that opens a start there). So is a slot that leaves
-    the cutter less play than this planner works in (about 0.19 mm a side
-    with a 4 mm cutter); use a Pocket there. A pocket that cuts part of its
-    region is not refused: an area no entry reaches is left and counted in
-    each level's residual area.
+    An area of the region no entry reaches refuses the pocket (#250), as it
+    does a Pocket: where the cutter fits but no helix does and nothing there
+    is clear of material to enter from (a slot barely wider than the
+    cutter), the run raises when the level starts, before its first motion,
+    with the place, the area's extent and the options (a RampEntry, a
+    smaller cutter, an earlier operation that opens a start there). So does
+    an area that leaves the cutter less play than this planner works in
+    (about 0.19 mm a side with a 4 mm cutter; use a Pocket there), and a
+    region the cutter fits nowhere in. Each level's report counts all the
+    stock left in the region as its residual area.
     Orbit options, max_stay_down_mm and rest_tolerance_mm do not apply; the
     direction is cutting_sense ('climb' by default, or 'conventional').
 
@@ -1625,8 +1625,8 @@ class AdaptivePocket(Pocket):
     orbit_radius_mm and local_orbit_tolerance_mm (for example .05 mm) to size
     orbits from whole-guide clearance. path_strategy='stock_front' is a
     development strategy that raises on unresolved steering/coverage. Both
-    refuse the four options above, and a region no orbit fits in anywhere
-    (cutter radius plus orbit radius) though the cutter does.
+    refuse the four options above, and an area of the region the cutter
+    fits in that no orbit does (cutter radius plus orbit radius).
     """
 
     orbit_radius_mm: float | None = None

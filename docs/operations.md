@@ -123,6 +123,38 @@ Every planned tool-centre path is checked against the original region before
 any motion is emitted: if geometry construction ever went wrong, the operation
 fails instead of cutting into an island or wall.
 
+**What a pocket operation cannot get into is refused** (`Pocket`,
+`RestPocket` and `AdaptivePocket` on every path strategy; #250). A pocket
+operation is asked to clear its region, so it never leaves part of it
+without a word:
+
+- **An area no entry reaches refuses the operation.** That is a part of the
+  region the cutter fits in, with material in it, that the operation's entry
+  cannot bring the cutter down into: no helix of the entry's radii fits
+  (`Pocket`, `RestPocket`; a plunge, `entry=None`, always fits); for
+  `AdaptivePocket` no place in that connected area of tool centres is clear
+  of material to enter from and no helix fits, or the area is tighter than
+  the planner resolves (below); for `disk_front` and `stock_front` no orbit
+  fits. The message names the operation, a tool-centre position in the
+  area, the area's extent, what was tried (the helix or orbit radii and what
+  the area leaves) and the options: another entry (`RampEntry`, a plunge, a
+  smaller helix), a smaller cutter, an earlier operation that opens a start
+  there, or a region without that area.
+- **A region the cutter fits nowhere in refuses the operation**, since it
+  can do nothing it was asked to. (This used to be an empty plan with a
+  `CamWarning`.)
+- `Pocket`, `RestPocket`, `disk_front` and `stock_front` refuse before any
+  motion. `AdaptivePocket`'s default strategy plans from the stock, so it
+  refuses when a level starts, before that level's first motion: for the
+  first level that is before any motion of the operation.
+- **Not refused:** a pocket with nothing left to cut, and the parts of a
+  region the cutter cannot reach from where it does fit (corners, a part
+  narrower than the cutter). Those are left and reported as the residual
+  area (`geometric_residual_area_mm2`).
+
+`Roughing` is different on purpose: see
+[3D roughing](#3d-roughing-roughing-restroughing).
+
 **A top below the remaining stock** (`Pocket` and `AdaptivePocket`, issue
 #129). `top_z_mm` may be below the stock's original top when earlier
 operations removed the material: the depth (and the cutting-length check) is
@@ -367,35 +399,36 @@ no full-width slotting, for hard materials and high-speed toolpaths.
   `entry=RampEntry(angle_deg)` it ramps in along a straight path instead (see
   [Ramp entry](#ramp-entry-rampentry)): the entry for a pocket too narrow for
   a helix.
-- **A pocket no entry reaches is refused** (#250): it does not plan no
-  motion without a word. "No entry reaches" means material where the cutter
-  fits but has no way in: nowhere in that connected area of tool centres is
-  the cutter clear of material (no entry from air or cleared stock), the
-  level has cut nothing there, and no helix fits, as in a slot barely wider
-  than the cutter. When no level of the pocket makes a motion for that
-  reason, the run stops before any motion and no program is written. The
-  message names the operation, the place, the area's extent, the level and
-  the helix radii tried, and the options: `entry=RampEntry(angle_deg)`, a
-  smaller cutter, an earlier operation that opens a start there (the level
-  then enters through the stock it cleared), or a region without that area.
-  - A pocket with nothing left to cut is not an error.
-  - A pocket that cuts part of its region is not refused. An area of it no
-    entry reaches is left, as before, and counted in each level's residual
-    area (`layers[].clearing.geometric_residual_area_mm2`, the material the
-    cutter could reach that the level left), with corners and slivers no
-    pass can take. A material check against the part
-    (`StreamChecks(material=...)`) reports the stock left.
+- **Areas no entry reaches** are refused as for `Pocket` (see
+  [above](#pocket-pocket-restpocket)). Here an area is a connected set of
+  tool centres the planner can use. It has a way in where the cutter's
+  whole disk is clear of material at one of them (an entry from air or from
+  cleared stock, so an earlier operation that opens a start there is one),
+  or where a helix fits at its most open position on material; with neither
+  (a slot barely wider than the cutter) the level is refused when it starts.
+  `entry=RampEntry(angle_deg)` ramps into such an area instead, and is
+  refused by name where no ramp fits.
 - **A slot only a little wider than the cutter** leaves it less play than
   the engagement front plans in: it steers on a grid (a twentieth of the
   cutter radius, or a fifth of the stepover if that is finer) and keeps
   tool centres about 1.9 cells further from the walls than the cutter
-  radius, 0.19 mm with a 4 mm cutter. A pocket that makes no motion because
-  it has stock there and no position the planner can use is refused the
-  same way, with the place and that figure; a `Pocket` follows the walls'
-  exact offset and cuts it. Known limit: where a pocket does cut elsewhere,
-  stock in such an area (or in a channel that tight off a wider part) is
-  left and is not in the level's residual area, which counts only what the
-  planner's positions reach; the material check reports it.
+  radius, 0.19 mm with a 4 mm cutter. An area that tight with stock in it
+  and no position the planner can use is refused the same way, with that
+  figure; a `Pocket` follows the walls' exact offset and cuts it. A channel
+  that tight which opens into a wider part of the region is not such an
+  area: the level's wall pass follows the walls' exact offset into it and
+  cuts it.
+- **The residual area of a level** (`layers[].clearing`) counts all the
+  stock left in the region at that level, from the region and the stock
+  (on the steering grid, with the stock's whole-cell bounds), not from
+  where the planner could stand. `geometric_residual_area_mm2` is the sum
+  of `residual_reachable_area_mm2` (within reach of the planner's
+  positions: slivers too thin to cut), `residual_unresolved_area_mm2` (the
+  cutter reaches it in the region but the planner's positions do not: the
+  skin along the walls before the wall pass, a channel tighter than the
+  planner resolves) and `residual_unreachable_area_mm2` (beyond the
+  cutter's reach: corners, the radial allowance, parts narrower than the
+  cutter).
 - `cutting_sense`: `"climb"` (default) or `"conventional"` with a clockwise
   spindle.
 - **Links and entries** take the options `Roughing`'s adaptive clearing has
@@ -438,11 +471,12 @@ no full-width slotting, for hard materials and high-speed toolpaths.
   `clockwise` sets the orbit direction, `max_engagement_deg` (default 90)
   bounds the total contact, and `min_orbit_radius_mm` with
   `local_orbit_tolerance_mm` sizes each orbit from the clearance around it.
-  An orbit sweeps a disk of the cutter radius plus the orbit radius. A
-  region nowhere that wide, though the cutter itself fits, is refused before
-  any motion with the sweep's size and the options (#250; it used to plan
-  nothing). Where an orbit fits in part of the region, the narrower parts
-  are left and reported as the plan's residual region, as before. The same
+  An orbit sweeps a disk of the cutter radius plus the orbit radius. An
+  area of the region the cutter fits in (a component of its tool-centre
+  region) that is nowhere that wide is an area no entry reaches: the pocket
+  is refused before any motion with the sweep's size and the options (#250;
+  it used to be left). The narrower parts of an area an orbit does fit in
+  are left and reported in the plan's residual region, as before. The same
   holds for `stock_front`.
 - `path_strategy="stock_front"` is a development strategy; it stops with an
   error where its coverage is unresolved.
@@ -525,19 +559,29 @@ location. `clearing` is one of:
     [Ramp entry](#ramp-entry-rampentry)); entries from beside the stock or
     from cleared stock are used first, as with `StockEdgeEntry`. Offset and
     raster clearing refuse a ramp entry.
-  - **Roughing that no entry lets cut anything is refused** (#250), as in
-    [`AdaptivePocket`](#adaptive-pocket-adaptivepocket). An opening of the
-    part the cutter fits in, with stock in it, no place clear of material to
-    enter from, nothing of it cut by the layer and no room for a helix,
-    cannot be entered. When no layer makes a motion for that reason, the
-    run stops before any motion with the place and the options (a
-    `RampEntry`, a smaller cutter, an earlier operation that opens a start
-    there, or `limits` that leave the area out). Roughing that cuts
-    anything is not refused: such an opening is left, as before, and counted
-    in its layers' residual area. Offset and raster clearing fit their
-    entries before any motion and refuse an opening with none (their
-    smallest helix is 0.1 mm in radius). Roughing with nothing left to cut
-    is not an error.
+  - **Areas no entry reaches are listed, not refused** (#250). A roughing
+    layer legitimately has material its cutter cannot enter (a rest pass
+    with a smaller cutter takes it), so `Roughing` does not follow the
+    pocket rule. When a layer starts, each area the cutter fits in that has
+    material and no way in (as defined for
+    [`AdaptivePocket`](#adaptive-pocket-adaptivepocket)) is put in the
+    layer's report, `layers[].clearing.unentered_areas`: `reason`
+    (`no_helix_fits`, `no_helix_allowed`, `tighter_than_planner_resolves`,
+    or `no_orbit_fits` with `stock_front`), `at_mm`, the extent of its tool
+    centres (`min_mm`, `max_mm`), `level_z_mm`, `cutter_radius_mm`,
+    `radii_tried_mm`, `needed_mm` and `available_mm`. Its stock is in the
+    layer's residual area, which counts all the stock left in the layer's
+    region (the three parts described for `AdaptivePocket`). A layer whose
+    region the cutter fits nowhere in says so in its diagnostics, as a
+    pocket plan does, and all its stock is residual.
+  - **Roughing that would make no motion at all** because of such an area
+    is refused, with the first area's place and the options, instead of
+    planning nothing. Roughing with nothing left to cut is not an error.
+  - Offset and raster clearing fit an entry for every area before any
+    motion, with helix radii down to 0.1 mm, and refuse the operation where
+    an area has none (for example with `StockEdgeEntry(helix=None)` and an
+    enclosed area), naming the area, what was tried and the options. They
+    leave no area without an entry, so they list none.
   - `path_strategy="disk_front"` is refused in `Roughing`. It covers a region
     it takes to be solid with small orbits and never reads the stock;
     `Roughing`'s region is the stock grown by a margin, so it orbited through

@@ -1,11 +1,12 @@
-"""Material an operation cannot get into is refused by name (#250).
+"""Material a pocket operation cannot get into is refused by name (#250).
 
 An AdaptivePocket in a slot too narrow for its helix used to plan no motion
 at all, without an error. Checked from the run alone: the refusal names the
 operation, the place, the level, the entry tried and the options; nothing is
 cut before it; and the same slot is cut to its floor (an independent height
 map of the emitted moves, not the engine's stock) with a ramp entry or after
-an earlier operation has opened a start.
+an earlier operation has opened a start. A region the cutter fits nowhere in
+is refused the same way, for Pocket and AdaptivePocket alike.
 """
 
 from dataclasses import replace
@@ -59,9 +60,20 @@ class NoEntryTest(unittest.TestCase):
         # The orbit strategies sweep a disk of radius 3 mm: none fits.
         for strategy in ('disk_front', 'stock_front'):
             error = refused(self, adaptive_job(None, path_strategy=strategy))
-            self.assertIn('adaptive pocket slot: no orbit fits anywhere in the region', error)
-            self.assertIn('though the cutter itself fits', error)
+            self.assertIn('adaptive pocket slot: no orbit fits the area at (', error)
+            self.assertIn('though the cutter fits it', error)
             self.assertIn('path_strategy engagement_front', error)
+
+    def test_a_region_the_cutter_fits_nowhere_in_is_refused(self):
+        # 26 x 3 mm for the 4 mm cutter: no operation can do anything there.
+        narrow = ((3.0, 10.5), (29.0, 13.5))
+        jobs = [(slot_job(None, region=narrow), 'pocket slot')]
+        for strategy in ('engagement_front', 'disk_front', 'stock_front'):
+            jobs.append((adaptive_job(None, region=narrow, path_strategy=strategy), 'adaptive pocket slot'))
+        for job, name in jobs:
+            error = refused(self, job)
+            self.assertIn(f'{name}: the cutter fits nowhere in the region', error)
+            self.assertIn('Use a smaller cutter', error)
 
     def test_the_same_slot_plans_with_a_ramp_or_from_an_opened_start(self):
         # With a ramp entry: cut to the floor.

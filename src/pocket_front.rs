@@ -67,10 +67,6 @@ pub struct PocketFrontPlan {
     generation: Option<u64>,
     spec: StockSpec,
     report: PocketFrontReport,
-    /// Why the first level that made no motion left material it was asked
-    /// to cut (`EngagementFrontPlan::refusal`): the pocket's refusal if no
-    /// level makes a motion (#250).
-    refusal: Option<String>,
 }
 
 impl PocketFrontPlan {
@@ -193,11 +189,24 @@ impl PocketFrontPlan {
             .map_err(|e| format!("adaptive pocket level {level} at Z{z}: {e}"))?
             // A pocket's walls are finished surfaces.
             .with_wall_pass(true)
+            // A pocket is asked to clear its whole region: an area of it
+            // no entry reaches refuses the level, as `Pocket` refuses one
+            // (#250, `crate::entry::UnenteredArea`).
+            .with_unentered_refused(true)
             // Each level proves its own rapid descents and fast links from
             // the stock committed when it plans them, as a roughing layer
             // does: the level's operation is built the same way (its top the
             // stock top, or just above the level before it).
             .with_motion_options(motion);
+            // The cutter fits nowhere in the region: the pocket can do
+            // nothing it was asked to (#250).
+            if !plan.cutter_fits() {
+                return Err(crate::pocket::cutter_fits_nowhere(
+                    &format!("adaptive pocket {}", pocket.id),
+                    r,
+                    pocket.radial_allowance_mm,
+                ));
+            }
             layers.push(PocketFrontLayer {
                 tip_z_mm: z,
                 clearing: serde_json::to_value(plan.report()).unwrap(),
@@ -216,7 +225,6 @@ impl PocketFrontPlan {
             next_id: first_id,
             generation: None,
             spec: spec.clone(),
-            refusal: None,
             report: PocketFrontReport {
                 strategy: "adaptive_pocket",
                 clearing: "engagement_front",
@@ -284,17 +292,6 @@ impl PocketFrontPlan {
         }
         loop {
             let Some(plan) = self.plans.front_mut() else {
-                // A pocket that cut nothing although a level had material
-                // no entry reaches is refused, not planned without a
-                // motion (#250). One that cut part of its region leaves
-                // the rest as each level's reported residual area.
-                if self.report.motions == 0
-                    && let Some(refusal) = &self.refusal
-                {
-                    return Err(format!(
-                        "{refusal}. No level of this pocket has anything else to cut, so it is refused rather than planned without a motion"
-                    ));
-                }
                 return Ok(None);
             };
             if !self.activated {
@@ -329,14 +326,6 @@ impl PocketFrontPlan {
                 self.generation = Some(stock.generation() + 1);
                 self.report.motions += 1;
                 return Ok(Some(m));
-            }
-            if self.refusal.is_none()
-                && let Some(why) = plan.refusal()
-            {
-                self.refusal = Some(format!(
-                    "{why}; adaptive pocket level {layer} at Z{}",
-                    self.report.layers[layer].tip_z_mm
-                ));
             }
             plan.finish_report(cancel)?;
             self.report.layers[layer].clearing = serde_json::to_value(plan.report()).unwrap();

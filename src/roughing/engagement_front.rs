@@ -223,7 +223,30 @@ pub struct EngagementFrontReport {
     pub motions: usize,
     pub stock_top_carried: bool,
     pub geometric_residual_status: ResidualStatus,
+    /// All the stock left in the level's region at this level, by the
+    /// steering grid and the stock's whole-cell bounds: what the level was
+    /// asked to clear and did not, whether or not the planner has a
+    /// position there (#250). It is the sum of the three parts below.
     pub geometric_residual_area_mm2: Option<f64>,
+    /// The part within reach of the planner's own positions: slivers too
+    /// thin to cut, and the areas no entry reaches (`unentered_areas`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub residual_reachable_area_mm2: Option<f64>,
+    /// The part the cutter reaches in the region but the planner's
+    /// positions do not: they keep `grid_clearance` off the walls, so this
+    /// is the skin along the walls (which a pocket's wall pass takes) and
+    /// any area tighter than the planner resolves.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub residual_unresolved_area_mm2: Option<f64>,
+    /// The part beyond the cutter's reach: corners, the radial allowance,
+    /// parts of the region narrower than the cutter.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub residual_unreachable_area_mm2: Option<f64>,
+    /// Areas with material that no entry reaches, found when the level
+    /// starts (`crate::entry::UnenteredArea`). An `AdaptivePocket` is
+    /// refused with the first; a roughing layer lists them here.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unentered_areas: Vec<crate::entry::UnenteredArea>,
     pub diagnostics: Vec<String>,
 }
 
@@ -277,6 +300,10 @@ impl Default for EngagementFrontReport {
             stock_top_carried: false,
             geometric_residual_status: ResidualStatus::Pending,
             geometric_residual_area_mm2: None,
+            residual_reachable_area_mm2: None,
+            residual_unresolved_area_mm2: None,
+            residual_unreachable_area_mm2: None,
+            unentered_areas: vec![],
             diagnostics: vec![],
         }
     }
@@ -288,6 +315,8 @@ struct Layer {
     top: Vec<f64>,
     /// This operation's cleared height per fine cell.
     cleared: Vec<f64>,
+    /// Cell centres inside the level's region.
+    inside: Vec<bool>,
     allowed: Vec<bool>,
     /// Material the cutter can reach from an allowed centre.
     reachable: Vec<bool>,
@@ -660,9 +689,9 @@ pub(crate) struct EngagementFrontPlan {
     area_mm2: Option<(f64, f64)>,
     /// The paths of this level's ramp entries: slots cut to depth.
     ramp_slots: Vec<(Point, Point)>,
-    /// The first enclosed material this level found no entry into while it
-    /// had made no motion (`no_entry`'s message; see `refusal`).
-    unentered: Option<String>,
+    /// Refuse the level when it starts with an area no entry reaches
+    /// (`with_unentered_refused`), instead of listing it in the report.
+    refuse_unentered: bool,
 }
 
 /// The entry and link options of an engagement_front clearing, as `Roughing`
@@ -759,7 +788,7 @@ impl EngagementFrontPlan {
         };
         let z = guides.report().target_z_mm;
         let ramped = entry.ramp().is_some();
-        let report = EngagementFrontReport {
+        let mut report = EngagementFrontReport {
             strategy: "engagement_front",
             target_z_mm: z,
             target_radial_engagement_mm: width,
@@ -778,6 +807,13 @@ impl EngagementFrontPlan {
             },
             ..Default::default()
         };
+        if guides.guide_strokes().is_empty() {
+            // As `PocketPlan` says it: the cutter fits nowhere in this
+            // level's region, and all its stock is the level's residual.
+            report
+                .diagnostics
+                .push("no cutter-center region remains: this level emits no cutting motion".into());
+        }
         Ok(Self {
             guides,
             op,
@@ -807,7 +843,7 @@ impl EngagementFrontPlan {
             walls_done: false,
             area_mm2: None,
             ramp_slots: vec![],
-            unentered: None,
+            refuse_unentered: false,
         })
     }
     /// See `RoughingOperation::ramp_clearance_mm` (validated there).
@@ -889,12 +925,37 @@ impl EngagementFrontPlan {
         if self.report.geometric_residual_status == ResidualStatus::Pending {
             match &self.layer {
                 Some(layer) => {
-                    let c2 = layer.g.c * layer.g.c;
-                    let left = (0..layer.top.len())
-                        .filter(|&k| layer.reachable[k] && layer.material(k))
-                        .count() as f64
-                        * c2;
-                    self.report.geometric_residual_area_mm2 = Some(left);
+                    // Every cell of the region that still holds stock above
+                    // the level, from the region and the stock themselves,
+                    // not from where the planner could stand (#250); split
+                    // by why it is left. A tool centre fits where the room
+                    // to the walls is the cutter radius and the allowance;
+                    // the cutter reaches its radius from there.
+                    let g = layer.g;
+                    let fits: Vec<bool> = (0..layer.top.len())
+                        .map(|k| {
+                            layer.inside[k]
+                                && layer.room[k] as f64 >= self.r + self.op.radial_allowance_mm
+                        })
+                        .collect();
+                    let to_fit = edt(&g, &fits);
+                    let mut left = [0usize; 3];
+                    for k in 0..layer.top.len() {
+                        if !layer.material(k) {
+                            continue;
+                        }
+                        if layer.reachable[k] {
+                            left[0] += 1;
+                        } else if layer.inside[k] {
+                            left[if to_fit[k] <= self.r { 1 } else { 2 }] += 1;
+                        }
+                    }
+                    let area = |cells: usize| cells as f64 * g.c * g.c;
+                    self.report.residual_reachable_area_mm2 = Some(area(left[0]));
+                    self.report.residual_unresolved_area_mm2 = Some(area(left[1]));
+                    self.report.residual_unreachable_area_mm2 = Some(area(left[2]));
+                    self.report.geometric_residual_area_mm2 =
+                        Some(area(left[0] + left[1] + left[2]));
                     self.report.geometric_residual_status = ResidualStatus::Estimated;
                 }
                 None => self.report.geometric_residual_status = ResidualStatus::Unknown,
@@ -1055,6 +1116,7 @@ impl EngagementFrontPlan {
             g,
             top,
             cleared,
+            inside,
             allowed,
             reachable,
             room,
@@ -2818,82 +2880,149 @@ impl EngagementFrontPlan {
         Ok(false)
     }
 
-    /// Why this level, once it has planned all it can and made no motion,
-    /// left material it was asked to cut (#250): material in an area the
-    /// cutter fits in but no entry reaches (`no_entry`), or where the
-    /// planner has no position at all (`unresolved_material`). `None` when
-    /// it made a motion, or when nothing of that kind is left: a level with
-    /// nothing to cut is not refused.
-    ///
-    /// The caller refuses the operation only if none of its levels makes a
-    /// motion: an operation that cuts part of what it was asked leaves the
-    /// rest as it always has, counted in each level's residual area, and
-    /// one that would cut nothing says why instead of planning no motion.
+    /// A pocket operation is asked to clear its whole region: an area of
+    /// it no entry reaches refuses the level when it starts, before any of
+    /// its motions (`crate::entry::UnenteredArea` states the rule). Without
+    /// this (a roughing layer) such areas are listed in the report.
+    pub(crate) fn with_unentered_refused(mut self, on: bool) -> Self {
+        self.refuse_unentered = on;
+        self
+    }
+    /// Whether the cutter fits anywhere in the level's region (the exact
+    /// cutter-centre region of the guide plan).
+    pub(crate) fn cutter_fits(&self) -> bool {
+        self.guides.report().center_components > 0
+    }
+    /// For an operation that lists unentered areas: why this level, having
+    /// made no motion, left material it was asked to cut. The caller
+    /// refuses the operation only if none of its levels makes a motion.
     pub(crate) fn refusal(&self) -> Option<String> {
         if self.report.motions > 0 {
             return None;
         }
-        if self.unentered.is_some() {
-            return self.unentered.clone();
+        Some(self.report.unentered_areas.first()?.message(&self.op.id))
+    }
+    /// At the start of the level: list the areas no entry reaches, and
+    /// refuse with the first where the operation asks for that.
+    fn note_unentered(&mut self) -> Result<(), String> {
+        self.report.unentered_areas = self.unentered_areas();
+        match self.report.unentered_areas.first() {
+            Some(area) if self.refuse_unentered => Err(area.message(&self.op.id)),
+            _ => Ok(()),
         }
-        let p = self.unresolved_material()?;
-        let c = self.layer.as_ref()?.g.c;
-        Some(format!(
-            "engagement_front: {} has material at ({:.3}, {:.3}) for the level at Z{}, where the cutter of radius {} mm fits the region but with less play to its walls than this planner works in (it needs {:.3} mm on each side at this cutter and width), so it has no way into that area. Use a Pocket there (its passes follow the walls' exact offset; entry=RampEntry(angle_deg), a helix or a plunge), a smaller cutter, or keep the tool out of that area (the region, or the operation's limits)",
-            self.op.id,
-            p[0],
-            p[1],
-            self.z,
-            self.r,
-            self.grid_clearance(c) - self.r - self.op.radial_allowance_mm
-        ))
     }
 
-    /// Per grid cell: a cutter position (an allowed centre) in a connected
-    /// set of them the level has a way into without boring. One of them has
-    /// the cutter's whole disk clear of material, which is where an entry
-    /// from air or cleared stock starts (`refresh` finds its starts by the
-    /// same test), or this level has already cut there.
-    fn entered(&self) -> Vec<bool> {
+    /// The areas of this level with material that no entry reaches (#250),
+    /// from the layer as it stands (called when the level starts).
+    ///
+    /// Enclosed material no helix fits in. An area is a connected set of
+    /// cutter positions (allowed centres). It has an entry from air or
+    /// cleared stock where one of them has the cutter's whole disk clear of
+    /// material (`refresh` finds its starts by the same test), and
+    /// otherwise a helix at its most open position on material, by
+    /// `helix_pass`'s own fit. With neither, nothing brings the cutter
+    /// down there. (A `RampEntry` is planned and refused by `ramp_pass`.)
+    ///
+    /// Material where the planner has no position at all: see
+    /// `unresolved_areas`.
+    ///
+    /// Established practice: adaptive clearing enters a pocket by a helix
+    /// no smaller than the tool allows, by a ramp, or through an opening
+    /// made first (Autodesk Fusion, 2D Adaptive Clearing reference,
+    /// help.autodesk.com/cloudhelp/ENU/Fusion-CAM/files/
+    /// GUIDA73542E9-ED9C-4BD9-A87D-3A0ECA8BEB41.htm: "Ramp Type: Specifies
+    /// how the cutter moves down for each depth cut"; "Minimum Ramp
+    /// Diameter: The smallest Helix Ramp Diameter that is acceptable. ...
+    /// Smaller diameters can reduce the chip evacuation, create jerking
+    /// machine motion and can cause tool breakage"; "Predrill Positions:
+    /// Select points where holes have been drilled to provide clearance
+    /// for the cutter to enter the material"). Where none of them is
+    /// possible that area cannot be cut as asked, and leaving it without a
+    /// word would be a silent fallback.
+    fn unentered_areas(&self) -> Vec<crate::entry::UnenteredArea> {
+        let mut found = self.unresolved_areas();
+        let Some(helix) = self.entry.helix() else {
+            return found;
+        };
         let layer = self.layer.as_ref().unwrap();
         let g = layer.g;
         let n = g.nx * g.ny;
+        let need = self.grid_clearance(g.c);
         let material: Vec<bool> = (0..n).map(|k| layer.material(k)).collect();
         let clear = edt(&g, &material);
-        let mut entered = vec![false; n];
-        let mut open: Vec<usize> = (0..n)
-            .filter(|&k| {
-                layer.allowed[k] && (clear[k] > self.r + g.c || layer.cleared[k] <= layer.z)
-            })
-            .collect();
-        for &k in &open {
-            entered[k] = true;
-        }
-        while let Some(k) = open.pop() {
-            g.for_neighbours(k, |m| {
-                if layer.allowed[m] && !entered[m] {
-                    entered[m] = true;
-                    open.push(m);
+        let radii = helix.radii(self.r, self.r / 2., 0.);
+        let mut seen = vec![false; n];
+        let mut open = vec![];
+        for start in 0..n {
+            if !layer.allowed[start] || seen[start] {
+                continue;
+            }
+            // One area: whether it has a way in, its most open position on
+            // material, and its extent.
+            let mut way_in = false;
+            let mut best: Option<(f64, usize)> = None;
+            let (mut low, mut high) = (g.center(start), g.center(start));
+            seen[start] = true;
+            open.push(start);
+            while let Some(k) = open.pop() {
+                let p = g.center(k);
+                low = [low[0].min(p[0]), low[1].min(p[1])];
+                high = [high[0].max(p[0]), high[1].max(p[1])];
+                way_in |= clear[k] > self.r + g.c || layer.cleared[k] <= layer.z;
+                if material[k] {
+                    let room = layer.room[k] as f64 - need;
+                    if best.is_none_or(|(b, _)| room > b) {
+                        best = Some((room, k));
+                    }
                 }
+                g.for_neighbours(k, |m| {
+                    if layer.allowed[m] && !seen[m] {
+                        seen[m] = true;
+                        open.push(m);
+                    }
+                });
+            }
+            let Some((room, k)) = best else { continue };
+            if way_in || radii.iter().any(|&h| h <= room - g.c && h > 4. * g.c) {
+                continue;
+            }
+            found.push(crate::entry::UnenteredArea {
+                reason: if self.entry.policy() == EntryPolicy::StockEdge {
+                    "no_helix_allowed"
+                } else {
+                    "no_helix_fits"
+                },
+                at_mm: g.center(k),
+                min_mm: low,
+                max_mm: high,
+                level_z_mm: self.z,
+                cutter_radius_mm: self.r,
+                radii_tried_mm: radii.clone(),
+                needed_mm: 4. * g.c,
+                available_mm: Some(room - g.c),
             });
         }
-        entered
+        found
     }
 
-    /// A place with material where the cutter fits the region exactly but
+    /// Areas with material where the cutter fits the region exactly but
     /// this planner has no position at all (#250): the region leaves the
     /// cutter less play there than the steering grid resolves
     /// (`grid_clearance`), as in a slot a few tenths wider than the cutter.
     ///
-    /// The point returned is on a guide stroke: a cutter-centre path of the
-    /// exact region (`PocketPlan`'s, each proven to keep the cutter off the
-    /// walls). There is material at it that no allowed centre reaches, and
-    /// the area of near-fitting centres around it holds no allowed centre:
-    /// it is not a corner or a neck of an area the planner does work in
-    /// (what it leaves there is beside its cuts), but an area it cannot
-    /// work in at all.
-    fn unresolved_material(&self) -> Option<Point> {
-        let layer = self.layer.as_ref()?;
+    /// Each is found from a point of a guide stroke: a cutter-centre path
+    /// of the exact region (`PocketPlan`'s, each proven to keep the cutter
+    /// off the walls). There is material at it that no allowed centre
+    /// reaches, and the area of near-fitting centres around it holds no
+    /// allowed centre: it is not a corner or a neck of an area the planner
+    /// does work in (what it leaves there is beside its cuts, and counted
+    /// in `residual_unresolved_area_mm2`), but an area it cannot work in
+    /// at all.
+    fn unresolved_areas(&self) -> Vec<crate::entry::UnenteredArea> {
+        let mut found = vec![];
+        let Some(layer) = self.layer.as_ref() else {
+            return found;
+        };
         let g = layer.g;
         // Centres the cutter fits at, to within the grid's resolution.
         let fits = self.r + self.op.radial_allowance_mm - 2. * g.c;
@@ -2916,92 +3045,50 @@ impl EngagementFrontPlan {
                 };
                 let Some((ci, cj)) = g.cell(p) else { continue };
                 let k = g.idx(ci, cj);
-                if !layer.material(k) || layer.reachable[k] {
+                if !layer.material(k) || layer.reachable[k] || area[k] != 0 {
                     continue;
                 }
-                if area[k] == 0 {
-                    let mut seen = vec![k];
-                    let mut open = vec![k];
-                    let mut found = false;
-                    area[k] = 2;
-                    while let Some(k) = open.pop()
-                        && !found
-                    {
-                        g.for_neighbours(k, |m| {
-                            if area[m] == 1 || layer.allowed[m] {
-                                found = true;
-                            } else if area[m] == 0 && layer.room[m] as f64 >= fits {
-                                area[m] = 2;
-                                seen.push(m);
-                                open.push(m);
-                            }
-                        });
-                    }
-                    if found {
-                        for m in seen {
-                            area[m] = 1;
+                let mut seen = vec![k];
+                let mut open = vec![k];
+                let mut resolved = false;
+                area[k] = 2;
+                while let Some(k) = open.pop() {
+                    g.for_neighbours(k, |m| {
+                        if area[m] == 1 || layer.allowed[m] {
+                            resolved = true;
+                        } else if area[m] == 0 && layer.room[m] as f64 >= fits {
+                            area[m] = 2;
+                            seen.push(m);
+                            open.push(m);
                         }
+                    });
+                }
+                if resolved {
+                    for m in seen {
+                        area[m] = 1;
                     }
+                    continue;
                 }
-                if area[k] == 2 {
-                    return Some(p);
+                let (mut low, mut high) = (p, p);
+                for m in seen {
+                    let q = g.center(m);
+                    low = [low[0].min(q[0]), low[1].min(q[1])];
+                    high = [high[0].max(q[0]), high[1].max(q[1])];
                 }
+                found.push(crate::entry::UnenteredArea {
+                    reason: "tighter_than_planner_resolves",
+                    at_mm: p,
+                    min_mm: low,
+                    max_mm: high,
+                    level_z_mm: self.z,
+                    cutter_radius_mm: self.r,
+                    radii_tried_mm: vec![],
+                    needed_mm: self.grid_clearance(g.c) - self.r - self.op.radial_allowance_mm,
+                    available_mm: None,
+                });
             }
         }
-        None
-    }
-
-    /// The refusal of enclosed material no entry reaches (#250): cell `k`
-    /// is the most open cutter position on material in an area `entered`
-    /// does not hold, and no helix of `radii` fits in the `play` it has.
-    ///
-    /// Established practice: adaptive clearing enters a pocket by a helix
-    /// no smaller than the tool allows, by a ramp, or through an opening
-    /// made first (Autodesk Fusion, 2D Adaptive Clearing reference,
-    /// help.autodesk.com/cloudhelp/ENU/Fusion-CAM/files/
-    /// GUIDA73542E9-ED9C-4BD9-A87D-3A0ECA8BEB41.htm: "Ramp Type: Specifies
-    /// how the cutter moves down for each depth cut"; "Minimum Ramp
-    /// Diameter: The smallest Helix Ramp Diameter that is acceptable. ...
-    /// Smaller diameters can reduce the chip evacuation, create jerking
-    /// machine motion and can cause tool breakage"; "Predrill Positions:
-    /// Select points where holes have been drilled to provide clearance
-    /// for the cutter to enter the material"). Where none of them is
-    /// possible that area cannot be cut as asked. An operation that then
-    /// cuts nothing at all is refused with those options (`refusal`):
-    /// planning no motion would be a silent fallback.
-    fn no_entry(&self, k: usize, play: f64, radii: &[f64]) -> String {
-        let layer = self.layer.as_ref().unwrap();
-        let g = layer.g;
-        let q = g.center(k);
-        // The connected cutter positions around `k`: their extent.
-        let (mut low, mut high) = (q, q);
-        let mut seen = vec![false; g.nx * g.ny];
-        let mut open = vec![k];
-        seen[k] = true;
-        while let Some(k) = open.pop() {
-            let p = g.center(k);
-            low = [low[0].min(p[0]), low[1].min(p[1])];
-            high = [high[0].max(p[0]), high[1].max(p[1])];
-            g.for_neighbours(k, |m| {
-                if layer.allowed[m] && !seen[m] {
-                    seen[m] = true;
-                    open.push(m);
-                }
-            });
-        }
-        let helix = if self.entry.policy() == EntryPolicy::StockEdge {
-            "the entry allows no helix (StockEdgeEntry(helix=None)), and none would fit".to_string()
-        } else {
-            format!(
-                "no helix fits (the most open point leaves a helix radius of at most {:.3} mm; the entry's radii are {radii:?} mm and the planner needs more than {:.3} mm)",
-                play.max(0.),
-                4. * g.c
-            )
-        };
-        format!(
-            "engagement_front: no entry into the enclosed material of {} at ({:.3}, {:.3}) for the level at Z{}: the cutter of radius {} mm fits there (tool centres within X{:.3}..{:.3}, Y{:.3}..{:.3}), but nowhere in that area is it clear of material to enter from air or cleared stock, and {helix}. Use entry=RampEntry(angle_deg) to ramp in along a straight path, a smaller cutter, an earlier operation that opens a start there, or keep the tool out of that area (the region, or the operation's limits)",
-            self.op.id, q[0], q[1], self.z, self.r, low[0], high[0], low[1], high[1]
-        )
+        found
     }
 
     /// Enclosed material: helix down at the most open reachable point.
@@ -3011,7 +3098,6 @@ impl EngagementFrontPlan {
         }
         let r = self.r;
         let z = self.z;
-        let mut entered: Option<Vec<bool>> = None;
         loop {
             if cancel.is_cancelled() {
                 return Err("engagement_front planning cancelled".into());
@@ -3038,22 +3124,11 @@ impl EngagementFrontPlan {
                 .ok_or("engagement_front: missing helical entry")?
                 .clone();
             let radii = helix.radii(r, r / 2., 0.);
-            let Some(rh) = radii.iter().copied().find(|&h| h <= room - c && h > 4. * c) else {
-                // No helix fits at the most open point of what is left, so
-                // at none of it: it is left, and counted in the level's
-                // residual area. Material beside a place the cutter got to
-                // is leftover (the passes from there found it too thin, or
-                // their start unproven; the report counts both). Material
-                // in an area the cutter has no way into at all is noted
-                // (#250, `refusal`): an operation that cuts nothing at all
-                // for that reason is refused, not planned without a motion.
-                // A level that has made a motion is not such an operation.
-                if self.report.motions == 0
-                    && self.unentered.is_none()
-                    && !entered.get_or_insert_with(|| self.entered())[k]
-                {
-                    self.unentered = Some(self.no_entry(k, room - c, &radii));
-                }
+            let Some(rh) = radii.into_iter().find(|&h| h <= room - c && h > 4. * c) else {
+                // No helix fits at the most open point left, so at none of
+                // it: it stays, counted in the level's residual area. An
+                // area nothing enters at all was listed when the level
+                // started (`unentered_areas`).
                 self.mark_dead(q, 1);
                 continue;
             };
@@ -3164,6 +3239,7 @@ impl EngagementFrontPlan {
         while self.pending.is_empty() && !self.finished {
             if self.layer.is_none() {
                 self.build_layer(stock, cancel)?;
+                self.note_unentered()?;
             }
             if !self.plan_pass(stock, cancel)? {
                 if self.wall_pass && !self.walls_done {
@@ -3337,6 +3413,7 @@ mod tests {
             g,
             top: vec![10.; n],
             cleared: vec![f64::INFINITY; n],
+            inside: vec![true; n],
             allowed: vec![true; n],
             reachable: vec![true; n],
             room: vec![100.; n],
@@ -3389,6 +3466,7 @@ mod tests {
             cleared: (0..n)
                 .map(|k| if reachable[k] { 0. } else { f64::INFINITY })
                 .collect(),
+            inside: vec![true; n],
             allowed: (0..n).map(|k| y(k) <= 5.).collect(),
             reachable,
             room: vec![100.; n],

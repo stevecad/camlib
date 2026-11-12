@@ -476,6 +476,92 @@ pub(crate) struct EntryFitOptions {
 /// The start of `fit_entries`'s refusal when a component has no entry.
 pub(crate) const NO_ENTRY: &str = "no source-admitted entry/route";
 
+/// An area of an operation's region with material that no entry reaches
+/// (#250): the cutter fits there, but the operation's planner has no way to
+/// bring it down into that material.
+///
+/// The rule. A pocket operation (`Pocket`, a rest pocket, `AdaptivePocket`
+/// on every path strategy) is asked to clear its region, so one such area
+/// refuses it, as `fit_entries` always has for `Pocket`. A `Roughing` layer
+/// legitimately has material its cutter cannot enter (a rest pass with a
+/// smaller cutter takes it), so its adaptive clearing lists these areas in
+/// the layer's report (`unentered_areas`), counts their material in the
+/// layer's residual area, and the operation is refused only when no layer
+/// makes any motion.
+#[derive(Clone, Debug, Serialize)]
+pub struct UnenteredArea {
+    /// `no_helix_fits`: enclosed material (no place there is clear of it to
+    /// enter from air or cleared stock) and no helix of the entry fits.
+    /// `no_helix_allowed`: the same, with an entry that allows no helix.
+    /// `tighter_than_planner_resolves`: the cutter fits with less play than
+    /// the engagement front's steering grid works in.
+    /// `no_orbit_fits`: disk_front / stock_front, whose orbits sweep more
+    /// than the cutter.
+    pub reason: &'static str,
+    /// A tool-centre position in the area, and the extent of the tool
+    /// centres the cutter fits at around it.
+    pub at_mm: Point,
+    pub min_mm: Point,
+    pub max_mm: Point,
+    pub level_z_mm: f64,
+    pub cutter_radius_mm: f64,
+    /// The helix radii (or orbit radii) tried.
+    pub radii_tried_mm: Vec<f64>,
+    /// What the planner needs there and what the area leaves: a helix (or
+    /// orbit) radius, or for `tighter_than_planner_resolves` the play
+    /// between the cutter and the walls on each side.
+    pub needed_mm: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub available_mm: Option<f64>,
+}
+impl UnenteredArea {
+    /// The refusal, naming the operation, the area, what was tried and the
+    /// options.
+    pub(crate) fn message(&self, operation: &str) -> String {
+        let (at, low, high, r, z) = (
+            self.at_mm,
+            self.min_mm,
+            self.max_mm,
+            self.cutter_radius_mm,
+            self.level_z_mm,
+        );
+        let area = format!(
+            "tool centres within X{:.3}..{:.3}, Y{:.3}..{:.3}",
+            low[0], high[0], low[1], high[1]
+        );
+        let keep_out = "keep the tool out of that area (the region, or the operation's limits)";
+        match self.reason {
+            "tighter_than_planner_resolves" => format!(
+                "engagement_front: {operation} has material at ({:.3}, {:.3}) for the level at Z{z}, where the cutter of radius {r} mm fits the region ({area}) but with less play to its walls than this planner works in (it needs {:.3} mm on each side at this cutter and width), so it has no way into that area. Use a Pocket there (its passes follow the walls' exact offset; entry=RampEntry(angle_deg), a helix or a plunge), a smaller cutter, or {keep_out}",
+                at[0], at[1], self.needed_mm
+            ),
+            "no_orbit_fits" => format!(
+                "{operation}: no orbit fits the area at ({:.3}, {:.3}) ({area}) for the level at Z{z}: this path strategy clears with orbits that sweep a disk of radius {} mm (cutter radius {r} + orbit radius {}), and that area is nowhere that wide, though the cutter fits it. Use path_strategy engagement_front (with entry=RampEntry(angle_deg) where no helix fits), a smaller orbit_radius_mm, a Pocket, a smaller cutter, or {keep_out}",
+                at[0],
+                at[1],
+                r + self.needed_mm,
+                self.needed_mm
+            ),
+            reason => {
+                let helix = if reason == "no_helix_allowed" {
+                    "the entry allows no helix (StockEdgeEntry(helix=None)), and none of its radii would fit".to_string()
+                } else {
+                    format!(
+                        "no helix fits (the most open point leaves a helix radius of at most {:.3} mm; the entry's radii are {:?} mm and the planner needs more than {:.3} mm)",
+                        self.available_mm.unwrap_or(0.).max(0.),
+                        self.radii_tried_mm,
+                        self.needed_mm
+                    )
+                };
+                format!(
+                    "engagement_front: no entry into the enclosed material of {operation} at ({:.3}, {:.3}) for the level at Z{z}: the cutter of radius {r} mm fits there ({area}), but nowhere in that area is it clear of material to enter from air or cleared stock, and {helix}. Use entry=RampEntry(angle_deg) to ramp in along a straight path, a smaller cutter, an earlier operation that opens a start there, or {keep_out}",
+                    at[0], at[1]
+                )
+            }
+        }
+    }
+}
+
 pub(crate) fn fit_entries(
     pocket: &PocketPlan,
     tours: &[Vec<Guide>],
@@ -613,7 +699,43 @@ pub(crate) fn fit_entries(
             }
         }
     }
-    let locations=chosen.into_iter().enumerate().map(|(i,c)|c.ok_or_else(||format!("{NO_ENTRY} for component {i}; choose a smaller radius or another entry strategy"))).collect::<Result<_,_>>()?;
+    let locations = chosen
+        .into_iter()
+        .enumerate()
+        .map(|(i, c)| {
+            c.ok_or_else(|| {
+                // Where: the area's tool centres (its guide strokes' ends).
+                let at = tours[i][0].stroke.a;
+                let (mut low, mut high) = (at, at);
+                for p in tours[i].iter().flat_map(|g| [g.stroke.a, g.stroke.b]) {
+                    low = [low[0].min(p[0]), low[1].min(p[1])];
+                    high = [high[0].max(p[0]), high[1].max(p[1])];
+                }
+                let radii = h.radii(cutter, preferred_cap, minimum);
+                let no_helix = format!(
+                    "no helix of the entry's radii {radii:?} mm fits (a helix of radius h needs a circle of radius {} + h mm clear of the walls)",
+                    cutter + minimum
+                );
+                let tried = match policy {
+                    EntryPolicy::Helix | EntryPolicy::Ramp => no_helix,
+                    EntryPolicy::StockEdge => "it has no entry from outside the stock, and the entry allows no helix (StockEdgeEntry(helix=None))".into(),
+                    EntryPolicy::StockEdgeOrHelix => {
+                        format!("it has no entry from outside the stock, and {no_helix}")
+                    }
+                };
+                format!(
+                    "{NO_ENTRY} into area {i} of {} at ({:.3}, {:.3}) (tool centres within X{:.3}..{:.3}, Y{:.3}..{:.3}): the cutter of radius {cutter} mm fits there, but {tried}. Use a helix radius_mm that fits, another entry strategy the operation takes (entry=RampEntry(angle_deg), or a plunge with entry=None), a smaller cutter, or keep the tool out of that area (the region, or the operation's limits)",
+                    pocket.operation_id(),
+                    at[0],
+                    at[1],
+                    low[0],
+                    high[0],
+                    low[1],
+                    high[1]
+                )
+            })
+        })
+        .collect::<Result<_, String>>()?;
     Ok(EntryFit { locations, work })
 }
 type RouteEdge = (usize, Stroke, f64, Option<usize>);
