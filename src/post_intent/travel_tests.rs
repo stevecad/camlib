@@ -1,5 +1,6 @@
-//! #246: the plan check and the posted-output check hold one travel rule
-//! (`crate::travel`). Every case here is put to both.
+//! #246: the plan check, the posted-output check and the kinematic machine
+//! model's check hold one travel rule (`crate::travel`). Every case here is
+//! put to all three.
 use super::normal_limit_tests::fixture;
 use super::*;
 use crate::motion::{Curve, Motion, MoveKind, Plane, SpindleDirection};
@@ -100,12 +101,158 @@ fn posted(frame: &WorkFrame, source: &Curve, decoded: &Curve) -> Result<(), Stri
         .map(|_| ())
 }
 
-/// Both checks on one move: `Ok` when both hold it inside, the posted
-/// refusal when both hold it outside. They never disagree.
+/// The kinematic machine model's check (`crate::machine::Session`) of the
+/// decoded move `curve`: its machine-travel finding, if any. The axes travel
+/// the tip box raised by the tool's gauge length (the controlled point is
+/// the gauge line); `calibration` is the declared interval of the gauge
+/// offset about that length, on machine Z.
+fn machine_model(
+    frame: &WorkFrame,
+    curve: &Curve,
+    calibration: [f64; 2],
+) -> Option<crate::machine::Finding> {
+    use crate::machine::*;
+    let (_, _, header) = fixture(None, false);
+    let tool = header.tools[0].clone();
+    let length = tool.gauge_length_mm;
+    // The session starts inside the travel and approaches the move.
+    let home = [2., 0., 5.];
+    let mut manifest: crate::stream::StreamManifest = serde_json::from_str(include_str!(
+        "../../fixtures/operations/adaptive-pocket.json"
+    ))
+    .unwrap();
+    manifest.stock = crate::stock::StockSpec {
+        version: 1,
+        units: "mm".into(),
+        min_mm: [5000., 5000., 0.],
+        max_mm: [5010., 5010., 10.],
+        cell_size_mm: 1.,
+        max_cells: 1000,
+    }
+    .into();
+    manifest.initial_stock = None;
+    manifest.tools = vec![tool];
+    manifest.initial_position_mm = home;
+    manifest.operations = vec![];
+    // The stock replay reads the decoded curves at the same tolerance.
+    manifest.sweep.tolerance_mm = 0.01;
+    manifest.sweep.chord_error_mm = manifest.sweep.chord_error_mm.max(0.01);
+    manifest.verification = None;
+    manifest.tool_change = None;
+    manifest.turning = None;
+    let solid = |lo: Vec3, hi: Vec3| Solid::Box {
+        min_mm: lo,
+        max_mm: hi,
+    };
+    let model = Model {
+        version: 1,
+        units: "mm".into(),
+        id: "travel-rule".into(),
+        revision: "1".into(),
+        process: Process::Milling,
+        axes: std::array::from_fn(|k| Axis {
+            drive: Drive::Head,
+            min_mm: BOX[0][k] + if k == 2 { length } else { 0. },
+            max_mm: BOX[1][k] + if k == 2 { length } else { 0. },
+        }),
+        work_offset: 1,
+        work_to_machine: frame.clone(),
+        work_error_min_mm: [0.; 3],
+        work_error_max_mm: [0.; 3],
+        initial_axes_mm: {
+            let q = frame.to_design(home);
+            [q[0], q[1], q[2] + length]
+        },
+        initial_tool: Some("t1".into()),
+        rapid_mode: RapidMode::Linear,
+        controller_reference: "synthetic controller, exact-stop linear G0".into(),
+        tools: vec![ToolCalibration {
+            tool: "t1".into(),
+            length_register: 1,
+            body_solids: vec![],
+            gauge_offset_min_mm: [0., 0., length + calibration[0]],
+            gauge_offset_max_mm: [0., 0., length + calibration[1]],
+        }],
+        bodies: vec![Body {
+            id: "head".into(),
+            component: "spindle_head".into(),
+            mount: Mount::Head,
+            solids: vec![solid([-1., -1., 0.], [1., 1., 10.])],
+            indexed_solids: Default::default(),
+        }],
+        absent_components: [
+            ("column".into(), "synthetic stand".into()),
+            ("table".into(), "synthetic stand".into()),
+            ("enclosure".into(), "open stand".into()),
+        ]
+        .into(),
+        allowed_contacts: vec![AllowedContact {
+            bodies: ["head".into(), "@tool".into()],
+            reason: "mounted at spindle gauge".into(),
+        }],
+        tool_change_routes: [(
+            "t1".into(),
+            ToolRoute {
+                reference: "synthetic complete indexing envelope".into(),
+                before_index_mm: vec![],
+                index_envelopes: vec![solid([-500., -500., -length - 10.], [500., 500., 10.])],
+                replaces: vec!["@tool".into()],
+                after_index_mm: vec![],
+            },
+        )]
+        .into(),
+        program_end_route_mm: vec![],
+        options: Options {
+            // The output tolerance of the posted check here: a decoded arc's
+            // endpoint gap must be accepted as a curve before it is judged.
+            tolerance_mm: 0.01,
+            spatial_resolution_mm: 0.05,
+            max_axis_tests: 1_000_000,
+            max_findings: 128,
+            stock_contact: crate::stock_contact::Options {
+                tolerance_mm: 0.01,
+                spatial_resolution_mm: 0.05,
+                ..Default::default()
+            },
+        },
+    };
+    let definition = serde_json::json!({"machine":{"frame":WorkFrame::identity(),"work_to_machine":frame,"work_offset":1,"tools":[{"tool":"t1","length_register":1}]}});
+    let mut session = Session::new(model, manifest, &definition, &|| false).unwrap();
+    let mut events = 0;
+    if curve.start() != home {
+        let approach = motion(line(home, curve.start()));
+        session
+            .event(Event::Motion { motion: approach }, 0, &|| false)
+            .unwrap();
+        events += 1;
+    }
+    // Motion IDs increase along a program: the approach is 1, the move 2.
+    let mut checked = motion(curve.clone());
+    checked.id = 2;
+    session
+        .event(Event::Motion { motion: checked }, 1, &|| false)
+        .unwrap();
+    session
+        .finish(events + 1, &|| false)
+        .unwrap()
+        .findings
+        .iter()
+        .find(|f| f.kind == "machine_travel" && f.motion_id == Some(2))
+        .cloned()
+}
+
+/// Every check on one move: `Ok` when all hold it inside, the posted
+/// refusal when all hold it outside. They never disagree.
 fn both(frame: &WorkFrame, curve: &Curve) -> Result<(), String> {
     let plan = planned(frame, curve);
     let post = posted(frame, curve, curve);
+    let machine = machine_model(frame, curve, [0., 0.]);
     assert_eq!(plan, post.is_err(), "{frame:?} {curve:?}: {post:?}");
+    assert_eq!(
+        machine.as_ref().map(|f| f.status),
+        plan.then_some(Status::Violation),
+        "{frame:?} {curve:?}: {machine:?}"
+    );
     post
 }
 
@@ -277,11 +424,35 @@ fn a_decoded_arc_is_inside_only_by_its_endpoint_gap() {
     ] {
         assert!(refusal.contains(part), "{part}: {refusal}");
     }
+    // The machine model replays the same decoded arc: not shown inside, and
+    // not shown outside either (the gap is an interval about the circle).
+    let found = machine_model(&frame, &arc(0., 4e-4), [0., 0.]).unwrap();
+    assert_eq!(found.status, Status::Uncertain);
+    assert!(
+        found.detail.contains("endpoint gap 4.000e-4 mm"),
+        "{}",
+        found.detail
+    );
     // Inside the limit by less than the gap: still not shown inside.
     let refusal = posted(&frame, &arc(3e-4, 0.), &arc(3e-4, 4e-4)).unwrap_err();
     assert!(refusal.contains("3.000e-4 mm inside"), "{refusal}");
+    assert_eq!(
+        machine_model(&frame, &arc(3e-4, 4e-4), [0., 0.])
+            .unwrap()
+            .status,
+        Status::Uncertain
+    );
     // Inside by more than the gap: it posts.
     posted(&frame, &arc(5e-4, 0.), &arc(5e-4, 4e-4)).unwrap();
+    assert!(machine_model(&frame, &arc(5e-4, 4e-4), [0., 0.]).is_none());
+    // Beyond by more than the gap: outside whatever the controller does.
+    assert_eq!(
+        machine_model(&frame, &arc(-5e-4, 4e-4), [0., 0.])
+            .unwrap()
+            .status,
+        Status::Violation
+    );
+    assert!(posted(&frame, &arc(-5e-4, 0.), &arc(-5e-4, 4e-4)).is_err());
     // The plan check keeps a planned arc's own gap the other way (its arc is
     // camlib's representation of one curve): a planned gap of 4e-6 mm, the
     // nominal middle 1e-6 mm beyond, is not shown outside; with no gap it is.
@@ -310,10 +481,74 @@ fn a_word_rounded_beyond_a_limit_is_refused_not_tolerated() {
             && refusal.contains("rounded beyond the limit"),
         "{refusal}"
     );
-    // The decoded move is outside by the plan check's rule too.
+    // The decoded move is outside by the plan check's rule too, and by the
+    // machine model's, which replays the decoded words.
     assert!(planned(&frame, &words));
+    assert_eq!(
+        machine_model(&frame, &words, [0., 0.]).unwrap().status,
+        Status::Violation
+    );
+    assert!(machine_model(&frame, &plan, [0., 0.]).is_none());
     // With the offset on the grid the same position is written exactly.
     let frame = turned(0., [100., 50., -200.]);
     let plan = line(start, [200., 150., 50.]);
     both(&frame, &plan).unwrap();
+}
+
+#[test]
+fn a_calibration_interval_is_inside_only_whole_and_a_violation_only_whole() {
+    // The machine model's tool gauge offset is known to +-0.01 mm on machine
+    // Z. A position is then an interval on Z: inside only if the whole
+    // interval is inside the closed travel, a violation only if the whole
+    // interval is beyond a limit, uncertain otherwise. Nothing but the
+    // declared interval makes it uncertain.
+    let frame = turned(0., [100., 50., -200.]);
+    let start = [2., 0., 5.];
+    // Machine Z of the tip: -150 (the maximum) at work Z 50.
+    let to = |z: f64| line(start, [150., 100., z]);
+    let interval = [-0.01, 0.01];
+    // On the limit: the plan and the posted check hold it inside; with the
+    // interval it straddles the limit, and the finding states both.
+    both(&frame, &to(50.)).unwrap();
+    let found = machine_model(&frame, &to(50.), interval).unwrap();
+    assert_eq!(found.status, Status::Uncertain);
+    assert_eq!(found.bodies[0], "axis_z");
+    assert_eq!(found.fraction, 1.);
+    let length = fixture(None, false).2.tools[0].gauge_length_mm;
+    for part in [
+        format!("{:.6} to {:.6} mm", length - 150.01, length - 149.99),
+        format!("maximum {:.6} mm", length - 150.),
+        "straddles".into(),
+    ] {
+        assert!(found.detail.contains(&part), "{part}: {}", found.detail);
+    }
+    // The whole interval inside (its upper end on the limit, and well inside).
+    assert!(machine_model(&frame, &to(49.99), interval).is_none());
+    assert!(machine_model(&frame, &to(40.), interval).is_none());
+    // Its upper end 1e-6 mm beyond the limit: straddling, not a violation.
+    let found = machine_model(&frame, &to(49.99 + 1e-6), interval).unwrap();
+    assert_eq!(found.status, Status::Uncertain);
+    // Its lower end on the limit is still straddling (the limit is inside);
+    // 1e-6 mm more and the whole interval is beyond: a violation.
+    let found = machine_model(&frame, &to(50.01), interval).unwrap();
+    assert_eq!(found.status, Status::Uncertain);
+    let found = machine_model(&frame, &to(50.01 + 1e-6), interval).unwrap();
+    assert_eq!(found.status, Status::Violation);
+    assert!(
+        found.detail.contains("whole interval is beyond"),
+        "{}",
+        found.detail
+    );
+    // Without an interval the same positions are inside or a violation, as
+    // in the other checks: never uncertain, and no tolerance decides.
+    assert!(machine_model(&frame, &to(50.), [0., 0.]).is_none());
+    let refusal = both(&frame, &to(50. + 1e-6)).unwrap_err();
+    assert!(refusal.contains("machine Z"), "{refusal}");
+    // The interval is on Z only: X and Y stay exact.
+    assert!(machine_model(&frame, &line(start, [200., 150., 40.]), interval).is_none());
+    let found = machine_model(&frame, &line(start, [200. + 1e-6, 150., 40.]), interval).unwrap();
+    assert_eq!(
+        (found.status, found.bodies[0].as_str()),
+        (Status::Violation, "axis_x")
+    );
 }

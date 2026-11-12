@@ -12,6 +12,9 @@ struct Path {
     from: Vec3,
     to: Vec3,
     curve: Option<PreparedCurve>,
+    /// The decoded move in work coordinates (a line too), for the travel
+    /// rule; `None` for a route between declared machine-axis positions.
+    work: Option<PreparedCurve>,
     frame: WorkFrame,
     gauge: Vec3,
     speed: f64,
@@ -25,6 +28,7 @@ impl Path {
             from,
             to,
             curve: None,
+            work: None,
             frame: WorkFrame::identity(),
             gauge: [0.; 3],
             speed: sub(to, from).into_iter().map(f64::abs).sum(),
@@ -422,110 +426,113 @@ impl Session {
             )
         }
     }
+    /// Machine-axis travel of one path, by the one travel rule
+    /// (`crate::travel`, docs/python.md "The travel rule"): the axis travel
+    /// is closed, a declared position is exact up to the evaluation bound,
+    /// and no tolerance enters the decision.
+    ///
+    /// A decoded move's axis position is its transformed position plus the
+    /// tool's expected gauge offset, known to the declared calibration
+    /// interval (work frame and gauge offset): inside only if the whole
+    /// interval is inside, a violation only if the whole interval is beyond
+    /// a limit, uncertain otherwise. A route between declared machine-axis
+    /// positions has no interval, so it is inside or a violation. A decoded
+    /// arc's nominal circle is known to its endpoint gap either side, as in
+    /// the posted-output check.
+    ///
+    /// Every axis is extreme at an end of the path or where an arc's
+    /// coordinate is stationary (an independent-axis rapid moves each axis
+    /// monotonically between its ends), so those points decide the path.
     fn travel(
         &mut self,
         path: &Path,
         at: &Attribution,
         work: &mut Budget<'_, impl CancelSignal>,
     ) -> Result<(), String> {
+        use crate::travel::{ArcGap, Calibration, Travel};
         let m = &self.prepared.model;
-        let mut e = if path.absolute {
-            [[0.; 3]; 2]
-        } else {
-            [m.work_error_min_mm, m.work_error_max_mm]
-        };
-        if !path.absolute
-            && let Some(t) = &self.active
-        {
-            e = interval_add(e, gauge_error(self.calibration(t)?));
-        }
-        e = [sub(e[0], path.error), add(e[1], path.error)];
-        let mut bad = vec![];
-        for k in 0..3 {
-            let axis = &m.axes[k];
-            let tol = m.options.tolerance_mm;
-            let speed = if path.from[k] == path.to[k] && path.error[k] == 0. {
-                0.
-            } else {
-                path.speed
+        let travel = Travel::tip(
+            std::array::from_fn(|k| m.axes[k].min_mm),
+            std::array::from_fn(|k| m.axes[k].max_mm),
+        );
+        work.tick()?;
+        let found = if let Some(curve) = &path.work {
+            let mut e = [m.work_error_min_mm, m.work_error_max_mm];
+            if let Some(t) = &self.active {
+                e = interval_add(e, gauge_error(self.calibration(t)?));
+            }
+            let calibration = Calibration {
+                offset_mm: path.gauge,
+                low_mm: e[0],
+                high_mm: e[1],
             };
-            let mut stack = vec![(0., 1.)];
-            let mut outcome = None;
-            while let Some((a, b)) = stack.pop() {
-                work.tick()?;
-                let t = (a + b) / 2.;
-                let p = path.position(t)?[k];
-                let (lo, hi) = if path.curve.is_none() {
-                    (
-                        path.from[k].min(path.to[k]) + e[0][k],
-                        path.from[k].max(path.to[k]) + e[1][k],
+            crate::travel::curve_calibrated(
+                &path.frame,
+                &travel,
+                &calibration,
+                curve,
+                ArcGap::Executed,
+            )?
+        } else {
+            // Declared machine-axis positions: exact, no calibration.
+            [(0., path.from), (1., path.to)]
+                .into_iter()
+                .find_map(|(fraction, axes)| {
+                    crate::travel::axes_outside(&travel, axes).map(|mut found| {
+                        found.fraction = fraction;
+                        found
+                    })
+                })
+        };
+        let Some(found) = found else {
+            return Ok(());
+        };
+        let k = found.axis;
+        let name = ["X", "Y", "Z"][k];
+        let (min, max) = (m.axes[k].min_mm, m.axes[k].max_mm);
+        let side = if found.low { "minimum" } else { "maximum" };
+        let [low, high] = found.interval_mm;
+        let gap = found.nominal_gap_mm.map_or(String::new(), |gap| {
+            format!(
+                "; a point of a decoded arc's nominal circle, which the executed path may differ from by its endpoint gap {gap:.3e} mm"
+            )
+        });
+        let (status, detail) = if found.certain {
+            (
+                Status::Violation,
+                format!(
+                    "axis {name} at {:.6} mm (calibration interval {low:.6} to {high:.6} mm) exceeds declared [{min}, {max}] machine travel: the whole interval is beyond the {side} {:.6} mm, by at least {:.3e} mm{gap}",
+                    found.machine_mm[k], found.limit_mm, found.beyond_mm
+                ),
+            )
+        } else {
+            (
+                Status::Uncertain,
+                if low == high {
+                    // No calibration interval: only a decoded arc's gap.
+                    format!(
+                        "axis {name} at {low:.6} mm is not shown inside the {side} {:.6} mm of declared [{min}, {max}] machine travel{gap}",
+                        found.limit_mm
                     )
                 } else {
-                    (
-                        p + e[0][k] - speed * (b - a) / 2.,
-                        p + e[1][k] + speed * (b - a) / 2.,
+                    format!(
+                        "axis {name} calibration interval {low:.6} to {high:.6} mm (expected position {:.6} mm) straddles the {side} {:.6} mm of declared [{min}, {max}] machine travel: not shown inside{gap}",
+                        found.machine_mm[k], found.limit_mm
                     )
-                };
-                if lo >= axis.min_mm && hi <= axis.max_mm {
-                    continue;
-                }
-                let witness = [a, t, b]
-                    .into_iter()
-                    .map(|t| path.position(t).map(|p| (t, p[k])))
-                    .collect::<Result<Vec<_>, _>>()?
-                    .into_iter()
-                    .find(|(_, p)| {
-                        p + e[1][k] < axis.min_mm - tol || p + e[0][k] > axis.max_mm + tol
-                    });
-                if let Some((t, p)) = witness {
-                    outcome = Some((
-                        Status::Violation,
-                        t,
-                        format!(
-                            "axis {} at {p} mm exceeds declared [{}, {}] machine travel",
-                            ["X", "Y", "Z"][k],
-                            axis.min_mm,
-                            axis.max_mm
-                        ),
-                    ));
-                    break;
-                }
-                if path.curve.is_none()
-                    || speed * (b - a) <= m.options.spatial_resolution_mm
-                    || t == a
-                    || t == b
-                {
-                    outcome = Some((
-                        Status::Uncertain,
-                        t,
-                        format!(
-                            "axis {} calibration/path enclosure overlaps travel boundary",
-                            ["X", "Y", "Z"][k]
-                        ),
-                    ));
-                    break;
-                }
-                stack.push((t, b));
-                stack.push((a, t));
-            }
-            if let Some(v) = outcome {
-                bad.push((k, v));
-            }
-        }
-        for (k, (status, t, detail)) in bad {
-            self.finding(
-                status,
-                "machine_travel",
-                [
-                    format!("axis_{}", ["x", "y", "z"][k]),
-                    "travel_limit".into(),
-                ],
-                t,
-                detail,
-                at,
-            )?;
-        }
-        Ok(())
+                },
+            )
+        };
+        self.finding(
+            status,
+            "machine_travel",
+            [
+                format!("axis_{}", ["x", "y", "z"][k]),
+                "travel_limit".into(),
+            ],
+            found.fraction,
+            detail,
+            at,
+        )
     }
     fn check_path(
         &mut self,
@@ -816,6 +823,7 @@ impl Session {
                     .sqrt()
                     .next_up()
                 * 1.00000001,
+            work: Some(curve.clone()),
             curve: if matches!(motion.curve, Curve::Line { .. }) {
                 None
             } else {

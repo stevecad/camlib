@@ -1,8 +1,11 @@
 //! The one rule for comparing a tool position with machine travel (#246).
 //!
-//! Both the plan check (`verification::check_travel`) and the posted-output
-//! check (`post_intent::IntentChecker`) decide travel here, so they cannot
-//! disagree about a point on a limit.
+//! Every comparison of a position with machine travel is decided here, so no
+//! two checks can disagree about a point on a limit:
+//! - the plan check (`verification::check_travel`);
+//! - the posted-output check (`post_intent::IntentChecker`);
+//! - the kinematic machine model (`machine::Session`: decoded moves with
+//!   their calibration interval, route waypoints, the start position).
 //!
 //! **The rule.** The travel box is closed: a position on a limit is inside
 //! (a machine at home sits on its limits, often on three at once). A position
@@ -48,6 +51,22 @@
 //!     when every nominal point is inside by the gap: it is refused when it
 //!     is beyond `E - gap`. The gap shrinks what is admissible; it is never
 //!     an allowance. A gap below `E` is not distinguishable from none.
+//!
+//! **With a calibration interval** (the kinematic machine model,
+//! `crate::machine`, declares how far the work frame and each tool's gauge
+//! offset may be from their expected values) a position is an interval on
+//! each machine axis, and the rule is applied to the interval:
+//!
+//! - inside only if the whole interval is inside the closed travel;
+//! - a violation only if the whole interval is beyond a limit;
+//! - otherwise uncertain: the interval straddles the limit, and the finding
+//!   states the interval and the limit.
+//!
+//! The interval is the declared calibration interval alone (and, for a
+//! nominal point of a decoded arc, the arc's gap either side of it); no
+//! tolerance enters it. Its two ends are evaluated with one more rounded sum
+//! each, bounded like the others. Without an interval the three cases are
+//! the two of the rule above: a position is inside or a violation.
 //!
 //! A machine coordinate of a move is extreme at an end or where it is
 //! stationary, so a move is inside exactly when those points are: a line has
@@ -100,23 +119,55 @@ impl Travel {
     }
 }
 
-/// A position outside the travel.
+/// A calibration interval on the machine position (the kinematic machine
+/// model, `crate::machine`): the machine coordinate is the transformed
+/// position plus `offset_mm` (the expected gauge offset), and the true
+/// position lies anywhere in `[coordinate + low_mm, coordinate + high_mm]`
+/// (`low_mm <= 0 <= high_mm`, per machine axis). The interval is declared
+/// calibration uncertainty, never a tolerance.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Calibration {
+    pub offset_mm: Vec3,
+    pub low_mm: Vec3,
+    pub high_mm: Vec3,
+}
+
+impl Calibration {
+    /// An exactly known position: the interval is a point.
+    pub const NONE: Self = Self {
+        offset_mm: [0.; 3],
+        low_mm: [0.; 3],
+        high_mm: [0.; 3],
+    };
+}
+
+/// A position that is not inside the travel.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Outside {
+    /// The whole interval of the position is beyond the limit (a violation).
+    /// Otherwise the interval straddles the limit: not shown inside, not
+    /// shown outside. A position without calibration interval or arc gap is
+    /// always certain.
+    pub certain: bool,
     /// Where along the move (0 for a lone point).
     pub fraction: f64,
     /// The position in work coordinates.
     pub point_mm: Vec3,
-    /// The position in machine coordinates.
+    /// The position in machine coordinates (with the calibration offset).
     pub machine_mm: Vec3,
     /// The machine axis whose limit is passed, and whether it is the lower.
     pub axis: usize,
     pub low: bool,
     pub limit_mm: f64,
-    /// How far beyond the limit the position is evaluated to be.
+    /// The calibration interval of the position on that axis (a point
+    /// without calibration).
+    pub interval_mm: [f64; 2],
+    /// How far beyond the limit the position is evaluated to be: the end of
+    /// its interval nearest the travel when `certain`, the farthest otherwise.
     pub beyond_mm: f64,
     /// The bound that distance exceeds (for a decoded arc's nominal point
-    /// it is negative by the arc's gap: the point must be that far inside).
+    /// that is not `certain` it is negative by the arc's gap: the point must
+    /// be that far inside).
     pub guard_mm: f64,
     /// For a point of an arc's nominal circle: the arc's endpoint gap.
     pub nominal_gap_mm: Option<f64>,
@@ -131,19 +182,29 @@ pub(crate) enum ArcGap {
     Executed,
 }
 
-/// `point` (work coordinates) against the travel. `nominal` is `None` for a
-/// declared position; for a point of an arc's nominal circle it is the arc's
-/// gap and the allowance beyond a declared position (which is negative when
-/// the point must be inside by the gap).
-fn outside(
+/// For a point of an arc's nominal circle: the arc's gap, and what the
+/// point is allowed beyond a declared position before it is not inside
+/// (`inside`, negative when it must be inside by the gap) and before it is
+/// certainly outside (`outside`).
+#[derive(Clone, Copy)]
+struct Nominal {
+    gap: f64,
+    inside: f64,
+    outside: f64,
+}
+
+/// `point` (work coordinates) against the travel: `None` when it is inside.
+/// `nominal` is `None` for a declared position.
+fn decide(
     frame: &WorkFrame,
     travel: &Travel,
+    calibration: &Calibration,
     fraction: f64,
     point: Vec3,
-    nominal: Option<(f64, f64)>,
+    nominal: Option<Nominal>,
 ) -> Option<Outside> {
-    let slack = nominal.map_or(0., |(_, slack)| slack);
-    let machine = frame.to_design(point);
+    let transformed = frame.to_design(point);
+    let machine: Vec3 = std::array::from_fn(|k| transformed[k] + calibration.offset_mm[k]);
     let mut worst: Option<Outside> = None;
     for axis in 0..3 {
         let row = [frame.x[axis], frame.y[axis], frame.z[axis]];
@@ -153,33 +214,64 @@ fn outside(
         let magnitude =
             frame.origin_mm[axis].abs() + (0..3).map(|j| (point[j] * row[j]).abs()).sum::<f64>();
         let transform = 5. * U * magnitude + f64::MIN_POSITIVE;
-        let allowance = slack * row[0].hypot(row[1]).hypot(row[2]);
+        let length = row[0].hypot(row[1]).hypot(row[2]);
+        let (low_mm, high_mm) = (calibration.low_mm[axis], calibration.high_mm[axis]);
+        // One rounded sum for the offset and one for an interval end, when
+        // there is one (adding zero is exact).
+        let at = machine[axis].abs();
+        let calibrated = if calibration.offset_mm[axis] != 0. {
+            U * at
+        } else {
+            0.
+        } + if low_mm != 0. || high_mm != 0. {
+            U * (at + low_mm.abs().max(high_mm.abs()))
+        } else {
+            0.
+        };
+        let interval = [machine[axis] + low_mm, machine[axis] + high_mm];
         for (low, limit) in [(true, travel.min[axis]), (false, travel.max[axis])] {
             // The difference of two numbers within a factor of two of each
             // other is exact (Sterbenz), and farther apart it exceeds any
             // guard here by orders of magnitude.
-            let beyond = if low {
-                limit - machine[axis]
+            // `near`: the end of the interval nearest the travel; `far`: the
+            // other. Without an interval they are one number.
+            let (near, far) = if low {
+                (limit - interval[1], limit - interval[0])
             } else {
-                machine[axis] - limit
+                (interval[0] - limit, interval[1] - limit)
             };
             let derived = if travel.lowered && axis == 2 {
                 U * limit.abs()
             } else {
                 0.
             };
-            let guard = transform + derived + allowance;
-            if beyond > guard && worst.is_none_or(|w| beyond > w.beyond_mm) {
+            let evaluation = transform + derived + calibrated;
+            let outside = evaluation + nominal.map_or(0., |n| n.outside * length);
+            let inside = evaluation + nominal.map_or(0., |n| n.inside * length);
+            let found = if near > outside {
+                Some((true, near, outside))
+            } else if far > inside {
+                Some((false, far, inside))
+            } else {
+                None
+            };
+            let Some((certain, beyond, guard)) = found else {
+                continue;
+            };
+            // A certain finding outranks an uncertain one; then the farthest.
+            if worst.is_none_or(|w| (certain, beyond) > (w.certain, w.beyond_mm)) {
                 worst = Some(Outside {
+                    certain,
                     fraction,
                     point_mm: point,
                     machine_mm: machine,
                     axis,
                     low,
                     limit_mm: limit,
+                    interval_mm: interval,
                     beyond_mm: beyond,
                     guard_mm: guard,
-                    nominal_gap_mm: nominal.map(|(gap, _)| gap),
+                    nominal_gap_mm: nominal.map(|n| n.gap),
                 });
             }
         }
@@ -189,7 +281,45 @@ fn outside(
 
 /// A declared position (exact) against the travel.
 pub(crate) fn point_outside(frame: &WorkFrame, travel: &Travel, point: Vec3) -> Option<Outside> {
-    outside(frame, travel, 0., point, None)
+    decide(frame, travel, &Calibration::NONE, 0., point, None)
+}
+
+/// A declared machine-axis position (a route waypoint, a start position of
+/// the kinematic machine model) against the axis travel. It is given in
+/// machine coordinates, so nothing is evaluated and the comparison is exact:
+/// on a limit is inside, any binary64 step beyond is outside.
+pub(crate) fn axes_outside(travel: &Travel, axes: Vec3) -> Option<Outside> {
+    let mut worst: Option<Outside> = None;
+    for axis in 0..3 {
+        for (low, limit) in [(true, travel.min[axis]), (false, travel.max[axis])] {
+            let beyond = if low {
+                limit - axes[axis]
+            } else {
+                axes[axis] - limit
+            };
+            if (if low {
+                axes[axis] < limit
+            } else {
+                axes[axis] > limit
+            }) && worst.is_none_or(|w| beyond > w.beyond_mm)
+            {
+                worst = Some(Outside {
+                    certain: true,
+                    fraction: 0.,
+                    point_mm: axes,
+                    machine_mm: axes,
+                    axis,
+                    low,
+                    limit_mm: limit,
+                    interval_mm: [axes[axis]; 2],
+                    beyond_mm: beyond,
+                    guard_mm: 0.,
+                    nominal_gap_mm: None,
+                });
+            }
+        }
+    }
+    worst
 }
 
 /// For a point of the nominal circle of an arc or helix: the move's endpoint
@@ -250,19 +380,32 @@ pub(crate) fn curve_outside(
     path: &PreparedCurve,
     arcs: ArcGap,
 ) -> Result<Option<Outside>, String> {
+    curve_calibrated(frame, travel, &Calibration::NONE, path, arcs)
+}
+
+/// A whole move whose position carries a calibration interval, against the
+/// travel. `None`: every tested point's whole interval is inside. Otherwise
+/// the earliest point whose whole interval is beyond a limit (`certain`), or,
+/// when there is none, the earliest whose interval straddles one.
+pub(crate) fn curve_calibrated(
+    frame: &WorkFrame,
+    travel: &Travel,
+    calibration: &Calibration,
+    path: &PreparedCurve,
+    arcs: ArcGap,
+) -> Result<Option<Outside>, String> {
     let curve = path.curve();
-    if let Some(found) = outside(frame, travel, 0., curve.start(), None) {
-        return Ok(Some(found));
-    }
+    let mut points = vec![(0., curve.start(), None)];
     if !matches!(curve, Curve::Line { .. }) {
         let (gap, evaluation) = nominal_gap_and_evaluation(path);
-        let nominal = Some((
+        let nominal = Some(Nominal {
             gap,
-            match arcs {
+            inside: match arcs {
                 ArcGap::Planned => evaluation + gap,
                 ArcGap::Executed => evaluation - gap,
             },
-        ));
+            outside: evaluation + gap,
+        });
         let mut fractions = Vec::new();
         for axis in 0..3 {
             fractions.extend(path.stationary_fractions([
@@ -275,16 +418,22 @@ pub(crate) fn curve_outside(
         for fraction in fractions {
             // At fraction 0 or 1 `position` returns the declared end.
             let nominal = nominal.filter(|_| fraction > 0. && fraction < 1.);
-            if let Some(found) = outside(frame, travel, fraction, path.position(fraction)?, nominal)
-            {
-                return Ok(Some(found));
-            }
+            points.push((fraction, path.position(fraction)?, nominal));
         }
-        if let Some(found) = outside(frame, travel, 1., path.nominal_end(), nominal) {
-            return Ok(Some(found));
+        points.push((1., path.nominal_end(), nominal));
+    }
+    points.push((1., curve.end(), None));
+    let mut uncertain = None;
+    for (fraction, point, nominal) in points {
+        match decide(frame, travel, calibration, fraction, point, nominal) {
+            Some(found) if found.certain => return Ok(Some(found)),
+            Some(found) => {
+                uncertain.get_or_insert(found);
+            }
+            None => {}
         }
     }
-    Ok(outside(frame, travel, 1., curve.end(), None))
+    Ok(uncertain)
 }
 
 #[cfg(test)]

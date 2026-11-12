@@ -143,6 +143,48 @@ class MachineTest(unittest.TestCase):
             self.assertEqual(run.posting_manifest()['definition']['machine']['crash_model']['id'], 'synthetic')
             self.assertEqual(run.check_machine()['status'], 'clear')
 
+    def test_axis_travel_follows_the_one_travel_rule(self):
+        # 246: the program feeds from machine X 5 to X 10. The axis travel is
+        # closed and a decoded position is exact: no tolerance decides.
+        p, m = fixture()
+        declared = run_options(p, m)['machine'].crash_model
+
+        def travel(x_max, work_error=0):
+            crash = replace(
+                declared,
+                axes=(Axis('head', -200, x_max), *declared.axes[1:]),
+                work_error_min_mm=(-work_error, 0, 0),
+                work_error_max_mm=(work_error, 0, 0),
+            )
+            with PostedRun(
+                p, machine=replace(m, crash_model=crash), stock=StockSpec((100, 100, 0), (110, 110, 10), 1)
+            ) as run:
+                report = run.check_machine()
+            found = [f for f in report['findings'] if f['kind'] == 'machine_travel']
+            return (found[0]['status'], found[0]) if found else ('clear', None)
+
+        # The end on the limit is inside; the limit 1e-6 mm short of it is a violation.
+        self.assertEqual(travel(10)[0], 'clear')
+        status, finding = travel(10 - 1e-6)
+        self.assertEqual(status, 'violation')
+        self.assertEqual(
+            (finding['bodies'], finding['motion_id'], finding['fraction']), (['axis_x', 'travel_limit'], 1, 1)
+        )
+        # A work frame known to +-0.01 mm: the position is an interval. Inside
+        # only if the whole interval is inside, a violation only if the whole
+        # interval is beyond the limit, uncertain while it straddles it.
+        status, finding = travel(10, 0.01)
+        self.assertEqual(status, 'uncertain')
+        self.assertRegex(
+            finding['detail'], r'interval 9\.990000 to 10\.010000 mm .*straddles the maximum 10\.000000 mm'
+        )
+        self.assertEqual(travel(10.01, 0.01)[0], 'clear')
+        self.assertEqual(travel(10.01 - 1e-6, 0.01)[0], 'uncertain')
+        self.assertEqual(travel(9.99, 0.01)[0], 'uncertain')
+        status, finding = travel(9.99 - 1e-6, 0.01)
+        self.assertEqual(status, 'violation')
+        self.assertIn('whole interval is beyond the maximum', finding['detail'])
+
     def test_missing_components_wrong_register_and_nonconvex_mesh_refuse(self):
         p, m = fixture()
         options = run_options(p, m)

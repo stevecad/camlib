@@ -165,9 +165,12 @@ laser) tool or a lathe is refused, and declares a tip box.
 
 ### The travel rule
 
-The planned-move check and the posted-program check compare a tool position
-with the machine's travel by one rule (`src/travel.rs`), so they cannot
-disagree about a position on a limit:
+Every check that compares a position with the machine's travel uses one rule
+(`src/travel.rs`), so they cannot disagree about a position on a limit: the
+planned-move check (`MachineLimits`), the posted-program check
+(`Machine.tip_travel_mm`/`gauge_travel_mm`) and the kinematic machine model's
+axis travel ([`MachineModel.axes`](machine.md)), including its start position
+and route waypoints.
 
 - **The travel box is closed.** A position on a limit is inside: a machine at
   home sits on its limits, often on three at once.
@@ -213,6 +216,20 @@ disagree about a position on a limit:
   position on the limit can round beyond it, and the post refuses with the
   axis, the decoded position and the limit: keep the plan one output step
   inside, or put the offset and the limit on the grid.
+
+- **A calibration interval is judged whole.** The kinematic machine model
+  declares how far the work frame and each tool's gauge offset may be from
+  their expected values, so there a decoded position is an interval on each
+  machine axis: inside only if the whole interval is inside the closed
+  travel, a violation only if the whole interval is beyond a limit, and
+  `uncertain` while it straddles one (the finding states the interval and the
+  limit). The interval is the declared calibration alone; no tolerance widens
+  it. A decoded arc's endpoint gap is such an interval about its nominal
+  circle: the posted check refuses an arc that is not inside by its gap, and
+  the machine model reports it `uncertain`, or a `violation` once it is
+  beyond the limit by more than the gap. Positions declared in machine
+  coordinates (the model's start position and route waypoints) involve no
+  arithmetic and are compared exactly.
 
 A rotated work frame is decided on the move itself, not on a box around it.
 Through a general rotation the machine coordinate of a position is a rounded
