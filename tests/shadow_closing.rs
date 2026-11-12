@@ -209,16 +209,22 @@ fn seams_close(n: usize, m: usize, twist: f64, message: &str, cancel: &AtomicBoo
     let error = 0.002;
     let target =
         PreparedRoughingTarget::prepare(mesh(triangles.clone(), error), 1e-5, cancel).unwrap();
+    // Below Z4 the two faces overlap and the exact union is refused (above);
+    // there the closing is applied and reported. Where the exact union is a
+    // valid region it is used as it is, with no closing.
+    let mut closed_levels = 0;
     for z in [-1., 0.5, 2., 3.9, 3.999, 4., 4.001, 4.5, 5.9] {
         for radius in [0., 0.5, 3.] {
             let shadow = target
                 .shadow_for_cutter(z, 0., radius, &mut 0, cancel)
                 .unwrap_or_else(|e| panic!("{n} {m}: Z{z} radius {radius}: {e}"));
-            let closing = shadow.report.seam_closing.expect("closing is reported");
-            assert_eq!(closing.distance_mm, error);
-            // Lunes between two chord sets of one circle, and the rounding.
-            assert!((0. ..0.05).contains(&closing.added_area_mm2), "{closing:?}");
-            assert_eq!(shadow.report.filled_holes, 0, "the seams are closed, not holes");
+            if let Some(closing) = shadow.report.seam_closing {
+                closed_levels += 1;
+                assert_eq!(closing.distance_mm, error);
+                // Lunes between two chord sets of one circle, and the rounding.
+                assert!((0. ..0.05).contains(&closing.added_area_mm2), "{closing:?}");
+                assert_eq!(shadow.report.filled_holes, 0, "the seams are closed, not holes");
+            }
             let region = shadow.region.prepare(ConstructionOptions::default()).unwrap();
             assert_eq!(
                 (region.summary().components, region.summary().holes),
@@ -265,6 +271,7 @@ fn seams_close(n: usize, m: usize, twist: f64, message: &str, cancel: &AtomicBoo
         .unwrap_or_else(|e| panic!("silhouette at Z{z}: {e}"));
         assert_eq!((silhouette.report.components, silhouette.report.holes), (1, 0));
     }
+    assert!(closed_levels >= 3, "{n} {m}: closing reported at {closed_levels} levels");
 }
 
 /// xorshift64*: the tests need repeatable shapes, not statistics.
@@ -284,7 +291,7 @@ fn the_closed_shadow_contains_every_point_of_every_facet_over_random_sharp_meshe
     // case a round-joined dilation loses the tips of (PR #255's review
     // measured up to 27 um over such meshes). No simplification, no cutter.
     let cancel = AtomicBool::new(false);
-    let mut built = 0;
+    let (mut built, mut closed) = (0, 0);
     let mut worst = 0f64;
     for (seed, error) in (1u64..=60).map(|s| (s, [0.001, 0.0272, 0.1][s as usize % 3])) {
         let mut random = Random(seed.wrapping_mul(0x9E3779B97F4A7C15));
@@ -300,6 +307,20 @@ fn the_closed_shadow_contains_every_point_of_every_facet_over_random_sharp_meshe
             };
             triangles.push([[tip[0], tip[1], 1.], side(-1.), side(1.)]);
         }
+        // A seam as between two tessellations of one face: two plates 0.4 um
+        // apart, capped at both ends, so the exact union has a sliver hole
+        // and the closing (which joins it) is what builds this shadow.
+        let (x, y) = (40. + 10. * random.next(), 10. * random.next());
+        let plate = |x0: f64, x1: f64, y0: f64, y1: f64| {
+            [
+                [[x0, y0, 1.], [x1, y0, 1.], [x1, y1, 1.]],
+                [[x0, y0, 1.], [x1, y1, 1.], [x0, y1, 1.]],
+            ]
+        };
+        triangles.extend(plate(x, x + 5., y, y + 10.));
+        triangles.extend(plate(x + 5.0004, x + 10., y, y + 10.));
+        triangles.extend(plate(x, x + 10., y + 10., y + 11.));
+        triangles.extend(plate(x, x + 10., y - 1., y));
         let target =
             PreparedRoughingTarget::prepare(mesh(triangles.clone(), error), 1e-5, &cancel).unwrap();
         // Facets that happen to touch within the tolerance but farther apart
@@ -308,6 +329,7 @@ fn the_closed_shadow_contains_every_point_of_every_facet_over_random_sharp_meshe
             continue;
         };
         built += 1;
+        closed += usize::from(shadow.report.seam_closing.is_some());
         assert!(shadow.report.simplified.is_none());
         let rings = rings(&shadow.region);
         for t in &triangles {
@@ -329,7 +351,10 @@ fn the_closed_shadow_contains_every_point_of_every_facet_over_random_sharp_meshe
         }
     }
     assert!(built >= 50, "only {built} of 60 random meshes built");
-    println!("{built} of 60 built; farthest facet point outside its shadow: {worst} mm");
+    assert!(closed >= 30, "the closing built only {closed} of {built} shadows");
+    println!(
+        "{built} of 60 built, {closed} by closing; farthest facet point outside its shadow: {worst} mm"
+    );
 }
 
 #[test]
@@ -367,7 +392,9 @@ fn a_sharp_tip_is_kept_and_a_gap_wider_than_twice_the_error_stays_open() {
         }
     }
     // Two plates 0.05 apart: one shadow at an error of 0.03 (the gap is
-    // within twice the error), two at 0.02 (it is a real 50 um slot).
+    // within twice the error, and the closing that joins them is reported),
+    // two at 0.02 (a real 50 um slot: nothing is joined, so the exact union
+    // is used and no closing is reported).
     let plate = |x0: f64, x1: f64| {
         vec![
             [[x0, 0., 1.], [x1, 0., 1.], [x1, 10., 1.]],
@@ -381,11 +408,14 @@ fn a_sharp_tip_is_kept_and_a_gap_wider_than_twice_the_error_stays_open() {
             PreparedRoughingTarget::prepare(mesh(triangles.clone(), error), 1e-5, &cancel).unwrap();
         let shadow = target.shadow(0.5, 0., &mut 0, &cancel).unwrap();
         assert_eq!(shadow.region.components.len(), components, "error {error}");
-        let added = shadow.report.seam_closing.unwrap().added_area_mm2;
-        if components == 1 {
-            assert!((added - 0.5).abs() < 0.01, "the 0.05 x 10 slot is reported: {added}");
-        } else {
-            assert!(added < 0.001, "{added}");
+        match shadow.report.seam_closing {
+            // Joined: the 0.05 x 10 slot is what the closing added.
+            Some(closing) => {
+                assert_eq!(components, 1);
+                assert!((closing.added_area_mm2 - 0.5).abs() < 0.01, "{closing:?}");
+            }
+            // Nothing to join: the exact union, with no closing applied.
+            None => assert_eq!(components, 2),
         }
     }
 }

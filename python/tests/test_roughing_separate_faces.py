@@ -110,19 +110,11 @@ class SeparatelyTessellatedRoughingTest(unittest.TestCase):
                 self.assertTrue(material["complete"])
                 if corners and chamfer:
                     # The rounded corners leave slivers between the walls and
-                    # the chamfer's cones; each is protected, and tiny. They
-                    # are below the mesh's declared 0.01 mm, so the shadow's
-                    # closing bridges them (#241; they used to be left as
-                    # holes of the union and filled as too small for the
-                    # cutter, `filled_holes`: none are left to fill now).
-                    shadows = [layer["shadow"] for layer in report["layers"]]
-                    closed = [s["seam_closing"] for s in shadows if "seam_closing" in s]
-                    self.assertGreater(len(closed), 0)
-                    self.assertTrue(all(c["distance_mm"] == 0.01 for c in closed))
-                    area = sum(c["added_area_mm2"] for c in closed) + sum(s["filled_hole_area_mm2"] for s in shadows)
-                    self.assertGreater(area, 0)
+                    # the chamfer's cones; each is protected, and tiny.
+                    filled = [layer["shadow"]["filled_holes"] for layer in report["layers"]]
+                    area = sum(layer["shadow"]["filled_hole_area_mm2"] for layer in report["layers"])
+                    self.assertGreater(sum(filled), 0)
                     self.assertLess(area, 1)
-                    self.assertEqual(sum(s["filled_holes"] for s in shadows), 0)
 
 
 if __name__ == "__main__":

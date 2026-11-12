@@ -2380,9 +2380,7 @@ fn economical_raster_preserves_cuts_whole_part_and_stock_with_half_the_navigatio
             optimized.motions.len()
         );
         if angle == 0. && clockwise {
-            // (1463 before every shadow was closed by the mesh's declared
-            // error, #241: the closed shadow is 3e-7 mm larger.)
-            assert_eq!(nav(&legacy), 1471);
+            assert_eq!(nav(&legacy), 1463);
             // Both routing policies now reuse committed air during entry. Keep
             // the original frozen cycle target: improving the baseline too must
             // not silently replace the acceptance reference with a new one.
@@ -3083,9 +3081,7 @@ fn actual_cadquery_empty_cutting_changes_only_bounds_not_reachable_material() {
     let ca = continued_entry_turns(a.iter().map(|m| &m.curve));
     let cb = continued_entry_turns(b.iter().map(|m| &m.curve));
     // Golden counts from before entry helices were split one turn per motion.
-    // (282 before every shadow was closed by the mesh's declared error,
-    // #241: the closed shadow is 3e-7 mm larger.)
-    assert_eq!((a.len() - ca, b.len() - cb), (278, 54));
+    assert_eq!((a.len() - ca, b.len() - cb), (282, 54));
     let mut changed = 0;
     for (i, cell) in new.cells().iter().enumerate() {
         let p = new.cell_center(i).unwrap();
@@ -4005,15 +4001,22 @@ fn separately_tessellated_faces_give_a_shadow_for_the_cutter() {
             6.,
         ),
     ] {
+        // With a cutter the slivers are filled as holes too small for it and
+        // the exact union stands; without one the union is not a valid
+        // region and is closed by the declared error.
         if shadow.report.source_error_mm > 0. {
-            let closing = shadow.report.seam_closing.unwrap();
-            assert_eq!(closing.distance_mm, 0.01);
+            if cutter == 0. {
+                assert!(shadow.report.seam_closing.is_some(), "{:?}", shadow.report);
+            }
+            let added = shadow.report.seam_closing.map_or(0., |closing| {
+                assert_eq!(closing.distance_mm, 0.01);
+                closing.added_area_mm2
+            });
             assert!(
-                closing.added_area_mm2 + shadow.report.filled_hole_area_mm2 < 0.5,
+                added + shadow.report.filled_hole_area_mm2 < 0.5,
                 "{:?}",
                 shadow.report
             );
-            assert_eq!(shadow.report.filled_holes, 0, "cutter {cutter}");
         }
         let region = shadow
             .region

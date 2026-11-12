@@ -1068,19 +1068,47 @@ impl PreparedRegion {
         if !clipper.execute(ClipType::Union, FillRule::NonZero, &mut closed, None) {
             return Err("integer batch union backend failed".into());
         }
-        // Edges within 32 times the kernel's shortest (a quarter of the
-        // tolerance, `boundary_to_polyline`) are absorbed.
-        let closing = (close_mm > 0.)
-            .then(|| close_protectively(&mut closed, grid, close_mm, 8. * options.tolerance_mm));
-        let filled = fill_small_holes(&mut closed, grid, fill_holes_below_mm2);
         let error = regions
             .iter()
             .map(|r| r.definition.boundary_error_mm)
             .fold(0f64, f64::max)
             + options.tolerance_mm;
-        first
+        // The exact union, and the union closed by the declared distance.
+        // Seams between the operands show in the exact union as boundaries
+        // that touch (it is then not a valid region) or as sliver holes and
+        // gaps (it is valid, with pieces the closing joins). A mesh without
+        // seams gives the same components and holes either way; its exact
+        // union is then used as it is, because closing it would only move
+        // its boundary by the rounding margin: enough to change what is
+        // planned around it, for nothing.
+        let exact = {
+            let mut exact = closed.clone();
+            let filled = fill_small_holes(&mut exact, grid, fill_holes_below_mm2);
+            first
+                .integer_result(exact, "clipper2_rust_1.2.0_linear_batch", error, 0., grid)
+                .map(|r| (r.report, filled, None))
+        };
+        if close_mm == 0. {
+            return exact;
+        }
+        // Edges within 32 times the kernel's shortest (a quarter of the
+        // tolerance, `boundary_to_polyline`) are absorbed.
+        let closing = close_protectively(&mut closed, grid, close_mm, 8. * options.tolerance_mm);
+        let filled = fill_small_holes(&mut closed, grid, fill_holes_below_mm2);
+        let joined = first
             .integer_result(closed, "clipper2_rust_1.2.0_linear_batch", error, 0., grid)
-            .map(|r| (r.report, filled, closing))
+            .map(|r| (r.report, filled, Some(closing)));
+        match (&exact, &joined) {
+            (Ok((a, ..)), Ok((b, ..)))
+                if (a.after_components, a.after_holes) == (b.after_components, b.after_holes) =>
+            {
+                exact
+            }
+            // The closing joined something, or the exact union is not a
+            // valid region: the closed one, reported by the caller. If the
+            // closed one fails, its refusal is the one to show.
+            _ => joined,
+        }
     }
 }
 
