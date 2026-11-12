@@ -11,6 +11,9 @@
 //! hole of another part before that hole, so nothing is cut free before its
 //! inner features. Every lead and cut is proven not to touch any part, and
 //! every pierce point to keep `pierce_clearance_mm` from every part.
+//!
+//! With `common_line`, parts exactly one kerf path apart share one cut along
+//! their common straight edge (`common_line.rs`).
 use crate::{
     contour::{Boundaries, Compensation},
     motion::{CompensationSide, Curve, Event, Motion, MoveKind, Plane, Vec3},
@@ -22,6 +25,9 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::f64::consts::{FRAC_PI_2, PI};
+
+mod common_line;
+pub use common_line::{CommonLine, CommonLineReport};
 
 /// How the torch or head height is controlled.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,6 +141,10 @@ pub struct ThermalCutOperation {
     pub small_holes: Option<SmallHoles>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub micro_joints: Option<MicroJoints>,
+    /// Cut the shared straight edge of two parts placed exactly one kerf
+    /// path apart once (see `thermal/common_line.rs`). Off unless set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub common_line: Option<CommonLine>,
     /// Default: outlines clockwise and holes counter-clockwise (the part on
     /// the right of travel, the good side of a plasma arc with clockwise
     /// swirl). True reverses both.
@@ -168,6 +178,9 @@ pub struct ThermalCutReport {
     /// Loop order: (part index, hole index or None for the outline).
     pub order: Vec<(usize, Option<usize>)>,
     pub loops_completed: usize,
+    /// The common lines, in cutting order (empty unless `common_line`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub common_lines: Vec<CommonLineReport>,
     pub diagnostics: Vec<String>,
 }
 
@@ -397,6 +410,18 @@ impl ThermalCutPlan {
                     op.micro_joints.is_none() || op.compensation == Compensation::Computer,
                     "micro-joints turn the beam off and on inside the loop, which cutter compensation does not allow".into(),
                 ),
+                (
+                    op.common_line.is_none_or(|c| c.min_length_mm.is_finite() && c.min_length_mm > 0.),
+                    "common_line min_length_mm must be positive".into(),
+                ),
+                (
+                    op.common_line.is_none() || op.compensation == Compensation::Computer,
+                    "a common line has a part on both sides, so the controller cannot trim its kerf: common_line needs compensation=\"computer\"".into(),
+                ),
+                (
+                    op.common_line.is_none() || op.micro_joints.is_none(),
+                    "common_line with micro_joints is not supported: use one of them".into(),
+                ),
                 ((1..=9).contains(&op.work_offset), format!("work_offset {} must be 1..9", op.work_offset)),
                 (
                     op.tool_number > 0 && op.length_register > 0,
@@ -426,15 +451,39 @@ impl ThermalCutPlan {
             );
         }
         let offset = kerf / 2. + error + margin;
-        let prepared = crate::profiles::offset_profiles(
-            &source,
-            offset,
-            Boundaries::All,
-            false,
-            options,
-            cancel,
-        )?;
         let definition = source.definition().clone();
+        // Common lines: parts whose kerf paths coincide are offset one by
+        // one (the offset of the whole region cannot represent paths that
+        // touch). Without any, the region is offset as a whole as always.
+        let split = match op.common_line {
+            Some(_) => Some(common_line::part_profiles(
+                &definition,
+                offset,
+                options,
+                cancel,
+            )?)
+            .filter(|p| common_line::any(p, op.tolerance_mm)),
+            None => None,
+        };
+        let shared = split.is_some();
+        let prepared = match split {
+            Some(p) => p,
+            None => crate::profiles::offset_profiles(
+                &source,
+                offset,
+                Boundaries::All,
+                false,
+                options,
+                cancel,
+            )
+            .map_err(|e| match op.common_line {
+                Some(_) => format!(
+                    "{e} (common_line: no two parts are exactly {} mm apart, twice the applied offset, along a complete straight edge of both)",
+                    2. * offset
+                ),
+                None => e,
+            })?,
+        };
         // Nesting depth: how many holes of other parts contain each part.
         let holes: Vec<(usize, crate::planar::PreparedRegion)> = definition
             .components
@@ -509,6 +558,46 @@ impl ThermalCutPlan {
         if loops.is_empty() {
             return Err("thermal cut has no part loops".into());
         }
+        // Common lines: each group of parts joined by them gets one
+        // outline, and each shared edge one open cut.
+        let mut common = common_line::Plan::default();
+        if let Some(c) = op.common_line.filter(|_| shared) {
+            let rings = loops
+                .into_iter()
+                .map(|l| (l.part, l.hole, l.strokes))
+                .collect();
+            // Every part's own boundary, for the proof that no kerf path
+            // runs inside another part's allowance.
+            let boundaries: Vec<(usize, Vec<Stroke>)> = definition
+                .components
+                .iter()
+                .enumerate()
+                .flat_map(|(i, c)| {
+                    std::iter::once(&c.outer)
+                        .chain(&c.holes)
+                        .map(move |b| (i, Stroke::from_boundary(b)))
+                })
+                .collect();
+            let (rings, plan) = common_line::plan(
+                rings,
+                c,
+                kerf,
+                offset,
+                op.tolerance_mm,
+                op.reverse,
+                &boundaries,
+            )?;
+            loops = rings
+                .into_iter()
+                .map(|(part, hole, strokes)| Loop {
+                    length: strokes.iter().map(crate::profiles::stroke_length).sum(),
+                    strokes,
+                    part,
+                    hole,
+                })
+                .collect();
+            common = plan;
+        }
         // Order: deepest parts first; within a part its holes, then its
         // outline; parts of equal depth nearest first.
         let mut order = vec![];
@@ -527,8 +616,11 @@ impl ThermalCutPlan {
                 .min_by(|a, b| a.1.total_cmp(&b.1))
                 .unwrap();
             let part = remaining.remove(k);
+            // Parts joined by common lines are cut as one group.
+            let members = common.members(part);
+            remaining.retain(|p| !members.contains(p));
             let mut own: Vec<usize> = (0..loops.len())
-                .filter(|&l| loops[l].part == part)
+                .filter(|&l| members.contains(&loops[l].part))
                 .collect();
             // Holes nearest first, the outline last.
             let mut ordered = vec![];
@@ -546,6 +638,9 @@ impl ThermalCutPlan {
                 at = loops[l].strokes[0].a;
                 ordered.push(l);
             }
+            // Common lines after the holes and before the outline (entries
+            // past the loops).
+            ordered.extend(common.cuts_of(part).into_iter().map(|c| loops.len() + c));
             ordered.extend(own);
             if let Some(&l) = ordered.last() {
                 at = loops[l].strokes[0].a;
@@ -601,6 +696,13 @@ impl ThermalCutPlan {
         let mut micro_joints = 0;
         let mut cut_length = 0.;
         let mut diagnostics = prepared.diagnostics;
+        diagnostics.append(&mut common.diagnostics);
+        if op.common_line.is_some() && !shared {
+            diagnostics.push(
+                "common_line: no two parts are exactly one kerf path apart; nothing is shared"
+                    .into(),
+            );
+        }
         let power = op.power_percent;
         let line = |a: Vec3, b: Vec3| Curve::Line { start: a, end: b };
         let push_move = |steps: &mut std::collections::VecDeque<Step>,
@@ -622,9 +724,45 @@ impl ThermalCutPlan {
                 None,
             );
         }
+        let mut common_lines: Vec<CommonLineReport> = vec![];
+        // What each pierce cuts, for the refusals of the kerf checks.
+        let mut pierced = vec![];
         for &l in &order {
+            if l >= loops.len() {
+                let [a, b] = common.cut(l - loops.len()).parts;
+                pierced.push(format!("the common line between parts {a} and {b}"));
+                let emit = common_line::Emit {
+                    probe: &probe,
+                    kerf_probe: &kerf_probe,
+                    crater_probe: &crater_probe,
+                    lead_mm: op.lead_in.length_mm,
+                    top,
+                    z_check,
+                    z_cut,
+                    z_pierce,
+                    z_travel,
+                    program,
+                    power_percent: power,
+                    pierce_delay_s: op.pierce_delay_s,
+                    plunge_mm_min: op.plunge_mm_min,
+                    feed_mm_min: op.feed_mm_min,
+                    height_control: op.height_control,
+                };
+                let (cut, line, length) = common.cut(l - loops.len()).steps(&emit, &mut pos)?;
+                steps.extend(cut);
+                common_lines.push(line);
+                cut_length += length;
+                continue;
+            }
             let lp = &loops[l];
             report_order.push((lp.part, lp.hole));
+            pierced.push(match lp.hole {
+                Some(h) => format!("hole {h} of part {}", lp.part),
+                None => match common.members(lp.part).as_slice() {
+                    [_] => format!("the outline of part {}", lp.part),
+                    group => format!("the outline of parts {group:?}"),
+                },
+            });
             let is_small = lp.hole.is_some()
                 && op.small_holes.is_some_and(|s| {
                     lp.length / PI + kerf <= s.max_diameter_mm.unwrap_or(1.5 * thickness)
@@ -1121,6 +1259,9 @@ impl ThermalCutPlan {
                 );
             }
         }
+        if common.len() > 0 {
+            common_line::check_kerfs(steps.iter(), &pierced, kerf, op.tolerance_mm)?;
+        }
         // Validate the complete outline before emitting any beam-on event.
         // A clipped thermal outline would no longer produce the requested part.
         if let Some(limits) = op.limits.as_ref().filter(|l| !l.is_empty()) {
@@ -1192,13 +1333,14 @@ impl ThermalCutPlan {
             kerf_mm: kerf,
             applied_offset_mm: offset,
             parts: definition.components.len(),
-            loops: order.len(),
+            loops: order.len() - common.len(),
             small_holes: small,
             pierces: order.len(),
             micro_joints,
             cut_length_mm: cut_length,
             order: report_order,
             loops_completed: 0,
+            common_lines,
             diagnostics,
         };
         Ok(Self {

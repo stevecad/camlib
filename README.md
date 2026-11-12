@@ -58,7 +58,7 @@ and writes G-code through a postprocessor you can read and change.
 | Flat-area finishing | Horizontal faces at their exact heights, flat end mills |
 | Parallel, spiral, radial, project, pencil, scallop, waterline, ramp, steep-and-shallow, morph, flow finishing | Triangle-mesh surfaces: ball (certified error), flat and bull-nose end mills; slope limits; rest finishing from the stock |
 | Machining limits | Avoid areas (clamps) and containment regions for every operation, rapids and links |
-| Plasma and laser cutting | Kerf-compensated sheet parts: leads, pierce clearance, inner features first, small holes, micro-joints, torch height control, programmed or controller heights |
+| Plasma and laser cutting | Kerf-compensated sheet parts: leads, pierce clearance, inner features first, small holes, micro-joints, common-line cutting, torch height control, programmed or controller heights |
 | Plasma and laser marking | Part numbers and lines marked before the cut, in the marking process the machine declares; marks proven on their parts, the sheet left whole under them |
 | Feeds and speeds | rpm and feed from cutting data (chip thinning, ball effective diameter) |
 | Probing, tool setting | Work-offset probing of surfaces, corners, bores, bosses, pockets and webs, tool length and diameter on a tool setter; LinuxCNC G38 or Renishaw Inspection Plus macros, decoded back and checked |
