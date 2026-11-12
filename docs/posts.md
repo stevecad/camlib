@@ -281,6 +281,18 @@ Hooks: `on_begin(program)`, `on_work_offset`, `on_tool_change`,
 with the time in seconds in `dwell_word` (P), rounded up to
 `dwell_resolution_s` and limited to `dwell_max_s`.
 
+Plane selection is modal (G17/G18/G19, modal group 2 in the LinuxCNC G-code
+reference; FANUC, Haas and Centroid read it the same way), so the program
+selects a plane once, in its header, and again only where an arc or a canned
+cycle needs another one: a lathe program has one `G18`, and a mill program
+with XY arcs only has one `G17`. A post that writes arcs itself calls
+`self.select_plane("xy" | "xz" | "yz")` before the arc block; it writes the
+dialect's code only when another plane is active (a block that is a plane
+code alone, written by any hook, sets the active plane). The decoder keeps
+its own plane from the blocks it reads and decodes every arc in it, so a
+plane code that was needed and is missing gives an arc that differs from the
+plan, and the program is refused.
+
 Arc words come from `circular_values(curve)`: with the standard `number` and
 `word` it searches the representable end and centre words for ones whose
 start and end radius agree within the dialect's radius tolerance. A post

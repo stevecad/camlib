@@ -903,12 +903,43 @@ class PostProcessor(_TransactionCopy):
         self._lines = []
         self._limit = 8
         self._modal = {}
+        # The plane the program has selected so far (None: none written yet).
+        self._plane = None
 
     def emit(self, *words):
         line = ' '.join(str(w) for w in words if w is not None and w != '')
         if len(self._lines) >= self._limit or len(line) > 1024 or _INVALID_BLOCK.search(line):
             raise ValueError('post hook output exceeds block/ASCII/1024byte limit')
         self._lines.append(line)
+        # Plane selection is modal (G17/G18/G19, modal group 2: LinuxCNC G-code
+        # reference, "Modal Groups"; FANUC and Haas "plane selection"): a block
+        # that is a plane code alone makes that plane the active one, whichever
+        # hook wrote it, so select_plane writes a code only for a change.
+        plane = self._plane_codes().get(line)
+        if plane is not None:
+            self._plane = plane
+
+    def _plane_codes(self):
+        codes = self.__dict__.get('_plane_code_map')
+        if codes is None:
+            codes = self._plane_code_map = {
+                c.code: c.effect[6:]
+                for c in self.machine.dialect.commands
+                if c.effect in ('plane_xy', 'plane_xz', 'plane_yz')
+            }
+        return codes
+
+    def select_plane(self, plane):
+        """Write the plane's code unless that plane is already active.
+
+        The plane stays selected until another plane code (modal group 2), so a
+        code per arc would be a redundant block. The decoder keeps its own
+        plane from the blocks it reads and decodes every arc in it: an omitted
+        code that was needed gives an arc that differs from the plan, and the
+        program is refused."""
+        if getattr(self, '_plane', None) != plane:
+            self.emit(self.machine.dialect.code('plane_' + plane))
+            self._plane = plane
 
     def number(self, value, *, dimensional=True):
         if not math.isfinite(value) or abs(value) > 1e6:
@@ -1084,7 +1115,6 @@ class GCodePost(PostProcessor):
         ):
             if effect not in d.fixed_modes:
                 self.emit(d.code(effect))
-        self._plane = plane[6:]
         # Explicitly stopped above, or the dialect declares it the controller's
         # startup mode. Tracked so later output omits only provably redundant codes.
         self._spindle_on = False
@@ -1505,9 +1535,8 @@ class GCodePost(PostProcessor):
         G18 LinuxCNC drills along Y ("performed with respect to the
         currently-selected plane", LinuxCNC G-code reference, Canned Cycles).
         camlib's cycles drill along Z, so G17 is selected first (#183)."""
-        if 'xy' in self.machine.planes and getattr(self, '_plane', None) != 'xy':
-            self.emit(self.machine.dialect.code('plane_xy'))
-            self._plane = 'xy'
+        if 'xy' in self.machine.planes:
+            self.select_plane('xy')
 
     def cycle_dwell(self, seconds):
         """The G82 P word, rounded up to the controller resolution."""
@@ -1545,8 +1574,7 @@ class GCodePost(PostProcessor):
             )
             return
         if isinstance(c, Arc):
-            self.emit(d.code('plane_' + c.plane))
-            self._plane = c.plane
+            self.select_plane(c.plane)
             effect = 'arc_ccw' if c.sweep_rad > 0 else 'arc_cw'
         else:
             effect = 'rapid' if motion.kind in ('rapid', 'shift') and motion.feed_mm_min is None else 'linear'
@@ -3188,7 +3216,8 @@ class PostEngine:
                 if plane is not None:
                     decoder.ready.add('plane')
                     # The native batch wrote the plane codes: keep the post's
-                    # plane in step (canned cycles select G17 from it, #183).
+                    # plane in step (later hooks select a plane only when it
+                    # changes; canned cycles select G17 from it, #183).
                     post._plane = plane
                 i = j
                 continue
@@ -3259,6 +3288,8 @@ class PostEngine:
             d.position, d.plane = tuple(position), plane
             if plane is not None:
                 d.ready.add('plane')
+                # As in _format_default: the post's plane follows the batch.
+                self.post._plane = plane
             return Chunk(raw)
         originals = [
             e

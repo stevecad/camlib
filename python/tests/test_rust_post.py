@@ -529,6 +529,87 @@ class RustPostEventsTest(unittest.TestCase):
                         for line in broken:
                             decoder.read_line(line, dict(id=1, operation="file", kind="cut"))
 
+    def test_a_plane_is_selected_once_and_again_only_when_it_changes(self):
+        """#204: plane selection is modal (G17/G18/G19, modal group 2), so the
+        post writes a plane code only for a change, and the decoder still has
+        the plane of every arc from the program alone."""
+        from camlib.post import GCodePost, NativeGCodeDecoder
+        from test_post import fixture
+
+        p, m = fixture()
+        q = math.pi / 2
+        curves = (
+            Arc((5, 0, 3), (0, 5, 3), (0, 0, 3), q, "xy"),
+            Arc((0, 5, 3), (5, 0, 3), (0, 0, 3), -q, "xy"),
+            Arc((5, 0, 3), (10, 0, 8), (10, 0, 3), q, "xz"),
+            Arc((10, 0, 8), (5, 0, 3), (10, 0, 3), -q, "xz"),
+            Arc((5, 0, 3), (5, 5, 8), (5, 5, 3), -q, "yz"),
+            Arc((5, 5, 8), (5, 0, 3), (5, 5, 3), q, "yz"),
+            Line((5, 0, 3), (6, 0, 3)),
+            Arc((6, 0, 3), (0, 6, 3), (0, 0, 3), q, "xy"),
+        )
+        moves = tuple(Motion(i + 1, "op", "t1", c, 1200) for i, c in enumerate(curves))
+        program = replace(p, events=(*p.events[:4], *moves, Coolant("off"), Spindle(0)))
+        text = self.assert_same(program, m)
+        lines = text.splitlines()
+        # The header's G17 covers the first two arcs; then each change, once.
+        self.assertEqual([x for x in lines if x in ("G17", "G18", "G19")], ["G17", "G18", "G19", "G17"], text)
+        planes = [c.plane for c in curves if isinstance(c, Arc)]
+        self.assertEqual(sum(x.startswith(("G2 ", "G3 ")) for x in lines), len(planes))
+
+        # The same blocks through the Python hooks (a subclass is not taken by
+        # the native batch formatter).
+        class Hooked(GCodePost):
+            def on_motion(self, motion):
+                super().on_motion(motion)
+
+        self.assertEqual("".join(chunk.text for chunk in post_program(program, m, post=Hooked)), text)
+
+        def decoded(lines):
+            decoder = NativeGCodeDecoder(m, program)
+            events = [e for x in lines for e in decoder.read_line(x, dict(id=1, operation="file", kind="cut"))]
+            return [e.curve.plane for e in events if isinstance(e, Motion) and isinstance(e.curve, Arc)]
+
+        self.assertEqual(decoded(lines), planes)
+        # Without a plane code that changes the plane, the arcs after it are
+        # not the planned ones: the block is refused or read in the old plane.
+        changes = [i for i, x in enumerate(lines) if x in ("G17", "G18", "G19")][1:]
+        self.assertEqual(len(changes), 3)
+        for i in changes:
+            with self.subTest(omitted=lines[i], line=i):
+                try:
+                    got = decoded(lines[:i] + lines[i + 1 :])
+                except ValueError:
+                    continue
+                self.assertNotEqual(got, planes)
+
+    def test_a_cycle_that_selected_g17_leaves_it_selected(self):
+        """#204 with #183: the G17 a canned cycle needed after an XZ arc is the
+        plane of the XY arc after it (no second G17); an XZ arc selects G18 again."""
+        from test_post import fixture
+
+        p, m = fixture()
+        q = math.pi / 2
+        covers = (
+            Motion(2, "drill", "t1", Line((10, 0, 8), (10, 0, 5)), None, "rapid"),
+            Motion(3, "drill", "t1", Line((10, 0, 5), (10, 0, 1)), 150),
+            Motion(4, "drill", "t1", Line((10, 0, 1), (10, 0, 8)), None, "rapid"),
+        )
+        events = (
+            *p.events[:4],
+            Motion(1, "op", "t1", Arc((5, 0, 3), (10, 0, 8), (10, 0, 3), q, "xz"), 1200),
+            Cycle("drill", (10, 0), 1, 5, 8, 150, len(covers)),
+            *covers,
+            Motion(5, "op", "t1", Arc((10, 0, 8), (0, 10, 8), (0, 0, 8), q, "xy"), 1200),
+            Motion(6, "op", "t1", Arc((0, 10, 8), (5, 10, 3), (5, 10, 8), -q, "xz"), 1200),
+            Coolant("off"),
+            Spindle(0),
+        )
+        text = self.assert_same(replace(p, events=events), m)
+        lines = text.splitlines()
+        self.assertEqual([x for x in lines if x in ("G17", "G18", "G19")], ["G17", "G18", "G17", "G18"], text)
+        self.assertEqual(sum(x.startswith(("G2 ", "G3 ")) for x in lines), 3)
+
     def test_lathe_words_as_data(self):
         """Diameter X, T<tt><oo>, constant surface speed, feed per revolution."""
         from test_post import fixture

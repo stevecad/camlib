@@ -166,13 +166,9 @@ class CentroidLathePost(GCodePost):
         if motion.kind in ('rapid', 'shift') and c.start[0] != c.end[0] and c.start[2] != c.end[2]:
             raise ValueError('CNC12 G0 runs each axis at its own rate: a lathe rapid moves along X or Z only')
         super().on_motion(motion)
-        # The header's G18 is the only plane; no Y words.
+        # No Y words. (The header's G18 stays the plane: no arc writes another.)
         y = self.machine.dialect.axes[1]
-        self._lines = [
-            ' '.join(w for w in line.split(' ') if not w.startswith(y))
-            for line in self._lines
-            if line != self.machine.dialect.code('plane_xz')
-        ]
+        self._lines = [' '.join(w for w in line.split(' ') if not w.startswith(y)) for line in self._lines]
 
     def on_finish(self):
         d = self.machine.dialect

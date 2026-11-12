@@ -232,7 +232,6 @@ class LNCMillPost(GCodePost):
 
     def on_begin(self, program):
         self.active_tool = None
-        self._plane = None
         super().on_begin(program)
         self._lines = [('G52 X0. Y0. Z0.' if line == 'G52' else line) for line in self._lines]
 
@@ -257,15 +256,6 @@ class LNCMillPost(GCodePost):
             'H' + str(event.length_register),
             *self.words(('Z', 'F'), (self.active_tool.position_after_mm[2], self.machine.traverse_feed_mm_min)),
         )
-
-    def emit(self, *words):
-        # Plane codes only when the plane changes (the base writes one per arc).
-        planes = {self.machine.dialect.code('plane_' + p): p for p in self.machine.planes}
-        if len(words) == 1 and words[0] in planes:
-            if planes[words[0]] == getattr(self, '_plane', None):
-                return
-            self._plane = planes[words[0]]
-        return super().emit(*words)
 
     def tap(self, motion):
         c = motion.curve

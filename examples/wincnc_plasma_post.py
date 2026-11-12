@@ -145,6 +145,8 @@ class WinCNCPlasmaPost(GCodePost):
         # block, right after this header and before any motion.
         self.emit('G40')
         self.emit('G49')
+        # WinCNC arcs are XY only and it has no plane words: XY is the plane.
+        self._plane = 'xy'
         self._spindle_on = False
         self._coolant_mode = 'off'
 
@@ -184,10 +186,8 @@ class WinCNCPlasmaPost(GCodePost):
             )
         super().on_motion(motion)
         z = self.machine.dialect.axes[2]
-        # No plane words (WinCNC arcs are XY) and no Z words.
-        self._lines = [
-            ' '.join(w for w in line.split(' ') if not w.startswith(z)) for line in self._lines if line != 'G17'
-        ]
+        # No Z words.
+        self._lines = [' '.join(w for w in line.split(' ') if not w.startswith(z)) for line in self._lines]
 
     def on_finish(self):
         # As WinCNC's posts: the end macro alone (no length offset was ever

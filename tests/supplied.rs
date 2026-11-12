@@ -302,12 +302,10 @@ fn the_posted_program_holds_the_supplied_moves_and_decodes_back() {
         "G0 X6 Y6.123 Z5.5",
         "G1 X6 Y6.123 Z4 F150",
         "G1 X12 Y6.123 Z4 F612.5",
-        // The default post selects the plane before each arc, and an arc
-        // in XY carries no Z word.
-        "G17",
+        // The header's G17 is still the plane: no arc repeats it (#204).
+        // An arc in XY carries no Z word.
         "G3 X12 Y10.123 I0 J2 F500",
         "G1 X6 Y10.123 Z4 F612.5",
-        "G17",
         "G3 X6 Y6.123 Z3.5 I0 J-2 F200",
         "G1 X6 Y6.123 Z8 F300",
     ];

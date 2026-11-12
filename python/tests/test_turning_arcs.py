@@ -114,6 +114,26 @@ class TurningArcsTest(unittest.TestCase):
         self.assertEqual(posted.material["gouge"]["assessment"], "within_tolerance")
         self.assertEqual(posted.material["residual"]["definite_cells"], 0, posted.material["findings"][:3])
 
+    def test_the_plane_is_selected_once_for_all_arcs(self):
+        """#204: G18 is modal (modal group 2), so the header's G18 is the only
+        one in a lathe program; the decoder reads every arc in XZ from it."""
+        from camlib.motion import Arc, Motion
+        from camlib.post import NativeGCodeDecoder
+
+        nc = self.post().text.splitlines()
+        self.assertEqual(sum(line.split()[0] in ("G2", "G3") for line in nc if line), 3)
+        self.assertEqual([line for line in nc if line in ("G17", "G18", "G19")], ["G18"], nc)
+
+        def planes(lines):
+            decoder = NativeGCodeDecoder(self.machine, self.plan.program)
+            events = [e for x in lines for e in decoder.read_line(x, dict(id=1, operation="file", kind="cut"))]
+            return [e.curve.plane for e in events if isinstance(e, Motion) and isinstance(e.curve, Arc)]
+
+        self.assertEqual(planes(nc), ["xz"] * 3)
+        # Without that one G18 no arc has a plane: the program is refused.
+        with self.assertRaises(ValueError):
+            planes([line for line in nc if line != "G18"])
+
     def test_arcs_take_far_fewer_blocks_than_their_chords(self):
         native = self.post().text.splitlines()
         # The same plan with every curve as checked line segments (chords

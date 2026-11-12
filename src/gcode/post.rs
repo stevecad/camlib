@@ -42,8 +42,10 @@ pub struct DefaultPost {
     pending_compensation: Option<Vec<String>>,
     cycle_open: bool,
     cycle_initial: Option<f64>,
-    /// The plane the last plane code selected: canned cycles drill along Z
-    /// only in G17 (#183).
+    /// The plane the last plane code selected. Plane selection is modal
+    /// (G17/G18/G19, modal group 2: LinuxCNC G-code reference, "Modal
+    /// Groups"), so a code is written only for a change (#204); canned
+    /// cycles drill along Z only in G17 (#183).
     plane: Option<crate::motion::Plane>,
     covered: u32,
     /// The moves still covered are a probing cycle's (none of its events
@@ -168,7 +170,32 @@ impl DefaultPost {
         if self.lines.len() >= self.limit || line.len() > 1024 || invalid_block(&line) {
             return Err("post hook output exceeds block/ASCII/1024byte limit".into());
         }
+        // A block that is a plane code alone makes that plane the active one,
+        // whichever hook wrote it.
+        if let Some(c) = self.machine.dialect.commands.iter().find(|c| {
+            c.code == line && matches!(c.effect.as_str(), "plane_xy" | "plane_xz" | "plane_yz")
+        }) {
+            use crate::motion::Plane;
+            self.plane = Some(match c.effect.as_str() {
+                "plane_xy" => Plane::Xy,
+                "plane_xz" => Plane::Xz,
+                _ => Plane::Yz,
+            });
+        }
         self.lines.push(line);
+        Ok(())
+    }
+    /// Write the plane's code unless that plane is already active
+    /// (`GCodePost.select_plane`). The decoder keeps its own plane from the
+    /// blocks it reads and decodes every arc in it, so an omitted code that
+    /// was needed gives an arc that differs from the plan and is refused.
+    fn select_plane(&mut self, plane: crate::motion::Plane) -> Result<(), String> {
+        if self.plane != Some(plane) {
+            let effect = format!("plane_{}", super::decode::plane_name(plane));
+            let code = self.machine.dialect.code(&effect)?.to_string();
+            self.emit(&[&code])?;
+            self.plane = Some(plane);
+        }
         Ok(())
     }
     fn emit_owned(&mut self, words: Vec<String>) -> Result<(), String> {
@@ -934,11 +961,6 @@ impl DefaultPost {
                 .ok_or("machine declares no plane")?;
             format!("plane_{}", super::decode::plane_name(*first))
         };
-        self.plane = if self.machine.planes.contains(&crate::motion::Plane::Xy) {
-            Some(crate::motion::Plane::Xy)
-        } else {
-            self.machine.planes.first().copied()
-        };
         let units = if self.machine.output_units == "mm" {
             "units_mm"
         } else {
@@ -1035,10 +1057,8 @@ impl DefaultPost {
     /// camlib's cycles drill along Z, so G17 is selected first (#183).
     fn cycle_plane(&mut self) -> Result<(), String> {
         use crate::motion::Plane;
-        if self.machine.planes.contains(&Plane::Xy) && self.plane != Some(Plane::Xy) {
-            let code = self.machine.dialect.code("plane_xy")?.to_string();
-            self.emit(&[&code])?;
-            self.plane = Some(Plane::Xy);
+        if self.machine.planes.contains(&Plane::Xy) {
+            self.select_plane(Plane::Xy)?;
         }
         Ok(())
     }
@@ -1250,7 +1270,7 @@ impl DefaultPost {
                 let feed = motion
                     .feed_mm_min
                     .ok_or("Haas circular motion requires positive explicit feed")?;
-                self.emit(&["G17"])?;
+                self.select_plane(crate::motion::Plane::Xy)?;
                 let (end, offsets) = self.circular_values(c)?;
                 let full = c.start()[..2] == c.end()[..2];
                 let mut addresses = Vec::new();
@@ -1271,8 +1291,7 @@ impl DefaultPost {
             }
         }
         let effect = if let Some((plane, sweep, _)) = circular {
-            self.emit(&[d.code(&format!("plane_{}", super::decode::plane_name(plane)))?])?;
-            self.plane = Some(plane);
+            self.select_plane(plane)?;
             if sweep > 0. { "arc_ccw" } else { "arc_cw" }
         } else if motion.kind.is_rapid() && motion.feed_mm_min.is_none() {
             "rapid"

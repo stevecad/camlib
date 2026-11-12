@@ -2406,6 +2406,14 @@ impl DefaultMotionPost {
         use camlib::motion::{Curve, MoveKind, Plane};
         let names = ["xy", "xz", "yz"];
         let mut plane = plane;
+        // The plane the program has selected: the decoder's on entry (what
+        // the blocks written so far select), then each plane code written
+        // here. Plane selection is modal (G17/G18/G19, modal group 2:
+        // LinuxCNC G-code reference, "Modal Groups"), so a code is written
+        // only for a change (#204). The decoding below keeps its own plane
+        // from the blocks it reads; the session checks each decoded arc
+        // against its source, so a missing code is refused.
+        let mut selected = plane;
         let mut position = position;
         let declared = |code: &Option<String>, effect: &str| {
             code.clone()
@@ -2444,10 +2452,13 @@ impl DefaultMotionPost {
                         Plane::Xz => 1,
                         Plane::Yz => 2,
                     };
-                    lines.push(declared(
-                        &self.planes[index],
-                        &format!("plane_{}", names[index]),
-                    )?);
+                    if selected != Some(index) {
+                        lines.push(declared(
+                            &self.planes[index],
+                            &format!("plane_{}", names[index]),
+                        )?);
+                        selected = Some(index);
+                    }
                     let [u, v, normal] = p.axes();
                     let axes = if matches!(m.curve, Curve::Helix { .. }) {
                         vec![0, 1, 2]

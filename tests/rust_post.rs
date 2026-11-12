@@ -206,6 +206,105 @@ fn canned_cycles_are_refused_outside_g17() {
     }
 }
 
+/// An explicit program on the fixture machine: arcs in XY, XY, XZ, XZ, YZ and
+/// XY again (the planes named per arc).
+fn plane_program() -> (Value, Vec<&'static str>) {
+    use std::f64::consts::FRAC_PI_2;
+    let f = fixture();
+    let arc = |id: u64, start: [f64; 3], end: [f64; 3], center: [f64; 3], sweep: f64, plane: &str| {
+        serde_json::json!({"kind": "motion", "motion": {
+            "id": id, "operation": "arcs", "tool": "mill4", "kind": "cut", "feed_mm_min": 300,
+            "curve": {"kind": "arc", "start": start, "end": end, "center": center,
+                      "sweep_rad": sweep, "plane": plane}}})
+    };
+    let events = serde_json::json!([
+        {"kind": "work_offset", "number": 1},
+        {"kind": "tool_change", "tool": "mill4", "number": 7, "length_register": 9,
+         "position_after_mm": [0, 0, 8]},
+        {"kind": "spindle", "rpm": 12000, "direction": "cw"},
+        {"kind": "motion", "motion": {"id": 1, "operation": "arcs", "tool": "mill4", "kind": "cut",
+            "feed_mm_min": 300,
+            "curve": {"kind": "line", "start": [0, 0, 8], "end": [5, 0, 8]}}},
+        arc(2, [5., 0., 8.], [0., 5., 8.], [0., 0., 8.], FRAC_PI_2, "xy"),
+        arc(3, [0., 5., 8.], [5., 0., 8.], [0., 0., 8.], -FRAC_PI_2, "xy"),
+        arc(4, [5., 0., 8.], [10., 0., 13.], [10., 0., 8.], FRAC_PI_2, "xz"),
+        arc(5, [10., 0., 13.], [5., 0., 8.], [10., 0., 8.], -FRAC_PI_2, "xz"),
+        arc(6, [5., 0., 8.], [5., 5., 13.], [5., 5., 8.], -FRAC_PI_2, "yz"),
+        arc(7, [5., 5., 13.], [0., 10., 13.], [0., 5., 13.], FRAC_PI_2, "xy"),
+    ]);
+    let input = serde_json::json!({
+        "machine": f["machine"],
+        "program": {
+            "version": 1, "id": "planes", "revision": "1", "units": "mm", "tolerance_mm": 1e-6,
+            "frame": f["frame"], "initial_position_mm": [0, 0, 8],
+            "tools": [f["manifest"]["tools"][0]], "events": events,
+        },
+    });
+    (input, vec!["xy", "xy", "xz", "xz", "yz", "xy"])
+}
+
+#[test]
+fn a_plane_is_selected_once_and_again_only_when_it_changes() {
+    // #204: plane selection is modal (G17/G18/G19, modal group 2: LinuxCNC
+    // G-code reference, "Modal Groups"), so a plane code per arc is a
+    // redundant block.
+    let (input, planes) = plane_program();
+    let report: Value = serde_json::from_str(
+        &camlib::gcode::post_program(&input.to_string(), &AtomicBool::new(false)).unwrap(),
+    )
+    .unwrap();
+    let program = report["program"].as_str().unwrap();
+    let lines: Vec<&str> = program.lines().collect();
+    let codes: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|l| ["G17", "G18", "G19"].contains(l))
+        .collect();
+    // The header's G17 covers both XY arcs; then each change, once.
+    assert_eq!(codes, ["G17", "G18", "G19", "G17"], "{program}");
+    assert_eq!(
+        lines.iter().filter(|l| l.starts_with("G2 ") || l.starts_with("G3 ")).count(),
+        planes.len(),
+        "{program}"
+    );
+
+    // The decoder, reading the program alone, has the plane of every arc.
+    let machine = Machine::from_json(input["machine"].clone()).unwrap();
+    let decode = |lines: &[&str]| -> Result<Vec<&'static str>, String> {
+        let mut decoder = Decoder::new(&machine, [0., 0., 8.], Default::default())?;
+        let context = Context {
+            id: 1,
+            operation: "arcs".into(),
+            kind: MoveKind::Cut,
+        };
+        let mut out = vec![];
+        for line in lines {
+            for event in decoder.read_line(line, Some(&context))? {
+                if let camlib::motion::Event::Motion { motion } = event
+                    && let camlib::motion::Curve::Arc { plane, .. } = motion.curve
+                {
+                    out.push(camlib::gcode::decode::plane_name(plane));
+                }
+            }
+        }
+        Ok(out)
+    };
+    assert_eq!(decode(&lines).unwrap(), planes);
+    // Without a plane code that changes the plane, the arcs after it are not
+    // the planned ones: the block is refused or read in the old plane.
+    for code in ["G18", "G19"] {
+        let at = lines.iter().position(|l| *l == code).unwrap();
+        let mut broken = lines.clone();
+        broken.remove(at);
+        assert!(decode(&broken).map_or(true, |got| got != planes), "{code}");
+    }
+    // The last G17 (after the YZ arc) is needed as well.
+    let at = lines.iter().rposition(|l| *l == "G17").unwrap();
+    let mut broken = lines.clone();
+    broken.remove(at);
+    assert!(decode(&broken).map_or(true, |got| got != planes));
+}
+
 #[test]
 fn cam_post_command_reports_on_stdout() {
     use std::io::Write;

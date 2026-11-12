@@ -286,7 +286,7 @@ class HaasNGCPost(GCodePost):
             raise ValueError('native Haas reference arc requires G17')
         if motion.feed_mm_min is None:
             raise ValueError('Haas circular motion requires positive explicit feed')
-        self.emit('G17')
+        self.select_plane('xy')
         full = c.start[:2] == c.end[:2]
         axes = ([] if full else [0, 1]) + ([2] if isinstance(c, Helix) else [])
         addresses = ['XYZ'[i] for i in axes] + ['I', 'J', 'F']
