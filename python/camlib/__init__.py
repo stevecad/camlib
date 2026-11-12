@@ -55,6 +55,7 @@ _EXPORTS = {
             "Parallel",
             "Waterline",
             "HelicalEntry",
+            "RampEntry",
             "StockEdgeEntry",
             "RasterClearing",
             "OffsetClearing",

@@ -27,12 +27,223 @@ pub enum PocketEntry {
     Helix(HelicalEntry),
     StockEdgeOrHelix(HelicalEntry),
     StockEdge(HelicalEntry),
+    /// Descend along the cutting path itself (see [`RampEntry`]).
+    Ramp(RampEntry),
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EntryPolicy {
     Helix,
     StockEdgeOrHelix,
     StockEdge,
+    Ramp,
+}
+/// Ramp entry: the tool descends along the path it is about to cut, at no
+/// more than `angle_rad` to the XY plane, at the entry feed, and the path is
+/// then cut at full depth, which removes the sloped floor the ramp left.
+///
+/// Reference: FreeCAD CAM's Ramp Entry dressup (FreeCAD/FreeCAD at commit
+/// 9623213a: `src/Mod/CAM/Path/Dressup/Gui/RampEntry.py`, properties `Angle`
+/// "Angle of ramp" and `Method`; generator
+/// `src/Mod/CAM/Path/Base/Generator/ramp_entry.py`).
+/// - Its ramp replaces a plunge by a descent along "the path that comes
+///   after the plunge", over the XY length `plungelen / tan(angle)`
+///   (`generateRamps`). camlib's one-leg ramp is its "Ramp Method 2":
+///   "Travel at start depth along the path, for a distance required" and
+///   "Ramp backwards along the path at rampangle, arriving exactly at the
+///   bottom of the plunge".
+/// - When the path is shorter than that length its `_createRampHelper`
+///   turns round at the path's end and keeps descending ("Method1 support
+///   going back-and-forth"). camlib's zigzag does the same, with every leg
+///   the whole path at one equal, shallower slope so that the last leg ends
+///   at the start of the cut (FreeCAD keeps the angle and returns to the
+///   start at depth instead).
+/// - On a closed path ("Ramp Method 0: Helix like path", "Can be applied
+///   only to closed path") its `createHelix` descends in whole loops,
+///   `max(ceil(height / pitch), ceil(height / length / tan(angle)))` of
+///   them, `pitch` being the "Maximum height for each helix turn". camlib's
+///   Contour ramp is that, with the operation's stepdown as the pitch.
+///
+/// Autodesk Fusion's 2D Pocket and 2D Contour have the same entries
+/// (help.autodesk.com/cloudhelp/ENU/Fusion-CAM/files/
+/// GUID67DC60DE-EE42-4BC4-B50D-B28D938D146E.htm and
+/// GUID75B6821B-DE26-4E3B-AF10-4A54131CD9E4.htm): "Ramp Type" ("Zig-Zag",
+/// "Profile", "Helix", "Plunge", ...), "Ramping Angle (deg): Specifies the
+/// maximum ramping angle of the helix during the cut" and "Maximum Ramp
+/// Stepdown: Specifies the maximum stepdown per revolution on the ramping
+/// profile. This parameter allows the tool load to be constrained when
+/// doing full-width cuts during ramping".
+///
+/// The angle is a fact about the tool and material, so it has no default.
+/// Neither has `min_length_mm`, the shortest span the tool may reverse a
+/// ramp on: FreeCAD has no such limit (it zigzags on any edge), and camlib
+/// assumes no cutting data, so a ramp that has to reverse is refused until
+/// the caller declares it, and refused on a span shorter than declared. A
+/// one-leg ramp never reverses and does not need it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RampEntry {
+    pub angle_rad: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_length_mm: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feed_mm_min: Option<f64>,
+}
+/// A ramp never has more legs (or laps) than this, like the helix's
+/// 1000-turn bound.
+pub(crate) const MAX_RAMP_LEGS: f64 = 1000.;
+impl RampEntry {
+    pub(crate) fn validate(&self, tol: f64, default_feed: f64) -> Result<(), String> {
+        let feed = self.feed_mm_min.unwrap_or(default_feed);
+        if !self.angle_rad.is_finite() || self.angle_rad <= 0. || self.angle_rad >= PI / 2. {
+            return Err(format!(
+                "invalid ramp entry: the angle {} rad must be above 0 and below 90 degrees",
+                self.angle_rad
+            ));
+        }
+        if self
+            .min_length_mm
+            .is_some_and(|m| !m.is_finite() || m <= 64. * tol || m > 1e6)
+        {
+            return Err(format!(
+                "invalid ramp entry: min_length_mm {:?} (the shortest span the tool may reverse a ramp on) must be a positive length",
+                self.min_length_mm
+            ));
+        }
+        if !(feed.is_finite() && feed > 0.) {
+            return Err(format!(
+                "invalid ramp entry: feed_mm_min {feed} must be positive"
+            ));
+        }
+        Ok(())
+    }
+    /// Whole laps of a closed loop `length` long that descend `depth` at no
+    /// more than the angle and no more than `max_drop` per lap (the axial
+    /// depth of cut: a lap cuts what the lap above left).
+    pub(crate) fn laps(&self, length: f64, depth: f64, max_drop: f64) -> Result<usize, String> {
+        let exact = 1. - 128. * f64::EPSILON;
+        let count = (depth / (length * self.angle_rad.tan()) * exact)
+            .max(depth / max_drop * exact)
+            .ceil()
+            .max(1.);
+        if !count.is_finite() || count > MAX_RAMP_LEGS {
+            return Err(format!(
+                "ramp entry needs more than {MAX_RAMP_LEGS} laps of a loop {length:.4} mm long to descend {depth:.4} mm; use a steeper angle the tool allows"
+            ));
+        }
+        Ok(count as usize)
+    }
+    /// The legs of a zigzag ramp descending `depth` on a path `total` long,
+    /// and the length each leg covers (the whole path when it reverses,
+    /// exactly what the angle needs otherwise). `Err` names why no ramp fits.
+    pub(crate) fn legs(&self, total: f64, depth: f64) -> Result<(usize, f64), String> {
+        if depth.is_nan() || depth <= 0. || total.is_nan() || total <= 0. {
+            return Err("the ramp has no depth or no path to follow".into());
+        }
+        // Horizontal travel the angle needs for this depth.
+        let needed = depth / self.angle_rad.tan();
+        let legs = (needed / total * (1. - 128. * f64::EPSILON)).ceil().max(1.);
+        let span = if legs == 1. { needed.min(total) } else { total };
+        if legs > 1. {
+            let short = format!(
+                "the path there is {total:.4} mm long, shorter than the {needed:.4} mm a {:.3} degree ramp needs for {depth:.4} mm of depth, so the ramp has to reverse on it",
+                self.angle_rad.to_degrees()
+            );
+            match self.min_length_mm {
+                None => {
+                    return Err(format!(
+                        "{short}, and RampEntry.min_length_mm is not set: declare the shortest span this tool may reverse a ramp on (camlib assumes no cutting data)"
+                    ));
+                }
+                Some(minimum) if total < minimum => {
+                    return Err(format!(
+                        "{short}, and it is shorter than min_length_mm {minimum:.4} mm, the shortest span declared for a reversal; a smaller angle does not help"
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+        if !legs.is_finite() || legs > MAX_RAMP_LEGS {
+            return Err(format!(
+                "the ramp needs more than {MAX_RAMP_LEGS} zigzag legs over a path {total:.4} mm long to descend {depth:.4} mm"
+            ));
+        }
+        Ok((legs as usize, span))
+    }
+    /// The ramp from `top` down to `bottom` along `chain` (contiguous
+    /// strokes; the cut starts at the chain's first point and the ramp ends
+    /// there, at `bottom`). Returns the curves in order; the first starts at
+    /// height `top`. `Err` names why no ramp fits: the caller adds which
+    /// pocket and level.
+    pub(crate) fn zigzag(
+        &self,
+        chain: &[Stroke],
+        top: f64,
+        bottom: f64,
+    ) -> Result<Vec<Curve>, String> {
+        use crate::profiles::{stroke_length, sub_curve};
+        let lengths: Vec<f64> = chain.iter().map(stroke_length).collect();
+        let total: f64 = lengths.iter().sum();
+        let depth = top - bottom;
+        let (legs, span) = self.legs(total, depth)?;
+        // One leg over [from, to] of the chain's arc length, in travel order.
+        let leg = |forward: bool, z0: f64, z1: f64, out: &mut Vec<Curve>| {
+            let height = |s: f64| {
+                // Travelled fraction of the leg at arc length s.
+                let f = if forward { s / span } else { 1. - s / span };
+                if f <= 0. {
+                    z0
+                } else if f >= 1. {
+                    z1
+                } else {
+                    z0 + (z1 - z0) * f
+                }
+            };
+            let mut pieces = vec![];
+            let mut start = 0.;
+            for (stroke, &length) in chain.iter().zip(&lengths) {
+                let end = start + length;
+                if length > 0. && start < span {
+                    let t1 = if end <= span {
+                        1.
+                    } else {
+                        (span - start) / length
+                    };
+                    let reach = end.min(span);
+                    if t1 > 0. {
+                        pieces.push(if forward {
+                            sub_curve(stroke, 0., t1, height(start), height(reach))
+                        } else {
+                            sub_curve(
+                                &stroke.reversed(),
+                                1. - t1,
+                                1.,
+                                height(reach),
+                                height(start),
+                            )
+                        });
+                    }
+                }
+                start = end;
+            }
+            if !forward {
+                pieces.reverse();
+            }
+            out.extend(pieces);
+        };
+        let mut curves = vec![];
+        for i in 0..legs {
+            // The last leg runs back to the start of the cut.
+            let forward = (legs - 1 - i) % 2 == 1;
+            let z0 = top - depth * i as f64 / legs as f64;
+            let z1 = if i + 1 == legs {
+                bottom
+            } else {
+                top - depth * (i + 1) as f64 / legs as f64
+            };
+            leg(forward, z0, z1, &mut curves);
+        }
+        Ok(curves)
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -57,16 +268,41 @@ impl Default for HelicalEntry {
     }
 }
 impl PocketEntry {
-    pub(crate) fn helix(&self) -> &HelicalEntry {
+    /// The helix of a helical or stock-edge entry; None for a ramp.
+    pub(crate) fn helix(&self) -> Option<&HelicalEntry> {
         match self {
-            Self::Helix(h) | Self::StockEdgeOrHelix(h) | Self::StockEdge(h) => h,
+            Self::Helix(h) | Self::StockEdgeOrHelix(h) | Self::StockEdge(h) => Some(h),
+            Self::Ramp(_) => None,
         }
+    }
+    pub(crate) fn ramp(&self) -> Option<&RampEntry> {
+        match self {
+            Self::Ramp(r) => Some(r),
+            _ => None,
+        }
+    }
+    /// The feed of the entry's descending moves, if it sets its own.
+    pub(crate) fn feed_mm_min(&self) -> Option<f64> {
+        match self {
+            Self::Ramp(r) => r.feed_mm_min,
+            Self::Helix(h) | Self::StockEdgeOrHelix(h) | Self::StockEdge(h) => h.feed_mm_min,
+        }
+    }
+    /// The refusal of an operation whose entry model has no ramp.
+    pub(crate) fn refuse_ramp(&self, operation: &str, why: &str) -> Result<(), String> {
+        if self.ramp().is_some() {
+            return Err(format!(
+                "{operation}: RampEntry is not supported here: {why}; use HelicalEntry or StockEdgeEntry"
+            ));
+        }
+        Ok(())
     }
     pub(crate) fn policy(&self) -> EntryPolicy {
         match self {
             Self::Helix(_) => EntryPolicy::Helix,
             Self::StockEdgeOrHelix(_) => EntryPolicy::StockEdgeOrHelix,
             Self::StockEdge(_) => EntryPolicy::StockEdge,
+            Self::Ramp(_) => EntryPolicy::Ramp,
         }
     }
 }
@@ -265,6 +501,11 @@ pub(crate) fn fit_entries(
         EntryPolicy::Helix => &[false],
         EntryPolicy::StockEdge => &[true],
         EntryPolicy::StockEdgeOrHelix => &[true, false],
+        EntryPolicy::Ramp => {
+            return Err(
+                "a ramp entry follows the cutting path and has no fitted entry location".into(),
+            );
+        }
     };
     for &stock_edge in stages {
         for radius in h.radii(cutter, preferred_cap, minimum) {

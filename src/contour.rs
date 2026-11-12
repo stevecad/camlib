@@ -59,6 +59,14 @@ pub struct ContourOperation {
     /// Containment and avoid areas (clamps, fixtures, features to leave alone).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limits: Option<crate::limits::Limits>,
+    /// `RampEntry`: each loop is cut in one continuous descent around it,
+    /// from the stock top to the floor, at no more than the ramp angle and
+    /// no more than `stepdown_mm` per lap, then once more flat at the floor.
+    /// None: a pass per level, each a straight plunge at the lead-in point
+    /// (the default). Only a ramp is accepted: a profile has no pocket to
+    /// fit a helix in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<crate::entry::PocketEntry>,
 }
 /// Holding tabs: `count` per loop (or one per `spacing_mm` of loop length),
 /// or one at each of `positions_mm`; `width_mm` wide along the part edge,
@@ -275,6 +283,26 @@ impl ContourPlan {
                 ),
             ],
         )?;
+        let ramp = match &op.entry {
+            None => None,
+            Some(crate::entry::PocketEntry::Ramp(ramp)) => {
+                ramp.validate(op.tolerance_mm, op.plunge_mm_min)
+                    .map_err(|e| format!("contour {}: {e}", op.id))?;
+                if op.tabs.is_some() {
+                    return Err(format!(
+                        "contour {}: a ramp entry cannot be combined with holding tabs: the tool comes back down from a tab steeper than the ramp angle. Remove the entry or the tabs",
+                        op.id
+                    ));
+                }
+                Some(ramp.clone())
+            }
+            Some(_) => {
+                return Err(format!(
+                    "contour {}: the entry must be a RampEntry (or None for a plunge): a profile has no pocket to fit a helical or stock-edge entry in",
+                    op.id
+                ));
+            }
+        };
         let options = ConstructionOptions {
             tolerance_mm: op.tolerance_mm,
         };
@@ -331,7 +359,21 @@ impl ContourPlan {
             .into_iter()
             .map(|p| p.strokes)
             .collect::<Vec<_>>();
+        if let Some(ramp) = &ramp {
+            // Refused before any motion.
+            for (index, ring) in loops.iter().enumerate() {
+                let length: f64 = ring.iter().map(crate::profiles::stroke_length).sum();
+                ramp.laps(length, spec.max_mm[2] - target, op.stepdown_mm)
+                    .map_err(|e| format!("contour {}, loop {index}: {e}", op.id))?;
+            }
+        }
         let passes = ((spec.max_mm[2] - target) / op.stepdown_mm).ceil() as usize;
+        // A ramp is one continuous descent per loop, not a pass per level.
+        let passes = if ramp.is_some() {
+            passes.min(1)
+        } else {
+            passes
+        };
         if loops.is_empty() || passes == 0 || first_id == 0 || first_id.checked_add(1).is_none() {
             return Err(
                 "contour has no selected loops or exceeds bounded geometry/passes/motion IDs"
@@ -534,12 +576,29 @@ impl ContourPlan {
             motion.sides = sides;
         }
         motion.tabs = tabs;
+        let ramped = ramp.is_some();
+        if let Some(ramp) = ramp {
+            motion.ramp_feed = ramp.feed_mm_min.unwrap_or(op.plunge_mm_min);
+            motion.entry_ramp = Some(ramp);
+        }
         if let Some(limits) = limits {
             motion.limits = Some(crate::limits::PreparedLimits::new(
                 &limits,
                 cutter.diameter_mm / 2.,
                 motion_tolerance,
             )?);
+            if ramped {
+                // Refused before any motion: a stretch the limits block is
+                // lifted over, and the tool comes straight back down.
+                for ring in 0..motion.loop_count() {
+                    if !motion.lifts(ring, target)?.is_empty() {
+                        return Err(format!(
+                            "contour {}: a ramp entry cannot be combined with limits that block part of loop {ring}: the tool is lifted over the blocked stretch and comes straight back down into material, steeper than the ramp angle. Remove the entry or change the limits",
+                            motion.operation_id()
+                        ));
+                    }
+                }
+            }
         }
         Ok(Self { motion, report })
     }

@@ -82,9 +82,7 @@ impl<C: CancelSignal> Scheduler<'_, C> {
         let entry_feed = op
             .entry
             .as_ref()
-            .unwrap()
-            .helix()
-            .feed_mm_min
+            .and_then(|e| e.feed_mm_min())
             .unwrap_or(op.plunge_mm_min);
         let mut best = None::<(f64, Candidate)>;
         for &candidate in candidates {
@@ -145,6 +143,12 @@ impl PocketPlan {
             || !self.rest_group_ends.is_empty()
         {
             return Err("raster scheduling needs an untouched non-rest plan".into());
+        }
+        if let Some(entry) = &self.operation.entry {
+            entry.refuse_ramp(
+                &format!("operation {}", self.operation.id),
+                "scheduled (offset or economical raster) clearing links its passes through fitted helical entry routes",
+            )?;
         }
         if self.strokes.is_empty() {
             self.report.routing = Some(RoutingReport::new(policy, 0));

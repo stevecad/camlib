@@ -497,6 +497,15 @@ impl AdaptivePlan {
         if op.path_strategy == AdaptivePathStrategy::EngagementFront {
             return Err("an engagement_front adaptive pocket is planned by PocketFrontPlan (OperationPlan::prepare)".into());
         }
+        if let Some(entry) = &op.pocket.entry {
+            // An adaptive pass is planned for a bounded engagement from a
+            // fitted seed circle; a ramp along the first pass is a full-width
+            // slot, which that model has no proof for.
+            entry.refuse_ramp(
+                &format!("adaptive pocket {}", op.pocket.id),
+                "adaptive clearing starts from a fitted helix (or the stock edge) so that every pass keeps its bounded engagement",
+            )?;
+        }
         let prepared = tool.prepare()?;
         let r = prepared.cutter().definition().diameter_mm / 2.;
         let (radius, min_radius, bound) = op.validate_parameters(r)?;
@@ -581,7 +590,7 @@ impl AdaptivePlan {
             let fit = fit_entries(
                 &guides,
                 &graph.tours,
-                entry.helix(),
+                entry.helix().ok_or("missing helical entry")?,
                 EntryFitOptions {
                     cutter_radius: r,
                     minimum_orbit: min_radius,
@@ -783,7 +792,7 @@ impl AdaptivePlan {
                         .pocket
                         .entry
                         .as_ref()
-                        .and_then(|e| e.helix().feed_mm_min)
+                        .and_then(|e| e.feed_mm_min())
                         .unwrap_or(self.op.pocket.plunge_mm_min)
                 } else {
                     self.op.pocket.feed_mm_min
@@ -1277,7 +1286,13 @@ impl AdaptivePlan {
                     );
                 }
                 Phase::EntryHelix => {
-                    let h = self.op.pocket.entry.as_ref().unwrap().helix();
+                    let h = self
+                        .op
+                        .pocket
+                        .entry
+                        .as_ref()
+                        .and_then(|e| e.helix())
+                        .ok_or("missing helical entry")?;
                     let turns = h.turns(self.active_radius, self.op.pocket.top_z_mm - self.z())?;
                     let default_clockwise = if self.front.is_some() {
                         self.op.cutting_sense.unwrap_or(CuttingSense::Climb)
@@ -1387,7 +1402,7 @@ impl AdaptivePlan {
                                 .pocket
                                 .entry
                                 .as_ref()
-                                .and_then(|e| e.helix().clockwise)
+                                .and_then(|e| e.helix()?.clockwise)
                                 .map_or(self.sign(), |clockwise| if clockwise { -1. } else { 1. })
                                 * TAU
                         } else {

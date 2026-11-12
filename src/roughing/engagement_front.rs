@@ -634,6 +634,10 @@ impl EngagementFrontPlan {
             .entry
             .clone()
             .ok_or("engagement_front needs an entry policy")?;
+        entry.refuse_ramp(
+            &format!("operation {}", op.id),
+            "engagement_front enters from air or cleared stock and helixes only into enclosed material, which is what its engagement proof covers",
+        )?;
         if entry.policy() == EntryPolicy::Helix {
             return Err("engagement_front enters from air or cleared stock and helixes only into enclosed material; use StockEdgeEntry (stock_edge_or_helix or stock_edge), not HelicalEntry".into());
         }
@@ -2036,11 +2040,7 @@ impl EngagementFrontPlan {
         let limit = self.report.engagement_limit_deg;
         let mut failed = None;
         let (mut proved, mut upper) = (0, 0f64);
-        let entry_feed = self
-            .entry
-            .helix()
-            .feed_mm_min
-            .unwrap_or(self.op.plunge_mm_min);
+        let entry_feed = self.entry.feed_mm_min().unwrap_or(self.op.plunge_mm_min);
         // `halved[i]`: stroke `from + i` continues the straight stroke before
         // it, which the proof halved.
         let mut halved = vec![false; self.pending.len().saturating_sub(from)];
@@ -2360,7 +2360,11 @@ impl EngagementFrontPlan {
                 return Ok(false);
             };
             let q = layer.g.center(k);
-            let helix = self.entry.helix().clone();
+            let helix = self
+                .entry
+                .helix()
+                .ok_or("engagement_front: missing helical entry")?
+                .clone();
             let radii = helix.radii(r, r / 2., 0.);
             let Some(rh) = radii.into_iter().find(|&h| h <= room - c && h > 4. * c) else {
                 self.mark_dead(q, 1);

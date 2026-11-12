@@ -102,7 +102,9 @@ that are kept.** Boundaries are polygons (`Boundary.polygon`) or line/arc loops
 - Entry: `entry=None` plunges straight down (center-cutting tool required);
   `HelicalEntry(angle_deg=3, radius_mm=None, ...)` ramps in on a helix, written
   one full turn per G2/G3 block; `StockEdgeEntry()` enters from outside the
-  stock where possible, helical otherwise.
+  stock where possible, helical otherwise; `RampEntry(angle_deg)` ramps in
+  along the cutting path (see [Ramp entry](#ramp-entry-rampentry)), the entry
+  for slots and narrow pockets a helix does not fit.
 - Heights: `retract_z_mm` (travel between passes) and `feed_z_mm` (where rapid
   approach changes to plunge feed, and where leaving a cut changes from feed to
   rapid). Both default to `clearance_z_mm`, the most conservative behaviour.
@@ -156,6 +158,100 @@ holder sections. Parallel finishing and waterline, when the remaining stock
 stands taller than the flutes, refuse a feed move whose neck, shank or holder
 section would meet that stock the same way (`z_mm` is the move's lowest tip). In Rust, `camlib::reach::ReachRefusal::parse` reads it from
 the error text.
+
+### Ramp entry: `RampEntry`
+
+`RampEntry(angle_deg, min_length_mm=None, feed_mm_min=None)` enters by
+descending along the pass the tool is about to cut, never steeper than
+`angle_deg` to the XY plane, at the entry feed (`feed_mm_min`, default the
+operation's `plunge_mm_min`). The pass is then cut at full depth, which removes
+the sloped floor the ramp left. `angle_deg` is a fact about the tool and
+material, so there is no default.
+
+References:
+
+- FreeCAD CAM's Ramp Entry dressup
+  ([`Path/Dressup/Gui/RampEntry.py`](https://github.com/FreeCAD/FreeCAD/blob/9623213a59dd3cda20fb573f8295691af23b6b68/src/Mod/CAM/Path/Dressup/Gui/RampEntry.py),
+  generator
+  [`Path/Base/Generator/ramp_entry.py`](https://github.com/FreeCAD/FreeCAD/blob/9623213a59dd3cda20fb573f8295691af23b6b68/src/Mod/CAM/Path/Base/Generator/ramp_entry.py)):
+  a plunge is replaced by a descent along "the path that comes after the
+  plunge" over the XY length `plungelen / tan(angle)`. The pocket's one-leg
+  ramp is its "Ramp Method 2" ("Travel at start depth along the path, for a
+  distance required", then "Ramp backwards along the path at rampangle,
+  arriving exactly at the bottom of the plunge"). On a path shorter than that
+  length its ramp helper turns round at the end of the path and keeps
+  descending ("going back-and-forth"), which is the pocket's zigzag. On a
+  closed path its "Helix like path" method descends in whole loops,
+  `max(ceil(height / pitch), ceil(height / length / tan(angle)))` of them
+  (`pitch`: "Maximum height for each helix turn"), which is the contour's ramp
+  with `stepdown_mm` as the pitch.
+- Autodesk Fusion,
+  [2D Pocket reference](https://help.autodesk.com/cloudhelp/ENU/Fusion-CAM/files/GUID67DC60DE-EE42-4BC4-B50D-B28D938D146E.htm)
+  and
+  [2D Contour reference](https://help.autodesk.com/cloudhelp/ENU/Fusion-CAM/files/GUID75B6821B-DE26-4E3B-AF10-4A54131CD9E4.htm):
+  "Ramp Type" (Zig-Zag, Profile, Helix, Plunge, ...), "Ramping Angle (deg):
+  Specifies the maximum ramping angle of the helix during the cut", and
+  "Maximum Ramp Stepdown: Specifies the maximum stepdown per revolution on the
+  ramping profile. This parameter allows the tool load to be constrained when
+  doing full-width cuts during ramping."
+
+Differences from FreeCAD, on purpose: camlib's zigzag gives every leg the whole
+path at one equal slope (shallower than the angle) so the last leg ends at the
+start of the cut, where FreeCAD keeps the angle and returns to the start at
+depth; and camlib never leaves a plunge where no ramp fits (FreeCAD logs "plunge
+will remain as such"): it refuses.
+
+- **`Pocket`**: every descent into a level is a ramp (the first pass of the
+  level, and every pass reached by a retract rather than a short link at depth).
+  The ramp runs along that pass and the passes continuing it without a gap
+  (lines, and arcs as helical arcs), and ends at the start of the pass. When
+  the path is at least depth / tan(angle) long it is one leg at exactly the
+  angle; when it is shorter the tool zigzags back and forth over the whole
+  path, every leg at the same, shallower slope.
+- **`min_length_mm`** is the shortest span the tool may reverse a ramp on. It
+  has no default: neither reference defines one, and camlib assumes no cutting
+  data. A one-leg ramp never reverses and does not need it; a pocket where a
+  ramp has to reverse is refused until it is declared, and refused where the
+  pass is shorter than declared.
+- The first level's ramp starts at the pocket top. Each later one starts 0.01
+  mm above the level before, at a point of the path that level has cut, and
+  the planner requires the simulated stock to show that path cut before it
+  descends straight to the start: the straight descent is through air, and
+  every move below it is a ramp. The same holds on stock earlier operations
+  have cut, and for a pocket whose `top_z_mm` is below the stock top.
+- **`Contour`**: each loop is cut in one continuous descent instead of a pass
+  per level. The tool comes down to the stock top at the lead-in point, leads
+  in there, descends around the closed loop in whole laps to the floor (as many
+  as keep the slope within the angle and each lap within `stepdown_mm`), then
+  cuts one lap flat at the floor before the lead-out. A closed loop needs no
+  reversal, so `min_length_mm` does not apply, and the tool never comes
+  straight down into material. With `compensation="wear"` G41/G42 goes on over
+  the lead-in at the stock top and stays on down the whole descent.
+- Ramp moves are `plunge` moves at the entry feed, swept through the stock like
+  any other move.
+- The pocket report gives `ramp_entries` and `max_ramp_angle_deg` (the steepest
+  ramp made, never above `angle_deg`).
+
+Refused, before any motion:
+
+- A pocket pass the ramp has to reverse on, with `min_length_mm` not set or
+  larger than the pass. camlib does not plunge instead: the message names the
+  pocket, the place and the level. A smaller angle does not help; use
+  `HelicalEntry`, `entry=None` (plunge), a smaller cutter, or declare
+  `min_length_mm` for the tool.
+- More than 1000 zigzag legs or laps (an angle far too small for the path).
+- `RampEntry` on a `Pocket` with `rest_tolerance_mm` (`RestPocket`): rest
+  passes are short leftover pieces a ramp does not fit.
+- `RampEntry` on a `Contour` with holding tabs, or with limits that block part
+  of a loop: the tool comes back down from a tab or a lift steeper than the
+  ramp angle. A `Contour` accepts no other entry type.
+- `RampEntry` on `Roughing` and `AdaptivePocket`: their passes are linked and
+  their engagement proven from stock-edge and helical entries, and a ramp along
+  the first pass is a full-width slot outside that model.
+
+Refused while running, as a planner defect, should it ever happen: a ramp whose
+start the simulated stock does not show cut by the level above. The planner
+stops rather than descend straight into material.
 
 ## Adaptive pocket: `AdaptivePocket`
 
@@ -384,6 +480,13 @@ depend on where a loop starts and which way it is cut, and a point does not.
   overlap and are refused, as is a tab that close to the loop start, where the
   tool enters and leaves. Both refusals name the points.
 - `positions_mm` cannot be combined with `count` or `spacing_mm`.
+
+`entry=RampEntry(angle_deg)` replaces the plunge at the start of each pass by
+one continuous ramp around each loop, from the stock top to the floor (see
+[Ramp entry](#ramp-entry-rampentry)), at no more than the angle and no more
+than `stepdown_mm` per lap, followed by one lap at the floor. Not combined with
+tabs or with limits that block part of a loop (both refused before any
+motion).
 
 ## Drilling: `Drilling`
 

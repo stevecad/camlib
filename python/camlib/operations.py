@@ -1168,6 +1168,9 @@ class Contour:
     cutting_sense: str = "climb"
     # Holding tabs (camlib.Tabs) on through-cuts; None: no tabs.
     tabs: object | None = None
+    # None: a pass per level, plunging at its start. RampEntry(angle_deg):
+    # each loop is one continuous descent around it, then a flat lap at depth.
+    entry: object | None = None
 
     def to_dict(self):
         result = {field: getattr(self, field) for field in self.__dataclass_fields__}
@@ -1177,6 +1180,9 @@ class Contour:
             region=self.region.to_dict() if hasattr(self.region, "to_dict") else self.region,
             reverse=_profile_reverse(self.reverse, result.pop("cutting_sense")),
         )
+        entry = result.pop("entry")
+        if entry is not None:
+            result["entry"] = entry.to_dict() if hasattr(entry, "to_dict") else dict(entry)
         tabs = result.pop("tabs")
         if tabs is not None:
             result["tabs"] = tabs.to_dict() if hasattr(tabs, "to_dict") else dict(tabs)
@@ -1250,6 +1256,39 @@ class HelicalEntry:
 
         result = dict(kind="helix", angle_rad=math.radians(self.angle_deg))
         for key in ("radius_mm", "feed_mm_min", "clockwise"):
+            if getattr(self, key) is not None:
+                result[key] = getattr(self, key)
+        return result
+
+
+@dataclass(frozen=True)
+class RampEntry:
+    """Ramp entry: descend along the cutting path at ``angle_deg`` to the plane.
+
+    The tool comes down along the pass it is about to cut, never steeper than
+    ``angle_deg``, at the entry feed (``feed_mm_min``, default the operation's
+    plunge feed); the pass is then cut at full depth, which removes the sloped
+    floor. ``angle_deg`` is the largest ramp angle for the tool and material:
+    it has no default.
+
+    Pocket: along the pass, one leg at the angle when the pass is long enough,
+    back and forth over it when it is shorter than depth / tan(angle).
+    ``min_length_mm`` is the shortest span the tool may reverse a ramp on. It
+    has no default either: a ramp that has to reverse is refused until it is
+    set, and refused on a pass shorter than it. Contour: one continuous descent
+    around each closed loop from the stock top to the floor (a profile ramp),
+    no lap deeper than the stepdown, then one lap flat at the floor.
+    """
+
+    angle_deg: float
+    min_length_mm: float | None = None
+    feed_mm_min: float | None = None
+
+    def to_dict(self):
+        import math
+
+        result = dict(kind="ramp", angle_rad=math.radians(self.angle_deg))
+        for key in ("min_length_mm", "feed_mm_min"):
             if getattr(self, key) is not None:
                 result[key] = getattr(self, key)
         return result
@@ -1473,7 +1512,7 @@ class Pocket:
     coolant: str = field(kw_only=True)
     rest_tolerance_mm: float | None = None
     boundary_clockwise: bool | None = None
-    entry: HelicalEntry | StockEdgeEntry | None = None
+    entry: HelicalEntry | StockEdgeEntry | RampEntry | None = None
     # Non-cutting planes (absolute Z), like the retract/feed heights of other
     # CAM systems. None keeps the default: travel, approach and departure all
     # at clearance_z_mm. Required order: top < feed <= retract <= clearance.

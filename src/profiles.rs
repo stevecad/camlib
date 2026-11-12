@@ -95,6 +95,16 @@ pub(crate) struct ProfileMotion {
     /// Ramp: the first pass of each loop descends from this height to its
     /// depth along the loop (entered at this height).
     pub ramp_from: Option<f64>,
+    /// Ramp entry (`RampEntry`, linear depths, one pass): each loop is
+    /// entered at the top and descends to the final depth around the loop in
+    /// whole laps, at no more than the entry's angle, no lap deeper than the
+    /// depth step, at `ramp_feed`; a flat lap at depth then cuts the sloped
+    /// floor away. This is FreeCAD CAM's helix ramp on a closed path
+    /// (`createHelix` in `Path/Base/Generator/ramp_entry.py`: whole loops,
+    /// bounded by the angle and by a pitch per turn): a closed pass needs no
+    /// reversal, and the tool never comes straight down into material.
+    pub entry_ramp: Option<crate::entry::RampEntry>,
+    pub ramp_feed: f64,
 }
 type CutMove = (crate::motion::Curve, crate::motion::MoveKind);
 /// Holding tabs on the tool-center loops: around each center (arc length),
@@ -493,11 +503,19 @@ impl ProfileMotion {
             cut: None,
             limits: None,
             ramp_from: None,
+            entry_ramp: None,
+            ramp_feed: 0.,
         }
     }
     /// The stretches of a loop at depth z the limits block, as arc-length
     /// intervals, and the height to lift over them.
-    fn lifts(&self, ring: usize, z: f64) -> Result<Vec<(f64, f64, f64)>, String> {
+    pub(crate) fn loop_count(&self) -> usize {
+        self.loops.len()
+    }
+    pub(crate) fn operation_id(&self) -> &str {
+        &self.settings.id
+    }
+    pub(crate) fn lifts(&self, ring: usize, z: f64) -> Result<Vec<(f64, f64, f64)>, String> {
         let Some(limits) = &self.limits else {
             return Ok(vec![]);
         };
@@ -638,6 +656,16 @@ impl ProfileMotion {
                 Some(from) if self.pass == 0 => from.max(z),
                 _ => z,
             };
+            // A ramp entry is one descent from the top to the final depth.
+            let (z, entry_z, ramp_step) = match (&self.entry_ramp, &self.depths) {
+                (Some(_), ProfileDepths::Linear { top, target, step }) if self.passes == 1 => {
+                    (*target, *top, *step)
+                }
+                (Some(_), _) => {
+                    return Err("a ramp entry needs linear depths, planned as one pass".into());
+                }
+                (None, _) => (z, entry_z, 0.),
+            };
             let first = self.loops[self.ring][0].curve(entry_z).start();
             let s = &self.settings;
             let (curve, kind, next) = match self.phase {
@@ -698,11 +726,54 @@ impl ProfileMotion {
                             .as_ref()
                             .map(|p| (p, p.centers[self.ring].as_slice()));
                         let lifts = self.lifts(self.ring, z)?;
-                        self.cut = Some((
-                            self.ring,
-                            self.pass,
-                            tabbed_loop(&self.loops[self.ring], z, entry_z, tabs, &lifts)?,
-                        ));
+                        let moves = if let Some(ramp) = &self.entry_ramp {
+                            if tabs.is_some() || !lifts.is_empty() {
+                                return Err(format!(
+                                    "operation {}: a ramp entry cannot be combined with {}: the tool comes back down from them steeper than the ramp angle. Remove the entry or the {}",
+                                    s.id,
+                                    if tabs.is_some() {
+                                        "holding tabs"
+                                    } else {
+                                        "limits that block part of the loop (it is lifted over them)"
+                                    },
+                                    if tabs.is_some() {
+                                        "tabs"
+                                    } else {
+                                        "blocking limits"
+                                    },
+                                ));
+                            }
+                            let ring = &self.loops[self.ring];
+                            let length: f64 = ring.iter().map(stroke_length).sum();
+                            let depth = entry_z - z;
+                            let mut moves = vec![];
+                            if depth > 0. {
+                                let laps = ramp.laps(length, depth, ramp_step).map_err(|e| {
+                                    format!(
+                                        "operation {}, loop {}, level Z{z}: {e}",
+                                        s.id, self.ring
+                                    )
+                                })?;
+                                for lap in 0..laps {
+                                    let from = entry_z - depth * lap as f64 / laps as f64;
+                                    let to = if lap + 1 == laps {
+                                        z
+                                    } else {
+                                        entry_z - depth * (lap + 1) as f64 / laps as f64
+                                    };
+                                    moves.extend(
+                                        tabbed_loop(ring, to, from, None, &[])?
+                                            .into_iter()
+                                            .map(|(curve, _)| (curve, MoveKind::Plunge)),
+                                    );
+                                }
+                            }
+                            moves.extend(tabbed_loop(ring, z, z, None, &[])?);
+                            moves
+                        } else {
+                            tabbed_loop(&self.loops[self.ring], z, entry_z, tabs, &lifts)?
+                        };
+                        self.cut = Some((self.ring, self.pass, moves));
                     }
                     let (curve, kind) = self.cut.as_ref().unwrap().2[self.edge].clone();
                     (curve, kind, Phase::Cut)
@@ -769,7 +840,11 @@ impl ProfileMotion {
                         None
                     } else {
                         Some(if kind == MoveKind::Plunge {
-                            s.plunge
+                            if self.phase == Phase::Cut && self.entry_ramp.is_some() {
+                                self.ramp_feed
+                            } else {
+                                s.plunge
+                            }
                         } else {
                             s.feed
                         })

@@ -22,10 +22,10 @@ See [Operations](operations.md) for parameters. Summary:
 | Operation | Scope |
 | --- | --- |
 | Facing | Rectangular stock top; flat mills; zig-zag or one-way |
-| Pocket / rest pocket | Line/arc regions with islands; plunge, helical or stock-edge entry; rest pocket cuts only what the simulated stock still holds |
+| Pocket / rest pocket | Line/arc regions with islands; plunge, helical, ramp (zigzag along the path) or stock-edge entry; rest pocket cuts only what the simulated stock still holds |
 | Adaptive pocket | Engagement-limited clearing of the same regions |
 | 3D roughing / rest roughing | Layered clearing above a mesh part: raster, offset, adaptive; air passes can be omitted |
-| Contour | Outer walls and/or hole walls of a part: climb (default) or conventional, tangent leads, wear compensation (G41/G42), holding tabs (triangle or rectangle; spread evenly or at given points) |
+| Contour | Outer walls and/or hole walls of a part: climb (default) or conventional, tangent leads, wear compensation (G41/G42), holding tabs (triangle or rectangle; spread evenly or at given points), ramp entry around the loop |
 | 3D finishing cutters | Ball (all patterns, certified error), flat and bull-nose (raster, spiral, radial, project, waterline; exact contacts, proven no-gouge moves, sampled error) |
 | Parallel / spiral / radial / project / pencil / scallop finishing | Mesh surfaces; zigzag or one-way parallel rows; slope (contact-angle) limits; rest finishing from the stock model |
 | Waterline, ramp finishing | Constant-Z contours, or one continuous descent per level (`ramp=True`); steep-and-shallow pairs waterline with parallel or spiral |

@@ -115,6 +115,15 @@ impl PocketFrontPlan {
         // committed cuts prove gone, which is what the planner does.
         // With no entry given, the helix is HelicalEntry's own default: an
         // adaptive pocket has no plunge into uncut material.
+        if let Some(entry) = &pocket.entry {
+            // The planner proves the engagement of every stroke from an entry
+            // made in air, in cleared stock or on a helix; a ramp along the
+            // first pass is a full-width slot, outside that proof.
+            entry.refuse_ramp(
+                &format!("adaptive pocket {}", pocket.id),
+                "adaptive clearing enters from cleared stock or on a helix so that every pass keeps its proven engagement",
+            )?;
+        }
         let entry = Some(match pocket.entry.clone() {
             Some(PocketEntry::Helix(h)) => PocketEntry::StockEdgeOrHelix(h),
             Some(other) => other,

@@ -52,6 +52,7 @@ modules! {
     preparation,
     probe,
     protocol,
+    ramp_entry,
     recessed_finishing,
     regeneration,
     roughing,

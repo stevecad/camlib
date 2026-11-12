@@ -1162,6 +1162,14 @@ impl RoughingPlan {
         let options = ConstructionOptions {
             tolerance_mm: op.tolerance_mm,
         };
+        // Roughing layers enter beside the stock or on a fitted helix: offset
+        // and scheduled raster clearing link their passes through those
+        // fitted entry routes, and engagement_front proves its engagement
+        // from them. A ramp along the path is not modelled for layers.
+        op.entry.refuse_ramp(
+            &format!("roughing {}", op.id),
+            "roughing layers enter beside the stock or on a fitted helix, which their pass linking and engagement proofs rely on",
+        )?;
         let expanded = stock_region.prepare(options)?;
         // A no-op still validates the selected tool/setup/entry/strategy. Use
         // the same scalar policies as actual layers, without inventing a layer.

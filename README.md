@@ -44,10 +44,10 @@ and writes G-code through a postprocessor you can read and change.
 | Operation | Notes |
 | --- | --- |
 | Facing | Rectangular stock, zig-zag or one-way passes |
-| Pocket, rest pocket | Line/arc regions with islands; plunge, helical or stock-edge entry; links kept at depth only through cleared stock |
+| Pocket, rest pocket | Line/arc regions with islands; plunge, helical, ramp or stock-edge entry; links kept at depth only through cleared stock |
 | Adaptive pocket | Engagement-limited clearing |
 | 3D roughing, rest roughing | Layered clearing above a triangle-mesh part (raster, offset or adaptive) |
-| Contour | Outer walls / holes of a part: climb or conventional, leads, wear compensation (G41/G42), holding tabs |
+| Contour | Outer walls / holes of a part: climb or conventional, leads, wear compensation (G41/G42), holding tabs, ramp entry |
 | Drilling, peck drilling, spot/counterbore dwell | Canned cycles (G81/G82/G83/G73) where the machine declares them, explicit moves elsewhere |
 | Reaming, boring, fine boring, bore milling | G85/G89/G86 from proven pilot holes; G76 or M19 fine boring with an oriented stop and shift proven inside the bore; helical bore milling |
 | Trochoidal slot, chamfer, V-carve | Straight or curved slots; chamfer on top edges; deburring of horizontal and sloped edges; sharp-cornered V-carving of letters and logos |
