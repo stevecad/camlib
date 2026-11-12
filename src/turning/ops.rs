@@ -547,6 +547,10 @@ pub(crate) struct ToolGeom {
     /// their images (projection or radial), the 2D outline only the cut.
     pub(crate) insert_body: Vec<Vec<[f64; 3]>>,
     pub(crate) holder_body: Vec<Vec<[f64; 3]>>,
+    /// A straight grooving blade's flanks (#170): what each is called and
+    /// the body's vertices on it, so a refusal names the flank that reaches
+    /// the material.
+    pub(crate) flanks: Vec<(String, Vec<[f64; 3]>)>,
     rn: f64,
     /// Grooving blade: the trailing corner's nose center this far along z
     /// (signed by hand) from the leading corner's; zero for one nose.
@@ -569,6 +573,10 @@ pub(crate) struct ToolGeom {
     /// The insert's exact straight sides (relative to the nose center).
     edges: Vec<[[f64; 2]; 2]>,
 }
+
+/// How far a flank's images (the one the checks use, and the radial one)
+/// reach into material.
+type FlankMeasure<'a> = dyn Fn(&[Vec<[f64; 2]>], &[Vec<[f64; 2]>]) -> Result<f64, String> + 'a;
 
 /// The polygon mirrored across the spindle axis.
 fn mirrored(polygon: &[[f64; 2]]) -> Vec<[f64; 2]> {
@@ -643,7 +651,8 @@ pub(crate) fn tool_geometry(
         }
     };
     let mapped = |polygon: &[[f64; 2]]| polygon.iter().map(map).collect::<Vec<_>>();
-    let (insert_body, holder_body) = super::body::body_pieces(t)?;
+    let body = super::body::body(t)?;
+    let (insert_body, holder_body) = (body.insert, body.holder);
     let mapped3 = |pieces: Vec<Vec<[f64; 3]>>| {
         pieces
             .into_iter()
@@ -659,6 +668,33 @@ pub(crate) fn tool_geometry(
             .collect::<Vec<_>>()
     };
     let (insert_body, holder_body) = (mapped3(insert_body), mapped3(holder_body));
+    let flanks = body
+        .flanks
+        .into_iter()
+        .map(|f| {
+            use super::body::BladeFlank;
+            // A grooving blade's sides face along z (its reference corner's
+            // toward -z, mirrored for a left-hand tool); a face grooving
+            // blade's along r (its reference corner's toward the axis).
+            let name = match f.flank {
+                BladeFlank::Front => "front flank",
+                BladeFlank::Corner => "corner flank (between its front and a side)",
+                BladeFlank::Side(k) if axial => ["inner side flank", "outer side flank"][k],
+                BladeFlank::Side(k) => {
+                    if (k == 0) == (s > 0.) {
+                        "side flank toward -Z"
+                    } else {
+                        "side flank toward +Z"
+                    }
+                }
+            };
+            let points = mapped3(vec![f.points]).remove(0);
+            (
+                format!("{name}, {} degrees of clearance", f.clearance_deg),
+                points,
+            )
+        })
+        .collect();
     let is_drill = matches!(t.insert, super::tool::Insert::Drill { .. });
     let rn = t.nose_radius_mm;
     let tip = match (controlled_point, &t.insert) {
@@ -689,6 +725,7 @@ pub(crate) fn tool_geometry(
         insert: super::tool::convex_pieces(&mapped(&shape.insert)),
         insert_body,
         holder_body,
+        flanks,
         tip,
         axial,
         inner: boring || is_drill,
@@ -887,10 +924,61 @@ impl Planner<'_> {
                 }
                 Ok(worst)
             };
+            // Which flank of a grooving blade's body reaches farthest by
+            // `measure` (given a piece's image the checks use and its radial
+            // image), among those reaching beyond `floor` (refused on their
+            // own). A corner shares its ends with the front and a side: it
+            // is named only when it reaches farther than both.
+            let flank_note = |floor: f64, measure: &FlankMeasure| -> String {
+                let mut best = floor;
+                let mut named: Vec<&str> = vec![];
+                // The front and the sides first, the corners last.
+                for corner in [false, true] {
+                    for (name, points) in &tool.flanks {
+                        if name.starts_with("corner") != corner {
+                            continue;
+                        }
+                        let piece = std::slice::from_ref(points);
+                        let far = image(piece, true);
+                        let near = if tool.inner {
+                            far.clone()
+                        } else {
+                            image(piece, false)
+                        };
+                        if far[0].len() < 3 || near[0].len() < 3 {
+                            continue;
+                        }
+                        let Ok(reach) = measure(&near, &far) else {
+                            continue;
+                        };
+                        if reach > best + 1e-9 {
+                            best = reach;
+                            named = vec![name];
+                        } else if reach > floor && reach >= best - 1e-9 && !corner {
+                            named.push(name);
+                        }
+                    }
+                }
+                if named.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "; the body below the cutting face reaches farthest at the blade's {}",
+                        named.join(" and its ")
+                    )
+                }
+            };
             let part = into_part(&insert, &insert_rad)?;
             if part > 0. {
+                // Name a flank only when the body, not the cutting face
+                // itself, is what reaches the part.
+                let note = if into_part(&face, &face)? < part - 1e-9 {
+                    flank_note(0., &into_part)
+                } else {
+                    String::new()
+                };
                 return Err(format!(
-                    "{op}: the insert would cut {part:.4} mm into the part moving to r {:.3}, z {:.3}; check the insert's angles against the profile",
+                    "{op}: the insert would cut {part:.4} mm into the part moving to r {:.3}, z {:.3}; check the insert's angles against the profile{note}",
                     to[1], to[0]
                 ));
             }
@@ -1078,8 +1166,9 @@ impl Planner<'_> {
             };
             let (body_reach, face_reach) = (reach(&insert), reach(&face));
             if kind != MoveKind::Rapid && body_reach > face_reach.max(0.) + self.guard {
+                let note = flank_note(face_reach.max(0.) + self.guard, &|near, _| Ok(reach(near)));
                 return Err(format!(
-                    "{op}: the insert's body below its cutting face would rub the stock ({:.4} mm beyond the cutting face) moving to r {:.3}, z {:.3}; it needs more clearance here (a thinner or more positive insert, or a different seat)",
+                    "{op}: the insert's body below its cutting face would rub the stock ({:.4} mm beyond the cutting face) moving to r {:.3}, z {:.3}; it needs more clearance here (a thinner or more positive insert, or a different seat){note}",
                     body_reach - face_reach.max(0.),
                     to[1],
                     to[0]
@@ -3530,6 +3619,7 @@ mod tests {
                 edge_deg: edge,
                 curved_for_diameter_mm: matches!(insert, Insert::FaceGroove { .. })
                     .then_some([8., 14.]),
+                blade_clearance: None,
             }),
             holder_y_mm: if inner { [-1.5, 1.] } else { [-10., 2.] },
             bar_axis_y_mm: 0.,
@@ -4322,6 +4412,88 @@ test_tool("groove_in".into(), Insert::Groove { width_mm: 3.,
             assert_eq!(motions[0].curve.start(), [30., 0., 20.]);
             assert_eq!(motions.last().unwrap().curve.end(), [30., 0., 20.]);
         }
+    }
+
+    /// #170: a straight face grooving blade's outer side reaches out below
+    /// the centre plane (√(r² + y²)), so the groove's outer wall needs that
+    /// side's clearance, whatever the front's and the inner side's are.
+    #[test]
+    fn a_face_grooving_blade_is_checked_with_each_sides_clearance() {
+        use crate::turning::body::BladeClearance;
+        let job_with = |front: f64, sides: [f64; 2]| {
+            let mut j = job();
+            j.part.points = vec![[0., 0., 0.], [12., 0., 0.], [12., -40., 0.]];
+            j.face_grooves = vec![FaceGroove {
+                inner_radius_mm: 4.,
+                outer_radius_mm: 7.,
+                bottom_z_mm: -3.,
+            }];
+            let mut tool = test_tool(
+                "face_groove".into(),
+                Insert::FaceGroove {
+                    width_mm: 2.,
+                    depth_mm: 8.,
+                },
+                0.2,
+                TurnSide::Outer,
+                Hand::Right,
+                2.,
+                40.,
+                0.,
+            );
+            // A straight blade 3 mm thick.
+            let body = tool.body.as_mut().unwrap().insert.as_mut().unwrap();
+            body.curved_for_diameter_mm = None;
+            body.insert_clearance_deg = front.min(sides[0]).min(sides[1]);
+            body.blade_clearance = Some(BladeClearance {
+                front_deg: front,
+                side_deg: sides,
+            });
+            j.tools.push(TurnToolSetting {
+                tool,
+                number: 8,
+                offset: 8,
+            });
+            j.operations.truncate(1);
+            j.operations.push(TurnOperation::FaceGroove {
+                id: "fg".into(),
+                tool: "face_groove".into(),
+                inner_radius_mm: 4.,
+                outer_radius_mm: 7.,
+                bottom_z_mm: -3.,
+                peck_mm: Some(1.),
+                overlap_mm: 0.2,
+                feed_mm_rev: 0.03,
+                rpm: 600.,
+                surface_speed_m_min: None,
+            });
+            j
+        };
+        // At the outer wall (r 7) a point 3 mm below the plane is clear of
+        // it when its side has receded by 7 - √(7² - 3²) = 0.675 mm: at
+        // least 12.7 degrees over 3 mm.
+        let needed = ((7. - (49f64 - 9.).sqrt()) / 3.).atan().to_degrees();
+        assert!(needed > 12.6 && needed < 12.8);
+        // Outer side 15 degrees: planned, with no clearance at the front or
+        // the inner side (they recede from their walls as they are).
+        assert_eq!(plan(&job_with(0., [0., 15.])).unwrap().reports[1].passes, 2);
+        // The same angles with the sides swapped: the outer side rubs.
+        let e = plan_err(&job_with(0., [15., 0.]));
+        assert!(
+            e.contains("the blade's outer side flank, 0 degrees of clearance"),
+            "{e}"
+        );
+        assert!(
+            !e.contains("inner side") && !e.contains("front flank"),
+            "{e}"
+        );
+        // A generous front does not help the side.
+        let e = plan_err(&job_with(20., [15., 12.]));
+        assert!(
+            e.contains("the blade's outer side flank, 12 degrees of clearance"),
+            "{e}"
+        );
+        assert!(plan(&job_with(20., [15., 13.])).is_ok());
     }
 
     #[test]

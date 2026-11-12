@@ -1266,6 +1266,17 @@ impl TurningTool {
             .as_ref()
             .ok_or_else(|| super::body::missing_body(id))?
             .validate(id, matches!(self.insert, Insert::Drill { .. }))?;
+        if !matches!(
+            self.insert,
+            Insert::Groove { .. } | Insert::FaceGroove { .. }
+        ) && self
+            .body
+            .as_ref()
+            .and_then(|b| b.insert.as_ref())
+            .is_some_and(|b| b.blade_clearance.is_some())
+        {
+            return Err(super::body::blade_only(id));
+        }
         if let Some(bar) = &self.holder.bar
             && (!positive(bar.diameter_mm)
                 || !(bar.axis_x_mm.is_finite() && bar.axis_x_mm.abs() <= 1e4)
@@ -1410,6 +1421,7 @@ mod tests {
                     inclination_deg: 0.,
                     edge_deg: 5.,
                     curved_for_diameter_mm: None,
+                    blade_clearance: None,
                 }),
                 holder_y_mm: [-10., 2.],
                 bar_axis_y_mm: 0.,

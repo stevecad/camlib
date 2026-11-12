@@ -1474,7 +1474,8 @@ roughing setup its allowance.
     √(x² + y²), so in a bore a thick insert's heel reaches past its
     outline. `TurningTool(..., seat=TurningSeat(rake_deg, inclination_deg),
     insert_thickness_mm=, insert_clearance_deg=, edge_deg=,
-    curved_for_diameter_mm=)`:
+    curved_for_diameter_mm=, insert_front_clearance_deg=,
+    insert_side_clearance_deg=)`:
     - `seat`: the holder seat's orthogonal rake and inclination (ISO 3002-1,
       about the major cutting edge), from the holder maker (ISO 5608 codes
       do not carry them; ISO 5610 gives only recommended values).
@@ -1488,6 +1489,37 @@ roughing setup its allowance.
       (§3.3); the clearance letter is §3.2's (N 0, A 3, B 5, C 7, P 11,
       D 15, E 20, F 25, G 30 degrees; O must be declared). Declare the
       insert's catalogue thickness to tighten it.
+    - `insert_front_clearance_deg`, `insert_side_clearance_deg`: a grooving
+      blade's (`GrooveInsert`, `FaceGrooveInsert`) own clearance below its
+      front edge and below its sides, e.g. 10 degrees at the front and 3 at
+      the sides. ISO 1832 gives an indexable insert one normal clearance,
+      so every other insert takes `insert_clearance_deg` alone (per-flank
+      angles on one are refused); a grooving blade is not an ISO 1832
+      shape, and its maker lists its relief per face (Kaiser Tool Company's
+      THINBIT catalogue pages "O.D./I.D. Grooving Inserts" and "Parting
+      Inserts" give "side clearance" and "back clearance" per insert, "both
+      sides"), and a face grooving insert's two sides may differ (US
+      10,780,505 B2, Sandvik: its two side clearance surfaces, "the second
+      clearance angle is larger than the first"). Declared as one angle,
+      such a blade must take its least, and a groove its front clears is
+      refused. Give the two together, from the catalogue, instead of
+      `insert_clearance_deg`: the side value is one angle for both sides or
+      a pair, for a `GrooveInsert` (the side at its leading corner, toward
+      -Z for a right-hand tool; the other side), for a `FaceGrooveInsert`
+      (the inner side, toward the axis; the outer side). Each flank then
+      recedes below the face at its own angle; the rounded corners between
+      them recede at the least of the three (`insert_clearance_deg` is then
+      that least: left out, or given as exactly it; another value is
+      refused as a contradiction), so the checked body contains the real
+      one whatever blend is ground there. Nothing is assumed: a blade
+      declared with one angle is checked with that angle on every side, as
+      before. A refusal names the flank whose body reaches the material
+      (`the blade's front flank, 3 degrees of clearance`, `outer side
+      flank`, `side flank toward -Z`). Where it matters: the front in an
+      inside groove (below the centre plane it reaches √(x² + y²) toward
+      the groove's bottom), the outer side of a straight face grooving
+      blade at the groove's outer wall (it needs sin(2 x clearance) ≥
+      thickness / wall radius), the sides of a blade on an inclined seat.
     - `edge_deg`: the major edge's direction (the rake's axis), known for
       ISO, grooving, threading and face grooving inserts; declared for a
       drawn `InsertOutline`.

@@ -377,6 +377,18 @@ class TurningTool:
       ``TurningInsert.iso_code`` they are the code's worst case (the largest
       thickness its symbol and tolerance class allow); give them to use the
       insert's real values. Not for a drill.
+    - ``insert_front_clearance_deg``, ``insert_side_clearance_deg``: a
+      grooving blade's (``GrooveInsert``, ``FaceGrooveInsert``) own
+      clearance below its front edge and below its sides, from its maker's
+      catalogue (they differ: e.g. 10 degrees at the front, 3 at the
+      sides). The side value is one angle for both sides or a pair: for a
+      ``GrooveInsert`` (the side at its leading corner, the other side),
+      for a ``FaceGrooveInsert`` (the inner side, toward the axis; the
+      outer side). Given together, instead of ``insert_clearance_deg``
+      (which is then their least and applies to the corners between them);
+      an ``insert_clearance_deg`` that is not their least is refused. Other
+      inserts have one normal clearance (ISO 1832) and take only
+      ``insert_clearance_deg``.
     - ``edge_deg``: the major cutting edge's direction in the tool frame,
       for an ``InsertOutline`` not built by ``TurningInsert`` (grooving,
       threading and face grooving inserts know theirs).
@@ -397,6 +409,8 @@ class TurningTool:
         "insert_clearance_deg",
         "edge_deg",
         "curved_for_diameter_mm",
+        "insert_front_clearance_deg",
+        "insert_side_clearance_deg",
     )
 
     def __init__(
@@ -413,6 +427,8 @@ class TurningTool:
         insert_clearance_deg=None,
         edge_deg=None,
         curved_for_diameter_mm=None,
+        insert_front_clearance_deg=None,
+        insert_side_clearance_deg=None,
         **removed,
     ):
         if removed:
@@ -434,6 +450,44 @@ class TurningTool:
         elif nose_radius_mm is None:
             missing.append("nose_radius_mm")
         drill = isinstance(insert, DrillInsert)
+        if insert_front_clearance_deg is not None or insert_side_clearance_deg is not None:
+            # A grooving blade's own front and side clearance (#170).
+            if not isinstance(insert, (GrooveInsert, FaceGrooveInsert)):
+                raise TypeError(
+                    f"TurningTool {id!r}: insert_front_clearance_deg and insert_side_clearance_deg are a grooving "
+                    "blade's (GrooveInsert, FaceGrooveInsert) only: other inserts have one normal clearance "
+                    "(ISO 1832: insert_clearance_deg alone), a drill none"
+                )
+            if insert_front_clearance_deg is None or insert_side_clearance_deg is None:
+                given, other = (
+                    ("insert_side_clearance_deg", "insert_front_clearance_deg")
+                    if insert_front_clearance_deg is None
+                    else ("insert_front_clearance_deg", "insert_side_clearance_deg")
+                )
+                raise TypeError(
+                    f"TurningTool {id!r}: {given} needs {other} too (a blade's front and side clearance are "
+                    "declared together; for one angle on every side give insert_clearance_deg alone)"
+                )
+            insert_front_clearance_deg = float(insert_front_clearance_deg)
+            if isinstance(insert_side_clearance_deg, (int, float)):
+                insert_side_clearance_deg = (float(insert_side_clearance_deg),) * 2
+            else:
+                insert_side_clearance_deg = tuple(float(v) for v in insert_side_clearance_deg)
+                if len(insert_side_clearance_deg) != 2:
+                    raise TypeError(
+                        f"TurningTool {id!r}: insert_side_clearance_deg is one angle for both sides or a pair "
+                        "(the side at the blade's reference corner, the other side)"
+                    )
+            least = min(insert_front_clearance_deg, *insert_side_clearance_deg)
+            if insert_clearance_deg is None:
+                insert_clearance_deg = least
+            elif float(insert_clearance_deg) != least:
+                raise ValueError(
+                    f"TurningTool {id!r}: insert_clearance_deg={insert_clearance_deg!r} contradicts "
+                    f"insert_front_clearance_deg={insert_front_clearance_deg!r} and "
+                    f"insert_side_clearance_deg={insert_side_clearance_deg!r}: it is the insert's least clearance "
+                    f"({least!r} here); leave it out or give {least!r}"
+                )
         if not drill and insert is not None:
             if isinstance(insert, InsertOutline):
                 insert_thickness_mm = insert.thickness_mm if insert_thickness_mm is None else insert_thickness_mm
@@ -474,6 +528,8 @@ class TurningTool:
             ("insert_clearance_deg", insert_clearance_deg),
             ("edge_deg", edge_deg),
             ("curved_for_diameter_mm", None if curved_for_diameter_mm is None else tuple(curved_for_diameter_mm)),
+            ("insert_front_clearance_deg", insert_front_clearance_deg),
+            ("insert_side_clearance_deg", insert_side_clearance_deg),
         ):
             object.__setattr__(self, name, value)
 
@@ -491,7 +547,9 @@ class TurningTool:
             f"TurningTool({self.id!r}, insert={self.insert!r}, nose_radius_mm={self.nose_radius_mm!r}, "
             f"side={self.side!r}, hand={self.hand!r}, holder={self.holder!r}, seat={self.seat!r}, "
             f"insert_thickness_mm={self.insert_thickness_mm!r}, insert_clearance_deg={self.insert_clearance_deg!r}, "
-            f"edge_deg={self.edge_deg!r}, curved_for_diameter_mm={self.curved_for_diameter_mm!r})"
+            f"edge_deg={self.edge_deg!r}, curved_for_diameter_mm={self.curved_for_diameter_mm!r}, "
+            f"insert_front_clearance_deg={self.insert_front_clearance_deg!r}, "
+            f"insert_side_clearance_deg={self.insert_side_clearance_deg!r})"
         )
 
     def to_dict(self):
@@ -509,6 +567,10 @@ class TurningTool:
             )
             if self.curved_for_diameter_mm is not None:
                 insert["curved_for_diameter_mm"] = [float(v) for v in self.curved_for_diameter_mm]
+            if self.insert_front_clearance_deg is not None:
+                insert["blade_clearance"] = dict(
+                    front_deg=self.insert_front_clearance_deg, side_deg=list(self.insert_side_clearance_deg)
+                )
             body["insert"] = insert
         return dict(
             id=self.id,

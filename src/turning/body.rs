@@ -31,6 +31,31 @@
 //! - ISO 5610 (holder figures): the rake and inclination angles are
 //!   "recommended values; they can vary according to the application": a
 //!   holder's seat angles are its maker's data and are declared.
+//!
+//! A grooving blade's flanks (#170). ISO 1832 gives an indexable insert one
+//! normal clearance, so one angle is the model of an ISO turning insert. A
+//! grooving or parting blade is not an ISO 1832 shape: its maker states the
+//! clearance below its front edge and below its sides separately, and the
+//! two sides may differ:
+//! - Kaiser Tool Company, THINBIT "Little Bit" catalogue, pages "O.D./I.D.
+//!   Grooving Inserts" and "Parting Inserts": each insert's relief is listed
+//!   per face ("BACK CLEARANCE: 2-1/2° both sides", "SIDE CLEARANCE: 0° both
+//!   sides"; parting: "SIDE CLEARANCE: 1°"), separately from its front
+//!   angle.
+//! - US 10,780,505 B2 (Sandvik Intellectual Property AB, "Face grooving tool
+//!   body for metal cutting"): the grooving insert's front surface is a
+//!   clearance surface, and its two side surfaces carry a first and a second
+//!   clearance surface whose angles differ ("the second clearance angle is
+//!   larger than the first clearance angle").
+//! - Mitsubishi Materials, "Basic threading" course, "Flank clearance
+//!   angle": a threading insert's flank clearances are equal on both sides,
+//!   so a threading insert keeps the one angle.
+//!
+//! `BladeClearance` declares them: each flank's plane recedes below the
+//! face at its own angle; the rounded corners between them (and every side
+//! without an angle of its own) recede at the insert's least clearance,
+//! `insert_clearance_deg`, so the checked body contains the real one
+//! whatever blend the maker grinds there.
 use super::tool::{TurningTool, convex_pieces};
 use serde::{Deserialize, Serialize};
 
@@ -77,6 +102,53 @@ pub struct InsertBody {
     /// a straight blade, checked as its straight body.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub curved_for_diameter_mm: Option<[f64; 2]>,
+    /// A grooving or face grooving blade's own front and side clearance
+    /// (#170). None: `insert_clearance_deg` on every side. With it,
+    /// `insert_clearance_deg` must be the least of its angles (it applies
+    /// to the corners between the flanks).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blade_clearance: Option<BladeClearance>,
+}
+
+/// A grooving blade's clearance per flank (degrees), from its maker's
+/// catalogue: below its front cutting edge, and below each side.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BladeClearance {
+    pub front_deg: f64,
+    /// [the side at the blade's reference corner, the other side]: for a
+    /// grooving blade its leading corner's side (toward -z for a right-hand
+    /// tool) then the trailing one; for a face grooving blade its inner
+    /// side (toward the axis) then its outer side.
+    pub side_deg: [f64; 2],
+}
+
+/// A flank of a grooving blade, in its tool frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BladeFlank {
+    Front,
+    /// 0: the side at the reference corner; 1: the other side.
+    Side(usize),
+    /// The rounded corners between the front and the sides.
+    Corner,
+}
+
+/// A flank of a straight grooving blade's body: its clearance and the
+/// body's vertices on it (x, z, y), for naming what a refusal is about.
+#[derive(Clone, Debug)]
+pub struct FlankPiece {
+    pub flank: BladeFlank,
+    pub clearance_deg: f64,
+    pub points: Vec<[f64; 3]>,
+}
+
+/// A tool's body as convex 3D pieces: the insert's, the holder's (and
+/// bar's), and a straight grooving blade's flanks.
+#[derive(Clone, Debug)]
+pub struct Body {
+    pub insert: Pieces3,
+    pub holder: Pieces3,
+    pub flanks: Vec<FlankPiece>,
 }
 
 impl ToolBody {
@@ -108,6 +180,21 @@ impl ToolBody {
                     return Err(format!(
                         "turning tool {id:?}: its insert body needs a positive thickness, a clearance 0..60 degrees, seat rake and inclination within ±45 degrees and a finite edge direction"
                     ));
+                }
+                if let Some(c) = &b.blade_clearance {
+                    let angles = [c.front_deg, c.side_deg[0], c.side_deg[1]];
+                    if angles.iter().any(|a| !(0. ..60.).contains(a)) {
+                        return Err(format!(
+                            "turning tool {id:?}: its blade's front and side clearance must each be 0..60 degrees"
+                        ));
+                    }
+                    let least = angles.iter().copied().fold(f64::INFINITY, f64::min);
+                    if b.insert_clearance_deg != least {
+                        return Err(format!(
+                            "turning tool {id:?}: insert_clearance_deg {} contradicts its blade's front clearance {} and side clearance {} and {} degrees: it is the insert's least clearance; give {least} (or only insert_clearance_deg, for one angle on every side)",
+                            b.insert_clearance_deg, c.front_deg, c.side_deg[0], c.side_deg[1]
+                        ));
+                    }
                 }
                 Ok(())
             }
@@ -178,6 +265,12 @@ pub fn iso_insert_body(code: &str) -> Result<(f64, f64), String> {
 /// intersection of the inward half-planes, by clipping. None when nothing
 /// is left.
 fn erode_convex(polygon: &[[f64; 2]], d: f64) -> Option<Vec<[f64; 2]>> {
+    erode_convex_by(polygon, &vec![d; polygon.len()])
+}
+
+/// A convex polygon with side i (from vertex i to the next) moved inward
+/// by `d[i]`.
+fn erode_convex_by(polygon: &[[f64; 2]], d: &[f64]) -> Option<Vec<[f64; 2]>> {
     let n = polygon.len();
     let area2: f64 = (0..n)
         .map(|i| {
@@ -200,7 +293,7 @@ fn erode_convex(polygon: &[[f64; 2]], d: f64) -> Option<Vec<[f64; 2]>> {
         } else {
             [ez / len, -ex / len]
         };
-        let offset = nrm[0] * a[0] + nrm[1] * a[1] + d;
+        let offset = nrm[0] * a[0] + nrm[1] * a[1] + d[i];
         let inside = |p: [f64; 2]| nrm[0] * p[0] + nrm[1] * p[1] - offset;
         let mut clipped = vec![];
         for k in 0..out.len() {
@@ -222,17 +315,141 @@ fn erode_convex(polygon: &[[f64; 2]], d: f64) -> Option<Vec<[f64; 2]>> {
     Some(out)
 }
 
-/// The tool's body as convex 3D pieces in its frame (x, z, y), the nose
-/// center at the origin, for an outside right-hand tool (the caller mirrors
-/// as for the outline): the insert's pieces, then the holder's (and bar's).
+/// The sides of a convex polygon as inward half-planes: for side i (from
+/// vertex i to the next) its inward unit normal n and offset c (n·p >= c
+/// inside); None for a side of no length.
+fn half_planes(polygon: &[[f64; 2]]) -> Vec<Option<([f64; 2], f64)>> {
+    let n = polygon.len();
+    let area2: f64 = (0..n)
+        .map(|i| {
+            let (a, b) = (polygon[i], polygon[(i + 1) % n]);
+            a[0] * b[1] - b[0] * a[1]
+        })
+        .sum();
+    let ccw = area2 > 0.;
+    (0..n)
+        .map(|i| {
+            let (a, b) = (polygon[i], polygon[(i + 1) % n]);
+            let (ex, ez) = (b[0] - a[0], b[1] - a[1]);
+            let len = ex.hypot(ez);
+            (len != 0.).then(|| {
+                let nrm = if ccw {
+                    [-ez / len, ex / len]
+                } else {
+                    [ez / len, -ex / len]
+                };
+                (nrm, nrm[0] * a[0] + nrm[1] * a[1])
+            })
+        })
+        .collect()
+}
+
+/// The vertices (x, z, y) of a convex insert body whose side i recedes
+/// below the face at `rate[i]` (the tangent of its clearance): the solid
+/// {(p, y): -s <= y <= 0, n_i·p >= c_i + rate_i·(-y) for every side}. Its
+/// vertices are the face polygon's (y = 0), the bottom polygon's (y = -s)
+/// and, where a side runs out between the two (its neighbours meet below
+/// the face), the point where three side planes meet: without those the
+/// hull of face and bottom is thinner than the body. Each pair of side
+/// planes meets in a line; the part of it every other side keeps is an edge
+/// of the body, and its ends strictly between the face and the bottom are
+/// those vertices. None when nothing is left of the bottom.
+fn tapered_vertices(polygon: &[[f64; 2]], rate: &[f64], s: f64) -> Option<Vec<[f64; 3]>> {
+    let bottom = erode_convex_by(polygon, &rate.iter().map(|k| s * k).collect::<Vec<_>>())?;
+    let mut vertices: Vec<[f64; 3]> = polygon
+        .iter()
+        .map(|p| [p[0], p[1], 0.])
+        .chain(bottom.iter().map(|p| [p[0], p[1], -s]))
+        .collect();
+    let planes: Vec<([f64; 2], f64, f64)> = half_planes(polygon)
+        .into_iter()
+        .zip(rate)
+        .filter_map(|(h, k)| h.map(|(n, c)| (n, c, *k)))
+        .collect();
+    let scale = polygon
+        .iter()
+        .fold(s, |m, p| m.max(p[0].abs()).max(p[1].abs()));
+    // A point within `tol` of the body is kept: the hull only grows.
+    let tol = 1e-9 * scale;
+    let mut inner = vec![];
+    for (i, (ni, ci, ki)) in planes.iter().enumerate() {
+        for (nj, cj, kj) in &planes[i + 1..] {
+            let det = ni[0] * nj[1] - ni[1] * nj[0];
+            if det.abs() < 1e-9 {
+                continue;
+            }
+            // The planes' line: p(t) = a + b t at depth t below the face.
+            let solve =
+                |r: f64, q: f64| [(r * nj[1] - ni[1] * q) / det, (ni[0] * q - r * nj[0]) / det];
+            let (a, b) = (solve(*ci, *cj), solve(*ki, *kj));
+            let (mut lo, mut hi) = (0., s);
+            for (nk, ck, kk) in &planes {
+                // n_k·p(t) - c_k - k_k t >= -tol.
+                let g0 = nk[0] * a[0] + nk[1] * a[1] - ck + tol;
+                let g1 = nk[0] * b[0] + nk[1] * b[1] - kk;
+                if g1.abs() <= 1e-12 {
+                    if g0 < 0. {
+                        hi = f64::NEG_INFINITY;
+                    }
+                } else if g1 > 0. {
+                    lo = f64::max(lo, -g0 / g1);
+                } else {
+                    hi = f64::min(hi, -g0 / g1);
+                }
+                if lo > hi {
+                    break;
+                }
+            }
+            if lo > hi {
+                continue;
+            }
+            for t in [lo, hi] {
+                if t > 0. && t < s {
+                    inner.push([a[0] + b[0] * t, a[1] + b[1] * t, -t]);
+                }
+            }
+        }
+    }
+    inner.sort_by(|p, q| {
+        p[0].total_cmp(&q[0])
+            .then(p[1].total_cmp(&q[1]))
+            .then(p[2].total_cmp(&q[2]))
+    });
+    inner.dedup_by(|p, q| (0..3).all(|k| (p[k] - q[k]).abs() <= tol));
+    vertices.extend(inner);
+    Some(vertices)
+}
+
 /// Convex 3D pieces (x, z, y) of a body.
 pub type Pieces3 = Vec<Vec<[f64; 3]>>;
 
+/// The tool's body as convex 3D pieces in its frame (x, z, y), the nose
+/// center at the origin, for an outside right-hand tool (the caller mirrors
+/// as for the outline): the insert's pieces, then the holder's (and bar's).
 pub fn body_pieces(tool: &TurningTool) -> Result<(Pieces3, Pieces3), String> {
+    let body = body(tool)?;
+    Ok((body.insert, body.holder))
+}
+
+/// `body_pieces`, with a straight grooving blade's flanks.
+pub fn body(tool: &TurningTool) -> Result<Body, String> {
+    use super::tool::Insert;
     let tool_body = tool.body.as_ref().ok_or_else(|| missing_body(&tool.id))?;
-    let drill = matches!(tool.insert, super::tool::Insert::Drill { .. });
+    let drill = matches!(tool.insert, Insert::Drill { .. });
     tool_body.validate(&tool.id, drill)?;
-    let curved = matches!(tool.insert, super::tool::Insert::FaceGroove { .. })
+    let blade = matches!(
+        tool.insert,
+        Insert::Groove { .. } | Insert::FaceGroove { .. }
+    );
+    if !blade
+        && tool_body
+            .insert
+            .as_ref()
+            .is_some_and(|b| b.blade_clearance.is_some())
+    {
+        return Err(blade_only(&tool.id));
+    }
+    let curved = matches!(tool.insert, Insert::FaceGroove { .. })
         && tool_body
             .insert
             .as_ref()
@@ -248,24 +465,111 @@ pub fn body_pieces(tool: &TurningTool) -> Result<(Pieces3, Pieces3), String> {
             .iter()
             .map(|piece| piece.iter().map(|p| [p[0], p[1], 0.]).collect())
             .collect();
-        return Ok((insert, holder_pieces(tool, &shape, tool_body)));
+        return Ok(Body {
+            insert,
+            holder: holder_pieces(tool, &shape, tool_body),
+            flanks: vec![],
+        });
     };
     let s = body.insert_thickness_mm;
+    // A blade's sides by their outward direction in its frame: the front
+    // toward -x, the top (where the blade goes on into its holder) toward
+    // +x, the sides toward -z (the reference corner's) and +z; the rounded
+    // corners are every other side.
+    let planes = half_planes(polygon);
+    let flank_of = |i: usize| -> Option<BladeFlank> {
+        let (n, _) = planes[i]?;
+        let axis = |v: f64| v > 1. - 1e-12;
+        Some(if axis(n[0]) {
+            BladeFlank::Front
+        } else if axis(-n[0]) {
+            return None;
+        } else if axis(n[1]) {
+            BladeFlank::Side(0)
+        } else if axis(-n[1]) {
+            BladeFlank::Side(1)
+        } else {
+            BladeFlank::Corner
+        })
+    };
+    let angle_of = |flank: Option<BladeFlank>| match (&body.blade_clearance, flank) {
+        (Some(c), Some(BladeFlank::Front)) => c.front_deg,
+        (Some(c), Some(BladeFlank::Side(k))) => c.side_deg[k],
+        // The corners (whatever blend is ground between the flanks) and
+        // the top: the insert's least clearance.
+        _ => body.insert_clearance_deg,
+    };
+    let mut flanks = vec![];
     insert = if pieces.len() == 1 {
-        let bottom = erode_convex(polygon, s * body.insert_clearance_deg.to_radians().tan())
-            .ok_or_else(|| {
-                format!(
-                    "turning tool {:?}: its clearance taper ({} degrees over {s} mm) leaves no insert bottom",
-                    tool.id, body.insert_clearance_deg
-                )
-            })?;
-        vec![
+        let no_bottom = || {
+            format!(
+                "turning tool {:?}: its clearance taper ({} degrees over {s} mm) leaves no insert bottom",
+                tool.id, body.insert_clearance_deg
+            )
+        };
+        let rate: Vec<f64> = (0..polygon.len())
+            .map(|i| {
+                let flank = if blade { flank_of(i) } else { None };
+                angle_of(flank).to_radians().tan()
+            })
+            .collect();
+        let vertices: Vec<[f64; 3]> = if body.blade_clearance.is_some() {
+            tapered_vertices(polygon, &rate, s).ok_or_else(no_bottom)?
+        } else {
+            let bottom = erode_convex(polygon, s * body.insert_clearance_deg.to_radians().tan())
+                .ok_or_else(no_bottom)?;
             polygon
                 .iter()
                 .map(|p| [p[0], p[1], 0.])
                 .chain(bottom.iter().map(|p| [p[0], p[1], -s]))
-                .collect(),
-        ]
+                .collect()
+        };
+        if blade {
+            // Each flank: the body's vertices on its planes, with a point
+            // inside the body (its vertices' mean) so that a flank seen
+            // edge-on still has an image with area. The piece lies in the
+            // body, so it reaches no farther than the body does, and as far
+            // only through a vertex on the flank.
+            let count = vertices.len() as f64;
+            let middle = vertices.iter().fold([0.; 3], |m, v| {
+                [
+                    m[0] + v[0] / count,
+                    m[1] + v[1] / count,
+                    m[2] + v[2] / count,
+                ]
+            });
+            let scale = polygon
+                .iter()
+                .fold(s, |m, p| m.max(p[0].abs()).max(p[1].abs()));
+            for flank in [
+                BladeFlank::Front,
+                BladeFlank::Side(0),
+                BladeFlank::Side(1),
+                BladeFlank::Corner,
+            ] {
+                let on: Vec<[f64; 3]> = vertices
+                    .iter()
+                    .filter(|v| {
+                        (0..polygon.len()).any(|i| {
+                            flank_of(i) == Some(flank)
+                                && planes[i].is_some_and(|(n, c)| {
+                                    (n[0] * v[0] + n[1] * v[1] - c + rate[i] * v[2]).abs()
+                                        <= 1e-7 * scale
+                                })
+                        })
+                    })
+                    .copied()
+                    .collect();
+                if on.len() >= 3 {
+                    flanks.push(FlankPiece {
+                        flank,
+                        clearance_deg: angle_of(Some(flank)),
+                        points: on.into_iter().chain([middle]).collect(),
+                    });
+                }
+            }
+        }
+        vec![vertices]
     } else {
         // A concave outline: its convex pieces extruded straight (a prism
         // contains a tapering body).
@@ -296,21 +600,29 @@ pub fn body_pieces(tool: &TurningTool) -> Result<(Pieces3, Pieces3), String> {
     // ISO 3002-1: tan(normal rake) = tan(orthogonal rake) cos(inclination).
     let gamma_n = (body.rake_deg.to_radians().tan() * lambda.cos()).atan();
     let (theta1, theta2) = (-gamma_n, lambda);
+    let seat = |v: &mut [f64; 3]| {
+        let (a, b, c) = (v[0] * e[0] + v[1] * e[1], v[0] * q[0] + v[1] * q[1], v[2]);
+        let (b, c) = (
+            b * theta1.cos() - c * theta1.sin(),
+            b * theta1.sin() + c * theta1.cos(),
+        );
+        let (a, c) = (
+            a * theta2.cos() - c * theta2.sin(),
+            a * theta2.sin() + c * theta2.cos(),
+        );
+        *v = [a * e[0] + b * q[0], a * e[1] + b * q[1], c];
+    };
     for piece in &mut insert {
-        for v in piece.iter_mut() {
-            let (a, b, c) = (v[0] * e[0] + v[1] * e[1], v[0] * q[0] + v[1] * q[1], v[2]);
-            let (b, c) = (
-                b * theta1.cos() - c * theta1.sin(),
-                b * theta1.sin() + c * theta1.cos(),
-            );
-            let (a, c) = (
-                a * theta2.cos() - c * theta2.sin(),
-                a * theta2.sin() + c * theta2.cos(),
-            );
-            *v = [a * e[0] + b * q[0], a * e[1] + b * q[1], c];
-        }
+        piece.iter_mut().for_each(seat);
     }
-    Ok((insert, holder_pieces(tool, &shape, tool_body)))
+    for flank in &mut flanks {
+        flank.points.iter_mut().for_each(seat);
+    }
+    Ok(Body {
+        insert,
+        holder: holder_pieces(tool, &shape, tool_body),
+        flanks,
+    })
 }
 
 fn holder_pieces(
@@ -344,6 +656,12 @@ fn holder_pieces(
         );
     }
     holder
+}
+
+pub(crate) fn blade_only(id: &str) -> String {
+    format!(
+        "turning tool {id:?}: a front and side clearance of their own (blade_clearance) are a grooving or face grooving blade's; this insert has one normal clearance (ISO 1832): give insert_clearance_deg only"
+    )
 }
 
 pub(crate) fn missing_body(id: &str) -> String {
@@ -412,6 +730,7 @@ mod tests {
                 inclination_deg: incl,
                 edge_deg: edge,
                 curved_for_diameter_mm: None,
+                blade_clearance: None,
             }),
             holder_y_mm: [-10., 0.],
             bar_axis_y_mm: 0.,
@@ -519,6 +838,254 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A grooving blade 3 mm wide (0.2 mm corners), 8 mm deep, `s` thick,
+    /// with its clearance per flank.
+    fn blade(s: f64, front: f64, sides: [f64; 2]) -> TurningTool {
+        let mut b = body(s, front.min(sides[0]).min(sides[1]), 0., 0., 90.);
+        b.insert.as_mut().unwrap().blade_clearance = Some(BladeClearance {
+            front_deg: front,
+            side_deg: sides,
+        });
+        tool(
+            Insert::Groove {
+                width_mm: 3.,
+                depth_mm: 8.,
+            },
+            0.2,
+            TurnSide::Outer,
+            b,
+        )
+    }
+
+    /// Unit directions over the sphere.
+    fn directions() -> Vec<[f64; 3]> {
+        (0..400)
+            .map(|k| {
+                let z = 1. - 2. * (k as f64 + 0.5) / 400.;
+                let a = k as f64 * 2.399963229728653;
+                let r = (1. - z * z).sqrt();
+                [r * a.cos(), r * a.sin(), z]
+            })
+            .collect()
+    }
+    fn support(points: &[[f64; 3]], n: [f64; 3]) -> f64 {
+        points
+            .iter()
+            .map(|p| p[0] * n[0] + p[1] * n[1] + p[2] * n[2])
+            .fold(f64::NEG_INFINITY, f64::max)
+    }
+
+    #[test]
+    fn a_blades_front_and_sides_recede_at_their_own_clearance() {
+        // The blade in its frame: front at x = -0.2, sides at z = -0.2 and
+        // z = 2.8, top at x = 8; corner centers (0, 0) and (0, 2.6).
+        let (s, front, sides) = (3., 10., [3., 5.]);
+        let t = blade(s, front, sides);
+        let built = super::body(&t).unwrap();
+        let piece = &built.insert[0];
+        let tan = |deg: f64| deg.to_radians().tan();
+        // Independent oracle: points of the declared body from the flank
+        // planes and the corner circles themselves (the corners and the
+        // top at the least clearance), not from the polygon.
+        let least = 3.;
+        let inside = |x: f64, z: f64, depth: f64| {
+            let corner = |cz: f64| x.hypot(z - cz) <= 0.2 - depth * tan(least);
+            x >= -0.2 + depth * tan(front)
+                && x <= 8. - depth * tan(least)
+                && z >= -0.2 + depth * tan(sides[0])
+                && z <= 2.8 - depth * tan(sides[1])
+                && (x >= 0. || (0. ..=2.6).contains(&z) || corner(0.) || corner(2.6))
+        };
+        let mut oracle = vec![];
+        for i in 0..=164 {
+            for j in 0..=60 {
+                for k in 0..=30 {
+                    let (x, z, depth) = (
+                        -0.2 + 0.05 * i as f64,
+                        -0.2 + 0.05 * j as f64,
+                        0.1 * k as f64,
+                    );
+                    if inside(x, z, depth) {
+                        oracle.push([x, z, -depth]);
+                    }
+                }
+            }
+        }
+        assert!(oracle.len() > 10_000);
+        for n in directions() {
+            let (hull, truth) = (support(piece, n), support(&oracle, n));
+            // Never thinner than the declared body; tight to the sampling.
+            assert!(truth <= hull + 1e-9, "{n:?}: {truth} {hull}");
+            assert!(hull - truth < 0.12, "{n:?}: {truth} {hull}");
+        }
+        // The bottom's flanks, exactly where their angles put them.
+        let bottom: Vec<_> = piece.iter().filter(|v| v[2] == -s).collect();
+        let extent = |axis: usize, sign: f64| {
+            bottom
+                .iter()
+                .map(|v| sign * v[axis])
+                .fold(f64::NEG_INFINITY, f64::max)
+                * sign
+        };
+        assert!((extent(0, -1.) - (-0.2 + s * tan(10.))).abs() < 1e-12);
+        assert!((extent(1, -1.) - (-0.2 + s * tan(3.))).abs() < 1e-12);
+        assert!((extent(1, 1.) - (2.8 - s * tan(5.))).abs() < 1e-12);
+        // Each flank is named with its own angle.
+        let named: Vec<_> = built
+            .flanks
+            .iter()
+            .map(|f| (f.flank, f.clearance_deg))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                (BladeFlank::Front, 10.),
+                (BladeFlank::Side(0), 3.),
+                (BladeFlank::Side(1), 5.),
+                (BladeFlank::Corner, 3.)
+            ]
+        );
+        // Between declaring the least angle on every side and the front's
+        // on every side: never thicker than the first, never thinner than
+        // the second.
+        let uniform = |deg: f64| {
+            let mut u = t.clone();
+            let b = u.body.as_mut().unwrap().insert.as_mut().unwrap();
+            b.blade_clearance = None;
+            b.insert_clearance_deg = deg;
+            body_pieces(&u).unwrap().0.remove(0)
+        };
+        let (thick, thin) = (uniform(3.), uniform(10.));
+        let mut differs = false;
+        for n in directions() {
+            let h = support(piece, n);
+            assert!(h <= support(&thick, n) + 1e-9 && support(&thin, n) <= h + 1e-9);
+            differs |= h < support(&thick, n) - 0.1;
+        }
+        assert!(differs);
+    }
+
+    #[test]
+    fn a_tapered_body_has_the_vertices_where_a_side_runs_out() {
+        // An octagon whose short sides recede slower than their neighbours:
+        // they run out below the face, at vertices neither the face nor the
+        // bottom has. Oracle: every vertex of the solid by brute force, any
+        // three of its planes (sides, face, bottom) that meet in a point
+        // every plane keeps.
+        let polygon = [
+            [0., 1.],
+            [0., 4.],
+            [1., 5.],
+            [6., 5.],
+            [7., 4.5],
+            [7., 0.5],
+            [6.5, 0.],
+            [1., 0.],
+        ];
+        let rate = [0.3, 0.05, 0.2, 0.02, 0.25, 0.02, 0.1, 0.0];
+        let s = 4.;
+        let got = tapered_vertices(&polygon, &rate, s).unwrap();
+        // Planes a·(x, z, depth) >= b.
+        let mut planes: Vec<([f64; 3], f64)> = half_planes(&polygon)
+            .into_iter()
+            .zip(rate)
+            .map(|(h, k)| {
+                let (n, c) = h.unwrap();
+                ([n[0], n[1], -k], c)
+            })
+            .collect();
+        planes.push(([0., 0., 1.], 0.));
+        planes.push(([0., 0., -1.], -s));
+        let det = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
+            a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                + a[2] * (b[0] * c[1] - b[1] * c[0])
+        };
+        let mut truth = vec![];
+        for i in 0..planes.len() {
+            for j in i + 1..planes.len() {
+                for k in j + 1..planes.len() {
+                    let (a, b, c) = (planes[i].0, planes[j].0, planes[k].0);
+                    let d = det(a, b, c);
+                    if d.abs() < 1e-9 {
+                        continue;
+                    }
+                    let r = [planes[i].1, planes[j].1, planes[k].1];
+                    let col = |m: usize| {
+                        let sub = |v: [f64; 3], w: f64| {
+                            let mut v = v;
+                            v[m] = w;
+                            v
+                        };
+                        det(sub(a, r[0]), sub(b, r[1]), sub(c, r[2])) / d
+                    };
+                    let p = [col(0), col(1), col(2)];
+                    if planes
+                        .iter()
+                        .all(|(n, c)| n[0] * p[0] + n[1] * p[1] + n[2] * p[2] >= c - 1e-9)
+                    {
+                        truth.push([p[0], p[1], -p[2]]);
+                    }
+                }
+            }
+        }
+        let near = |a: &[f64; 3], b: &[f64; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-7);
+        for v in &truth {
+            assert!(got.iter().any(|g| near(g, v)), "missing {v:?}");
+        }
+        for g in &got {
+            assert!(truth.iter().any(|v| near(g, v)), "not a vertex: {g:?}");
+        }
+        // Some lie strictly between the face and the bottom.
+        assert!(truth.iter().any(|v| v[2] < -0.1 && v[2] > -s + 0.1));
+    }
+
+    #[test]
+    fn blade_clearance_is_a_blades_and_agrees_with_the_least_clearance() {
+        // Not on an ISO insert (one normal clearance, ISO 1832).
+        let (insert, rn) = Insert::iso_code("CCMT09T304", 95.).unwrap();
+        let mut b = body(3.97, 7., 0., 0., 5.);
+        b.insert.as_mut().unwrap().blade_clearance = Some(BladeClearance {
+            front_deg: 7.,
+            side_deg: [7., 7.],
+        });
+        let t = tool(insert, rn, TurnSide::Outer, b);
+        for e in [t.validate().unwrap_err(), super::body(&t).unwrap_err()] {
+            assert!(e.contains("give insert_clearance_deg only"), "{e}");
+        }
+        // The uniform angle must be the least of the flanks'.
+        let mut t = blade(3., 10., [3., 3.]);
+        t.body
+            .as_mut()
+            .unwrap()
+            .insert
+            .as_mut()
+            .unwrap()
+            .insert_clearance_deg = 10.;
+        let e = t.validate().unwrap_err();
+        assert!(e.contains("contradicts") && e.contains("give 3"), "{e}");
+        let mut t = blade(3., 10., [3., 3.]);
+        t.body
+            .as_mut()
+            .unwrap()
+            .insert
+            .as_mut()
+            .unwrap()
+            .blade_clearance
+            .as_mut()
+            .unwrap()
+            .side_deg[1] = 75.;
+        assert!(t.validate().unwrap_err().contains("0..60 degrees"));
+        // A tool without it serializes as before, and reads back.
+        let plain = body(3., 7., 0., 0., 90.);
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("blade_clearance"), "{json}");
+        assert_eq!(serde_json::from_str::<ToolBody>(&json).unwrap(), plain);
+        let declared = blade(3., 10., [3., 5.]).body.unwrap();
+        let json = serde_json::to_string(&declared).unwrap();
+        assert!(json.contains(r#""blade_clearance":{"front_deg":10.0,"side_deg":[3.0,5.0]}"#));
+        assert_eq!(serde_json::from_str::<ToolBody>(&json).unwrap(), declared);
     }
 
     #[test]
