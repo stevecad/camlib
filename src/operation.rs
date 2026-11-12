@@ -277,9 +277,12 @@ impl OperationPlan {
                     )?,
                 )))
             }
-            Operation::AdaptivePocket(p) => Ok(Self::Adaptive(Box::new(
-                AdaptivePlan::prepare_with_stock(p, tool, stock, initial, first_id, cancel)?,
-            ))),
+            Operation::AdaptivePocket(p) => {
+                let plan =
+                    AdaptivePlan::prepare_with_stock(p, tool, stock, initial, first_id, cancel)?;
+                plan.refuse_no_orbit()?;
+                Ok(Self::Adaptive(Box::new(plan)))
+            }
             Operation::Roughing(p) => Ok(Self::Roughing(Box::new(
                 RoughingPlan::prepare_with_stock(p, tool, stock, initial, first_id, cancel)?,
             ))),
@@ -323,9 +326,11 @@ impl OperationPlan {
                     )?,
                 )))
             }
-            Operation::AdaptivePocket(p) => Ok(Self::Adaptive(Box::new(AdaptivePlan::prepare(
-                p, tool, stock, initial, first_id, cancel,
-            )?))),
+            Operation::AdaptivePocket(p) => {
+                let plan = AdaptivePlan::prepare(p, tool, stock, initial, first_id, cancel)?;
+                plan.refuse_no_orbit()?;
+                Ok(Self::Adaptive(Box::new(plan)))
+            }
             Operation::Waterline(p) => Ok(Self::Waterline(Box::new(WaterlinePlan::prepare(
                 p, tool, stock, initial, first_id, cancel,
             )?))),

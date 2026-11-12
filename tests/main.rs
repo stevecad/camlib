@@ -43,6 +43,7 @@ modules! {
     material_budgets,
     material_resume,
     material_surface,
+    no_entry,
     parallel,
     patterns,
     planar,

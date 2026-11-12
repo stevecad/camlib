@@ -773,6 +773,38 @@ impl AdaptivePlan {
     pub fn report(&self) -> &AdaptiveReport {
         &self.report
     }
+    /// An `AdaptivePocket` no orbit fits in anywhere, though the cutter
+    /// does, is refused (#250): it would plan no motion at all, and the
+    /// orbit that opens each area is this strategy's entry. Where an orbit
+    /// fits in part of the region, the narrower parts are the strategy's
+    /// reported residual, as before. A region the cutter itself fits
+    /// nowhere in is not decided here (the plan reports it empty).
+    pub(crate) fn refuse_no_orbit(&self) -> Result<(), String> {
+        if !self.tours.is_empty() {
+            return Ok(());
+        }
+        let pocket = &self.op.pocket;
+        // The cutter's own centre region, as `PocketPlan` constructs it.
+        let cutter = self.guides.source_region().cutter_region(
+            self.r,
+            pocket.radial_allowance_mm + 16. * pocket.tolerance_mm,
+        )?;
+        if cutter.region.components.is_empty() {
+            return Ok(());
+        }
+        let orbit = self.report.min_orbit_radius_mm;
+        Err(format!(
+            "adaptive pocket {}: no orbit fits anywhere in the region, so nothing would be cut: path_strategy {} clears with orbits that sweep a disk of radius {} mm (cutter radius {} + orbit radius {orbit}), and the region is nowhere that wide, though the cutter itself fits. Use path_strategy engagement_front (with entry=RampEntry(angle_deg) where no helix fits), a smaller orbit_radius_mm, a Pocket, or a smaller cutter",
+            pocket.id,
+            match self.op.path_strategy {
+                AdaptivePathStrategy::DiskFront => "disk_front",
+                AdaptivePathStrategy::StockFront => "stock_front",
+                AdaptivePathStrategy::EngagementFront => "engagement_front",
+            },
+            self.r + orbit,
+            self.r
+        ))
+    }
     /// Planning progress (#198): depth passes done of those planned.
     pub fn progress(&self) -> crate::progress::Planned {
         crate::progress::Planned::Layers {

@@ -425,11 +425,17 @@ fn adaptive_pocket_ramps_along_a_slot_no_helix_fits() {
             })
             .count()
     };
-    // The helix this pocket would otherwise need has no room: nothing at
-    // all is cut (reported as residual area), which is why a slot needs a
-    // ramp.
-    let helix = run(4., slot);
-    assert!(helix.unwrap().motions.is_empty());
+    // The helix this pocket would otherwise need has no room, which is why
+    // a slot needs a ramp: without one it is refused by name (#250; it used
+    // to plan nothing, with only the residual area to show for it).
+    let helix = run(4., slot).err().unwrap();
+    for part in [
+        "no entry into the enclosed material of adaptive",
+        "no helix fits",
+        "entry=RampEntry(angle_deg)",
+    ] {
+        assert!(helix.contains(part), "{helix}");
+    }
     // 1 mm at 4 degrees needs 14.3 mm of the slot's 16: one leg.
     let seen = run(4., |op| {
         slot(op);

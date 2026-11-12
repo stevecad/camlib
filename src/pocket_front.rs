@@ -67,6 +67,10 @@ pub struct PocketFrontPlan {
     generation: Option<u64>,
     spec: StockSpec,
     report: PocketFrontReport,
+    /// Why the first level that made no motion left material it was asked
+    /// to cut (`EngagementFrontPlan::refusal`): the pocket's refusal if no
+    /// level makes a motion (#250).
+    refusal: Option<String>,
 }
 
 impl PocketFrontPlan {
@@ -212,6 +216,7 @@ impl PocketFrontPlan {
             next_id: first_id,
             generation: None,
             spec: spec.clone(),
+            refusal: None,
             report: PocketFrontReport {
                 strategy: "adaptive_pocket",
                 clearing: "engagement_front",
@@ -279,6 +284,17 @@ impl PocketFrontPlan {
         }
         loop {
             let Some(plan) = self.plans.front_mut() else {
+                // A pocket that cut nothing although a level had material
+                // no entry reaches is refused, not planned without a
+                // motion (#250). One that cut part of its region leaves
+                // the rest as each level's reported residual area.
+                if self.report.motions == 0
+                    && let Some(refusal) = &self.refusal
+                {
+                    return Err(format!(
+                        "{refusal}. No level of this pocket has anything else to cut, so it is refused rather than planned without a motion"
+                    ));
+                }
                 return Ok(None);
             };
             if !self.activated {
@@ -313,6 +329,14 @@ impl PocketFrontPlan {
                 self.generation = Some(stock.generation() + 1);
                 self.report.motions += 1;
                 return Ok(Some(m));
+            }
+            if self.refusal.is_none()
+                && let Some(why) = plan.refusal()
+            {
+                self.refusal = Some(format!(
+                    "{why}; adaptive pocket level {layer} at Z{}",
+                    self.report.layers[layer].tip_z_mm
+                ));
             }
             plan.finish_report(cancel)?;
             self.report.layers[layer].clearing = serde_json::to_value(plan.report()).unwrap();

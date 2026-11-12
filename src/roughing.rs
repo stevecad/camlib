@@ -950,6 +950,10 @@ pub struct RoughingPlan {
     report: RoughingReport,
     front_progress: Option<FrontProgress>,
     materialized_report: OnceLock<RoughingReport>,
+    /// Why the first engagement-front layer that made no motion left
+    /// material it was asked to cut (`EngagementFrontPlan::refusal`): the
+    /// operation's refusal if no layer makes a motion (#250).
+    refusal: Option<String>,
 }
 impl RoughingPlan {
     pub fn prepare(
@@ -1697,6 +1701,7 @@ impl RoughingPlan {
             report,
             front_progress: None,
             materialized_report: OnceLock::new(),
+            refusal: None,
         })
     }
     pub fn report(&self) -> &RoughingReport {
@@ -1790,6 +1795,17 @@ impl RoughingPlan {
         loop {
             check(cancel)?;
             let Some(plan) = self.plans.front_mut() else {
+                // Roughing that cut nothing although a layer had material
+                // no entry reaches is refused, not planned without a
+                // motion (#250). Where it cut anything, what no entry
+                // reaches is left as each layer's reported residual area.
+                if self.report.motions == 0
+                    && let Some(refusal) = &self.refusal
+                {
+                    return Err(format!(
+                        "{refusal}. No layer of this roughing has anything else to cut, so it is refused rather than planned without a motion"
+                    ));
+                }
                 return Ok(None);
             };
             if !self.activated {
@@ -1858,6 +1874,15 @@ impl RoughingPlan {
                 self.front_progress = plan.front_progress();
                 self.materialized_report.take();
                 return Ok(Some(m));
+            }
+            if self.refusal.is_none()
+                && let LayerPlan::Engagement(front) = &*plan
+                && let Some(why) = front.refusal()
+            {
+                self.refusal = Some(format!(
+                    "{why}; roughing layer {} at Z{}",
+                    self.report.active_layer, self.report.layers[self.report.active_layer].tip_z_mm
+                ));
             }
             plan.finish(cancel)?;
             self.report.layers[self.report.active_layer].clearing = plan.report();
