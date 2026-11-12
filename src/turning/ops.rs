@@ -6062,6 +6062,7 @@ test_tool("groove_in".into(), Insert::Groove { width_mm: 3.,
             edge_deg: 90.,
             curved_for_diameter_mm: None,
             blade_clearance: None,
+            size_tolerance: None,
         });
         let err = plan_err(&prism);
         assert!(

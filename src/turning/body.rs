@@ -602,6 +602,7 @@ pub fn body(tool: &TurningTool) -> Result<Body, String> {
             insert: vec![vertices],
             holder: holder_pieces(tool, &shape, tool_body),
             flanks: vec![],
+            nominal_insert: None,
         });
     }
     let blade = matches!(
