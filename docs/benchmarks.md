@@ -61,6 +61,7 @@ comparable only on the same machine; CI runs the same benchmark on every push.
 
 | Toolpath | Issue | Workload | Moves | Cut mm | Air cut | Rapid mm | Plunges | Retracts | Removed mm³ | Cycle s (exact / tangent) | Engine s |
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| ThermalCut common line | [#17](https://github.com/stevecad/camlib/issues/17) | `plasma-common-line` (plasma) | 34 | 518 | 0 (0%) | 355 | 4 | 4 | 3035 | 18.3 / 18.0 | 0.011 |
 | Facing | [#24](https://github.com/stevecad/camlib/issues/24) | `facing` (face) | 20 | 442 | 42 (10%) | 31 | 2 | 2 | 1920 | 47.1 / 47.1 | 0.006 |
 | Facing | [#24](https://github.com/stevecad/camlib/issues/24) | `facing-large` (face) | 140 | 21474 | 394 (2%) | 207 | 2 | 2 | 119999 | 2153.3 / 2153.3 | 0.359 |
 | Facing | [#24](https://github.com/stevecad/camlib/issues/24) | `rest-pocket` (face) | 18 | 256 | 16 (6%) | 6 | 1 | 1 | 384 | 26.9 / 26.9 | 0.001 |
@@ -165,6 +166,7 @@ comparable only on the same machine; CI runs the same benchmark on every push.
 | `scallop-dense` | Scallop finishing of a roof, 0.15 mm stepover | 27025 | 1678.2 / 1565.8 | 27048 | 0.0 / 143.6 | 0.0 / 81.0 | 2.998 | 1.026 | 1.552 | 444 |
 | `waterline-dense` | Waterline finishing of a tapered island, 0.1 mm stepdown | 1847 | 460.2 / 460.2 | 1870 | 369.9 / 797.6 | 0.0 / 100.4 | 1.008 | 0.382 | 0.104 | 392 |
 | `plasma` | Plasma-cut a plate with holes and a nested washer | 66 | 26.5 / 25.5 | 270 | – | – | 0.082 | 0.068 | 0.064 | 45 |
+| `plasma-common-line` | Plasma-cut a row of four flush rectangles with common lines | 34 | 18.3 / 18.0 | 73 | – | – | 0.064 | 0.053 | 0.008 | 60 |
 | `lathe-shaft` | Face, rough and finish a stepped shaft | 46 | 111.6 / 111.6 | 71 | 0.9 / 194.2 | 0.0 / 0.0 | 0.075 | 0.016 | 0.011 | 31 |
 | `lathe-groove` | Rough, groove and part off a shaft | 84 | 173.2 / 173.2 | 115 | 857.3 / 1386.6 | 0.0 / 0.0 | 0.035 | 0.007 | 0.008 | 29 |
 | `lathe-thread` | Turn and single-point thread M30 x 2 | 77 | 124.5 / 124.5 | 109 | 0.9 / 194.2 | 0.0 / 0.0 | 0.094 | 0.018 | 0.017 | 31 |

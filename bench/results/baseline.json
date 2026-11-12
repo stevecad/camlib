@@ -2303,6 +2303,51 @@
    }
   },
   {
+   "name": "plasma-common-line",
+   "family": "thermal",
+   "description": "Plasma-cut a row of four flush rectangles with common lines",
+   "operations": {
+    "plasma": {
+     "toolpath": "ThermalCut common line",
+     "issue": 17,
+     "moves": 34,
+     "cut_mm": 518.388,
+     "rapid_mm": 355.392,
+     "air_cut_mm": 0.0,
+     "link_mm": 0.0,
+     "plunges": 4,
+     "retracts": 4,
+     "removed_mm3": 3034.875,
+     "cycle_seconds_exact_stop": 18.345,
+     "cycle_seconds_tangent": 17.978,
+     "engine_seconds": 0.011
+    }
+   },
+   "toolpath": {
+    "moves": 34,
+    "cycle_seconds_exact_stop": 18.345,
+    "cycle_seconds_tangent": 17.978,
+    "posted_blocks": 73,
+    "post_error": null,
+    "removed_mm3": [
+     3034.875,
+     5992.5
+    ],
+    "material": null
+   },
+   "engine": {
+    "run_seconds": 0.064,
+    "first_move_seconds": 0.053,
+    "post_seconds": 0.0082,
+    "repeats": 3,
+    "engagement_measure_seconds": null,
+    "peak_rss_kib": {
+     "python": 67100.0,
+     "native": 61040.0
+    }
+   }
+  },
+  {
    "name": "lathe-shaft",
    "family": "lathe",
    "description": "Face, rough and finish a stepped shaft",
