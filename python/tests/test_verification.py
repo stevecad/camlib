@@ -276,6 +276,59 @@ class TravelLimitTest(unittest.TestCase):
             tip.machine.to_dict(), dict(min_tip_mm=(0, 0, -515), max_tip_mm=(500, 400, -115), max_feed_mm_min=10000)
         )
 
+    def test_a_start_at_a_home_corner_and_curves_on_a_limit_are_inside_in_any_frame(self):
+        # 212: travel X 0..450, Y 0..280, Z -400..0, home at machine X0 Y0 Z0:
+        # the X minimum, the Y minimum and the Z maximum at once.
+        import math
+
+        limits = MachineLimits((0, 0, -400), (450, 280, 0), 10000)
+        s = Scene("mill", "1", machine=limits, work_to_machine=WorkFrame((225.3, 140.7, -300.1)))
+        home = (-225.3, -140.7, 300.1)
+
+        def at(x, y, z):
+            return (home[0] + x, home[1] + y, home[2] + z)
+
+        def rapid(a, b):
+            return Motion(1, "op", "t1", Line(a, b), None, "rapid")
+
+        with Verifier(s) as verifier:
+            # A program's first two moves: over the part at Z home, then down.
+            for m in (
+                rapid(at(0, 0, 0), at(100, 50, 0)),
+                rapid(at(100, 50, 0), at(100, 50, -60)),
+                Motion(1, "op", "t1", Line(at(0, 0, 0), at(450, 280, -400)), 600),
+                Motion(1, "op", "t1", Helix(at(0, 10, 0), at(0, 10, -5), at(10, 10, 0), math.tau), 600),
+            ):
+                report = verifier.check(tool(), m)
+                self.assertEqual(report["status"], "clear", report["findings"])
+                self.assertTrue(report["coverage"]["machine_tip_travel_examined"])
+            report = verifier.check(tool(), rapid(at(0, 0, 0), at(-0.001, 50, -10)))
+            self.assertEqual(report["status"], "violation")
+            self.assertEqual(report["findings"][0]["kind"], "machine_travel")
+            self.assertEqual(report["findings"][0]["witness"]["fraction"], 1)
+        # A work frame turned a quarter about Z: machine X is 100 - work Y.
+        turned = Scene(
+            "turned",
+            "1",
+            machine=MachineLimits((90, -10, -10), (110, 10, 30), 10000),
+            work_to_machine=WorkFrame((100, 0, 0), (0, 1, 0), (-1, 0, 0)),
+        )
+
+        def arc(lowest_y):
+            # A half circle of radius 5 through work Y = lowest_y.
+            c = lowest_y + 5
+            return Motion(1, "op", "t1", Arc((-5, c, 0), (5, c, 0), (0, c, 0), math.pi), 600)
+
+        with Verifier(turned) as verifier:
+            # Tangent to the machine +X limit (work Y -10): on it, so inside.
+            report = verifier.check(tool(), arc(-10))
+            self.assertEqual(report["status"], "clear", report["findings"])
+            report = verifier.check(tool(), arc(-10.001))
+            self.assertEqual(report["status"], "violation")
+            finding = next(f for f in report["findings"] if f["kind"] == "machine_travel")
+            self.assertAlmostEqual(finding["witness"]["fraction"], 0.5)
+            self.assertAlmostEqual(finding["witness"]["tip_mm"][1], -10.001)
+
     def test_machine_travel_is_declared_once(self):
         import math
 

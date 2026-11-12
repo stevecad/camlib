@@ -390,7 +390,7 @@ impl IntentChecker {
             .ok_or_else(|| format!("gauge-line travel: tool {tool} is not a program tool"))?;
         // The gauge line is the tip raised by the gauge length (G43).
         let gauge = [machine[0], machine[1], machine[2] + length];
-        // As the planned-move check (verification::travel_decided): a limit
+        // As the planned-move check (verification::check_travel): a limit
         // is inside, and binary64 representation error of the transformed
         // position is not a step any controller commands.
         let scale = point

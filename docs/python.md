@@ -144,7 +144,7 @@ These rarely need changing; each failure names the budget it hit.
 | `DexelStockSpec` | `max_rays` caps the three ray grids together; `max_intervals` the stored intervals (two per uncut ray) |
 | `StockContactOptions` | `spatial_resolution_mm` (0.001) smallest region examined; `max_nodes`, `max_cell_reads` work per move; `max_findings` per move |
 | verification `Options` | the same for fixture/part checks, and `target_floor_tolerance_mm` (floor allowance on protected parts) |
-| `MachineLimits` | Travel, declared once: `min_tip_mm`, `max_tip_mm` (the tip travel box of one tool length) or `min_gauge_mm`, `max_gauge_mm` (`MachineLimits.gauge_line(min, max, max_feed_mm_min)`: the spindle gauge line's travel; each tool is checked against it lowered by its gauge length, see below). Limits included: a tip on a limit, such as a mill at home, is inside. `max_feed_mm_min`, `max_normal_accel_mm_s2`, `max_axis_feed_mm_min` |
+| `MachineLimits` | Travel, declared once: `min_tip_mm`, `max_tip_mm` (the tip travel box of one tool length) or `min_gauge_mm`, `max_gauge_mm` (`MachineLimits.gauge_line(min, max, max_feed_mm_min)`: the spindle gauge line's travel; each tool is checked against it lowered by its gauge length, see below). Limits included: a tip on a limit, such as a mill at home in a corner of its travel, is inside, and every move (line, arc or helix, in any work frame) is decided as inside or as a violation at the point that leaves; travel is never reported `uncertain`. `max_feed_mm_min`, `max_normal_accel_mm_s2`, `max_axis_feed_mm_min` |
 | `RegenerationCache` | `max_entry_bytes`, `max_total_bytes` disk limits |
 
 **Machine travel with tools of different lengths.** A machine's travel is its

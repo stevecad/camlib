@@ -328,6 +328,88 @@ impl PreparedCurve {
             (peak[i], state)
         }))
     }
+    /// Where the nominal circular move ends: its centre, radius and sweep
+    /// place it within the preparation tolerance of the declared end, which
+    /// `position(1.)` returns. A line ends at its declared end.
+    pub(crate) fn nominal_end(&self) -> Vec3 {
+        let end = self.curve.end();
+        match self.curve {
+            Curve::Line { .. } => end,
+            Curve::Arc {
+                center,
+                plane,
+                sweep_rad,
+                ..
+            }
+            | Curve::Helix {
+                center,
+                plane,
+                sweep_rad,
+                ..
+            } => {
+                let [u, v, _] = plane.axes();
+                let (sin, cos) = (self.angle + sweep_rad).sin_cos();
+                let mut p = end;
+                p[u] = center[u] + self.radius * cos;
+                p[v] = center[v] + self.radius * sin;
+                p
+            }
+        }
+    }
+    /// Fractions in [0, 1] where the nominal curve's coordinate along
+    /// `direction` is stationary: with the two ends, every place that
+    /// coordinate can be extreme. `direction` is any vector (a row of a
+    /// work-to-machine rotation gives a machine axis).
+    ///
+    /// A line has none. On an arc or helix of radius r, with in-plane axes
+    /// u, v and axial axis w, the coordinate at fraction t is
+    /// `K + a cos(psi) + d t`, where `psi = angle - phase + t sweep`,
+    /// `a = r hypot(direction[u], direction[v])`,
+    /// `phase = atan2(direction[v], direction[u])` and
+    /// `d = direction[w] (end[w] - start[w])`. Its derivative vanishes where
+    /// `sin(psi) = d / (a sweep)`: two angles a turn, or none when the axial
+    /// drift outruns the circle. A helix repeats them every turn with a
+    /// constant drift, so its extremes are among the first and the last
+    /// occurrence of each.
+    pub(crate) fn stationary_fractions(&self, direction: Vec3) -> Vec<f64> {
+        let (Curve::Arc {
+            plane, sweep_rad, ..
+        }
+        | Curve::Helix {
+            plane, sweep_rad, ..
+        }) = self.curve
+        else {
+            return Vec::new();
+        };
+        let [u, v, w] = plane.axes();
+        let slope = self.radius * direction[u].hypot(direction[v]) * sweep_rad;
+        let drift = direction[w] * (self.curve.end()[w] - self.curve.start()[w]);
+        let sine = drift / slope;
+        // No in-plane part (slope 0), or a monotone coordinate. A ratio one
+        // rounding step past 1 is the two angles merged into one: keep it.
+        if sine.is_nan() || sine.abs() > 1. + 1e-12 {
+            return Vec::new();
+        }
+        let root = sine.clamp(-1., 1.).asin();
+        let start = self.angle - direction[v].atan2(direction[u]);
+        let span = sweep_rad.abs();
+        let mut fractions = Vec::new();
+        for target in [root, std::f64::consts::PI - root] {
+            let travel = if sweep_rad > 0. {
+                (target - start).rem_euclid(TAU)
+            } else {
+                (start - target).rem_euclid(TAU)
+            };
+            if travel <= span {
+                fractions.push(travel / span);
+                let last = travel + TAU * ((span - travel) / TAU).floor();
+                if last > travel {
+                    fractions.push((last / span).min(1.));
+                }
+            }
+        }
+        fractions
+    }
     /// Bounds include declared endpoints; callers must add construction/error
     /// guards when using them for collision pruning.
     pub fn bounds(&self) -> Bounds3 {

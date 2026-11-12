@@ -716,6 +716,303 @@ fn machine_travel_is_closed_a_tip_on_its_limit_is_inside() {
     );
 }
 
+fn tip_limits(min: [f64; 3], max: [f64; 3]) -> MachineLimits {
+    MachineLimits {
+        min_tip_mm: Some(min),
+        max_tip_mm: Some(max),
+        max_feed_mm_min: 10000.,
+        max_normal_accel_mm_s2: None,
+        max_axis_feed_mm_min: None,
+        min_gauge_mm: None,
+        max_gauge_mm: None,
+    }
+}
+fn travel_finding(r: &Report) -> Option<&Finding> {
+    r.findings
+        .iter()
+        .find(|f| f.kind == FindingKind::MachineTravel)
+}
+
+#[test]
+fn a_program_that_starts_at_a_home_corner_of_the_travel_is_inside() {
+    // #212: travel X 0..450, Y 0..280, Z -400..0, home at machine X0 Y0 Z0:
+    // the X minimum, the Y minimum and the Z maximum at once.
+    for origin in [
+        [0., 0., 0.],
+        [225., 140., -300.],
+        [123.456, 77.1, -250.3],
+        [0.1, 0.2, -0.3],
+    ] {
+        let mut s = scene(vec![]);
+        s.machine = Some(tip_limits([0., 0., -400.], [450., 280., 0.]));
+        s.work_to_machine.origin_mm = origin;
+        let home = [-origin[0], -origin[1], -origin[2]];
+        let at = |x: f64, y: f64, z: f64| [home[0] + x, home[1] + y, home[2] + z];
+        let rapid = |a, b| {
+            let mut m = line(a, b);
+            m.kind = MoveKind::Rapid;
+            m.feed_mm_min = None;
+            m
+        };
+        for (name, m) in [
+            // A program's first two moves: over the part at Z home, then down.
+            (
+                "rapid at Z home",
+                rapid(at(0., 0., 0.), at(100., 50., 0.)),
+            ),
+            (
+                "rapid down",
+                rapid(at(100., 50., 0.), at(100., 50., -60.)),
+            ),
+            ("along the X edge", line(at(0., 0., 0.), at(450., 0., 0.))),
+            ("along the Y edge", line(at(0., 0., 0.), at(0., 280., 0.))),
+            ("along the Z edge", line(at(0., 0., 0.), at(0., 0., -400.))),
+            (
+                "corner to corner",
+                line(at(0., 0., 0.), at(450., 280., -400.)),
+            ),
+            (
+                "arc leaving the corner along the Y0 face",
+                motion(Curve::Arc {
+                    start: at(0., 0., 0.),
+                    end: at(10., 10., 0.),
+                    center: at(10., 0., 0.),
+                    plane: Plane::Xy,
+                    sweep_rad: -FRAC_PI_2,
+                }),
+            ),
+            (
+                "full helix from the top, touching the X0 and Y0 faces",
+                motion(Curve::Helix {
+                    start: at(0., 10., 0.),
+                    end: at(0., 10., -5.),
+                    center: at(10., 10., 0.),
+                    plane: Plane::Xy,
+                    sweep_rad: TAU,
+                }),
+            ),
+        ] {
+            let r = check(s.clone(), &m);
+            assert_eq!(
+                r.status,
+                Status::Clear,
+                "{origin:?} {name}: {:?}",
+                r.findings
+            );
+            assert!(r.coverage.machine_tip_travel_examined, "{name}");
+        }
+        // Leaving the closed box by one output unit is a violation, at the
+        // point that leaves: an end, or where a curve is extreme.
+        let r = check(s.clone(), &line(at(0., 0., 0.), at(-0.001, 50., -10.)));
+        assert_eq!(r.status, Status::Violation, "{origin:?}");
+        assert_eq!(travel_finding(&r).unwrap().witness.as_ref().unwrap().fraction, 1.);
+        let r = check(s.clone(), &line(at(10., 10., 0.001), at(10., 10., -10.)));
+        assert_eq!(travel_finding(&r).unwrap().witness.as_ref().unwrap().fraction, 0.);
+        let r = check(
+            s.clone(),
+            &motion(Curve::Helix {
+                start: at(20., 9.999, 0.),
+                end: at(20., 9.999, -5.),
+                center: at(10., 9.999, 0.),
+                plane: Plane::Xy,
+                sweep_rad: TAU,
+            }),
+        );
+        assert_eq!(r.status, Status::Violation, "{origin:?}");
+        // The lowest Y of the turn is three quarters of the way round.
+        let w = travel_finding(&r).unwrap().witness.clone().unwrap();
+        assert!((w.fraction - 0.75).abs() < 1e-3, "{}", w.fraction);
+        assert!((w.tip_mm[1] - at(0., -0.001, 0.)[1]).abs() < 1e-5);
+    }
+}
+
+/// The largest and smallest machine coordinates of a move, by dense sampling
+/// of its declared geometry: independent of the checker's closed form.
+fn sampled_extent(frame: &WorkFrame, curve: &Curve) -> [[f64; 3]; 2] {
+    let (Curve::Arc {
+        start,
+        end,
+        center,
+        plane,
+        sweep_rad,
+    }
+    | Curve::Helix {
+        start,
+        end,
+        center,
+        plane,
+        sweep_rad,
+    }) = *curve
+    else {
+        unreachable!()
+    };
+    let [u, v, w] = plane.axes();
+    let radius = (start[u] - center[u]).hypot(start[v] - center[v]);
+    let angle = (start[v] - center[v]).atan2(start[u] - center[u]);
+    let (mut low, mut high) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    let n = 100_000;
+    for i in 0..=n {
+        let t = i as f64 / n as f64;
+        let mut p = start;
+        p[u] = center[u] + radius * (angle + t * sweep_rad).cos();
+        p[v] = center[v] + radius * (angle + t * sweep_rad).sin();
+        p[w] = start[w] + t * (end[w] - start[w]);
+        let q = frame.to_design(p);
+        for k in 0..3 {
+            low[k] = low[k].min(q[k]);
+            high[k] = high[k].max(q[k]);
+        }
+    }
+    [low, high]
+}
+
+#[test]
+fn curved_moves_in_any_work_frame_are_decided_against_the_closed_travel() {
+    // #212: an arc or helix that touches a limit is inside in a rotated work
+    // frame too, and one that crosses it is a violation; never unresolved.
+    let rotation = |axis: usize, angle: f64| {
+        let (s, c) = angle.sin_cos();
+        let (a, b) = ((axis + 1) % 3, (axis + 2) % 3);
+        let mut m = [[0.; 3]; 3];
+        m[axis][axis] = 1.;
+        m[a][a] = c;
+        m[b][a] = s;
+        m[a][b] = -s;
+        m[b][b] = c;
+        // Columns are the work axes in machine coordinates.
+        WorkFrame {
+            origin_mm: [120.3, -40.7, -210.1],
+            x: [m[0][0], m[1][0], m[2][0]],
+            y: [m[0][1], m[1][1], m[2][1]],
+            z: [m[0][2], m[1][2], m[2][2]],
+        }
+    };
+    let mut frames = vec![WorkFrame::identity()];
+    for axis in 0..3 {
+        for angle in [FRAC_PI_2, PI, 0.3, -1.1, 2.5] {
+            frames.push(rotation(axis, angle));
+        }
+    }
+    let mut curves = vec![];
+    for plane in [Plane::Xy, Plane::Xz, Plane::Yz] {
+        let [u, v, w] = plane.axes();
+        for (radius, from, sweep, axial) in [
+            (10., 0., FRAC_PI_2, 0.),
+            (10., 0.4, -2.2, 0.),
+            (7.5, -2., TAU, 0.),
+            (12., 1., 0.9, 6.),
+            (12., 1., -TAU, -4.),
+            (5., 2.5, 3.5 * TAU, 30.),
+            (5., -0.7, -2.25 * TAU, 80.),
+            (3., 0.2, 1.3, -40.),
+        ] {
+            let center = [3., -8., 5.];
+            let point = |angle: f64, height: f64| {
+                let mut p = center;
+                p[u] += radius * f64::cos(angle);
+                p[v] += radius * f64::sin(angle);
+                p[w] += height;
+                p
+            };
+            let (start, end) = (point(from, 0.), point(from + sweep, axial));
+            curves.push(if axial == 0. {
+                Curve::Arc {
+                    start,
+                    end,
+                    center,
+                    plane,
+                    sweep_rad: sweep,
+                }
+            } else {
+                Curve::Helix {
+                    start,
+                    end,
+                    center,
+                    plane,
+                    sweep_rad: sweep,
+                }
+            });
+        }
+    }
+    let mut checked = 0;
+    for frame in &frames {
+        frame.validate().unwrap();
+        for curve in &curves {
+            let [low, high] = sampled_extent(frame, curve);
+            let m = motion(curve.clone());
+            let mut s = scene(vec![]);
+            s.work_to_machine = frame.clone();
+            // The sampled extent is under 1e-7 mm inside the true one (at
+            // most radius times the angular step squared over 8): a box
+            // 1e-6 mm larger holds the move, within 1e-6 mm of all six limits.
+            let inside = |pad: f64| {
+                tip_limits(
+                    std::array::from_fn(|k| low[k] - pad),
+                    std::array::from_fn(|k| high[k] + pad),
+                )
+            };
+            s.machine = Some(inside(1e-6));
+            let r = check(s.clone(), &m);
+            assert!(
+                travel_finding(&r).is_none(),
+                "{frame:?} {curve:?}: {:?}",
+                r.findings
+            );
+            // Pulling any one limit 1e-3 mm inside the move is a violation
+            // whose witness is a point of the move beyond that limit.
+            for k in 0..3 {
+                if high[k] - low[k] < 0.01 {
+                    continue; // The move has no extent along this axis.
+                }
+                for side in 0..2 {
+                    let mut limits = inside(1e-6);
+                    if side == 0 {
+                        limits.min_tip_mm.as_mut().unwrap()[k] = low[k] + 1e-3;
+                    } else {
+                        limits.max_tip_mm.as_mut().unwrap()[k] = high[k] - 1e-3;
+                    }
+                    s.machine = Some(limits);
+                    let r = check(s.clone(), &m);
+                    let f = travel_finding(&r)
+                        .unwrap_or_else(|| panic!("{frame:?} {curve:?} axis {k} side {side}"));
+                    assert_eq!(f.status, Status::Violation);
+                    let q = frame.to_design(f.witness.as_ref().unwrap().tip_mm);
+                    let beyond = if side == 0 {
+                        low[k] + 1e-3 - q[k]
+                    } else {
+                        q[k] - (high[k] - 1e-3)
+                    };
+                    assert!(beyond > 0., "{frame:?} {curve:?} axis {k} side {side}: {beyond}");
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert!(checked > 16 * 24 * 4, "{checked}");
+    // Exactly on the limit in a frame turned a quarter about Z: an arc
+    // tangent to the machine +X limit, which is the work -Y side.
+    let mut s = scene(vec![]);
+    s.machine = Some(tip_limits([90., -10., -10.], [110., 10., 30.]));
+    s.work_to_machine.origin_mm = [100., 0., 0.];
+    s.work_to_machine.x = [0., 1., 0.];
+    s.work_to_machine.y = [-1., 0., 0.];
+    let tangent = |reach: f64| {
+        motion(Curve::Arc {
+            start: [-5., reach - 10. + 5., 0.],
+            end: [5., reach - 10. + 5., 0.],
+            center: [0., reach - 10. + 5., 0.],
+            plane: Plane::Xy,
+            sweep_rad: PI,
+        })
+    };
+    let r = check(s.clone(), &tangent(0.));
+    assert_eq!(r.status, Status::Clear, "{:?}", r.findings);
+    let r = check(s, &tangent(-0.001));
+    assert_eq!(r.status, Status::Violation);
+    let fraction = travel_finding(&r).unwrap().witness.as_ref().unwrap().fraction;
+    assert!((fraction - 0.5).abs() < 1e-12, "{fraction}");
+}
+
 #[test]
 fn budgets_truncation_and_mid_query_cancellation_cannot_fabricate_completion() {
     let s = scene(vec![body("small", [4.9, -0.1, 5.1, 0.1], [0., 2.])]);
