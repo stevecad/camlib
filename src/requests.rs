@@ -64,6 +64,16 @@ pub enum Request {
         #[serde(default)]
         options: ConstructionOptions,
     },
+    /// Nest sheet parts for thermal cutting (`crate::nesting`).
+    Nest {
+        nest: Box<crate::nesting::NestRequest>,
+    },
+    /// The independent check of a nest layout, from anywhere.
+    VerifyNest {
+        nest: Box<crate::nesting::NestRequest>,
+        placements: Vec<crate::nesting::Placement>,
+        region: PlanarRegion,
+    },
     PrepareVerification {
         scene: crate::verification::Scene,
         #[serde(default)]
@@ -147,6 +157,12 @@ fn execute(session: &mut Session, request: Request) -> Result<Value, String> {
             )?;
             Ok(json!({"region":silhouette.region,"report":silhouette.report}))
         }
+        Request::Nest { nest } => Ok(json!(crate::nesting::nest(&nest, &AtomicBool::new(false))?)),
+        Request::VerifyNest {
+            nest,
+            placements,
+            region,
+        } => Ok(json!(crate::nesting::verify(&nest, &placements, &region)?)),
         Request::PrepareVerification { scene, options } => {
             session.prepare_verification(&scene, options)?;
             Ok(

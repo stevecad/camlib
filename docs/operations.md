@@ -1565,6 +1565,10 @@ holes), `feed_mm_min`, `cut_height_mm`, and a beam tool:
 (the kerf is the beam's diameter; the nozzle and body are collision geometry).
 The setup's stock is the sheet (its top and thickness).
 
+`parts` can come from [`camlib.Nest`](nesting.md), which places copies of
+parts on a sheet with declared spacing, margin and rotations and proves the
+layout.
+
 ```python
 torch = camlib.Torch("torch", kerf_width=1.5)
 cut = camlib.ThermalCut("plasma", torch, parts, feed_mm_min=2500, cut_height_mm=1.5,

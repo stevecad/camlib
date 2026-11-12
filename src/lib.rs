@@ -80,6 +80,7 @@ pub mod limits;
 pub mod machine;
 pub mod material;
 pub mod motion;
+pub mod nesting;
 pub mod operation;
 pub mod planar;
 #[cfg(feature = "profile-planning")]
