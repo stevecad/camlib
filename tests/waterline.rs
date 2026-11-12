@@ -638,3 +638,202 @@ fn parallel_quad_tree_gives_exactly_the_serial_contours() {
         assert!(!serial.loops.is_empty());
     }
 }
+
+// Slope limits take the ball's contact on its level (#257).
+
+/// Cut length per level (tip Z in micrometres) of `op` run on the fixture's
+/// stock, and its level cuts.
+fn level_cuts(
+    op: &camlib::waterline::WaterlineOperation,
+) -> (
+    std::collections::BTreeMap<i64, f64>,
+    Vec<camlib::motion::Motion>,
+) {
+    use camlib::{motion::MoveKind, stock::Stock, waterline::WaterlinePlan};
+    let m = fixture();
+    let cancel = AtomicBool::new(false);
+    let mut plan = WaterlinePlan::prepare(
+        op.clone(),
+        &m.tools[0],
+        m.stock.height().unwrap(),
+        m.initial_position_mm,
+        1,
+        &cancel,
+    )
+    .unwrap();
+    let mut stock = Stock::new(m.stock.height().unwrap().clone()).unwrap();
+    let tool = m.tools[0].prepare().unwrap();
+    let (mut lengths, mut cuts) = (std::collections::BTreeMap::new(), vec![]);
+    while let Some(motion) = plan.next_motion_with_stock(&stock, &cancel).unwrap() {
+        let d = stock
+            .preview_sweep(&tool, &motion, 1., m.sweep, &cancel)
+            .unwrap();
+        stock.apply_delta(&d).unwrap();
+        let (a, b) = (motion.curve.start(), motion.curve.end());
+        if motion.kind == MoveKind::Cut && a[2] == b[2] {
+            *lengths.entry((a[2] * 1000.).round() as i64).or_insert(0.) +=
+                (b[0] - a[0]).hypot(b[1] - a[1]);
+            cuts.push(motion);
+        }
+    }
+    (lengths, cuts)
+}
+fn mesh(triangles: Vec<[[f64; 3]; 3]>) -> SurfaceMesh {
+    SurfaceMesh {
+        version: 1,
+        units: "mm".into(),
+        surface_error_mm: 0.,
+        source: serde_json::Value::Null,
+        triangles: triangles.into(),
+    }
+}
+/// A box 8 x 6 mm with its top face at `top`, vertical walls down to the base.
+fn box_top(top: f64) -> Vec<[[f64; 3]; 3]> {
+    let (a, b, c, d) = (
+        [8., 5., top],
+        [16., 5., top],
+        [16., 11., top],
+        [8., 11., top],
+    );
+    vec![[a, b, c], [a, c, d]]
+}
+/// The offset of the box's outline by `r`: what one level around it is long.
+fn box_perimeter(r: f64) -> f64 {
+    2. * (8. + 6.) + std::f64::consts::TAU * r
+}
+#[test]
+fn a_steep_only_waterline_keeps_vertical_walls_whole_at_any_safety_margin() {
+    // Below its top edge a vertical wall is a 90 degree contact at every
+    // sample of the level's contour, wherever the sample lies between the
+    // protected and the inflated offset (issue #257: found by Wookie1, whose
+    // box this is). A ball dropped at the sample lands on the floor, or with
+    // a larger safety margin on the wall's top edge.
+    let m = fixture();
+    for (margin, from) in [(0.005, 80.), (0.05, 80.), (0.1, 80.), (0.005, 89.)] {
+        let mut op = operation(&m);
+        op.surface = mesh(box_top(6.));
+        (op.top_z_mm, op.bottom_z_mm, op.stepdown_mm) = (7., 1., 1.);
+        op.safety_margin_mm = margin;
+        op.slope_from_deg = from;
+        let (lengths, _) = level_cuts(&op);
+        let whole = box_perimeter(2. + margin);
+        let mut walls = 0;
+        for (z, length) in &lengths {
+            let z = *z as f64 / 1000.;
+            if z <= 4. {
+                // The ball's center is at or below the top edge: the wall.
+                walls += 1;
+                assert!(
+                    (0.98 * whole..=1.01 * whole).contains(length),
+                    "margin {margin}, from {from}: level {z} keeps {length} of {whole} mm"
+                );
+            } else {
+                // Rolling over the top edge at acos((z - 4) / r): under 80
+                // degrees from 0.35 mm above.
+                assert!(z < 4.4, "margin {margin}: level {z} kept {length} mm");
+            }
+        }
+        assert!(walls >= 3, "margin {margin}: {lengths:?}");
+    }
+}
+#[test]
+fn a_steep_only_waterline_keeps_the_level_that_finishes_a_wall_to_its_floor() {
+    // The last level a few micrometres above a floor at the wall's foot:
+    // the ball touches the wall, not the floor it has not reached.
+    let m = fixture();
+    // The box on the machining base.
+    let mut op = operation(&m);
+    op.surface = mesh(box_top(6.));
+    (op.top_z_mm, op.bottom_z_mm, op.stepdown_mm) = (5., 0.006, 1.);
+    op.slope_from_deg = 80.;
+    let (lengths, _) = level_cuts(&op);
+    let whole = box_perimeter(2.005);
+    let last = lengths[&6];
+    assert!(
+        (0.98 * whole..=1.01 * whole).contains(&last),
+        "{last} of {whole} mm"
+    );
+    // The box on a plate whose top is a floor of the part at Z3.
+    for tip in [3.01, 3.03, 3.06] {
+        let mut op = operation(&m);
+        let (a, b, c, d) = ([2., 2., 3.], [22., 2., 3.], [22., 14., 3.], [2., 14., 3.]);
+        let mut triangles = box_top(6.);
+        triangles.extend([[a, b, c], [a, c, d]]);
+        op.surface = mesh(triangles);
+        (op.top_z_mm, op.bottom_z_mm, op.stepdown_mm) = (6., tip, 1.);
+        op.slope_from_deg = 80.;
+        let (lengths, _) = level_cuts(&op);
+        let last = lengths
+            .get(&((tip * 1000.).round() as i64))
+            .copied()
+            .unwrap_or(0.);
+        assert!(
+            (0.98 * whole..=1.01 * whole).contains(&last),
+            "tip {tip}: {last} of {whole} mm; {lengths:?}"
+        );
+    }
+}
+#[test]
+fn a_sloped_wall_is_kept_by_its_own_slope_at_every_level() {
+    // A flank at `angle` from horizontal, 12 mm long in y, its top edge at
+    // x 10, z 8; a vertical wall behind it and at both ends. On the flank,
+    // 3 mm clear of the ends, the contact angle is the flank's slope at
+    // every level: kept or dropped as a whole, never level by level.
+    let m = fixture();
+    let flank = |angle: f64| {
+        let run = 8. / angle.to_radians().tan();
+        let (a, b, c, d) = (
+            [10., 2., 8.],
+            [10. + run, 2., 0.],
+            [10. + run, 14., 0.],
+            [10., 14., 8.],
+        );
+        mesh(vec![[a, b, c], [a, c, d]])
+    };
+    // Kept length per level beside the flank (x beyond its top edge), for y
+    // in 5..11.
+    let on_flank = |angle: f64, from: f64, to: f64| {
+        let mut op = operation(&m);
+        op.surface = flank(angle);
+        (op.top_z_mm, op.bottom_z_mm, op.stepdown_mm) = (5.5, 1.5, 1.);
+        (op.slope_from_deg, op.slope_to_deg) = (from, to);
+        let (lengths, cuts) = level_cuts(&op);
+        let mut kept = std::collections::BTreeMap::new();
+        for z in lengths.keys() {
+            kept.insert(*z, 0.);
+        }
+        for cut in cuts {
+            let (a, b) = (cut.curve.start(), cut.curve.end());
+            if (a[0] + b[0]) / 2. > 10.5 {
+                let (low, high) = (a[1].min(b[1]).max(5.), a[1].max(b[1]).min(11.));
+                *kept.get_mut(&((a[2] * 1000.).round() as i64)).unwrap() += (high - low).max(0.);
+            }
+        }
+        (kept, lengths.len())
+    };
+    for (angle, from, to, whole) in [
+        (70., 80., 90., false),
+        (70., 60., 90., true),
+        (70., 0., 60., false),
+        (80., 85., 90., false),
+        (80., 30., 85., true),
+        (84., 30., 87., true),
+        (84., 87., 90., false),
+    ] {
+        let (all, _) = on_flank(angle, 0., 90.);
+        assert!(all.len() >= 4 && all.values().all(|l| (*l - 6.).abs() < 0.05));
+        let (kept, _) = on_flank(angle, from, to);
+        for z in all.keys() {
+            let length = kept.get(z).copied().unwrap_or(0.);
+            assert!(
+                if whole {
+                    (length - 6.).abs() < 0.05
+                } else {
+                    length == 0.
+                },
+                "{angle} degree flank, slope {from}..{to}: level {} keeps {length} mm",
+                *z as f64 / 1000.
+            );
+        }
+    }
+}

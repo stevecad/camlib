@@ -1398,6 +1398,19 @@ with a vertical plunge onto the surface. Over a convex edge the contact
 normal turns gradually, so a shallow pass may roll over the edge until the
 limit.
 
+The contact is the one the tool has where it is. A drop-cutter pass
+(`Parallel`, `Spiral`, `Radial`, `Project`) rests on the part from above, so
+its contact is the dropped ball's. A `Waterline` pass is on its level: its
+contact is the nearest point of the part to the ball's center at that level,
+90 degrees against a vertical wall at any height below the wall's top edge, a
+face's own slope on a sloped face, the roll-over angle on an edge. (A ball
+dropped at a wall's foot lands on the floor, which would call the wall flat.)
+Where the ball touches a wall and a floor at once, as on the level that
+finishes a wall down to its floor, both contacts count, and the contour is
+kept if either lies within the limits. With both definitions a steep pass
+above `t − o` and a shallow pass below `t + o` cover every reachable surface
+with the declared overlap.
+
 `camlib.steep_and_shallow(id, tool, surface, floor_z_mm, clearance_z_mm,
 top_z_mm=, bottom_z_mm=, stepdown_mm=, stepover_mm=, threshold_deg=45,
 overlap_deg=5, shallow="parallel")` returns the two operations of the usual

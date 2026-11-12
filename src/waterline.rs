@@ -254,6 +254,58 @@ fn simplify_ring(
     }
     Ok((result, n - remaining, excess))
 }
+/// The contact (slope) angles, in radians from the tool axis, of the ball at
+/// a contour sample: least and greatest.
+///
+/// A waterline's tool is on its level, so its contact is the nearest point
+/// of the part to the ball's center there: 90 degrees against a vertical
+/// wall, a facet's slope on a facet, the roll-over angle on an edge. (A ball
+/// dropped onto the part at the sample's XY rests somewhere else: at a
+/// wall's foot it lands on the floor, and the wall would be classified
+/// flat.) A sample lies within `band` of the offset surface, not on it, so
+/// it is first moved onto the surface along the contact normal; the range
+/// then covers every contact within the tolerance of the nearest, which is
+/// more than one where the ball touches a wall and a floor at once.
+fn level_contact_angles(
+    surface: &PreparedSurface,
+    sample: [f64; 3],
+    radius: f64,
+    band: f64,
+    tolerance: f64,
+    work: &mut SurfaceWork,
+    cancel: &impl CancelSignal,
+) -> Result<(f64, f64), String> {
+    let tie = 64. * tolerance;
+    let mut center = sample;
+    let mut range = None;
+    for _ in 0..8 {
+        let Some(contact) = surface.level_contact(center, radius, tie, work, cancel)? else {
+            break;
+        };
+        range = Some(contact.cos_axis);
+        let off = radius - contact.distance_mm;
+        let horizontal = contact.normal[0].hypot(contact.normal[1]);
+        // On the surface, or resting on a flat (no horizontal move changes
+        // the distance there).
+        if off.abs() <= tie || horizontal < 1e-6 {
+            break;
+        }
+        let step = off / horizontal;
+        let next = [
+            center[0] + step * contact.normal[0] / horizontal,
+            center[1] + step * contact.normal[1] / horizontal,
+            center[2],
+        ];
+        // Never further from the sample than a sample can be from the surface.
+        if (next[0] - sample[0]).hypot(next[1] - sample[1]) > band + tie {
+            break;
+        }
+        center = next;
+    }
+    // Nothing of the part within reach of the level: as on the base.
+    let [low, high] = range.unwrap_or([1., 1.]);
+    Ok((high.clamp(-1., 1.).acos(), low.clamp(-1., 1.).acos()))
+}
 pub fn prepare_contours(
     surface: &PreparedSurface,
     o: ContourOptions,
@@ -1243,12 +1295,24 @@ impl WaterlinePlan {
                     self.limits,
                     &self.region_limits,
                 );
+                // The ball's center on this level, and how far a contour
+                // sample may lie from the offset surface (inside it down to
+                // the protected radius, outside it by the contour error).
+                let center_z = z + self.radius;
+                let band = (self.inflated - self.protected).max(0.) + self.op.contour_error_mm;
+                let tolerance = self.op.tolerance_mm;
                 let mut runs = crate::finishing::filter_runs(vec![closed.clone()], spacing, |p| {
                     if let Some((lo, hi)) = slope {
-                        let angle = surface
-                            .contact(p, inflated, &mut slope_work, cancel)?
-                            .contact_angle(inflated);
-                        if angle < lo - 1e-9 || angle > hi + 1e-9 {
+                        let (least, greatest) = level_contact_angles(
+                            surface,
+                            [p[0], p[1], center_z],
+                            inflated,
+                            band,
+                            tolerance,
+                            &mut slope_work,
+                            cancel,
+                        )?;
+                        if greatest < lo - 1e-9 || least > hi + 1e-9 {
                             return Ok(false);
                         }
                     }
