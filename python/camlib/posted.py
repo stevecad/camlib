@@ -55,6 +55,7 @@ _KINDS = (
     'probe_measure',
     'probe_touch',
     'probe_return',
+    'mark',
 )
 _CURVES = ('line', 'arc', 'helix')
 _PLANES = ('xy', 'xz', 'yz')

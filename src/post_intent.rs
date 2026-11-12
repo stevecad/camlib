@@ -803,6 +803,14 @@ impl IntentChecker {
             {
                 (None, None)
             }
+            // A marking beam decodes as a marking beam (its process words,
+            // or on a machine that marks by power alone its attribution),
+            // its power within the same resolution.
+            (Event::BeamMark { power_percent: a }, [Event::BeamMark { power_percent: b }])
+                if (a - b).abs() <= 0.5 =>
+            {
+                (None, None)
+            }
             (Event::CutterCompensation { .. }, []) if self.deferred_compensation.is_some() => {
                 (None, None)
             }

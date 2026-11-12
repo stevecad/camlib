@@ -112,6 +112,7 @@ fn group(effect: &str) -> &str {
         "radius_off" | "radius_left" | "radius_right" => "radius",
         "stop" | "optional_stop" | "end" => "stop",
         "height_control_on" | "height_control_off" => "height_control",
+        "mark_mode" | "cut_mode" => "beam_process",
         other => other,
     }
 }
@@ -167,6 +168,14 @@ pub struct Decoder {
     cycle_initial: Option<f64>,
     compensation: CompensationSide,
     beams: BTreeSet<String>,
+    /// The beam process the decoded program selected (`beam_mark = "mode"`:
+    /// marking true, cutting false, none before its first selection).
+    beam_marking: Option<bool>,
+    /// `beam_mark = "power"`: the source event these blocks are read for is
+    /// a marking beam. With no process code the role of a beam word is the
+    /// source's attribution, as a fed move's kind is; its power is the
+    /// word's.
+    pub marking_source: bool,
     /// Probing: the program's probe tools, every tool's cutter radius (a
     /// probe's stylus ball) and the O-word labels already used.
     probes: BTreeSet<String>,
@@ -252,6 +261,8 @@ impl Decoder {
             cycle_initial: None,
             compensation: CompensationSide::Off,
             beams: beam_tools,
+            beam_marking: None,
+            marking_source: false,
             probes: BTreeSet::new(),
             tool_radii: BTreeMap::new(),
             probe_labels: BTreeSet::new(),
@@ -742,10 +753,36 @@ impl Decoder {
                             return Err("NC beam power S outside 0..beam_s_max".into());
                         };
                         self.rpm = s;
-                        output.push(Event::Beam {
-                            power_percent: s / s_max * 100.,
+                        let power_percent = s / s_max * 100.;
+                        let marking = match d.beam_mark.as_deref() {
+                            Some("mode") => self.beam_marking.ok_or(
+                                "NC beam on before its process (mark_mode or cut_mode) is selected",
+                            )?,
+                            Some(_) => self.marking_source,
+                            None => false,
+                        };
+                        output.push(if marking {
+                            Event::BeamMark { power_percent }
+                        } else {
+                            Event::Beam { power_percent }
                         });
                     }
+                }
+                "mark_mode" | "cut_mode" => {
+                    if d.beam_mark.as_deref() != Some("mode")
+                        || self.tool_pending
+                        || self.rpm != 0.
+                        || !self
+                            .active
+                            .as_ref()
+                            .is_some_and(|t| self.beams.contains(&t.tool))
+                    {
+                        return Err(
+                            "NC beam process selection needs beam_mark='mode', the beam tool and the beam off"
+                                .into(),
+                        );
+                    }
+                    self.beam_marking = Some(name == "mark_mode");
                 }
                 "height_control_on" | "height_control_off" => {
                     if let Some(word) = &d.height_control_word {

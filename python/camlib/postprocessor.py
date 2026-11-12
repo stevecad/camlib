@@ -33,6 +33,7 @@ from .motion import (
     CutterCompensation,
     SpindleOrient,
     Beam,
+    BeamMark,
     HeightControl,
     SurfaceSpeed,
     FeedPerRev,
@@ -117,6 +118,10 @@ _DEFAULT_COMMANDS = tuple(
 # word (height_control_word) written after the code.
 # Lathe threading: a spindle-synchronized line (LinuxCNC G33 Z K<lead>,
 # FANUC/Centroid G32 Z F<lead>), the lead in thread_lead_word.
+# Beam marking with a controller process selection (beam_mark='mode'): the
+# machine's own codes for its marking process and its cutting process
+# (mark_mode, cut_mode), written with the beam off before the beam word.
+# camlib knows no such code: the machine's owner declares both.
 _CYCLE_EFFECTS = frozenset(
     (
         'tap_cycle',
@@ -126,6 +131,8 @@ _CYCLE_EFFECTS = frozenset(
         'height_control_on',
         'height_control_off',
         'thread_synchronized',
+        'mark_mode',
+        'cut_mode',
     )
 )
 # Lathe spindle and feed modes, declared per machine: constant surface
@@ -165,6 +172,7 @@ _GROUPS = {
     **dict.fromkeys(('radius_off', 'radius_left', 'radius_right'), 'radius'),
     **dict.fromkeys(('stop', 'optional_stop', 'end'), 'stop'),
     **dict.fromkeys(('height_control_on', 'height_control_off'), 'height_control'),
+    **dict.fromkeys(('mark_mode', 'cut_mode'), 'beam_process'),
 }
 _REQUIRED = frozenset(
     (
@@ -339,6 +347,21 @@ class GCodeDialect:
     # off. None: beam tools are refused.
     beam_s_max: float | None = None
     beam_effect: str = 'spindle_cw'
+    # How this machine marks with its beam (ThermalMark), declared by its
+    # owner; None: marking is refused.
+    # 'power': the beam word at the marking power, S = power x beam_s_max /
+    # 100 (a laser: GRBL v1.1 laser mode scales the laser power with S, in
+    # M3 constant or M4 dynamic power mode). Nothing in the program tells a
+    # marking beam word from a cutting one but its power, so the decoder
+    # checks the power word and takes the role from the source event, as it
+    # takes a fed move's kind.
+    # 'mode': the controller selects a marking process (a marking current or
+    # gas, a marker): its codes mark_mode and cut_mode, added with
+    # GCodeDialect(beam_mark='mode').with_commands(mark_mode=..., cut_mode=...)
+    # and required of a Machine's dialect, are written with the beam off, before the first marking beam and before
+    # the first cutting beam of the program and at every change between
+    # them. The decoder tracks the selected process from those codes alone.
+    beam_mark: str | None = None
     # Lathes: X words are diameters (arc center I stays a radius, as FANUC
     # and Centroid lathes read it). False: X is the radius.
     x_diameter: bool = False
@@ -416,6 +439,17 @@ class GCodeDialect:
             raise ValueError('beam_s_max must be a positive S value')
         if self.beam_effect not in ('spindle_cw', 'spindle_ccw'):
             raise ValueError("beam_effect must be 'spindle_cw' or 'spindle_ccw'")
+        if self.beam_mark not in (None, 'power', 'mode'):
+            raise ValueError(
+                "beam_mark must be None, 'power' (the beam word at the marking power) or 'mode' "
+                '(declared mark_mode and cut_mode codes)'
+            )
+        # The codes of beam_mark='mode' are added with with_commands, so a
+        # dialect may still lack them; a Machine may not (Machine.__post_init__).
+        if self.beam_mark != 'mode' and declared & {'mark_mode', 'cut_mode'}:
+            raise ValueError("mark_mode and cut_mode are the process codes of beam_mark='mode'")
+        if self.beam_mark is not None and self.beam_s_max is None:
+            raise ValueError('beam_mark needs a declared beam (beam_s_max)')
         if self.height_control_word is not None and not re.fullmatch(r'[A-Z][0-9]+', self.height_control_word):
             raise ValueError('height_control_word must be one address with an integer, e.g. P2')
         if self.oriented_edge_deg is not None and not (
@@ -592,6 +626,12 @@ class Machine:
     crash_model: object | None = None
 
     def __post_init__(self):
+        if self.dialect.beam_mark == 'mode' and not {'mark_mode', 'cut_mode'} <= {
+            c.effect for c in self.dialect.commands
+        }:
+            raise ValueError(
+                "beam_mark='mode' needs the controller's process codes: with_commands(mark_mode=..., cut_mode=...)"
+            )
         if self.crash_model is not None:
             from .machine import MachineModel
 
@@ -745,6 +785,8 @@ class Machine:
                 data.pop(key)
         if not self.schedule_post_feeds:
             data.pop('schedule_post_feeds')
+        if data['dialect']['beam_mark'] is None:
+            data['dialect'].pop('beam_mark')
         return data
 
     def schedule(self, program, *, adjust_feeds=True, cancel=None):
@@ -833,6 +875,7 @@ def _typed(data):
         'cutter_compensation': CutterCompensation,
         'spindle_orient': SpindleOrient,
         'beam': Beam,
+        'beam_mark': BeamMark,
         'height_control': HeightControl,
         'surface_speed': SurfaceSpeed,
         'feed_per_rev': FeedPerRev,
@@ -975,6 +1018,9 @@ class PostProcessor(_TransactionCopy):
         raise NotImplementedError
 
     def on_beam(self, event):
+        raise NotImplementedError
+
+    def on_beam_mark(self, event):
         raise NotImplementedError
 
     def on_height_control(self, event):
@@ -1371,6 +1417,31 @@ class GCodePost(PostProcessor):
             self.emit(d.code('spindle_off'))
             self._spindle_on = False
             return
+        # After marking (or at the program's first cut) the cutting process
+        # is stated before the beam fires.
+        if d.beam_mark == 'mode' and getattr(self, '_beam_marking', None) is not False:
+            self.emit(d.code('cut_mode'))
+            self._beam_marking = False
+        self.emit(
+            d.code(d.beam_effect), self.word(d.speed_word, event.power_percent * d.beam_s_max / 100, dimensional=False)
+        )
+        self._spindle_on = True
+
+    def on_beam_mark(self, event):
+        """Marking beam on, as the dialect declares the machine marks
+        (beam_mark): the beam word at the marking power, after the
+        controller's marking process code where it has one."""
+        d = self.machine.dialect
+        if d.beam_s_max is None:
+            raise ValueError('this dialect declares no beam (beam_s_max): it cannot post plasma or laser cutting')
+        if d.beam_mark is None:
+            raise ValueError(
+                'this dialect declares no beam marking (beam_mark): declare how the machine marks '
+                "('power', or 'mode' with its mark_mode and cut_mode codes)"
+            )
+        if d.beam_mark == 'mode' and getattr(self, '_beam_marking', None) is not True:
+            self.emit(d.code('mark_mode'))
+            self._beam_marking = True
         self.emit(
             d.code(d.beam_effect), self.word(d.speed_word, event.power_percent * d.beam_s_max / 100, dimensional=False)
         )
@@ -1759,6 +1830,9 @@ class GCodeDecoder(_TransactionCopy):
             return s.get('kind')
 
         self.beams = frozenset((t['id'] if isinstance(t, dict) else t.id) for t in program.tools if shape(t) == 'beam')
+        # The beam process the decoded program selected (beam_mark='mode':
+        # True marking, False cutting, None before its first selection).
+        self.beam_marking = None
         # Probing cycles: the declared stylus ball (or cutter) radii, and
         # the O-word labels already used in this program.
         self.probes = frozenset(
@@ -1982,7 +2056,26 @@ class GCodeDecoder(_TransactionCopy):
                     if s is None or not 0 < s <= d.beam_s_max:
                         raise ValueError('NC beam power S outside 0..beam_s_max')
                     self.rpm = s
-                    output.append(Beam(s / d.beam_s_max * 100))
+                    if d.beam_mark == 'mode':
+                        if self.beam_marking is None:
+                            raise ValueError('NC beam on before its process (mark_mode or cut_mode) is selected')
+                        marking = self.beam_marking
+                    else:
+                        # 'power': no word tells a marking beam from a cutting
+                        # one; the role is the source event's, the power the
+                        # word's.
+                        marking = d.beam_mark == 'power' and context is not None and context.get('beam_mark') is True
+                    output.append((BeamMark if marking else Beam)(s / d.beam_s_max * 100))
+            elif effect in ('mark_mode', 'cut_mode'):
+                if (
+                    d.beam_mark != 'mode'
+                    or self.active is None
+                    or self.tool_pending
+                    or self.active.tool not in self.beams
+                    or self.rpm != 0
+                ):
+                    raise ValueError("NC beam process selection needs beam_mark='mode', the beam tool and the beam off")
+                self.beam_marking = effect == 'mark_mode'
             elif effect in ('height_control_on', 'height_control_off'):
                 if d.height_control_word is not None:
                     word = d.height_control_word[0]
@@ -2906,6 +2999,10 @@ def _context(event):
         return {k: event['motion'][k] for k in ('id', 'operation', 'kind')}
     if event['kind'] == 'probe':
         return {'probe': event}
+    if event['kind'] == 'beam_mark':
+        # A machine that marks by power alone (beam_mark='power') writes no
+        # word that tells a marking beam from a cutting one.
+        return {'beam_mark': True}
     return None
 
 
@@ -3276,6 +3373,7 @@ class PostEngine:
                     CutterCompensation,
                     SpindleOrient,
                     Beam,
+                    BeamMark,
                     HeightControl,
                     SurfaceSpeed,
                     FeedPerRev,

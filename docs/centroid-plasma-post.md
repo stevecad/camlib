@@ -42,6 +42,9 @@ program = job.post_nc("sheet", machine=machine, post=c.CentroidPlasmaPost,
 | Z | None | Plan with `height_mode="fixed"` and start the job with the torch at the cut height, so no Z word is written; a Z move is refused |
 | End | `M30` | |
 
+A `ThermalMark` is refused: the post declares no marking method for CNC12
+(`M61` runs the cutting profile).
+
 Plan with `pierce_delay_s=0` and `height_control=False` (the post refuses a
 dwell or THC command: both belong to the profile). Arcs need exactly
 consistent words (`radius_tolerance_mm=0`; I/J incremental, Parameter 2 bit

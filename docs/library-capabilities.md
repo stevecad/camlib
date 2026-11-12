@@ -202,11 +202,13 @@ controller parameters, real offsets) is outside what camlib can check.
 | Drilling and boring cycles | G81/G82/G83/G73, G85/G89/G86, G76 (with G98, G80); decoded back into moves and checked |
 | Rigid tapping | G33.1 (M3 right, M4 left), or G84 / G74 with feed or lead word; SINUMERIK 808D native `CYCLE84` (signed lead) |
 | Lathe threading | G33 K<lead> or G32 F<lead> (spindle-synchronized), decoded back |
+| Plasma and laser marking | `ThermalMark`: caller-supplied lines and arcs (part numbers, bend lines) traced with the beam in the machine's marking process, before the cut; marking feed, height, power and line width declared by the caller; every mark proven inside its part (or explicitly allowed on the scrap), parts with marks not yet cut, sheet left whole under a mark (the stock refuses a mark over cut sheet) |
 | Lathe spindle and feed modes | G96 S (with G50 S or D limit) / G97, G95 or G99 F per revolution / G94 or G98, decoded back; per-move feed bounds checked |
 | Cutter compensation | G41/G42 with the tool's D register (wear), G40: on their own line (LinuxCNC, Centroid) or in the lead move's block (FANUC, Haas) |
 | Oriented spindle stop | M19 (declared per machine) for fine boring |
 | Probing | LinuxCNC `G38.3` (protected, with a trip check) and `G38.2` with `#5061`-`#5063` into `G10 L2`/`L10`/`L1`; or Renishaw Inspection Plus `G65 P9810`/`P9811`/`P9812`/`P9814`/`P9815` (FANUC); decoded back into moves and checked |
 | Beam on/off, power | Plasma `M3 S1`/`M5`, laser `M4 S<power>` (GRBL laser mode) or `M3 S`, from the declared S at full power |
+| Beam marking | Only as the machine declares it (`beam_mark`): the beam word at the marking power (lasers, GRBL laser mode), or the controller's declared marking and cutting process codes; QtPlasmaC: the machine's declared marking and cutting materials (`M190 P`/`M66 P3 L3 Q`). Decoded back, with the cutting process or power proven stated again before every cut |
 | Torch height control | Declared on/off codes (e.g. `M63 P2`/`M62 P2`) |
 | Tool changes | Table poses, preserved tip, preserved spindle position (the tip moves by the gauge-length difference), or Z home |
 | Redundant codes | Omitted only where the tracked state proves them redundant |

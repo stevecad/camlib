@@ -112,6 +112,7 @@ pub mod stream_verification;
 pub mod supplied;
 pub mod surface;
 pub mod thermal;
+pub mod thermal_mark;
 pub mod tool;
 pub mod trace;
 pub mod turning;

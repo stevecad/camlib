@@ -56,6 +56,7 @@ _MOVE_KINDS = (
     "probe_measure",
     "probe_touch",
     "probe_return",
+    "mark",
 )
 
 
@@ -2136,8 +2137,9 @@ class Simulation:
                         or data["report"].get("geometric_residual_status") not in ("estimated", "unknown")
                     ):
                         raise ProtocolError("operation end order mismatch")
-                    if definitions[completed_operations].get("kind") == "probe":
-                        # Probing and tool setting never cut, by design.
+                    if definitions[completed_operations].get("kind") in ("probe", "thermal_mark"):
+                        # Probing, tool setting and beam marking never cut,
+                        # by design.
                         pass
                     elif active_cuts == 0:
                         warnings.warn(

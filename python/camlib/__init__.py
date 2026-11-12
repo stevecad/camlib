@@ -75,6 +75,7 @@ _EXPORTS = {
             "Reaming",
             "FineBore",
             "ThermalCut",
+            "ThermalMark",
             "Lead",
             "SmallHoles",
             "MicroJoints",

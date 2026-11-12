@@ -47,6 +47,7 @@ pub enum OperationReport<'a> {
     Flat(&'a FlatReport),
     VCarve(&'a crate::vcarve::VCarveReport),
     ThermalCut(&'a crate::thermal::ThermalCutReport),
+    ThermalMark(&'a crate::thermal_mark::ThermalMarkReport),
     Probe(&'a crate::probe::ProbeReport),
     SuppliedToolpath(&'a crate::supplied::SuppliedToolpathReport),
 }
@@ -73,6 +74,7 @@ pub enum OperationPlan {
     Flat(Box<FlatPlan>),
     VCarve(Box<crate::vcarve::VCarvePlan>),
     ThermalCut(Box<crate::thermal::ThermalCutPlan>),
+    ThermalMark(Box<crate::thermal_mark::ThermalMarkPlan>),
     Probe(Box<crate::probe::ProbePlan>),
     /// The caller's own moves, run unchanged (#157).
     SuppliedToolpath(Box<crate::supplied::SuppliedToolpathPlan>),
@@ -281,6 +283,12 @@ impl OperationPlan {
             Operation::Roughing(p) => Ok(Self::Roughing(Box::new(
                 RoughingPlan::prepare_with_stock(p, tool, stock, initial, first_id, cancel)?,
             ))),
+            // A mark is planned against the stock: its parts must not be cut yet.
+            Operation::ThermalMark(p) => Ok(Self::ThermalMark(Box::new(
+                crate::thermal_mark::ThermalMarkPlan::prepare_with_stock(
+                    p, tool, stock, initial, first_id, cancel,
+                )?,
+            ))),
             other => Self::prepare(other, tool, stock.spec(), initial, first_id, cancel),
         }
     }
@@ -357,6 +365,10 @@ impl OperationPlan {
             Operation::ThermalCut(p) => Ok(Self::ThermalCut(Box::new(
                 crate::thermal::ThermalCutPlan::prepare(p, tool, stock, initial, first_id, cancel)?,
             ))),
+            Operation::ThermalMark(p) => Err(format!(
+                "thermal mark {}: marking is planned against the stock (its parts must not be cut yet); use OperationPlan::prepare_with_stock",
+                p.id
+            )),
             Operation::VCarve(p) => Ok(Self::VCarve(Box::new(crate::vcarve::VCarvePlan::prepare(
                 p, tool, stock, initial, first_id, cancel,
             )?))),
@@ -397,6 +409,7 @@ impl OperationPlan {
             Self::Flat(p) => OperationReport::Flat(p.report()),
             Self::VCarve(p) => OperationReport::VCarve(p.report()),
             Self::ThermalCut(p) => OperationReport::ThermalCut(p.report()),
+            Self::ThermalMark(p) => OperationReport::ThermalMark(p.report()),
             Self::Probe(p) => OperationReport::Probe(p.report()),
             Self::SuppliedToolpath(p) => OperationReport::SuppliedToolpath(p.report()),
         }
@@ -440,6 +453,7 @@ impl OperationPlan {
             Self::Flat(p) => p.prefix_events(),
             Self::VCarve(p) => p.prefix_events(),
             Self::ThermalCut(p) => p.prefix_events(),
+            Self::ThermalMark(p) => p.prefix_events(),
             Self::Probe(p) => p.prefix_events(),
             Self::SuppliedToolpath(p) => p.prefix_events(),
         }
@@ -467,6 +481,7 @@ impl OperationPlan {
             Self::Flat(p) => p.suffix_events(),
             Self::VCarve(p) => p.suffix_events(),
             Self::ThermalCut(p) => p.suffix_events(),
+            Self::ThermalMark(p) => p.suffix_events(),
             Self::Probe(p) => p.suffix_events(),
             Self::SuppliedToolpath(p) => p.suffix_events(),
         }
@@ -498,6 +513,7 @@ impl OperationPlan {
             Self::Flat(p) => p.next_motion_with_stock(stock, cancel),
             Self::VCarve(p) => p.next_motion_with_stock(stock, cancel),
             Self::ThermalCut(p) => p.next_motion_with_stock(stock, cancel),
+            Self::ThermalMark(p) => p.next_motion_with_stock(stock, cancel),
             Self::Probe(p) => p.next_motion_with_stock(stock, cancel),
             Self::SuppliedToolpath(p) => p.next_motion_with_stock(stock, cancel),
         }
@@ -510,6 +526,7 @@ impl OperationPlan {
             Self::Reaming(p) => p.take_events(),
             Self::Contour(p) => p.take_events(),
             Self::ThermalCut(p) => p.take_events(),
+            Self::ThermalMark(p) => p.take_events(),
             Self::Probe(p) => p.take_events(),
             _ => vec![],
         }
@@ -540,6 +557,7 @@ impl OperationPlan {
             Self::Flat(p) => p.finish_report(cancel),
             Self::VCarve(p) => p.finish_report(cancel),
             Self::ThermalCut(p) => p.finish_report(cancel),
+            Self::ThermalMark(p) => p.finish_report(cancel),
             Self::Probe(p) => p.finish_report(cancel),
             Self::SuppliedToolpath(p) => p.finish_report(cancel),
         }

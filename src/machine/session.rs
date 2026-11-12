@@ -749,7 +749,7 @@ impl Session {
             {
                 return Err("machine clearance under controller wear compensation is unproven; use computer compensation with declared geometry or explicitly accept uncertainty".into());
             }
-            Event::Beam { .. } | Event::HeightControl { .. } => {
+            Event::Beam { .. } | Event::BeamMark { .. } | Event::HeightControl { .. } => {
                 return Err(
                     "machine crash model covers milling and turning, not thermal machinery".into(),
                 );

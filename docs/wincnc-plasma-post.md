@@ -47,6 +47,9 @@ codes of WinCNC's own posts; pass your machine's codes:
 `define_machine(..., start_code="M65", torch_on_code="M61",
 torch_off_code="M62", end_code="M66")`.
 
+A `ThermalMark` is refused: the post declares no marking method for WinCNC
+(`M61` fires the torch with the cutting material setup).
+
 Torch height control runs in WinCNC (arc voltage); its settings (target
 volts, THC active delay, THC mode) and the pierce and cut heights are in the
 material setup. Plan with `pierce_delay_s=0` and `height_control=False`: the

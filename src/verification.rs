@@ -507,6 +507,7 @@ pub(crate) fn motion_identity(m: &crate::motion::Motion) -> String {
         MoveKind::ProbeMeasure => 10,
         MoveKind::ProbeTouch => 11,
         MoveKind::ProbeReturn => 12,
+        MoveKind::Mark => 13,
     }]);
     match m.feed_mm_min {
         Some(f) => {

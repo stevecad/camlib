@@ -1855,6 +1855,66 @@ class ThermalCut:
 
 
 @dataclass(frozen=True)
+class ThermalMark:
+    """Plasma or laser marking: lines traced on the sheet surface with the
+    beam in the machine's marking process, without cutting through (part
+    numbers, bend lines, layout marks). The beam centre follows ``paths``
+    (``TracePath`` values, in the order given) with no kerf compensation,
+    one beam-on per path.
+
+    Nothing is assumed about the machine: ``feed_mm_min``,
+    ``mark_height_mm`` (nozzle above the sheet top), ``power_percent`` (a
+    laser's marking power; a plasma torch marks at the current its
+    controller's marking process sets) and ``mark_width_mm`` (the width of
+    the marked line on this material) are the caller's, and the machine must
+    declare how it marks (``GCodeDialect(beam_mark=...)``, or its controller
+    post's setting) or the post refuses the program.
+
+    Marking runs before cutting, while each part is still held by the sheet:
+    put the ``ThermalMark`` before the ``ThermalCut``. ``parts`` is the
+    cut's ``parts``. Every mark's width, with ``edge_clearance_mm`` around
+    it, is proven inside one part (``allow_off_part=True`` skips that proof,
+    for marks on the scrap, and the report says so); a part with a mark must
+    not have been cut; and a marking move removes no stock and is refused
+    over sheet that is cut through.
+
+    ``height_mode="fixed"`` (default) keeps one Z (the controller owns the
+    height); ``"program"`` travels between paths at ``travel_height_mm``."""
+
+    id: str
+    tool: object
+    parts: object
+    paths: tuple
+    feed_mm_min: float
+    mark_height_mm: float
+    height_mode: str = "fixed"
+    travel_height_mm: float | None = None
+    power_percent: float = field(kw_only=True)
+    mark_width_mm: float = field(kw_only=True)
+    edge_clearance_mm: float = 0
+    allow_off_part: bool = False
+    tolerance_mm: float = 1e-5
+    work_offset: int = 1
+    tool_number: int = field(kw_only=True)
+    length_register: int = field(kw_only=True)
+
+    def __post_init__(self):
+        object.__setattr__(self, "paths", tuple(self.paths))
+
+    def to_dict(self):
+        result = {field: getattr(self, field) for field in self.__dataclass_fields__}
+        result.update(
+            kind="thermal_mark",
+            tool=getattr(self.tool, "id", self.tool),
+            parts=self.parts.to_dict() if hasattr(self.parts, "to_dict") else self.parts,
+            paths=[path.to_dict() if hasattr(path, "to_dict") else path for path in self.paths],
+        )
+        if result["travel_height_mm"] is None:
+            result.pop("travel_height_mm")
+        return result
+
+
+@dataclass(frozen=True)
 class TraceSideOffset:
     """Keep the cutter on one side of a Trace's open paths: the tool centre
     runs at the cutter radius plus ``radial_allowance_mm`` to the ``side``

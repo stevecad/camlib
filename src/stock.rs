@@ -1385,8 +1385,12 @@ impl Stock {
                 })
             }),
         };
-        // Rapids, oriented shifts and probing moves never remove stock.
+        // Rapids, oriented shifts, probing moves and a beam's marking moves
+        // never remove stock.
         if fraction == 0. || !motion.kind.cuts() {
+            if motion.kind == MoveKind::Mark && fraction > 0. {
+                self.mark_on_sheet(tool, motion, fraction, options, cancel)?;
+            }
             return Ok(delta);
         }
         if tool.cutter().definition().shape.undercuts() {
@@ -1921,68 +1925,7 @@ impl Stock {
         cancel: &impl CancelSignal,
     ) -> Result<(), String> {
         let r = tool.cutter().definition().diameter_mm / 2.;
-        let start = motion.curve.start();
-        let distance: Box<dyn Fn([f64; 2]) -> f64> = match motion.curve {
-            Curve::Line { end, .. } => {
-                let b = [
-                    start[0] + fraction * (end[0] - start[0]),
-                    start[1] + fraction * (end[1] - start[1]),
-                ];
-                let a = [start[0], start[1]];
-                {
-                    Box::new(move |p: [f64; 2]| {
-                        let d = [b[0] - a[0], b[1] - a[1]];
-                        let l = d[0] * d[0] + d[1] * d[1];
-                        let t = if l > 0. {
-                            (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / l).clamp(0., 1.)
-                        } else {
-                            0.
-                        };
-                        (p[0] - a[0] - t * d[0]).hypot(p[1] - a[1] - t * d[1])
-                    })
-                }
-            }
-            Curve::Arc {
-                center,
-                sweep_rad,
-                plane: Plane::Xy,
-                ..
-            }
-            | Curve::Helix {
-                center,
-                sweep_rad,
-                plane: Plane::Xy,
-                ..
-            } => {
-                let c = [center[0], center[1]];
-                let radius = (start[0] - c[0]).hypot(start[1] - c[1]);
-                let a0 = (start[1] - c[1]).atan2(start[0] - c[0]);
-                let sweep = sweep_rad * fraction;
-                let end = [
-                    c[0] + radius * (a0 + sweep).cos(),
-                    c[1] + radius * (a0 + sweep).sin(),
-                ];
-                let a = [start[0], start[1]];
-                {
-                    Box::new(move |p: [f64; 2]| {
-                        let angle = (p[1] - c[1]).atan2(p[0] - c[0]) - a0;
-                        let within = if sweep >= 0. {
-                            angle.rem_euclid(std::f64::consts::TAU) <= sweep
-                        } else {
-                            (-angle).rem_euclid(std::f64::consts::TAU) <= -sweep
-                        };
-                        if within || sweep.abs() >= std::f64::consts::TAU {
-                            ((p[0] - c[0]).hypot(p[1] - c[1]) - radius).abs()
-                        } else {
-                            (p[0] - a[0])
-                                .hypot(p[1] - a[1])
-                                .min((p[0] - end[0]).hypot(p[1] - end[1]))
-                        }
-                    })
-                }
-            }
-            _ => return Err("a beam cuts with straight moves and XY arcs only".into()),
-        };
+        let distance = beam_distance(motion, fraction)?;
         let bounds = motion.curve.prepare(options.tolerance_mm)?.bounds();
         let cell_radius = self.step[0].hypot(self.step[1]) / 2.;
         let pad = r + cell_radius;
@@ -2022,6 +1965,66 @@ impl Stock {
         delta.stats.delta_bytes = delta.changes.len() * std::mem::size_of::<CellChange>();
         Ok(())
     }
+    /// A beam's marking move (`MoveKind::Mark`) removes nothing, and the
+    /// sheet under it must still be whole: the beam's width (the tool's
+    /// kerf) stays on the sheet, over cells no beam has cut through or may
+    /// have (a mark is made before the cuts around it, on sheet that has
+    /// not moved; nothing is marked across a kerf or beyond the sheet edge).
+    fn mark_on_sheet(
+        &self,
+        tool: &PreparedAssembly,
+        motion: &Motion,
+        fraction: f64,
+        options: SweepOptions,
+        cancel: &impl CancelSignal,
+    ) -> Result<(), String> {
+        if !matches!(tool.cutter().definition().shape, CutterShape::Beam) {
+            return Err(
+                "a marking move needs a beam tool (camlib.tools.Torch or LaserHead)".into(),
+            );
+        }
+        let refuse = |p: [f64; 2], why: &str| {
+            format!(
+                "marking move {} of operation {} {why} near ({:.3}, {:.3}): a mark is made on whole sheet, before the cuts around it (run the marking operation before the cutting operation, and keep its paths on the sheet)",
+                motion.id, motion.operation, p[0], p[1]
+            )
+        };
+        let r = tool.cutter().definition().diameter_mm / 2.;
+        let distance = beam_distance(motion, fraction)?;
+        let bounds = motion.curve.prepare(options.tolerance_mm)?.bounds();
+        let guard = options.tolerance_mm;
+        for k in 0..2 {
+            if bounds.min[k] - r < self.spec.min_mm[k] - guard
+                || bounds.max[k] + r > self.spec.max_mm[k] + guard
+            {
+                let s = motion.curve.start();
+                return Err(refuse([s[0], s[1]], "leaves the sheet"));
+            }
+        }
+        let cell_radius = self.step[0].hypot(self.step[1]) / 2.;
+        let pad = r + cell_radius;
+        let Some(rect) = self.rect(
+            [bounds.min[0] - pad, bounds.min[1] - pad],
+            [bounds.max[0] + pad, bounds.max[1] + pad],
+        ) else {
+            return Ok(());
+        };
+        if rect.count() > options.max_scratch_cells {
+            return Err("marking move rectangle budget exceeded".into());
+        }
+        let bottom = self.spec.min_mm[2];
+        for j in rect.y0..=rect.y1 {
+            cancelled(cancel)?;
+            for i in rect.x0..=rect.x1 {
+                let index = j * self.nx + i;
+                let p = self.cell_center(index).unwrap();
+                if distance(p) - cell_radius <= r + guard && self.cells[index].lower_mm <= bottom {
+                    return Err(refuse(p, "passes over sheet that is or may be cut through"));
+                }
+            }
+        }
+        Ok(())
+    }
     fn rect(&self, min: [f64; 2], max: [f64; 2]) -> Option<Rect> {
         if (0..2).any(|k| max[k] < self.spec.min_mm[k] || min[k] > self.spec.max_mm[k]) {
             return None;
@@ -2041,6 +2044,73 @@ impl Stock {
     }
 }
 
+/// The XY distance from a point to the first `fraction` of a beam move's
+/// path (a line or an XY arc).
+type PathDistance = Box<dyn Fn([f64; 2]) -> f64>;
+fn beam_distance(motion: &Motion, fraction: f64) -> Result<PathDistance, String> {
+    let start = motion.curve.start();
+    Ok(match motion.curve {
+        Curve::Line { end, .. } => {
+            let b = [
+                start[0] + fraction * (end[0] - start[0]),
+                start[1] + fraction * (end[1] - start[1]),
+            ];
+            let a = [start[0], start[1]];
+            {
+                Box::new(move |p: [f64; 2]| {
+                    let d = [b[0] - a[0], b[1] - a[1]];
+                    let l = d[0] * d[0] + d[1] * d[1];
+                    let t = if l > 0. {
+                        (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / l).clamp(0., 1.)
+                    } else {
+                        0.
+                    };
+                    (p[0] - a[0] - t * d[0]).hypot(p[1] - a[1] - t * d[1])
+                })
+            }
+        }
+        Curve::Arc {
+            center,
+            sweep_rad,
+            plane: Plane::Xy,
+            ..
+        }
+        | Curve::Helix {
+            center,
+            sweep_rad,
+            plane: Plane::Xy,
+            ..
+        } => {
+            let c = [center[0], center[1]];
+            let radius = (start[0] - c[0]).hypot(start[1] - c[1]);
+            let a0 = (start[1] - c[1]).atan2(start[0] - c[0]);
+            let sweep = sweep_rad * fraction;
+            let end = [
+                c[0] + radius * (a0 + sweep).cos(),
+                c[1] + radius * (a0 + sweep).sin(),
+            ];
+            let a = [start[0], start[1]];
+            {
+                Box::new(move |p: [f64; 2]| {
+                    let angle = (p[1] - c[1]).atan2(p[0] - c[0]) - a0;
+                    let within = if sweep >= 0. {
+                        angle.rem_euclid(std::f64::consts::TAU) <= sweep
+                    } else {
+                        (-angle).rem_euclid(std::f64::consts::TAU) <= -sweep
+                    };
+                    if within || sweep.abs() >= std::f64::consts::TAU {
+                        ((p[0] - c[0]).hypot(p[1] - c[1]) - radius).abs()
+                    } else {
+                        (p[0] - a[0])
+                            .hypot(p[1] - a[1])
+                            .min((p[0] - end[0]).hypot(p[1] - end[1]))
+                    }
+                })
+            }
+        }
+        _ => return Err("a beam cuts with straight moves and XY arcs only".into()),
+    })
+}
 fn height_valid(h: HeightBounds, spec: &StockSpec) -> bool {
     h.lower_mm.is_finite()
         && h.upper_mm.is_finite()

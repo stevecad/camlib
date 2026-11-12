@@ -179,6 +179,13 @@ can say clear, violation or uncertain honestly.
 Stock only loses material. A receiver refuses any change that adds material, or
 whose old value doesn't match its own stock.
 
+A beam's marking move (`MoveKind::Mark`, after `Event::BeamMark`; #18) is a
+fed move that removes nothing (`MoveKind::cuts` is false for it). The height
+field does not record the mark; the run carries the move. `Stock::preview_sweep`
+refuses a mark over a cell that is or may be cut through, or beyond the
+sheet, so a mark after the cut around it fails in the planned run and in the
+replay of the decoded program.
+
 ## Verification
 
 - **Per move** (`src/stream_verification.rs`, records of kind 8): scene bodies

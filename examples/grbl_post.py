@@ -27,6 +27,11 @@ Premises (declared, not checked on the machine):
 - GRBL ignores M1: optional stops are refused.
 - Laser mode ($32=1): the beam is on with M4 S<power>, scaled by
   ``beam_s_max`` = $30.
+- Marking (``ThermalMark``) only on a machine declared with
+  ``beam_mark="power"``: GRBL has no marking process, a mark is the same
+  M4 S<power> at the marking power (Grbl v1.1 Laser Mode: S sets the laser
+  power; M4 dynamic power is "very useful for clean, precise engraving").
+  The marking power, feed and height are the caller's.
 No controller connection; verify on the machine before cutting.
 """
 
@@ -42,7 +47,7 @@ _REFERENCE = "GRBL 1.1h (gcode.c, nuts_bolts.c read_float, config.h)"
 _LINE_LIMIT = 79
 
 
-def _dialect(beam_s_max=None):
+def _dialect(beam_s_max=None, beam_mark=None):
     commands = (
         GCodeDialect()
         .with_commands(
@@ -73,6 +78,7 @@ def _dialect(beam_s_max=None):
         tool_change="direct_t",
         beam_effect="spindle_ccw",
         beam_s_max=beam_s_max,
+        beam_mark=beam_mark,
         radius_tolerance_mm=0,
     )
 
@@ -88,7 +94,9 @@ class GrblMachine(Machine):
 
     def __post_init__(self):
         super().__post_init__()
-        if self.dialect != _dialect(self.dialect.beam_s_max):
+        if self.dialect.beam_mark not in (None, "power"):
+            raise ValueError('GRBL has no marking process: a laser marks by its power word (beam_mark="power")')
+        if self.dialect != _dialect(self.dialect.beam_s_max, self.dialect.beam_mark):
             raise ValueError("dialect differs from the GRBL 1.1h subset")
         if (
             len(self.tools) != 1
@@ -107,14 +115,19 @@ class GrblMachine(Machine):
                 raise ValueError("GRBL needs finite three-axis work offset and initial machine positions")
 
 
-def define_machine(name, tool, *, work_offset_machine_mm, initial_machine_mm, beam_s_max=None, **machine):
+def define_machine(
+    name, tool, *, work_offset_machine_mm, initial_machine_mm, beam_s_max=None, beam_mark=None, **machine
+):
     """``tool``: the preloaded tool's ToolSetting (its position_after_mm is the
     program's initial position). ``machine``: units, precision, limits and
-    coolant of this machine (camlib assumes none of them)."""
+    coolant of this machine (camlib assumes none of them). ``beam_mark="power"``
+    declares that this laser marks (``ThermalMark``) with its power word."""
+    if beam_mark not in (None, "power"):
+        raise ValueError('GRBL has no marking process: a laser marks by its power word (beam_mark="power")')
     return GrblMachine(
         name,
         (tool,),
-        dialect=_dialect(beam_s_max),
+        dialect=_dialect(beam_s_max, beam_mark),
         planes=("xy",),
         arcs=False,
         helices=False,

@@ -115,6 +115,7 @@ impl Carvera {
                 && d.oriented_edge_deg.is_none()
                 && d.beam_s_max.is_none()
                 && d.beam_effect == "spindle_cw"
+                && d.beam_mark.is_none()
                 && d.thread_lead_word == "K"
                 && d.height_control_word.is_none()
                 && d.css_limit_word.is_none()

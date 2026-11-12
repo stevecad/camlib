@@ -52,6 +52,7 @@ pub enum Operation<G = crate::surface::SurfaceMesh> {
     Flat(crate::flat::FlatOperation<G>),
     VCarve(crate::vcarve::VCarveOperation),
     ThermalCut(crate::thermal::ThermalCutOperation),
+    ThermalMark(crate::thermal_mark::ThermalMarkOperation),
     Probe(crate::probe::ProbeOperation),
     /// The caller's own moves, run unchanged (#157).
     SuppliedToolpath(crate::supplied::SuppliedToolpathOperation),
@@ -97,6 +98,7 @@ impl<G> Operation<G> {
             Self::Flat(op) => Operation::Flat(op.map_geometry(f)?),
             Self::VCarve(op) => Operation::VCarve(op),
             Self::ThermalCut(op) => Operation::ThermalCut(op),
+            Self::ThermalMark(op) => Operation::ThermalMark(op),
             Self::Probe(op) => Operation::Probe(op),
             Self::SuppliedToolpath(op) => Operation::SuppliedToolpath(op),
         })
@@ -126,6 +128,7 @@ impl Operation {
             Self::Flat(p) => &p.id,
             Self::VCarve(p) => &p.id,
             Self::ThermalCut(p) => &p.id,
+            Self::ThermalMark(p) => &p.id,
             Self::Probe(p) => &p.id,
             Self::SuppliedToolpath(p) => &p.id,
         }
@@ -152,6 +155,7 @@ impl Operation {
             Self::Flat(p) => &p.tool,
             Self::VCarve(p) => &p.tool,
             Self::ThermalCut(p) => &p.tool,
+            Self::ThermalMark(p) => &p.tool,
             Self::Probe(p) => &p.tool,
             Self::SuppliedToolpath(p) => &p.tool,
         }
@@ -179,6 +183,7 @@ impl Operation {
             Self::Flat(p) => p.limits.as_ref(),
             Self::VCarve(p) => p.limits.as_ref(),
             Self::ThermalCut(p) => p.limits.as_ref(),
+            Self::ThermalMark(p) => p.limits.as_ref(),
             Self::Probe(p) => p.limits.as_ref(),
             Self::SuppliedToolpath(p) => p.limits.as_ref(),
         }
@@ -206,6 +211,7 @@ impl Operation {
             Self::Flat(p) => p.work_offset,
             Self::VCarve(p) => p.work_offset,
             Self::ThermalCut(p) => p.work_offset,
+            Self::ThermalMark(p) => p.work_offset,
             Self::Probe(p) => p.work_offset,
             Self::SuppliedToolpath(p) => p.work_offset,
         }

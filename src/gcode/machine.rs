@@ -59,6 +59,13 @@ pub struct Dialect {
     #[serde(deserialize_with = "present")]
     pub beam_s_max: Option<f64>,
     pub beam_effect: String,
+    /// How this machine marks with its beam (`ThermalMark`), declared by
+    /// its owner: `'power'` (the beam word at the marking power, as GRBL
+    /// laser mode scales S), `'mode'` (the controller's process selection
+    /// codes `mark_mode` and `cut_mode`, written with the beam off before
+    /// the beam word) or none (marking is refused). Left out when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub beam_mark: Option<String>,
     pub x_diameter: bool,
     pub thread_lead_word: String,
     #[serde(deserialize_with = "present")]
@@ -191,7 +198,7 @@ pub(crate) const DEFAULT_EFFECTS: [&str; 41] = [
     "bore_stop_cycle",
     "tap_synchronized",
 ];
-pub(crate) const CYCLE_EFFECTS: [&str; 7] = [
+pub(crate) const CYCLE_EFFECTS: [&str; 9] = [
     "tap_cycle",
     "tap_cycle_left",
     "fine_bore_cycle",
@@ -199,6 +206,8 @@ pub(crate) const CYCLE_EFFECTS: [&str; 7] = [
     "height_control_on",
     "height_control_off",
     "thread_synchronized",
+    "mark_mode",
+    "cut_mode",
 ];
 pub(crate) const LATHE_EFFECTS: [&str; 3] = ["css_on", "css_limit", "feed_per_rev"];
 pub(crate) const OPTIONAL_EFFECTS: [&str; 4] = [
@@ -370,6 +379,30 @@ impl Dialect {
         }
         if !["spindle_cw", "spindle_ccw"].contains(&self.beam_effect.as_str()) {
             return Err("beam_effect must be 'spindle_cw' or 'spindle_ccw'".into());
+        }
+        match self.beam_mark.as_deref() {
+            None | Some("power") => {
+                if self.declares("mark_mode") || self.declares("cut_mode") {
+                    return Err(
+                        "mark_mode and cut_mode are the process codes of beam_mark='mode'".into(),
+                    );
+                }
+            }
+            Some("mode") => {
+                if !self.declares("mark_mode") || !self.declares("cut_mode") {
+                    return Err(
+                        "beam_mark='mode' needs the controller's process codes: with_commands(mark_mode=..., cut_mode=...)".into(),
+                    );
+                }
+            }
+            Some(_) => {
+                return Err(
+                    "beam_mark must be None, 'power' (the beam word at the marking power) or 'mode' (declared mark_mode and cut_mode codes)".into(),
+                );
+            }
+        }
+        if self.beam_mark.is_some() && self.beam_s_max.is_none() {
+            return Err("beam_mark needs a declared beam (beam_s_max)".into());
         }
         if let Some(w) = &self.height_control_word {
             let b = w.as_bytes();

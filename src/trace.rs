@@ -122,7 +122,7 @@ pub struct TracePlan {
     report: TraceReport,
 }
 
-fn strokes(path: &TracePath, guard: f64) -> Result<(Vec<Stroke>, bool), String> {
+pub(crate) fn strokes(path: &TracePath, guard: f64) -> Result<(Vec<Stroke>, bool), String> {
     let finite = |p: [f64; 2]| p.iter().all(|v| v.is_finite() && v.abs() <= 1e6);
     if !finite(path.start_mm) {
         return Err("path start must be finite".into());

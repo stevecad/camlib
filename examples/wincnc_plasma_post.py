@@ -164,6 +164,12 @@ class WinCNCPlasmaPost(GCodePost):
         self.emit(m.torch_off_code if event.power_percent == 0 else m.torch_on_code)
         self._spindle_on = event.power_percent != 0
 
+    def on_beam_mark(self, event):
+        raise ValueError(
+            'WinCNC plasma: this post declares no marking method (M61 fires the torch with the '
+            'cutting material setup); a ThermalMark cannot be posted for it'
+        )
+
     def on_height_control(self, event):
         raise ValueError(
             'WinCNC plasma: torch height control follows the material setup (M61 starts it '

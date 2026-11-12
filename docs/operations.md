@@ -1519,8 +1519,75 @@ cut = camlib.ThermalCut("plasma", torch, parts, feed_mm_min=2500, cut_height_mm=
 Every lead and kerf path is proven not to touch any part, and every pierce
 crater to stay clear of them, before any motion is produced. The simulated
 sheet is cut through wherever the kerf passes. Not modeled: tipped-up parts
-after they are cut free (plan travel heights accordingly), bevel, marking and
+after they are cut free (plan travel heights accordingly), bevel and
 common-line cutting.
+
+## Plasma and laser marking: `ThermalMark`
+
+Lines traced on the sheet surface with the beam in the machine's marking
+process, without cutting through: part numbers, bend lines, layout marks.
+Required: the `parts` of the sheet (the cut's `parts`), the `paths` to mark
+(`TracePath` values of `TraceLine`/`TraceArc`, as for [`Trace`](#trace--engrave-trace);
+camlib has no fonts: text arrives as its strokes), and the marking values of
+this machine and material. None of them has a default.
+
+```python
+torch = camlib.Torch("torch", kerf_width=1.5)
+seven = camlib.TracePath((26, 92), (camlib.TraceLine((34, 92)), camlib.TraceLine((29, 80))))
+mark = camlib.ThermalMark("numbers", torch, parts, (seven,), feed_mm_min=4000, mark_height_mm=2.5,
+                          power_percent=100, mark_width_mm=0.8, tool_number=1, length_register=1)
+cut = camlib.ThermalCut("plasma", torch, parts, ...)
+setup = camlib.Setup("sheet", stock=sheet, tools=(torch,), operations=(mark, cut), ...)
+```
+
+| Parameter | Meaning |
+| --- | --- |
+| `feed_mm_min`, `mark_height_mm` | Marking feed, and the nozzle (or focus) height above the sheet top |
+| `power_percent` | A laser's marking power (posted as S). A plasma torch fires at the current its controller's marking process sets: give 100 |
+| `mark_width_mm` | The width of the marked line on this material: that width must stay inside the part |
+| `edge_clearance_mm` | Extra distance kept between a mark's edge and its part's edges (default 0) |
+| `allow_off_part` | Marks may lie on the scrap or cross parts (remnant labels, layout lines); default False |
+| `height_mode`, `travel_height_mm` | `"fixed"` (default): one Z, the marking height (the controller owns Z). `"program"`: travel between paths at `travel_height_mm` |
+
+What sets a mark's depth and width belongs to the machine ("You can vary the
+depth and width of marks by varying torch speed, output current, and
+torch-to-workpiece height": Hypertherm Powermax45 SYNC Operator Manual,
+*Marking process guidelines*), so camlib takes all of it from the caller.
+
+- **Path**: the beam centre follows each path, with no kerf compensation, one
+  beam-on per path, in the order given. A marking move is a line or an XY arc
+  at the marking height; its kind is `mark`.
+- **Marks run before cuts**, while each part is still held by the sheet and
+  has not moved (ProNest sequences scribing with its "Punch/Scribe first"
+  setting): put the `ThermalMark` before the `ThermalCut`. A part with a mark
+  must not have been cut: read from the stock when the operation is planned,
+  no cell at or inside its outline may be cut through. Refused otherwise,
+  also with `allow_off_part`.
+- **On its part**: every mark's width, with `edge_clearance_mm`, is proven
+  inside one part (not on the scrap, in a hole, across an edge or from one
+  part to another) before any motion is produced, by the same proof as the
+  containment limits. `allow_off_part=True` skips this proof, and the report
+  then says `containment: "not_checked"` instead of `"proven"`.
+- **Stock**: a marking move removes no material. The stock model itself
+  refuses one that passes (with the beam's width, the tool's kerf) over a
+  cell that is or may be cut through, or beyond the sheet: in the planned run
+  and again when the posted program is replayed. The run still carries every
+  marking move (kind `mark`), so an application can draw the marks.
+- **Typed motion**: a path's beam is `BeamMark(power_percent)`, turned off
+  with `Beam(0)`. Only `mark` moves are fed while it is on; a cutting move
+  under it, a `mark` move under the cutting beam, and firing either beam
+  while the other is on are all refused, in the plan and in the decoded
+  program.
+- **Posts**: the machine declares how it marks, or the post refuses the
+  program ([Posts](posts.md): `beam_mark`). Declared: generic G-code
+  (`beam_mark="power"` or `"mode"`), GRBL laser (`define_machine(...,
+  beam_mark="power")`) and [QtPlasmaC](qtplasmac-post.md) (declared marking
+  and cutting materials). Centroid CNC12 plasma and WinCNC plasma refuse:
+  no marking method is declared for them.
+
+Not modeled: the marked line's depth or appearance, a separate scribe or
+marker tool with its own offsets (QtPlasmaC tool 1), spotting (a timed torch
+pulse) and powder marking.
 
 ## Turning (lathe): a lathe `Setup`
 

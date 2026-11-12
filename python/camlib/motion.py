@@ -51,7 +51,9 @@ class Motion:
     :class:`Probe` cycle. A positive feed makes it a feed-controlled line traverse; None
     selects unprogrammed rapid speed. ``kind='shift'`` is a rapid line with the
     spindle stopped at its oriented angle (fine boring, after
-    :class:`SpindleOrient`). Other roles require a positive feed.
+    :class:`SpindleOrient`). ``kind='mark'`` is a beam tool's marking move
+    (after :class:`BeamMark`): a line or XY arc at one height that removes no
+    stock, over sheet that is still whole. Other roles require a positive feed.
     """
 
     id: int
@@ -149,6 +151,20 @@ class Beam:
 
     def to_dict(self):
         return {"kind": "beam", "power_percent": self.power_percent}
+
+
+@dataclass(frozen=True)
+class BeamMark:
+    """Plasma arc or laser beam on in the machine's marking process at
+    ``power_percent`` (laser power; a plasma torch marks at the current its
+    controller's marking process sets): it marks the sheet surface and does
+    not cut through. Only ``kind='mark'`` moves are fed while it is on;
+    ``Beam(0)`` turns it off, and a cut needs the cutting beam fired again."""
+
+    power_percent: float
+
+    def to_dict(self):
+        return {"kind": "beam_mark", "power_percent": self.power_percent}
 
 
 @dataclass(frozen=True)

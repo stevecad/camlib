@@ -197,7 +197,7 @@ def _snapshot(candidate, policy):
         raise TypeError('a candidate needs an ordinary Job and declared Machine')
     setup = candidate.job.compile().setup(candidate.setup_id)
     config = setup.config
-    if 'turning' in config or any(op['kind'] == 'thermal_cut' for op in config['operations']):
+    if 'turning' in config or any(op['kind'] in ('thermal_cut', 'thermal_mark') for op in config['operations']):
         raise ValueError('recipe comparison currently supports three-axis milling')
     checks = config.get('verification') or {}
     if not all(checks.get(key) for key in ('scene', 'stock_contact', 'material')):

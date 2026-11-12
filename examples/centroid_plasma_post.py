@@ -116,6 +116,12 @@ class CentroidPlasmaPost(GCodePost):
         self.emit('M62' if event.power_percent == 0 else 'M61')
         self._spindle_on = event.power_percent != 0
 
+    def on_beam_mark(self, event):
+        raise ValueError(
+            'CNC12 plasma: this post declares no marking method (M61 runs the cutting profile); '
+            'a ThermalMark cannot be posted for it'
+        )
+
     def on_height_control(self, event):
         raise ValueError(
             'CNC12 plasma: torch height control follows the material profile (M61 enables it '

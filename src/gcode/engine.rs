@@ -225,6 +225,7 @@ impl Engine {
                 self.decoder.read_probe(&block, cycle, *covers)?
             } else {
                 let context = context(&typed);
+                self.decoder.marking_source = matches!(typed, Event::BeamMark { .. });
                 self.decoder.read(&block, context.as_ref())?
             };
             if self.decoder.ended || self.decoder.tool_pending {

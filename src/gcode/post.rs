@@ -34,6 +34,9 @@ pub struct DefaultPost {
     /// The source event a (possibly lowered) motion was taken from.
     pub source_event: Option<Event>,
     spindle_on: bool,
+    /// The beam process the controller is in (`beam_mark = "mode"`): marking
+    /// (true), cutting (false) or not yet selected by this program.
+    beam_marking: Option<bool>,
     coolant_mode: Coolant,
     css: bool,
     rpm: f64,
@@ -125,6 +128,7 @@ impl DefaultPost {
             position_mm: None,
             source_event: None,
             spindle_on: false,
+            beam_marking: None,
             coolant_mode: Coolant::Off,
             css: false,
             rpm: 0.,
@@ -257,6 +261,7 @@ impl DefaultPost {
                 Event::Cycle { .. } => "on_cycle",
                 Event::SpindleOrient { .. } => "on_spindle_orient",
                 Event::Beam { .. } => "on_beam",
+                Event::BeamMark { .. } => "on_beam_mark",
                 Event::HeightControl { .. } => "on_height_control",
                 Event::SurfaceSpeed { .. } => "on_surface_speed",
                 Event::FeedPerRev { .. } => "on_feed_per_rev",
@@ -422,6 +427,37 @@ impl DefaultPost {
                     self.emit(&[d.code("spindle_off")?])?;
                     self.spindle_on = false;
                     return Ok(());
+                }
+                // After marking (or at the program's first cut) the cutting
+                // process is stated before the beam fires.
+                if d.beam_mark.as_deref() == Some("mode") && self.beam_marking != Some(false) {
+                    self.emit(&[d.code("cut_mode")?])?;
+                    self.beam_marking = Some(false);
+                }
+                let s = self.word(&d.speed_word, power_percent * s_max / 100., false)?;
+                self.emit(&[d.code(&d.beam_effect)?, &s])?;
+                self.spindle_on = true;
+                Ok(())
+            }
+            Event::BeamMark { power_percent } => {
+                if matches!(self.machine.controller, Some(Controller::Carvera(_))) {
+                    return Err(
+                        "Carvera reference supports milling only; beam control is not declared"
+                            .into(),
+                    );
+                }
+                let s_max = d.beam_s_max.ok_or(
+                    "this dialect declares no beam (beam_s_max): it cannot post plasma or laser cutting",
+                )?;
+                let Some(mark) = d.beam_mark.as_deref() else {
+                    return Err(
+                        "this dialect declares no beam marking (beam_mark): declare how the machine marks ('power', or 'mode' with its mark_mode and cut_mode codes)"
+                            .into(),
+                    );
+                };
+                if mark == "mode" && self.beam_marking != Some(true) {
+                    self.emit(&[d.code("mark_mode")?])?;
+                    self.beam_marking = Some(true);
                 }
                 let s = self.word(&d.speed_word, power_percent * s_max / 100., false)?;
                 self.emit(&[d.code(&d.beam_effect)?, &s])?;

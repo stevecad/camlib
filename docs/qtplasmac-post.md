@@ -1,7 +1,7 @@
 # LinuxCNC QtPlasmaC post
 
 [`examples/qtplasmac_post.py`](../examples/qtplasmac_post.py) writes
-`ThermalCut` programs for LinuxCNC 2.9 QtPlasmaC and reads its own output back
+`ThermalCut` and `ThermalMark` programs for LinuxCNC 2.9 QtPlasmaC and reads its own output back
 for checking. Reference: the LinuxCNC 2.9 QtPlasmaC documentation (G-code
 conventions, THC codes, G-code filter).
 
@@ -40,7 +40,43 @@ program = job.post_nc("sheet", machine=machine, post=q.QtPlasmaCPost, decoder=q.
 | Z | One Z (the cut height) | QtPlasmaC removes Z motion and handles probing, pierce height, pierce delay and cut height from the material file: plan with `height_mode="fixed"`, `pierce_delay_s=0` |
 | Feeds | `F` words | QtPlasmaC warns when they differ from the material's cut feed rate |
 
-Not written: material selection (`M190`/`M66`), velocity percentages (`M67`),
-hole sensing and QtPlasmaC's own overcut (camlib plans small-hole feeds and
-overburn itself), cutter compensation `G41.1`/`G42.1` (QtPlasmaC disables THC
-and overcut with it). Verify on the machine before cutting.
+## Marking
+
+QtPlasmaC documents no marking command for the torch. It documents materials
+(the material file: cut amps, and a cut mode `3 = Gouge/Mark`, both acted on
+with PowerMax communications) and automatic material changes: `M190 P<n>`,
+then `M66 P3 L3 Q<seconds>` to wait for the change, then the feed and
+`M3 $0 S1`, "in the order shown". So a `ThermalMark` is posted only on a
+machine whose owner declares the two materials of its own material file:
+
+```python
+machine = q.define_machine("Plasma table", setting, blend_mm=0.005,
+                           mark_material=7, cut_material=3, material_wait_s=2, **declared)
+```
+
+| Item | Output | Premise |
+| --- | --- | --- |
+| Before the first mark | `M190 P<mark_material>`, `M66 P3 L3 Q<material_wait_s>`, `M3 $0 S1` | The marking material holds this machine's marking current, cut mode, heights and feed; camlib only selects it |
+| Before the first cut after marks, and before the first cut of any program | `M190 P<cut_material>`, `M66 P3 L3 Q<material_wait_s>`, `M3 $0 S1` | A material is selected once and stays until the other is needed |
+| Feed | `F` on the first fed move after the change | QtPlasmaC warns when it differs from the material's cut feed rate |
+
+Plan the mark with `power_percent=100` (the torch fires at the material's
+current; the post refuses another value) and `height_mode="fixed"`. The
+decoder reads the selected material from the `M190`/`M66` blocks alone
+(only the two declared numbers, only with the torch off, each `M190` followed
+by its `M66`): a torch-on under the marking material decodes as a marking
+beam, under the cutting material as a cutting beam, and before any selection
+is refused. A machine that declares no materials writes cut programs exactly
+as before, and refuses a mark. Whether the mark is light enough is a property
+of the material entry, not of the program: prove it on scrap.
+
+Not written: the scribe (tool 1, `T1 M6`, `M3 $1 S1`: a second tool with its
+own offsets) and spotting (`M3 $2 S1`).
+
+## Not written
+
+Velocity percentages (`M67`), hole sensing and QtPlasmaC's own overcut
+(camlib plans small-hole feeds and overburn itself), cutter compensation
+`G41.1`/`G42.1` (QtPlasmaC disables THC and overcut with it), and material
+selection other than for marking as above. Verify on the machine before
+cutting.
