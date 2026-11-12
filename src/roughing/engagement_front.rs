@@ -56,8 +56,8 @@ impl Grid {
         ]
     }
     fn cell(&self, p: Point) -> Option<(usize, usize)> {
-        let i = ((p[0] - self.x0) / self.c).floor();
-        let j = ((p[1] - self.y0) / self.c).floor();
+        let i = floor((p[0] - self.x0) / self.c);
+        let j = floor((p[1] - self.y0) / self.c);
         (i >= 0. && j >= 0. && i < self.nx as f64 && j < self.ny as f64)
             .then_some((i as usize, j as usize))
     }
@@ -65,12 +65,12 @@ impl Grid {
     /// column and row (empty when a low exceeds its high).
     fn disk_box(&self, p: Point, rad: f64) -> Option<([usize; 2], [usize; 2])> {
         let lo = [
-            ((p[0] - rad - self.x0) / self.c - 0.5).ceil().max(0.) as usize,
-            ((p[1] - rad - self.y0) / self.c - 0.5).ceil().max(0.) as usize,
+            ceil((p[0] - rad - self.x0) / self.c - 0.5).max(0.) as usize,
+            ceil((p[1] - rad - self.y0) / self.c - 0.5).max(0.) as usize,
         ];
         let hi = [
-            (((p[0] + rad - self.x0) / self.c - 0.5).floor()).min(self.nx as f64 - 1.),
-            (((p[1] + rad - self.y0) / self.c - 0.5).floor()).min(self.ny as f64 - 1.),
+            floor((p[0] + rad - self.x0) / self.c - 0.5).min(self.nx as f64 - 1.),
+            floor((p[1] + rad - self.y0) / self.c - 0.5).min(self.ny as f64 - 1.),
         ];
         if hi[0] < 0. || hi[1] < 0. {
             return None;
@@ -98,7 +98,8 @@ impl Grid {
         )
     }
     /// The cells `for_disk` visits, in its order, with their centres and
-    /// without their distances (so without a square root per cell, #202).
+    /// without their distances: `Layer::cut`'s definition.
+    #[cfg(test)]
     fn for_disk_cells(&self, p: Point, rad: f64, mut f: impl FnMut(usize, Point)) {
         let Some((lo, hi)) = self.disk_box(p, rad) else {
             return;
@@ -136,10 +137,35 @@ impl Grid {
     /// can lie within `half` of the coordinate `at`: a whole cell wider at
     /// each end than the arithmetic says, so rounding never loses one.
     fn span(&self, o: f64, at: f64, half: f64, lo: usize, hi: usize) -> Option<(usize, usize)> {
-        let a = (((at - half - o) / self.c - 0.5).floor() - 1.).max(lo as f64);
-        let b = (((at + half - o) / self.c - 0.5).ceil() + 1.).min(hi as f64);
+        let a = (floor((at - half - o) / self.c - 0.5) - 1.).max(lo as f64);
+        let b = (ceil((at + half - o) / self.c - 0.5) + 1.).min(hi as f64);
         (a <= b).then_some((a as usize, b as usize))
     }
+}
+
+/// `x.floor()` and `x.ceil()`, to the bit, without the library call (this
+/// build targets processors without a rounding instruction): through the
+/// whole number below 2^52 in size, where the conversion is exact; the
+/// library's own for anything else.
+#[inline]
+fn floor(x: f64) -> f64 {
+    if x.abs() < 4e15 {
+        let t = x as i64 as f64;
+        if t > x {
+            t - 1.
+        } else if t == 0. {
+            // (The sign of a zero is kept: `x` is 0, -0 or in (0, 1).)
+            x * 0.
+        } else {
+            t
+        }
+    } else {
+        x.floor()
+    }
+}
+#[inline]
+fn ceil(x: f64) -> f64 {
+    -floor(-x)
 }
 
 /// Relative slack on a squared distance when cells are ruled out without
@@ -191,10 +217,15 @@ fn bit_at_or_above(row: &[u64], i: usize, hi: usize) -> Option<usize> {
 /// output with `t` does. (`t` is a few cutter radii: far below the 1e9
 /// `edt` reports where there is no set cell at all.)
 fn cells2_within(c: f64, t: f64, inclusive: bool) -> Option<usize> {
-    let near = |d2: usize| {
-        let d = (d2 as f64).sqrt() * c;
-        if inclusive { d <= t } else { d < t }
-    };
+    cells2_where(c, t, |d| if inclusive { d <= t } else { d < t })
+}
+
+/// `cells2_within` for any test of a distance that holds up to some
+/// distance and not beyond (`about` mm, roughly): the largest whole squared
+/// distance in cells whose distance in mm, as `edt` reports it, passes.
+fn cells2_where(c: f64, about: f64, test: impl Fn(f64) -> bool) -> Option<usize> {
+    let t = about;
+    let near = |d2: usize| test((d2 as f64).sqrt() * c);
     if !near(0) {
         return None;
     }
@@ -277,6 +308,216 @@ impl Near {
     }
 }
 
+/// The cells waiting in a link's search (`link_search`), by their distance
+/// from the start in 1/1024 of a cell.
+trait LinkQueue {
+    fn push(&mut self, key: u64, cell: usize);
+    /// The waiting cell of the smallest distance; of equals, the highest
+    /// cell index.
+    fn pop(&mut self) -> Option<(u64, usize)>;
+}
+/// The definition: a heap of every waiting cell.
+#[cfg(test)]
+impl LinkQueue for std::collections::BinaryHeap<(std::cmp::Reverse<u64>, usize)> {
+    fn push(&mut self, key: u64, cell: usize) {
+        std::collections::BinaryHeap::push(self, (std::cmp::Reverse(key), cell));
+    }
+    fn pop(&mut self) -> Option<(u64, usize)> {
+        std::collections::BinaryHeap::pop(self).map(|(key, cell)| (key.0, cell))
+    }
+}
+/// The same order from bands one cell of distance wide. A cell is pushed
+/// with a distance at least one whole cell beyond that of the cell being
+/// expanded, so into a later band than the one being taken from: when a
+/// band's turn comes it is complete, and sorted once it gives its cells in
+/// the heap's order.
+#[derive(Default)]
+struct LinkBuckets {
+    bands: Vec<Vec<(u64, usize)>>,
+    /// The band being taken from, sorted so that its end is next; `next`
+    /// is the band after it.
+    current: Vec<(u64, usize)>,
+    next: usize,
+}
+impl LinkQueue for LinkBuckets {
+    fn push(&mut self, key: u64, cell: usize) {
+        let band = (key >> 10) as usize;
+        debug_assert!(band >= self.next || self.next == 0);
+        if band >= self.bands.len() {
+            self.bands.resize_with(band + 1, Vec::new);
+        }
+        self.bands[band].push((key, cell));
+    }
+    fn pop(&mut self) -> Option<(u64, usize)> {
+        while self.current.is_empty() {
+            if self.next >= self.bands.len() {
+                return None;
+            }
+            self.current = std::mem::take(&mut self.bands[self.next]);
+            self.next += 1;
+            self.current
+                .sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        }
+        self.current.pop()
+    }
+}
+
+/// The search of a routed link over a window of `size` cells (columns,
+/// rows): shortest eight-neighbour distances from `start` in cells, until
+/// `goal` is taken from the queue or the distance passes `limit`.
+/// `enter(column, row, d)` says whether a cell may be stepped on from a
+/// cell at distance `d`. Returns each cell's distance and the cell it was
+/// reached from, and the goal's distance in the queue if the search ended
+/// by taking the goal from it.
+///
+/// A cell's distance in the queue is in 1/1024 of a cell, rounded down, and
+/// its neighbours' distances are counted on from that rounded value. So a
+/// cell is queued at least 1024 (a straight step) or 1448 (a diagonal one:
+/// 1024 times the square root of 2, rounded down) beyond the cell it was
+/// reached from: `LINK_DIAGONAL` names the latter.
+fn link_search(
+    mut queue: impl LinkQueue,
+    size: [usize; 2],
+    start: usize,
+    goal: usize,
+    limit: f64,
+    enter: impl Fn(usize, usize, f64) -> bool,
+) -> (Vec<f64>, Vec<usize>, Option<f64>) {
+    let n = size[0] * size[1];
+    let mut dist = vec![f64::INFINITY; n];
+    let mut prev = vec![usize::MAX; n];
+    let mut at_goal = None;
+    dist[start] = 0.;
+    queue.push(0, start);
+    while let Some((d, k)) = queue.pop() {
+        let d = d as f64 / 1024.;
+        if d > dist[k] + 1e-9 {
+            continue;
+        }
+        if k == goal || d > limit {
+            at_goal = (k == goal).then_some(d);
+            break;
+        }
+        let (i, j) = ((k % size[0]) as i64, (k / size[0]) as i64);
+        for (di, dj, step) in [
+            (1, 0, 1.),
+            (-1, 0, 1.),
+            (0, 1, 1.),
+            (0, -1, 1.),
+            (1, 1, std::f64::consts::SQRT_2),
+            (1, -1, std::f64::consts::SQRT_2),
+            (-1, 1, std::f64::consts::SQRT_2),
+            (-1, -1, std::f64::consts::SQRT_2),
+        ] {
+            let (ni, nj) = (i + di, j + dj);
+            if ni < 0 || nj < 0 || ni >= size[0] as i64 || nj >= size[1] as i64 {
+                continue;
+            }
+            let (ni, nj) = (ni as usize, nj as usize);
+            let nk = nj * size[0] + ni;
+            // A cell reached no sooner than before is left alone: asked
+            // first, since most neighbours are (the answer is the same in
+            // either order).
+            let nd = d + step;
+            if nd >= dist[nk] || nd.is_nan() || !enter(ni, nj, d) {
+                continue;
+            }
+            dist[nk] = nd;
+            prev[nk] = k;
+            queue.push((nd * 1024.) as u64, nk);
+        }
+    }
+    (dist, prev, at_goal)
+}
+
+/// What a diagonal step adds at least to a cell's distance in a link
+/// search's queue (`link_search`), in 1/1024 of a cell.
+const LINK_DIAGONAL: u64 = 1448;
+
+/// The shortest eight-neighbour path between two cells `dx` and `dy` apart
+/// with nothing in the way, counted as `link_search` counts at least: in
+/// 1/1024 of a cell.
+fn link_distance(dx: usize, dy: usize) -> u64 {
+    let (long, short) = (dx.max(dy) as u64, dx.min(dy) as u64);
+    1024 * (long - short) + LINK_DIAGONAL * short
+}
+
+/// The set cells of `pass` (rows of `words` words) that a path from `start`
+/// (column, row) over set cells reaches within `bound`, in 1/1024 of a
+/// cell: a step to one of the eight neighbours counted 1024 or
+/// `LINK_DIAGONAL`, as `link_search` counts at least. Dijkstra's algorithm
+/// in whole numbers, stopped at `bound`.
+fn cells_within(pass: &[u64], words: usize, start: (usize, usize), bound: u64) -> Vec<u64> {
+    let (cols, rows) = (words * 64, pass.len() / words);
+    let set = |i: usize, j: usize| pass[j * words + i / 64] >> (i % 64) & 1 == 1;
+    let mut dist = vec![u64::MAX; cols * rows];
+    let mut within = vec![0u64; pass.len()];
+    let mut queue = LinkBuckets::default();
+    let first = start.1 * cols + start.0;
+    dist[first] = 0;
+    queue.push(0, first);
+    while let Some((d, k)) = queue.pop() {
+        if d > dist[k] {
+            continue;
+        }
+        if d > bound {
+            break;
+        }
+        let (i, j) = (k % cols, k / cols);
+        within[j * words + i / 64] |= 1 << (i % 64);
+        for (di, dj, step) in [
+            (1i64, 0i64, 1024),
+            (-1, 0, 1024),
+            (0, 1, 1024),
+            (0, -1, 1024),
+            (1, 1, LINK_DIAGONAL),
+            (1, -1, LINK_DIAGONAL),
+            (-1, 1, LINK_DIAGONAL),
+            (-1, -1, LINK_DIAGONAL),
+        ] {
+            let (ni, nj) = (i as i64 + di, j as i64 + dj);
+            if ni < 0 || nj < 0 || ni >= cols as i64 || nj >= rows as i64 {
+                continue;
+            }
+            let (ni, nj) = (ni as usize, nj as usize);
+            let nk = nj * cols + ni;
+            let nd = d + step;
+            if nd < dist[nk] && set(ni, nj) {
+                dist[nk] = nd;
+                queue.push(nd, nk);
+            }
+        }
+    }
+    within
+}
+
+/// Cells a stay-down link from one start can possibly reach, for one state
+/// of the layer's material (`Layer::link_reach`).
+struct LinkReach {
+    version: u64,
+    start: usize,
+    max_len: u64,
+    /// The box of cells this was worked out in: columns and rows.
+    i: [usize; 2],
+    j: [usize; 2],
+    /// Rows `j[0]..` of `words` words from word `i[0] / 64` of the grid's
+    /// rows.
+    reach: Vec<u64>,
+    words: usize,
+}
+impl LinkReach {
+    /// Whether a search in the window of columns `i` and rows `j` is
+    /// covered by this box, so that what this says of its goal holds.
+    fn covers(&self, i: [usize; 2], j: [usize; 2]) -> bool {
+        self.i[0] <= i[0] && i[1] <= self.i[1] && self.j[0] <= j[0] && j[1] <= self.j[1]
+    }
+    /// Whether cell (`i`, `j`) of the box is out of the link's reach.
+    fn excludes(&self, i: usize, j: usize) -> bool {
+        let w = (j - self.j[0]) * self.words + i / 64 - self.i[0] / 64;
+        self.reach[w] >> (i % 64) & 1 == 0
+    }
+}
+
 /// One bit per fine cell, in rows of whole words: where the layer has
 /// material (`Layer::material`), and where that material is reachable.
 /// Kept current by everything that changes a cleared height (`Layer::cut`,
@@ -288,6 +529,14 @@ struct MaterialBits {
     stride: usize,
     any: Vec<u64>,
     reach: Vec<u64>,
+    /// The layer's allowed centres (they do not change).
+    allowed: Vec<u64>,
+    /// Cells this operation has not cleared down to the layer yet (cleared
+    /// height above it), with or without material: the cells a cut changes.
+    uncut: Vec<u64>,
+    /// Counts the changes of `any`: what was derived from the bits at one
+    /// count holds as long as the count stands.
+    version: u64,
 }
 impl MaterialBits {
     fn assign(&mut self, g: &Grid, k: usize, material: bool, reachable: bool) {
@@ -295,6 +544,11 @@ impl MaterialBits {
             (k / g.nx) * self.stride + (k % g.nx) / 64,
             1u64 << (k % g.nx % 64),
         );
+        self.assign_at(w, bit, material, reachable);
+    }
+    /// `assign` for the cell at bit `bit` of word `w`.
+    fn assign_at(&mut self, w: usize, bit: u64, material: bool, reachable: bool) {
+        self.version += 1;
         if material {
             self.any[w] |= bit;
         } else {
@@ -492,6 +746,21 @@ impl Default for EngagementFrontReport {
     }
 }
 
+/// The allowed cells that had material when `Layer::most_open` was first
+/// asked, by room (most first; of equals the lower cell index first), and
+/// how far down that order the cells are known to be cut or dead.
+struct OpenOrder {
+    /// The clearance the rooms are counted beyond (its bits).
+    need: u64,
+    cells: Vec<(f64, usize)>,
+    next: usize,
+}
+impl OpenOrder {
+    fn order(a: &(f64, usize), b: &(f64, usize)) -> std::cmp::Ordering {
+        b.0.total_cmp(&a.0).then(a.1.cmp(&b.1))
+    }
+}
+
 struct Layer {
     g: Grid,
     /// Top of possible material per fine cell.
@@ -501,8 +770,12 @@ struct Layer {
     allowed: Vec<bool>,
     /// Material the cutter can reach from an allowed centre.
     reachable: Vec<bool>,
-    /// Distance from the cell centre to the outside of the region (mm).
-    room: Vec<f32>,
+    /// Distance from the cell centre to the outside of the region (mm):
+    /// `room()`, worked out from `outside` when first asked for (the rare
+    /// entries into enclosed material ask; a pass does not).
+    room: std::cell::OnceCell<Vec<f32>>,
+    /// Cells outside the region.
+    outside: Vec<bool>,
     dead: Vec<bool>,
     candidates: Vec<usize>,
     /// Starts whose pass found the material beside them too thin to cut.
@@ -514,21 +787,123 @@ struct Layer {
     journal: Vec<(usize, f64)>,
     /// `material` and `reachable` as bits (see `sync_bits`).
     bits: MaterialBits,
+    /// See `most_open`.
+    open: std::cell::RefCell<Option<OpenOrder>>,
 }
 impl Layer {
+    fn room(&self) -> &[f32] {
+        self.room.get_or_init(|| {
+            edt(&self.g, &self.outside)
+                .into_iter()
+                .map(|d| d as f32)
+                .collect()
+        })
+    }
+    /// The allowed cell with material that is not dead and has the most
+    /// room beyond `need` (the first of equals, by cell index), and that
+    /// room: where an entry into enclosed material is tried.
+    ///
+    /// Asked once for every entry or start that is refused, which on a
+    /// large part is thousands of times a layer (#202: one layer of a
+    /// 430 mm part spent seven minutes testing every cell of the grid each
+    /// time). The allowed cells with material are put in order once, most
+    /// room first (`OpenOrder`), and the answer is the first of them that
+    /// still has material and is not dead: cells only leave (cut, or marked
+    /// dead) except where `reopened` is told of one coming back.
+    fn most_open(&self, need: f64) -> Option<(f64, usize)> {
+        let room = self.room();
+        let mut open = self.open.borrow_mut();
+        if open.as_ref().is_none_or(|o| o.need != need.to_bits()) {
+            let stride = self.bits.stride;
+            let mut cells = vec![];
+            for (w, (any, allowed)) in self.bits.any.iter().zip(&self.bits.allowed).enumerate() {
+                let mut word = any & allowed;
+                while word != 0 {
+                    let i = (w % stride) * 64 + word.trailing_zeros() as usize;
+                    word &= word - 1;
+                    let k = (w / stride) * self.g.nx + i;
+                    cells.push((room[k] as f64 - need, k));
+                }
+            }
+            cells.sort_unstable_by(OpenOrder::order);
+            *open = Some(OpenOrder {
+                need: need.to_bits(),
+                cells,
+                next: 0,
+            });
+        }
+        let order = open.as_mut().unwrap();
+        while order
+            .cells
+            .get(order.next)
+            .is_some_and(|&(_, k)| self.dead[k] || !self.material(k))
+        {
+            order.next += 1;
+        }
+        let best = order.cells.get(order.next).copied();
+        #[cfg(test)]
+        {
+            shortcut_taken(3);
+            let mut scan: Option<(f64, usize)> = None;
+            for k in 0..self.top.len() {
+                if self.allowed[k] && !self.dead[k] && self.material(k) {
+                    let room = room[k] as f64 - need;
+                    if scan.is_none_or(|(b, _)| room > b) {
+                        scan = Some((room, k));
+                    }
+                }
+            }
+            assert_eq!(
+                best.map(|(room, k)| (room.to_bits(), k)),
+                scan.map(|(room, k)| (room.to_bits(), k))
+            );
+        }
+        best
+    }
+    /// Cell `k` may have material and be alive again (an undone cut, a
+    /// revived start): `most_open` looks at it again.
+    fn reopened(&self, k: usize) {
+        let mut open = self.open.borrow_mut();
+        let Some(order) = open.as_mut() else {
+            return;
+        };
+        if !self.allowed[k] || !self.material(k) {
+            return;
+        }
+        let key = (self.room()[k] as f64 - f64::from_bits(order.need), k);
+        match order
+            .cells
+            .binary_search_by(|cell| OpenOrder::order(cell, &key))
+        {
+            Ok(at) => order.next = order.next.min(at),
+            // Not among the cells put in order (it had no material then).
+            Err(_) => *open = None,
+        }
+    }
     /// Rebuild the material bits from the heights. Needed once, when the
     /// layer is made: `cut` and `undo` keep them current after that.
     fn sync_bits(&mut self) {
+        *self.open.borrow_mut() = None;
         let g = self.g;
         let stride = g.nx.div_ceil(64);
         self.bits = MaterialBits {
             stride,
             any: vec![0; stride * g.ny],
             reach: vec![0; stride * g.ny],
+            allowed: vec![0; stride * g.ny],
+            uncut: vec![0; stride * g.ny],
+            version: self.bits.version + 1,
         };
         for k in 0..g.nx * g.ny {
             if self.material(k) {
                 self.bits.assign(&g, k, true, self.reachable[k]);
+            }
+            let (w, bit) = ((k / g.nx) * stride + (k % g.nx) / 64, 1 << (k % g.nx % 64));
+            if self.allowed[k] {
+                self.bits.allowed[w] |= bit;
+            }
+            if self.cleared[k] > self.z {
+                self.bits.uncut[w] |= bit;
             }
         }
     }
@@ -538,6 +913,18 @@ impl Layer {
             self.cleared[k] = old;
             let material = self.material(k);
             self.bits.assign(&self.g, k, material, self.reachable[k]);
+            let (w, bit) = (
+                (k / self.g.nx) * self.bits.stride + (k % self.g.nx) / 64,
+                1 << (k % self.g.nx % 64),
+            );
+            if old > self.z {
+                self.bits.uncut[w] |= bit;
+            } else {
+                self.bits.uncut[w] &= !bit;
+            }
+            if material {
+                self.reopened(k);
+            }
         }
     }
     fn material(&self, k: usize) -> bool {
@@ -549,21 +936,133 @@ impl Layer {
             .is_some_and(|(i, j)| self.allowed[self.g.idx(i, j)])
     }
     /// Mark the disk cleared; returns how many material cells it cleared.
+    ///
+    /// Only the cells of the disk not yet cleared to the layer change, and
+    /// a pass's next step finds few: they are read from the `uncut` bits,
+    /// in the order a scan of the disk meets them (the journal's order).
     fn cut(&mut self, p: Point, rad: f64) -> usize {
         let (z, floor) = (self.z, self.z + self.material_guard);
         let g = self.g;
-        let (cleared, top, journal) = (&mut self.cleared, &self.top, &mut self.journal);
-        let (bits, reachable) = (&mut self.bits, &self.reachable);
+        #[cfg(test)]
+        let scan = {
+            let mut cells = vec![];
+            g.for_disk_cells(p, rad, |k, _| {
+                if self.cleared[k] > z {
+                    cells.push(k);
+                }
+            });
+            cells
+        };
+        let Some((lo, hi)) = g.disk_box(p, rad) else {
+            return 0;
+        };
+        if lo[0] > hi[0] {
+            return 0;
+        }
+        let (sure, rim) = Grid::rim_bounds(rad);
+        let stride = self.bits.stride;
+        let mark = self.journal.len();
         let mut removed = 0;
-        g.for_disk_cells(p, rad, |k, _| {
-            if cleared[k] > z {
-                removed += usize::from(top[k].min(cleared[k]) > floor);
-                journal.push((k, cleared[k]));
-                cleared[k] = z;
-                bits.assign(&g, k, top[k].min(z) > floor, reachable[k]);
+        for j in lo[1]..=hi[1] {
+            let dy = g.y0 + (j as f64 + 0.5) * g.c - p[1];
+            let h2 = rim - dy * dy;
+            if h2 < 0. {
+                continue;
             }
-        });
+            let Some((i0, i1)) = g.span(g.x0, p[0], h2.sqrt(), lo[0], hi[0]) else {
+                continue;
+            };
+            let mut from = i0;
+            while let Some(i) =
+                bit_at_or_above(&self.bits.uncut[j * stride..(j + 1) * stride], from, i1)
+            {
+                from = i + 1;
+                let x = g.x0 + (i as f64 + 0.5) * g.c;
+                if !Grid::within(x - p[0], dy, rad, sure, rim) {
+                    continue;
+                }
+                let k = g.idx(i, j);
+                removed += usize::from(self.top[k].min(self.cleared[k]) > floor);
+                self.journal.push((k, self.cleared[k]));
+                self.cleared[k] = z;
+                let (w, bit) = (j * stride + i / 64, 1 << (i % 64));
+                self.bits.uncut[w] &= !bit;
+                self.bits
+                    .assign_at(w, bit, self.top[k].min(z) > floor, self.reachable[k]);
+            }
+        }
+        #[cfg(test)]
+        assert!(
+            self.journal[mark..].iter().map(|(k, _)| k).eq(scan.iter()),
+            "cut at {p:?} of {rad}"
+        );
+        let _ = mark;
         removed
+    }
+    /// Every cell a routed link from cell `start` can come to within its
+    /// length limit (`routed_link`, `max_len` mm) in any search window
+    /// inside the box of columns `i` and rows `j`, and possibly more: a
+    /// goal outside this set is one the search does not reach.
+    ///
+    /// The search steps between cells that are allowed and have no material
+    /// within `tight` mm, in a window around start and goal that closes a
+    /// ring at its border because it does not see the material beyond; and
+    /// within `relaxed` cells of path from the start it may also step on
+    /// other cells. A cell it steps on, away from the start, is therefore
+    /// allowed and has no material of the box within `tight` (the window
+    /// lies in the box, and its ring is wider than `tight`). So every path
+    /// the search follows is a path over such cells, the square of
+    /// `relaxed` cells around the start counted with them.
+    ///
+    /// The search's distance of a cell, in 1/1024 of a cell, is at least
+    /// the length of its path counted 1024 for a straight step and
+    /// `LINK_DIAGONAL` for a diagonal one (`link_search`), and it returns a
+    /// link only when the goal's distance is at most `max_len / c` cells. A
+    /// goal whose shortest path over those cells, counted that way
+    /// (`cells_within`), is longer than that is therefore not returned: its
+    /// distance exceeds the limit, or it was never reached.
+    fn link_reach(
+        &self,
+        start: (usize, usize),
+        tight: f64,
+        relaxed: usize,
+        i: [usize; 2],
+        j: [usize; 2],
+        max_len: f64,
+    ) -> LinkReach {
+        let g = &self.g;
+        let stride = self.bits.stride;
+        let near =
+            cells2_within(g.c, tight, false).map(|d2| Near::new(&self.bits.any, stride, i, j, d2));
+        let (w0, words, rows) = (i[0] / 64, i[1] / 64 - i[0] / 64 + 1, j[1] - j[0] + 1);
+        let mut pass = vec![0u64; words * rows];
+        for row in 0..rows {
+            for w in 0..words {
+                let allowed = self.bits.allowed[(j[0] + row) * stride + w0 + w];
+                let blocked = near.as_ref().map_or(0, |n| n.grown[row * words + w]);
+                pass[row * words + w] = allowed & !blocked;
+            }
+        }
+        for row in start.1.saturating_sub(relaxed).max(j[0])..=(start.1 + relaxed).min(j[1]) {
+            for col in start.0.saturating_sub(relaxed).max(i[0])..=(start.0 + relaxed).min(i[1]) {
+                pass[(row - j[0]) * words + col / 64 - w0] |= 1 << (col % 64);
+            }
+        }
+        LinkReach {
+            version: self.bits.version,
+            start: g.idx(start.0, start.1),
+            max_len: max_len.to_bits(),
+            i,
+            j,
+            // (A whole number at or above the limit in 1/1024 of a cell.)
+            reach: cells_within(
+                &pass,
+                words,
+                (start.0 - w0 * 64, start.1 - j[0]),
+                (max_len / g.c * 1024. * (1. + 1e-9)).ceil() as u64 + 1,
+            ),
+            words,
+        }
     }
     /// What a `for_disk(p, rad)` scan keeping the first cell of the smallest
     /// distance finds among the cells whose bit is set in `bits`: that
@@ -762,16 +1261,16 @@ impl Layer {
 }
 
 /// A cached start candidate (cell `k`, at index `at` of `Layer::candidates`)
-/// and its distance from the cutter. Ordered as the planner chooses: the
-/// nearest, and of equally near ones the first in the list.
+/// and its squared distance from the cutter. Ordered by that, then by the
+/// place in the list.
 struct NearStart {
-    d: f64,
+    d2: f64,
     at: usize,
     k: usize,
 }
 impl Ord for NearStart {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.d.total_cmp(&other.d).then(self.at.cmp(&other.at))
+        self.d2.total_cmp(&other.d2).then(self.at.cmp(&other.at))
     }
 }
 impl PartialOrd for NearStart {
@@ -788,18 +1287,31 @@ impl Eq for NearStart {}
 
 /// The cached start candidates of a layer by distance from `pos`, measured
 /// once. `take` hands out what a scan of the whole list for the nearest
-/// would (`nearest_start_scan`), and removes it from the list the same way,
-/// so the list stays in the same order.
+/// would (`nearest_start_scan`: the smallest distance, and of equal ones
+/// the first in the list), and removes it from the list the same way, so
+/// the list stays in the same order.
+///
+/// The queue is ordered by squared distance, which costs no square root
+/// per candidate. The scan compares distances (`hypot`), and two
+/// candidates whose squares differ in the last places can have the same
+/// distance: so the candidates whose squares are within `DISTANCE_SLACK` of
+/// the smallest are measured as the scan measures them, and the scan's
+/// choice among them is taken. A candidate farther than that is farther by
+/// more than rounding and is not the scan's choice.
 struct StartQueue {
     pos: Point,
     heap: std::collections::BinaryHeap<std::cmp::Reverse<NearStart>>,
 }
 impl StartQueue {
+    fn offset(layer: &Layer, pos: Point, k: usize) -> Point {
+        let q = layer.g.center(k);
+        [q[0] - pos[0], q[1] - pos[1]]
+    }
     fn near(layer: &Layer, pos: Point, at: usize) -> std::cmp::Reverse<NearStart> {
         let k = layer.candidates[at];
-        let q = layer.g.center(k);
+        let v = Self::offset(layer, pos, k);
         std::cmp::Reverse(NearStart {
-            d: (q[0] - pos[0]).hypot(q[1] - pos[1]),
+            d2: v[0] * v[0] + v[1] * v[1],
             at,
             k,
         })
@@ -819,15 +1331,35 @@ impl StartQueue {
         // queued again under its new slot (below); its old queue entry
         // names a slot past the list's end from then on (the list only
         // shrinks here) and is skipped.
-        let best = loop {
-            match self.heap.pop() {
-                Some(std::cmp::Reverse(n)) if layer.candidates.get(n.at) == Some(&n.k) => {
-                    break Some((n.at, n.k));
-                }
-                Some(_) => {}
-                None => break None,
+        let current = |layer: &Layer, n: &NearStart| layer.candidates.get(n.at) == Some(&n.k);
+        let mut best: Option<(f64, NearStart)> = None;
+        let mut others = vec![];
+        let mut within = f64::INFINITY;
+        while let Some(std::cmp::Reverse(n)) = self.heap.peek() {
+            if n.d2 > within {
+                break;
             }
-        };
+            let std::cmp::Reverse(n) = self.heap.pop().unwrap();
+            if !current(layer, &n) {
+                continue;
+            }
+            if best.is_none() {
+                within = n.d2 * (1. + DISTANCE_SLACK);
+            }
+            let v = Self::offset(layer, self.pos, n.k);
+            let d = v[0].hypot(v[1]);
+            let nearer = match &best {
+                Some((b, held)) => d.total_cmp(b).then(n.at.cmp(&held.at)).is_lt(),
+                None => true,
+            };
+            if nearer {
+                others.extend(best.replace((d, n)).map(|(_, n)| n));
+            } else {
+                others.push(n);
+            }
+        }
+        self.heap.extend(others.into_iter().map(std::cmp::Reverse));
+        let best = best.map(|(_, n)| (n.at, n.k));
         #[cfg(test)]
         assert_eq!(best, nearest_start_scan(layer, self.pos));
         let (at, k) = best?;
@@ -863,6 +1395,7 @@ fn nearest_start_scan(layer: &Layer, pos: Point) -> Option<(usize, usize)> {
 /// Only the cells in between need that distance (a square root): the
 /// squared distance tells the others apart (`smoothing_band`), and they add
 /// exactly 1 or nothing, as the formula gives for them (`area_plain`).
+#[cfg(test)]
 fn area(cells: &[Point], p: Point, r: f64, c: f64) -> f64 {
     let (full, none) = smoothing_band(r, c, 0.5);
     let mut n = 0.;
@@ -881,6 +1414,144 @@ fn area(cells: &[Point], p: Point, r: f64, c: f64) -> f64 {
     #[cfg(test)]
     assert_eq!((n * c * c).to_bits(), area_plain(cells, p, r, c).to_bits());
     n * c * c
+}
+
+/// `x + 1.` taken `n` times, for `x >= 0`: the same value, to the bit.
+///
+/// Between two powers of two (the upper one included) the numbers `x + j`
+/// for whole `j` are all representable when `x` is (they are multiples of
+/// `x`'s last place, which is at most 1 below 2^53), so those additions are
+/// exact and any number of them is one exact addition. Only an addition
+/// that passes a power of two rounds, and it is made on its own here as it
+/// would be in turn.
+fn add_ones(mut x: f64, mut n: usize) -> f64 {
+    while n > 0 {
+        if !(1. ..9e15).contains(&x) {
+            x += 1.;
+            n -= 1;
+            continue;
+        }
+        // The next power of two above `x`, and the whole steps up to it.
+        let top = f64::from_bits(((x.to_bits() >> 52) + 1) << 52);
+        let room = (top - x).floor();
+        if room >= 1. {
+            let steps = if room < n as f64 { room as usize } else { n };
+            x += steps as f64;
+            n -= steps;
+        } else {
+            x += 1.;
+            n -= 1;
+        }
+    }
+    x
+}
+
+/// One entry of the cells a step's load sums read (`step_cells`).
+#[derive(Clone, Copy, Debug)]
+enum LoadCell {
+    /// So many cells in a row that lie inside the cutter by half a cell or
+    /// more wherever the step goes: each counts 1.
+    Full(usize),
+    /// A cell centre whose count depends on where the step goes.
+    At(Point),
+}
+
+/// The material cells gathered around `p` (`Layer::gather`) as the load
+/// sums of a step of length `ds` from `p` read them: in the same order,
+/// every run of cells that are half a cell or more inside the cutter at
+/// any point `ds` from `p` as one count, and the cells that are a cell and
+/// a half or more outside it at every such point left out.
+///
+/// The steering tries some 26 directions for each step and sums over these
+/// cells for each. A cell within r - c/2 - ds of `p` is within r - c/2 of
+/// every centre tried (the triangle inequality, with `DISTANCE_SLACK` to
+/// spare), so it counts exactly 1 in the area and nothing in the ring each
+/// time: its distance need not be taken 26 times. Likewise a cell beyond
+/// r + 3c/2 + ds counts nothing. The sums are built in the same order with
+/// the same terms (`add_ones` for a run of ones), so they are the same to
+/// the bit (#192).
+fn step_cells(cells: &[Point], p: Point, ds: f64, r: f64, c: f64, out: &mut Vec<LoadCell>) {
+    out.clear();
+    let (inner, outer) = (r - 0.5 * c - ds, r + 1.5 * c + ds);
+    let full = if inner >= c {
+        inner * inner * (1. - DISTANCE_SLACK)
+    } else {
+        -1.
+    };
+    let none = outer * outer * (1. + DISTANCE_SLACK);
+    for q in cells {
+        let (dx, dy) = (q[0] - p[0], q[1] - p[1]);
+        let d2 = dx * dx + dy * dy;
+        if d2 >= none {
+            continue;
+        }
+        if d2 <= full {
+            if let Some(LoadCell::Full(n)) = out.last_mut() {
+                *n += 1;
+            } else {
+                out.push(LoadCell::Full(1));
+            }
+        } else {
+            out.push(LoadCell::At(*q));
+        }
+    }
+}
+
+/// `area` over a step's cells (`step_cells`).
+fn area_of(cells: &[LoadCell], p: Point, r: f64, c: f64) -> f64 {
+    let (full, none) = smoothing_band(r, c, 0.5);
+    let mut n = 0.;
+    for cell in cells {
+        let q = match *cell {
+            LoadCell::Full(k) => {
+                n = add_ones(n, k);
+                continue;
+            }
+            LoadCell::At(q) => q,
+        };
+        let (dx, dy) = (q[0] - p[0], q[1] - p[1]);
+        let d2 = dx * dx + dy * dy;
+        if d2 >= none {
+            continue;
+        }
+        if d2 <= full {
+            n += 1.;
+            continue;
+        }
+        n += ((r - dx.hypot(dy)) / c + 0.5).clamp(0., 1.);
+    }
+    n * c * c
+}
+
+/// `step_load` over a step's cells (`step_cells`).
+fn step_load_of(cells: &[LoadCell], p: Point, u: Point, r: f64, c: f64) -> (f64, f64) {
+    let (full, none) = smoothing_band(r, c, 1.5);
+    let (mut inside, mut ring) = (0., 0.);
+    for cell in cells {
+        let q = match *cell {
+            LoadCell::Full(k) => {
+                inside = add_ones(inside, k);
+                continue;
+            }
+            LoadCell::At(q) => q,
+        };
+        let v = [q[0] - p[0], q[1] - p[1]];
+        let d2 = v[0] * v[0] + v[1] * v[1];
+        if d2 >= none {
+            continue;
+        }
+        if d2 <= full {
+            inside += 1.;
+            continue;
+        }
+        let d = v[0].hypot(v[1]);
+        let within = ((r - d) / c + 0.5).clamp(0., 1.);
+        inside += within;
+        if v[0] * u[0] + v[1] * u[1] >= 0. {
+            ring += ((r + c - d) / c + 0.5).clamp(0., 1.) - within;
+        }
+    }
+    (inside * c * c, ring * c / (r + c / 2.))
 }
 
 /// Smoothed count of the cells inside the cutter disk at `p` that were not
@@ -962,6 +1633,7 @@ fn area_plain(cells: &[Point], p: Point, r: f64, c: f64) -> f64 {
 /// measured: those from half a cell inside the cutter to a cell and a half
 /// outside it. Nearer cells add 1 to the area and nothing to the ring;
 /// farther cells add nothing to either (`step_load_plain` is the formula).
+#[cfg(test)]
 fn step_load(cells: &[Point], p: Point, u: Point, r: f64, c: f64) -> (f64, f64) {
     let (full, none) = smoothing_band(r, c, 1.5);
     let (mut inside, mut ring) = (0., 0.);
@@ -1249,6 +1921,95 @@ struct PassMark {
 
 type Pending = (Curve, MoveKind, Option<f64>);
 
+/// Whether two curves are the same to the bit (so every computation on
+/// them gives the same result).
+fn same_curve(a: &Curve, b: &Curve) -> bool {
+    let same = |p: &Vec3, q: &Vec3| (0..3).all(|k| p[k].to_bits() == q[k].to_bits());
+    match (a, b) {
+        (Curve::Line { start, end }, Curve::Line { start: s, end: e }) => {
+            same(start, s) && same(end, e)
+        }
+        (
+            Curve::Arc {
+                start,
+                end,
+                center,
+                plane,
+                sweep_rad,
+            },
+            Curve::Arc {
+                start: s,
+                end: e,
+                center: c,
+                plane: p,
+                sweep_rad: w,
+            },
+        )
+        | (
+            Curve::Helix {
+                start,
+                end,
+                center,
+                plane,
+                sweep_rad,
+            },
+            Curve::Helix {
+                start: s,
+                end: e,
+                center: c,
+                plane: p,
+                sweep_rad: w,
+            },
+        ) => {
+            same(start, s)
+                && same(end, e)
+                && same(center, c)
+                && plane == p
+                && sweep_rad.to_bits() == w.to_bits()
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How often this thread's planning took each shortcut that a test
+    /// build compares with its definition: a recorded proof (0), a goal
+    /// out of a link's reach (1), a link search settled in its corridor
+    /// (2), the most open cell read from the bits (3). The whole-plan tests
+    /// check that none of them goes untested.
+    static SHORTCUTS: std::cell::Cell<[usize; 4]> = const { std::cell::Cell::new([0; 4]) };
+}
+#[cfg(test)]
+fn shortcut_taken(which: usize) {
+    SHORTCUTS.with(|taken| {
+        let mut counts = taken.get();
+        counts[which] += 1;
+        taken.set(counts);
+    });
+}
+
+/// The exact proof's status for a stroke and its bound in degrees.
+type Proved = (EngagementStatus, f64);
+
+/// What the exact proof found for the strokes queued from `from` on, in
+/// order: each stroke as it was queued, and the proof's status and bound
+/// for it once it has been proven (`None`: only ever a premise).
+///
+/// A stroke's proof depends on the committed sweeps and on the strokes
+/// queued before it since `from`, which are its premises, and on nothing
+/// else. A pass with an unproven stroke is planned again from that stroke,
+/// and the strokes before it are queued again as they were: while the
+/// committed sweeps are the same and the queue from `from` repeats what is
+/// recorded here stroke for stroke, to the bit, a stroke's proof is the
+/// recorded one and is not computed again (#192). The record ends at the
+/// first stroke that differs.
+#[derive(Default)]
+struct ProofMemo {
+    from: usize,
+    strokes: Vec<(Curve, MoveKind, Option<Proved>)>,
+}
+
 pub(crate) struct EngagementFrontPlan {
     guides: PocketPlan,
     op: PocketOperation,
@@ -1276,6 +2037,7 @@ pub(crate) struct EngagementFrontPlan {
     finished: bool,
     report: EngagementFrontReport,
     scratch: Vec<Point>,
+    scratch_load: Vec<LoadCell>,
     /// Committed cleared sweeps, for the exact engagement proof of each pass.
     proof: Option<(EngagementScene, ClearanceCursor)>,
     /// Passes may start on a remnant too thin for a full step (see
@@ -1292,6 +2054,13 @@ pub(crate) struct EngagementFrontPlan {
     area_mm2: Option<(f64, f64)>,
     /// The paths of this level's ramp entries: slots cut to depth.
     ramp_slots: Vec<(Point, Point)>,
+    /// Proofs of the strokes queued for the pass being planned.
+    proof_memo: ProofMemo,
+    /// Where links from the current position can reach (`routed_link`),
+    /// and the start and material state of the last link search that did
+    /// not reach its goal.
+    link_reach: std::cell::RefCell<Option<LinkReach>>,
+    link_failed: std::cell::Cell<Option<(u64, usize, u64)>>,
 }
 
 /// The entry and link options of an engagement_front clearing, as `Roughing`
@@ -1430,12 +2199,16 @@ impl EngagementFrontPlan {
             finished: false,
             report,
             scratch: vec![],
+            scratch_load: vec![],
             proof: None,
             remnant: false,
             wall_pass: false,
             walls_done: false,
             area_mm2: None,
             ramp_slots: vec![],
+            proof_memo: ProofMemo::default(),
+            link_reach: std::cell::RefCell::new(None),
+            link_failed: std::cell::Cell::new(None),
         })
     }
     /// See `RoughingOperation::ramp_clearance_mm` (validated there).
@@ -1644,10 +2417,46 @@ impl EngagementFrontPlan {
             inside[g.idx(g.nx - 1, j)] = false;
         }
         let outside: Vec<bool> = inside.iter().map(|b| !b).collect();
-        let room: Vec<f32> = edt(&g, &outside).into_iter().map(|d| d as f32).collect();
         let need = self.grid_clearance(g.c);
-        let allowed: Vec<bool> = room.iter().map(|&d| d as f64 >= need).collect();
-        let dallowed = edt(&g, &allowed);
+        // Allowed centres: at least `need` from the outside, the distance
+        // taken as the layer keeps it (`Layer::room`, single precision).
+        // Reachable cells: within the cutter's reach of an allowed centre.
+        // Both are asked of the cells grown by a disk (`Near`) instead of
+        // two distance transforms of the grid; the distances themselves
+        // are worked out only if an entry needs them.
+        let stride = g.nx.div_ceil(64);
+        let pack = |cells: &[bool]| {
+            let mut bits = vec![0u64; stride * g.ny];
+            for (k, _) in cells.iter().enumerate().filter(|(_, set)| **set) {
+                bits[(k / g.nx) * stride + (k % g.nx) / 64] |= 1 << (k % g.nx % 64);
+            }
+            bits
+        };
+        let whole = ([0, g.nx - 1], [0, g.ny - 1]);
+        let grown = |cells: &[bool], cells2: Option<usize>| -> Vec<bool> {
+            match cells2 {
+                Some(d2) => {
+                    let near = Near::new(&pack(cells), stride, whole.0, whole.1, d2);
+                    (0..n).map(|k| near.at(k % g.nx, k / g.nx)).collect()
+                }
+                None => vec![false; n],
+            }
+        };
+        let too_near = cells2_where(g.c, need, |d| ((d as f32) as f64) < need);
+        let allowed: Vec<bool> = grown(&outside, too_near).iter().map(|b| !b).collect();
+        let reach_limit = self.r - 0.5 * g.c;
+        let reachable = grown(&allowed, cells2_within(g.c, reach_limit, true));
+        #[cfg(test)]
+        {
+            let room: Vec<f32> = edt(&g, &outside).into_iter().map(|d| d as f32).collect();
+            let by_distance: Vec<bool> = room.iter().map(|&d| d as f64 >= need).collect();
+            assert!(allowed == by_distance, "allowed centres");
+            let by_distance: Vec<bool> = edt(&g, &allowed)
+                .iter()
+                .map(|&d| d <= reach_limit)
+                .collect();
+            assert!(reachable == by_distance, "reachable cells");
+        }
         // Stock: whole-cell upper bounds, so no material is ever missed.
         let [snx, sny] = stock.dimensions();
         let step = stock.cell_widths_mm();
@@ -1676,8 +2485,6 @@ impl EngagementFrontPlan {
             }
             None => vec![f64::INFINITY; n],
         };
-        let reach_limit = self.r - 0.5 * g.c;
-        let reachable = dallowed.iter().map(|&d| d <= reach_limit).collect();
         self.report.engagement_grid_mm = g.c;
         self.layer = Some(Layer {
             g,
@@ -1685,7 +2492,8 @@ impl EngagementFrontPlan {
             cleared,
             allowed,
             reachable,
-            room,
+            room: std::cell::OnceCell::new(),
+            outside,
             dead: vec![false; n],
             candidates: vec![],
             thin: vec![],
@@ -1693,8 +2501,11 @@ impl EngagementFrontPlan {
             material_guard: 16. * self.op.tolerance_mm,
             journal: vec![],
             bits: MaterialBits::default(),
+            open: Default::default(),
         });
         self.layer.as_mut().unwrap().sync_bits();
+        // What was known of another layer's links is void.
+        *self.link_reach.borrow_mut() = None;
         Ok(())
     }
 
@@ -1966,6 +2777,7 @@ impl EngagementFrontPlan {
         let target = w * ds;
         let fmax = 0.6 * PI;
         let mut cells = std::mem::take(&mut self.scratch);
+        let mut near = std::mem::take(&mut self.scratch_load);
         let mut pts = vec![start];
         let mut p = start;
         let mut th = heading;
@@ -1982,12 +2794,17 @@ impl EngagementFrontPlan {
                 break;
             }
             layer.gather(p, r + ds + 2. * c, &mut cells);
+            // Every sum of this step is taken at a point `ds` from `p`.
+            step_cells(&cells, p, ds, r, c, &mut near);
             let f = |phi: f64, layer: &Layer| {
                 let q = [p[0] + ds * (th + phi).cos(), p[1] + ds * (th + phi).sin()];
                 if !layer.allowed_at(q) {
                     return f64::INFINITY;
                 }
-                area(&cells, q, r, c)
+                let a = area_of(&near, q, r, c);
+                #[cfg(test)]
+                assert_eq!(a.to_bits(), area_plain(&cells, q, r, c).to_bits());
+                a
             };
             if !engaged {
                 let a0 = f(-side * PI / 2., layer);
@@ -2035,7 +2852,15 @@ impl EngagementFrontPlan {
                 if !layer.allowed_at(q) {
                     return f64::INFINITY;
                 }
-                let (a, contact) = step_load(&cells, q, u, r, c);
+                let (a, contact) = step_load_of(&near, q, u, r, c);
+                #[cfg(test)]
+                {
+                    let plain = step_load_plain(&cells, q, u, r, c);
+                    assert_eq!(
+                        (a.to_bits(), contact.to_bits()),
+                        (plain.0.to_bits(), plain.1.to_bits())
+                    );
+                }
                 a.max(target * contact / limit)
             };
             // Turn from the far side towards the material until a step
@@ -2088,6 +2913,7 @@ impl EngagementFrontPlan {
             pts.push(p);
         }
         self.scratch = cells;
+        self.scratch_load = near;
         if cut_any {
             match end {
                 0 => self.report.pass_ends_exhausted += 1,
@@ -2130,6 +2956,25 @@ impl EngagementFrontPlan {
         let j0 = ja.min(jb).saturating_sub(m);
         let i1 = (ia.max(ib) + m).min(g.nx - 1);
         let j1 = (ja.max(jb) + m).min(g.ny - 1);
+        // A goal that no link from this start reaches within the length
+        // limit (`Layer::link_reach`, worked out when a second search from
+        // the same start over the same material fails to reach its goal:
+        // starts are tried one after another from where the cutter is).
+        // The search below would not return it; a test build runs it and
+        // checks that.
+        let key = (layer.bits.version, g.idx(ia, ja), max_len.to_bits());
+        let known_reach = |known: &LinkReach| (known.version, known.start, known.max_len) == key;
+        let out_of_reach = self.link_reach.borrow().as_ref().is_some_and(|known| {
+            known_reach(known) && known.covers([i0, i1], [j0, j1]) && known.excludes(ib, jb)
+        });
+        #[cfg(not(test))]
+        if out_of_reach {
+            return None;
+        }
+        #[cfg(test)]
+        if out_of_reach {
+            shortcut_taken(1);
+        }
         let w = Grid {
             x0: g.x0 + i0 as f64 * c,
             y0: g.y0 + j0 as f64 * c,
@@ -2137,7 +2982,6 @@ impl EngagementFrontPlan {
             nx: i1 - i0 + 1,
             ny: j1 - j0 + 1,
         };
-        let n = w.nx * w.ny;
         // Material of the window nearer than a distance, from the material
         // bits (`Near`): what `dmat[k] < t` says of the window's distance
         // transform `dmat`, which used to be computed for every link.
@@ -2161,7 +3005,7 @@ impl EngagementFrontPlan {
         };
         #[cfg(test)]
         {
-            let mat: Vec<bool> = (0..n)
+            let mat: Vec<bool> = (0..w.nx * w.ny)
                 .map(|k| layer.material(g.idx(i0 + k % w.nx, j0 + k / w.nx)))
                 .collect();
             let dmat = edt(&w, &mat);
@@ -2177,51 +3021,102 @@ impl EngagementFrontPlan {
             return None;
         }
         // Dijkstra on the window (the start may still touch the front).
-        let mut dist = vec![f64::INFINITY; n];
-        let mut prev = vec![usize::MAX; n];
-        let mut heap = std::collections::BinaryHeap::new();
-        dist[start] = 0.;
-        heap.push((std::cmp::Reverse(0u64), start));
         let limit = max_len / c;
-        while let Some((std::cmp::Reverse(d), k)) = heap.pop() {
-            let d = d as f64 / 1024.;
-            if d > dist[k] + 1e-9 {
-                continue;
+        let enter = |i: usize, j: usize, d: f64| {
+            passable(i, j) || (d < 2. * self.width / c && clear(&loose, i, j))
+        };
+        // First in a corridor around the straight way: the cells from which
+        // start and goal are together within `corridor` (in 1/1024 of a
+        // cell, by `link_distance`). If that search ends by taking the goal
+        // from the queue at a distance within the corridor's and the
+        // link's limits, it is the whole window's search as far as the
+        // link goes: the same distance of the goal and the same cells
+        // behind it.
+        //
+        // Why: call a queued cell light when its distance in the queue plus
+        // its `link_distance` to the goal is within `corridor`, and heavy
+        // otherwise. A cell is queued at least `link_distance` beyond any
+        // cell it descends from, so (1) a cell outside the corridor is
+        // heavy, as is everything reached through a heavy cell; (2) of two
+        // distances for one cell, the smaller is light if the larger is,
+        // so a heavy distance never replaces a light one nor keeps one
+        // out. The queue hands cells out in one fixed order whatever else
+        // it holds (`LinkQueue`), so the light cells are taken in the same
+        // order, find the same distances and are reached from the same
+        // cells in both searches; they differ in heavy cells only. A goal
+        // taken at a light distance within the link's limit ends both
+        // searches there: an earlier end would be a goal taken at a
+        // smaller, also light, distance, or a distance beyond the limit
+        // taken before a smaller one. Otherwise the whole window is
+        // searched.
+        let size = [w.nx, w.ny];
+        let (ga, gb) = (start % w.nx, start / w.nx);
+        let (ha, hb) = (goal % w.nx, goal / w.nx);
+        let corridor = link_distance(ga.abs_diff(ha), gb.abs_diff(hb)) * 5 / 4 + 12 * 1024;
+        let inside = |i: usize, j: usize| {
+            link_distance(i.abs_diff(ga), j.abs_diff(gb))
+                + link_distance(i.abs_diff(ha), j.abs_diff(hb))
+                <= corridor
+        };
+        let narrow = link_search(
+            LinkBuckets::default(),
+            size,
+            start,
+            goal,
+            limit,
+            |i, j, d| inside(i, j) && enter(i, j, d),
+        );
+        let settled = narrow
+            .2
+            .is_some_and(|d| d <= limit && d * 1024. <= corridor as f64);
+        #[cfg(test)]
+        if settled {
+            shortcut_taken(2);
+        }
+        let (dist, prev, _) = if settled {
+            narrow
+        } else {
+            link_search(LinkBuckets::default(), size, start, goal, limit, enter)
+        };
+        #[cfg(test)]
+        {
+            // The definition: the whole window, from a heap.
+            let heap = std::collections::BinaryHeap::new();
+            let (d, p, _) = link_search(heap, size, start, goal, limit, enter);
+            assert_eq!(dist[goal].to_bits(), d[goal].to_bits());
+            if dist[goal].is_finite() {
+                let (mut a, mut b) = (goal, goal);
+                while a != start {
+                    (a, b) = (prev[a], p[b]);
+                    assert_eq!(a, b, "the cells behind the goal");
+                }
             }
-            if k == goal || d > limit {
-                break;
+            if !settled {
+                assert!(prev == p);
             }
-            let (i, j) = ((k % w.nx) as i64, (k / w.nx) as i64);
-            for (di, dj, step) in [
-                (1, 0, 1.),
-                (-1, 0, 1.),
-                (0, 1, 1.),
-                (0, -1, 1.),
-                (1, 1, std::f64::consts::SQRT_2),
-                (1, -1, std::f64::consts::SQRT_2),
-                (-1, 1, std::f64::consts::SQRT_2),
-                (-1, -1, std::f64::consts::SQRT_2),
-            ] {
-                let (ni, nj) = (i + di, j + dj);
-                if ni < 0 || nj < 0 || ni >= w.nx as i64 || nj >= w.ny as i64 {
-                    continue;
+        }
+        #[cfg(test)]
+        assert!(!out_of_reach || !dist[goal].is_finite() || dist[goal] * c > max_len);
+        if !dist[goal].is_finite() || dist[goal] * c > max_len {
+            // The second such search from this start in a row: the goals
+            // tried next are asked of the reach first. Its box holds this
+            // window and those of goals some way around this one.
+            if self.link_failed.replace(Some(key)) == Some(key) {
+                let mut known = self.link_reach.borrow_mut();
+                if !known
+                    .as_ref()
+                    .is_some_and(|k| known_reach(k) && k.covers([i0, i1], [j0, j1]))
+                {
+                    const AROUND: usize = 160;
+                    *known = Some(layer.link_reach(
+                        (ia, ja),
+                        r - 0.5 * self.width,
+                        (2. * self.width / c).ceil() as usize + 2,
+                        [i0.saturating_sub(AROUND), (i1 + AROUND).min(g.nx - 1)],
+                        [j0.saturating_sub(AROUND), (j1 + AROUND).min(g.ny - 1)],
+                        max_len,
+                    ));
                 }
-                let (ni, nj) = (ni as usize, nj as usize);
-                let nk = w.idx(ni, nj);
-                // A cell reached no sooner than before is left alone: asked
-                // first, since most neighbours are (the answer is the same
-                // in either order).
-                let nd = d + step;
-                if nd >= dist[nk] || nd.is_nan() {
-                    continue;
-                }
-                let near_start = d < 2. * self.width / c;
-                if !passable(ni, nj) && !(near_start && clear(&loose, ni, nj)) {
-                    continue;
-                }
-                dist[nk] = nd;
-                prev[nk] = k;
-                heap.push((std::cmp::Reverse((nd * 1024.) as u64), nk));
             }
         }
         if !dist[goal].is_finite() || dist[goal] * c > max_len {
@@ -2907,6 +3802,16 @@ impl EngagementFrontPlan {
             ),
         };
         let (rebuild, sweeps) = stock.committed_clearance_since(&mut cursor, tolerance, cancel)?;
+        // Recorded proofs stand only for the same committed sweeps and the
+        // same first queued stroke.
+        if rebuild || !sweeps.is_empty() || self.proof_memo.from != from {
+            self.proof_memo = ProofMemo {
+                from,
+                strokes: vec![],
+            };
+        }
+        // Whether the queue has repeated the record so far.
+        let mut recorded = true;
         if rebuild {
             scene = EngagementScene::new_with_cancel(stock.spec().clone(), sweeps, cancel)?;
         } else {
@@ -2927,6 +3832,20 @@ impl EngagementFrontPlan {
             let index = next;
             next += 1;
             let (curve, kind) = (self.pending[index].0.clone(), self.pending[index].1);
+            // This stroke's recorded proof, if the queue still repeats the
+            // record; otherwise the record ends here and is written anew.
+            let slot = index - from;
+            let known = match self.proof_memo.strokes.get(slot) {
+                Some((c, k, result)) if recorded && same_curve(c, &curve) && *k == kind => *result,
+                _ => {
+                    recorded = false;
+                    if !confined {
+                        self.proof_memo.strokes.truncate(slot);
+                        self.proof_memo.strokes.push((curve.clone(), kind, None));
+                    }
+                    None
+                }
+            };
             let flat = curve.start()[2] == curve.end()[2]
                 && matches!(
                     curve,
@@ -2948,13 +3867,41 @@ impl EngagementFrontPlan {
                 curve: curve.clone(),
             };
             if index >= unproven_from && matches!(kind, MoveKind::Cut | MoveKind::Link) {
-                let report = scene.check_leading(
-                    &motion,
-                    self.r,
-                    limit,
-                    EngagementOptions::default(),
-                    cancel,
-                )?;
+                let check = || {
+                    scene
+                        .check_leading(&motion, self.r, limit, EngagementOptions::default(), cancel)
+                        .map(|report| (report.status, report.upper_angle_deg))
+                };
+                let (status, upper_angle_deg) = match known {
+                    Some(result) => {
+                        #[cfg(test)]
+                        {
+                            shortcut_taken(0);
+                            let again = check()?;
+                            assert_eq!(
+                                (result.0, result.1.to_bits()),
+                                (again.0, again.1.to_bits()),
+                                "recorded proof of {curve:?}"
+                            );
+                        }
+                        result
+                    }
+                    None => {
+                        let result = check()?;
+                        if !confined {
+                            self.proof_memo.strokes[slot].2 = Some(result);
+                        }
+                        result
+                    }
+                };
+                struct Proof {
+                    status: EngagementStatus,
+                    upper_angle_deg: f64,
+                }
+                let report = Proof {
+                    status,
+                    upper_angle_deg,
+                };
                 // An unproven straight stroke is halved until the unproven
                 // part is no longer than an eighth of the cutter radius, so only the
                 // stretch that is not proven becomes entry motion.
@@ -2970,6 +3917,8 @@ impl EngagementFrontPlan {
                         .insert(index + 1, (Curve::Line { start: middle, end }, kind, feed));
                     halved.insert(index + 1 - from, true);
                     next = index;
+                    // The queue no longer repeats the record.
+                    recorded = false;
                     continue;
                 }
                 if matches!(report.status, EngagementStatus::Unresolved) && confined {
@@ -3025,6 +3974,11 @@ impl EngagementFrontPlan {
                     }
                 }
             }
+        }
+        if confined {
+            // Confined strokes were changed in the queue; nothing recorded
+            // for this pass is used again.
+            self.proof_memo.strokes.clear();
         }
         // Planned strokes are premises only until the stock commits them.
         scene.restore(mark);
@@ -3181,15 +4135,7 @@ impl EngagementFrontPlan {
         if layer.thin.is_empty() {
             return false;
         }
-        let mut best: Option<(f64, usize)> = None;
-        for k in 0..layer.top.len() {
-            if layer.allowed[k] && !layer.dead[k] && layer.material(k) {
-                let room = layer.room[k] as f64 - need;
-                if best.is_none_or(|(b, _)| room > b) {
-                    best = Some((room, k));
-                }
-            }
-        }
+        let best = layer.most_open(need);
         let Some((_, k)) = best else {
             return false;
         };
@@ -3206,6 +4152,7 @@ impl EngagementFrontPlan {
             for jj in j.saturating_sub(3)..=(j + 3).min(g.ny - 1) {
                 for ii in i.saturating_sub(3)..=(i + 3).min(g.nx - 1) {
                     layer.dead[g.idx(ii, jj)] = false;
+                    layer.reopened(g.idx(ii, jj));
                 }
             }
             layer.candidates.push(g.idx(i, j));
@@ -3328,15 +4275,7 @@ impl EngagementFrontPlan {
         let layer = self.layer.as_ref().unwrap();
         let c = layer.g.c;
         let need = self.grid_clearance(c);
-        let mut best: Option<(f64, usize)> = None;
-        for k in 0..layer.top.len() {
-            if layer.allowed[k] && !layer.dead[k] && layer.material(k) {
-                let room = layer.room[k] as f64 - need;
-                if best.is_none_or(|(b, _)| room > b) {
-                    best = Some((room, k));
-                }
-            }
-        }
+        let best = layer.most_open(need);
         let Some((_, k)) = best else {
             return Ok(false);
         };
@@ -3584,15 +4523,7 @@ impl EngagementFrontPlan {
             let layer = self.layer.as_ref().unwrap();
             let c = layer.g.c;
             let need = self.grid_clearance(c);
-            let mut best: Option<(f64, usize)> = None;
-            for k in 0..layer.top.len() {
-                if layer.allowed[k] && !layer.dead[k] && layer.material(k) {
-                    let room = layer.room[k] as f64 - need;
-                    if best.is_none_or(|(b, _)| room > b) {
-                        best = Some((room, k));
-                    }
-                }
-            }
+            let best = layer.most_open(need);
             let Some((room, k)) = best else {
                 return Ok(false);
             };
@@ -3889,7 +4820,8 @@ mod tests {
             cleared: vec![f64::INFINITY; n],
             allowed: vec![true; n],
             reachable: vec![true; n],
-            room: vec![100.; n],
+            room: std::cell::OnceCell::from(vec![100.; n]),
+            outside: vec![],
             dead: vec![false; n],
             candidates: vec![],
             thin: vec![],
@@ -3897,6 +4829,7 @@ mod tests {
             material_guard: 1e-4,
             journal: vec![],
             bits: MaterialBits::default(),
+            open: Default::default(),
         };
         layer.sync_bits();
         let (p, r) = ([8., 8.], 3.);
@@ -3944,7 +4877,8 @@ mod tests {
                 .collect(),
             allowed: (0..n).map(|k| y(k) <= 5.).collect(),
             reachable,
-            room: vec![100.; n],
+            room: std::cell::OnceCell::from(vec![100.; n]),
+            outside: vec![],
             dead: vec![false; n],
             candidates: vec![],
             thin: vec![],
@@ -3952,6 +4886,7 @@ mod tests {
             material_guard: 1e-4,
             journal: vec![],
             bits: MaterialBits::default(),
+            open: Default::default(),
         };
         layer.sync_bits();
         let (p, q) = ([8., 4.9], [8.9, 4.9]);
@@ -3979,7 +4914,8 @@ mod tests {
             cleared: vec![f64::INFINITY; n],
             allowed: vec![true; n],
             reachable: (0..n).map(reachable).collect(),
-            room: vec![100.; n],
+            room: std::cell::OnceCell::from(vec![100.; n]),
+            outside: vec![],
             dead: vec![false; n],
             candidates: vec![],
             thin: vec![],
@@ -3987,6 +4923,7 @@ mod tests {
             material_guard: 1e-4,
             journal: vec![],
             bits: MaterialBits::default(),
+            open: Default::default(),
         };
         layer.sync_bits();
         layer
@@ -4031,6 +4968,11 @@ mod tests {
             );
             let material = layer.material(k);
             assert_eq!(layer.bits.any[w] >> bit & 1 == 1, material, "cell {k}");
+            assert_eq!(
+                layer.bits.uncut[w] >> bit & 1 == 1,
+                layer.cleared[k] > layer.z,
+                "cell {k}"
+            );
             assert_eq!(
                 layer.bits.reach[w] >> bit & 1 == 1,
                 material && layer.reachable[k],
@@ -4291,8 +5233,8 @@ mod tests {
     }
 
     /// A plate with two bosses and a frame, in the open block's stock:
-    /// links routed around the bosses, passes planned again, candidate
-    /// refreshes.
+    /// links routed around the bosses, goals out of a link's reach, passes
+    /// planned again, candidate refreshes.
     #[test]
     fn plate_with_bosses_plan_matches_the_scans_at_every_decision() {
         let mut m: serde_json::Value = serde_json::from_str(include_str!(
@@ -4315,6 +5257,9 @@ mod tests {
         op["entry"]["kind"] = "stock_edge_or_helix".into();
         let (motions, report) = plan_checked(&m.to_string(), 1500);
         let clearing = &report["layers"][0]["clearing"];
+        // Every shortcut was taken, and so compared with its definition.
+        let taken = SHORTCUTS.with(|taken| taken.get());
+        assert!(taken.iter().all(|&n| n >= 3), "{taken:?}");
         let count = |name: &str| clearing[name].as_u64().unwrap();
         assert!(count("passes") >= 20, "{clearing}");
         assert!(count("routed_links") >= 1, "{clearing}");
@@ -4461,5 +5406,203 @@ mod tests {
                 cells.truncate(g.nx * g.ny);
             }
         }
+    }
+
+    /// The bounded shortest-path set holds exactly the cells whose shortest
+    /// path over set cells is within the bound (distances by relaxing every
+    /// cell until nothing changes).
+    #[test]
+    fn cells_within_matches_relaxed_distances() {
+        let mut random = Random(11);
+        for (cols, rows, density, bound) in [
+            (64, 9, 0.6, 7300),
+            (128, 40, 0.7, 31700),
+            (192, 30, 0.8, 55100),
+            (64, 3, 0.9, 12200),
+        ] {
+            let words = cols / 64;
+            for _ in 0..12 {
+                let mut pass = vec![0u64; words * rows];
+                for j in 0..rows {
+                    for i in 0..cols {
+                        if random.next() < density {
+                            pass[j * words + i / 64] |= 1 << (i % 64);
+                        }
+                    }
+                }
+                let start = (random.below(cols), random.below(rows));
+                pass[start.1 * words + start.0 / 64] |= 1 << (start.0 % 64);
+                let set = |bits: &[u64], i: usize, j: usize| {
+                    bits[j * words + i / 64] >> (i % 64) & 1 == 1
+                };
+                let mut dist = vec![u64::MAX / 2; cols * rows];
+                dist[start.1 * cols + start.0] = 0;
+                loop {
+                    let mut changed = false;
+                    for j in 0..rows {
+                        for i in 0..cols {
+                            if !set(&pass, i, j) {
+                                continue;
+                            }
+                            for dj in -1i64..=1 {
+                                for di in -1i64..=1 {
+                                    let (a, b) = (i as i64 + di, j as i64 + dj);
+                                    if (di, dj) == (0, 0)
+                                        || a < 0
+                                        || b < 0
+                                        || a >= cols as i64
+                                        || b >= rows as i64
+                                    {
+                                        continue;
+                                    }
+                                    let step = if di != 0 && dj != 0 {
+                                        LINK_DIAGONAL
+                                    } else {
+                                        1024
+                                    };
+                                    let d = dist[b as usize * cols + a as usize] + step;
+                                    if d < dist[j * cols + i] {
+                                        dist[j * cols + i] = d;
+                                        changed = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !changed {
+                        break;
+                    }
+                }
+                let within = cells_within(&pass, words, start, bound);
+                let mut inside = 0;
+                for j in 0..rows {
+                    for i in 0..cols {
+                        let d = dist[j * cols + i];
+                        assert_eq!(set(&within, i, j), d <= bound, "{i} {j}: {d}");
+                        inside += usize::from(d <= bound);
+                    }
+                }
+                assert!(inside >= 1);
+                // With nothing in the way, the distance is `link_distance`.
+                let open = vec![u64::MAX; words * rows];
+                let within = cells_within(&open, words, start, bound);
+                for j in 0..rows {
+                    for i in 0..cols {
+                        let d = link_distance(i.abs_diff(start.0), j.abs_diff(start.1));
+                        assert_eq!(set(&within, i, j), d <= bound);
+                    }
+                }
+            }
+        }
+    }
+
+    /// A run of ones added at once is the ones added in turn, to the bit:
+    /// from sums with a fraction just under and over powers of two too.
+    #[test]
+    fn add_ones_matches_adding_one_at_a_time() {
+        let mut random = Random(5);
+        for round in 0..4000 {
+            let x = match round % 5 {
+                0 => 0.,
+                1 => random.next(),
+                2 => (1u64 << random.below(13)) as f64 - random.next() * 3.,
+                3 => random.next() * 5000.,
+                _ => (random.below(4096) as f64) + random.next() * 1e-9,
+            }
+            .max(0.);
+            let n = random.below(3000);
+            let mut want = x;
+            for _ in 0..n {
+                want += 1.;
+            }
+            assert_eq!(add_ones(x, n).to_bits(), want.to_bits(), "{x} + {n}");
+        }
+    }
+
+    /// The sums over a step's cells are the formulas' sums over all the
+    /// gathered cells, to the bit, for every centre a step length from the
+    /// point the cells were prepared for.
+    #[test]
+    fn step_sums_match_their_formulas() {
+        let mut random = Random(27);
+        for (r, c, ds) in [
+            (1., 0.05, 0.15),
+            (6., 1. / 6., 0.72),
+            (6., 0.25, 0.9),
+            (5., 0.25, 0.75),
+        ] {
+            let g = Grid {
+                x0: -2. * r,
+                y0: -2. * r,
+                c,
+                nx: (4. * r / c) as usize + 1,
+                ny: (4. * r / c) as usize + 1,
+            };
+            let all: Vec<Point> = (0..g.nx * g.ny).map(|k| g.center(k)).collect();
+            let (mut runs, mut near) = (0, vec![]);
+            for _ in 0..60 {
+                let p = [random.next() - 0.5, random.next() - 0.5];
+                // Material on one side of a line through the cutter.
+                let (a, cut) = (std::f64::consts::TAU * random.next(), random.next() * r);
+                let cells: Vec<Point> = all
+                    .iter()
+                    .copied()
+                    .filter(|q| (q[0] - p[0]) * a.cos() + (q[1] - p[1]) * a.sin() > cut - r)
+                    .filter(|q| (q[0] - p[0]).hypot(q[1] - p[1]) <= r + ds + 2. * c)
+                    .collect();
+                step_cells(&cells, p, ds, r, c, &mut near);
+                runs += near
+                    .iter()
+                    .filter(|cell| matches!(cell, LoadCell::Full(n) if *n > 1))
+                    .count();
+                for _ in 0..26 {
+                    let t = std::f64::consts::TAU * random.next();
+                    let (u, q) = (
+                        [t.cos(), t.sin()],
+                        [p[0] + ds * t.cos(), p[1] + ds * t.sin()],
+                    );
+                    assert_eq!(
+                        area_of(&near, q, r, c).to_bits(),
+                        area_plain(&cells, q, r, c).to_bits()
+                    );
+                    let (got, want) = (
+                        step_load_of(&near, q, u, r, c),
+                        step_load_plain(&cells, q, u, r, c),
+                    );
+                    assert_eq!(
+                        (got.0.to_bits(), got.1.to_bits()),
+                        (want.0.to_bits(), want.1.to_bits())
+                    );
+                }
+            }
+            assert!(runs > 100, "{runs}");
+        }
+    }
+
+    #[test]
+    fn floor_and_ceil_match_the_library() {
+        let mut random = Random(3);
+        let mut values = vec![
+            0.,
+            -0.,
+            0.5,
+            -0.5,
+            1.,
+            -1.,
+            4e15,
+            -4e15,
+            1e300,
+            f64::INFINITY,
+        ];
+        for _ in 0..20000 {
+            let scale = [1., 1e3, 1e9, 3.9e15, 1e-9][random.below(5)];
+            let x = (random.next() - 0.5) * 2. * scale;
+            values.extend([x, x.round(), x.round() + 0.5, x.round() - 1e-9]);
+        }
+        for x in values {
+            assert_eq!(floor(x).to_bits(), x.floor().to_bits(), "floor {x}");
+            assert_eq!(ceil(x).to_bits(), x.ceil().to_bits(), "ceil {x}");
+        }
+        assert!(floor(f64::NAN).is_nan() && ceil(f64::NAN).is_nan());
     }
 }
