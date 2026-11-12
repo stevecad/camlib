@@ -350,13 +350,144 @@ fn half_planes(polygon: &[[f64; 2]]) -> Vec<Option<([f64; 2], f64)>> {
 /// {(p, y): -s <= y <= 0, n_i·p >= c_i + rate_i·(-y) for every side}. Its
 /// vertices are the face polygon's (y = 0), the bottom polygon's (y = -s)
 /// and, where a side runs out between the two (its neighbours meet below
-/// the face), the point where three side planes meet: without those the
-/// hull of face and bottom is thinner than the body. Each pair of side
-/// planes meets in a line; the part of it every other side keeps is an edge
-/// of the body, and its ends strictly between the face and the bottom are
-/// those vertices. None when nothing is left of the bottom.
+/// the face), the point where it does: without those the hull of face and
+/// bottom is thinner than the body. None when nothing is left of the
+/// bottom.
+///
+/// The section at each depth is the convex polygon of the receded sides.
+/// Every side has length at the face, and a side of a convex solid is a
+/// convex face, present over one range of depths: a side that has run out
+/// never returns. So the sides are followed down from the face: between
+/// two events each side's ends move in straight lines (where it meets its
+/// neighbours), its length changes linearly, and the next event is the
+/// first side to reach no length, at the point its neighbours meet from
+/// then on. O(n²) for n sides.
 fn tapered_vertices(polygon: &[[f64; 2]], rate: &[f64], s: f64) -> Option<Vec<[f64; 3]>> {
     let bottom = erode_convex_by(polygon, &rate.iter().map(|k| s * k).collect::<Vec<_>>())?;
+    let mut vertices: Vec<[f64; 3]> = polygon
+        .iter()
+        .map(|p| [p[0], p[1], 0.])
+        .chain(bottom.iter().map(|p| [p[0], p[1], -s]))
+        .collect();
+    let scale = polygon
+        .iter()
+        .fold(s, |m, p| m.max(p[0].abs()).max(p[1].abs()));
+    let tol = 1e-9 * scale;
+    // A side: inward normal, offset, rate, and its direction along the
+    // outline.
+    struct Side {
+        n: [f64; 2],
+        c: f64,
+        k: f64,
+        d: [f64; 2],
+    }
+    // A side continuing the one before it on the same line (a straight
+    // edge running into the first chord of a circumscribed arc) is one
+    // side with it; of two rates on one line the larger governs below the
+    // face.
+    let same_line = |a: &Side, b: &Side| {
+        (a.n[0] * b.n[1] - a.n[1] * b.n[0]).abs() < 1e-9
+            && a.n[0] * b.n[0] + a.n[1] * b.n[1] > 0.
+            && (a.c - b.c).abs() <= tol
+    };
+    let mut sides: Vec<Side> = vec![];
+    let count = polygon.len();
+    for (i, (h, k)) in half_planes(polygon).into_iter().zip(rate).enumerate() {
+        let Some((n, c)) = h else { continue };
+        let (a, b) = (polygon[i], polygon[(i + 1) % count]);
+        let len = (b[0] - a[0]).hypot(b[1] - a[1]);
+        let side = Side {
+            n,
+            c,
+            k: *k,
+            d: [(b[0] - a[0]) / len, (b[1] - a[1]) / len],
+        };
+        match sides.last_mut() {
+            Some(last) if same_line(last, &side) => last.k = last.k.max(side.k),
+            _ => sides.push(side),
+        }
+    }
+    if sides.len() > 1 && same_line(&sides[sides.len() - 1], &sides[0]) {
+        let last = sides.pop().unwrap();
+        sides[0].k = sides[0].k.max(last.k);
+    }
+    let m = sides.len();
+    if m < 3 {
+        return Some(vertices);
+    }
+    // Where sides a and b meet at depth t: p(t) = p0 + p1 t.
+    let corner = |a: usize, b: usize| -> Option<([f64; 2], [f64; 2])> {
+        let (a, b) = (&sides[a], &sides[b]);
+        let det = a.n[0] * b.n[1] - a.n[1] * b.n[0];
+        (det.abs() >= 1e-12).then(|| {
+            let solve = |r: f64, q: f64| {
+                [
+                    (r * b.n[1] - a.n[1] * q) / det,
+                    (a.n[0] * q - r * b.n[0]) / det,
+                ]
+            };
+            (solve(a.c, b.c), solve(a.k, b.k))
+        })
+    };
+    // The depth (not above `now`) at which side i runs out between its
+    // neighbours a and b, and the point where it does.
+    let runs_out = |a: usize, i: usize, b: usize, now: f64| -> Option<(f64, [f64; 2])> {
+        let ((a0, a1), (b0, b1)) = (corner(a, i)?, corner(i, b)?);
+        let d = sides[i].d;
+        let l0 = d[0] * (b0[0] - a0[0]) + d[1] * (b0[1] - a0[1]);
+        let l1 = d[0] * (b1[0] - a1[0]) + d[1] * (b1[1] - a1[1]);
+        (l1 < -1e-12).then(|| {
+            let t = (-l0 / l1).max(now);
+            (t, [a0[0] + a1[0] * t, a0[1] + a1[1] * t])
+        })
+    };
+    let mut prev: Vec<usize> = (0..m).map(|i| (i + m - 1) % m).collect();
+    let mut next: Vec<usize> = (0..m).map(|i| (i + 1) % m).collect();
+    let mut event: Vec<Option<(f64, [f64; 2])>> =
+        (0..m).map(|i| runs_out(prev[i], i, next[i], 0.)).collect();
+    let mut inner: Vec<[f64; 3]> = vec![];
+    let mut left = m;
+    while left >= 3 {
+        let Some((i, (t, p))) = event
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| e.map(|e| (i, e)))
+            .min_by(|a, b| a.1.0.total_cmp(&b.1.0))
+        else {
+            break;
+        };
+        if t >= s * (1. - 1e-12) {
+            break;
+        }
+        let point = [p[0], p[1], -t];
+        if t > 0.
+            && !inner
+                .iter()
+                .any(|q| (0..3).all(|k| (q[k] - point[k]).abs() <= tol))
+        {
+            inner.push(point);
+        }
+        let (a, b) = (prev[i], next[i]);
+        next[a] = b;
+        prev[b] = a;
+        event[i] = None;
+        left -= 1;
+        if left >= 3 {
+            event[a] = runs_out(prev[a], a, b, t);
+            event[b] = runs_out(a, b, next[b], t);
+        }
+    }
+    vertices.extend(inner);
+    Some(vertices)
+}
+
+/// `tapered_vertices` by another route, for the tests: each pair of side
+/// planes meets in a line; the part of it every other side keeps is an edge
+/// of the body, and its ends strictly between the face and the bottom are
+/// vertices. O(n³), and it repeats a vertex many sides share.
+#[cfg(test)]
+fn tapered_vertices_by_lines(polygon: &[[f64; 2]], rate: &[f64], s: f64) -> Vec<[f64; 3]> {
+    let bottom = erode_convex_by(polygon, &rate.iter().map(|k| s * k).collect::<Vec<_>>()).unwrap();
     let mut vertices: Vec<[f64; 3]> = polygon
         .iter()
         .map(|p| [p[0], p[1], 0.])
@@ -370,22 +501,18 @@ fn tapered_vertices(polygon: &[[f64; 2]], rate: &[f64], s: f64) -> Option<Vec<[f
     let scale = polygon
         .iter()
         .fold(s, |m, p| m.max(p[0].abs()).max(p[1].abs()));
-    // A point within `tol` of the body is kept: the hull only grows.
     let tol = 1e-9 * scale;
-    let mut inner = vec![];
     for (i, (ni, ci, ki)) in planes.iter().enumerate() {
         for (nj, cj, kj) in &planes[i + 1..] {
             let det = ni[0] * nj[1] - ni[1] * nj[0];
             if det.abs() < 1e-9 {
                 continue;
             }
-            // The planes' line: p(t) = a + b t at depth t below the face.
             let solve =
                 |r: f64, q: f64| [(r * nj[1] - ni[1] * q) / det, (ni[0] * q - r * nj[0]) / det];
             let (a, b) = (solve(*ci, *cj), solve(*ki, *kj));
             let (mut lo, mut hi) = (0., s);
             for (nk, ck, kk) in &planes {
-                // n_k·p(t) - c_k - k_k t >= -tol.
                 let g0 = nk[0] * a[0] + nk[1] * a[1] - ck + tol;
                 let g1 = nk[0] * b[0] + nk[1] * b[1] - kk;
                 if g1.abs() <= 1e-12 {
@@ -397,28 +524,18 @@ fn tapered_vertices(polygon: &[[f64; 2]], rate: &[f64], s: f64) -> Option<Vec<[f
                 } else {
                     hi = f64::min(hi, -g0 / g1);
                 }
-                if lo > hi {
-                    break;
-                }
             }
             if lo > hi {
                 continue;
             }
             for t in [lo, hi] {
                 if t > 0. && t < s {
-                    inner.push([a[0] + b[0] * t, a[1] + b[1] * t, -t]);
+                    vertices.push([a[0] + b[0] * t, a[1] + b[1] * t, -t]);
                 }
             }
         }
     }
-    inner.sort_by(|p, q| {
-        p[0].total_cmp(&q[0])
-            .then(p[1].total_cmp(&q[1]))
-            .then(p[2].total_cmp(&q[2]))
-    });
-    inner.dedup_by(|p, q| (0..3).all(|k| (p[k] - q[k]).abs() <= tol));
-    vertices.extend(inner);
-    Some(vertices)
+    vertices
 }
 
 /// Convex 3D pieces (x, z, y) of a body.
@@ -536,6 +653,7 @@ pub fn body(tool: &TurningTool) -> Result<Body, String> {
             let scale = polygon
                 .iter()
                 .fold(s, |m, p| m.max(p[0].abs()).max(p[1].abs()));
+            let classes: Vec<Option<BladeFlank>> = (0..polygon.len()).map(flank_of).collect();
             for flank in [
                 BladeFlank::Front,
                 BladeFlank::Side(0),
@@ -546,7 +664,7 @@ pub fn body(tool: &TurningTool) -> Result<Body, String> {
                     .iter()
                     .filter(|v| {
                         (0..polygon.len()).any(|i| {
-                            flank_of(i) == Some(flank)
+                            classes[i] == Some(flank)
                                 && planes[i].is_some_and(|(n, c)| {
                                     (n[0] * v[0] + n[1] * v[1] - c + rate[i] * v[2]).abs()
                                         <= 1e-7 * scale
@@ -1034,6 +1152,97 @@ mod tests {
         }
         // Some lie strictly between the face and the bottom.
         assert!(truth.iter().any(|v| v[2] < -0.1 && v[2] > -s + 0.1));
+    }
+
+    /// The body's vertices followed down from the face against the same
+    /// body from every pair of side planes (another construction): the same
+    /// solid, for whole ISO inserts and blades with a rate per flank, and
+    /// without a vertex repeated for every side that runs out at it.
+    #[test]
+    fn the_tapered_body_agrees_with_its_construction_from_plane_pairs() {
+        let tan = |deg: f64| f64::to_radians(deg).tan();
+        let outline = |code: &str| {
+            let (insert, rn) = Insert::iso_code(code, 95.).unwrap();
+            tool(insert, rn, TurnSide::Outer, body(3., 7., 0., 0., 5.))
+                .shape()
+                .unwrap()
+                .insert
+        };
+        let blade_outline = blade(3., 10., [3., 5.]).shape().unwrap().insert;
+        // A blade's rates by flank, as `body` assigns them.
+        let blade_rates = |front: f64, sides: [f64; 2]| -> Vec<f64> {
+            let least = front.min(sides[0]).min(sides[1]);
+            half_planes(&blade_outline)
+                .iter()
+                .map(|h| {
+                    let n = h.unwrap().0;
+                    tan(if n[0] > 1. - 1e-12 {
+                        front
+                    } else if n[1] > 1. - 1e-12 {
+                        sides[0]
+                    } else if -n[1] > 1. - 1e-12 {
+                        sides[1]
+                    } else {
+                        least
+                    })
+                })
+                .collect()
+        };
+        // A case: its name, outline, rate per side and thickness.
+        type Case = (String, Vec<[f64; 2]>, Vec<f64>, f64);
+        let mut cases: Vec<Case> = vec![];
+        for code in [
+            "CCMT09T304",
+            "VCMT160404",
+            "TPGN160304",
+            "RCMT10T3M0",
+            "CNMG120408",
+        ] {
+            let p = outline(code);
+            for (deg, s) in [(7., 3.97), (11., 4.76), (0., 4.76), (20., 2.)] {
+                cases.push((
+                    format!("{code} {deg} {s}"),
+                    p.clone(),
+                    vec![tan(deg); p.len()],
+                    s,
+                ));
+            }
+        }
+        for (front, sides, s) in [
+            (10., [3., 5.], 3.),
+            (0., [0., 15.], 3.),
+            (20., [15., 12.], 3.),
+            (3., [10., 10.], 4.),
+            (7., [7., 7.], 2.),
+        ] {
+            cases.push((
+                format!("blade {front} {sides:?} {s}"),
+                blade_outline.clone(),
+                blade_rates(front, sides),
+                s,
+            ));
+        }
+        let directions: Vec<[f64; 3]> = (0..3000)
+            .map(|k| {
+                let z = 1. - 2. * (k as f64 + 0.5) / 3000.;
+                let a = k as f64 * 2.399963229728653;
+                let r = (1. - z * z).sqrt();
+                [r * a.cos(), r * a.sin(), z]
+            })
+            .collect();
+        let mut inner = 0;
+        for (name, polygon, rate, s) in &cases {
+            let got = tapered_vertices(polygon, rate, *s).unwrap();
+            let oracle = tapered_vertices_by_lines(polygon, rate, *s);
+            for n in &directions {
+                let (g, o) = (support(&got, *n), support(&oracle, *n));
+                assert!((g - o).abs() < 1e-7, "{name}: {n:?}: {g} {o}");
+            }
+            // At most two vertices for a side that runs out.
+            assert!(got.len() <= 4 * polygon.len(), "{name}: {}", got.len());
+            inner += got.iter().filter(|v| v[2] < 0. && v[2] > -s).count();
+        }
+        assert!(inner > 20);
     }
 
     #[test]
