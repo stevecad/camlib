@@ -572,6 +572,9 @@ pub(crate) struct ToolGeom {
     back: Option<Vec<super::tool::BackSide>>,
     /// The insert's exact straight sides (relative to the nose center).
     edges: Vec<[[f64; 2]; 2]>,
+    /// A solid boring bar (#114): its catalogue minimum bore diameter and
+    /// maximum bore depth, premises every move is held to.
+    solid_bar: Option<[f64; 2]>,
 }
 
 /// How far a flank's images (the one the checks use, and the radial one)
@@ -726,6 +729,11 @@ pub(crate) fn tool_geometry(
         insert_body,
         holder_body,
         flanks,
+        solid_bar: t
+            .body
+            .as_ref()
+            .and_then(|b| b.solid_bar.as_ref())
+            .map(|h| [h.min_bore_diameter_mm, h.max_bore_depth_mm]),
         tip,
         axial,
         inner: boring || is_drill,
@@ -848,6 +856,38 @@ impl Planner<'_> {
         };
         let mut after = self.stock.clone();
         let mut touches = false;
+        // A solid boring bar's catalogue premises (#114). Its maximum bore
+        // depth: the head's front end goes no deeper than that behind the
+        // front of the stock that is left.
+        if let Some([_, reach]) = tool.solid_bar {
+            let cells = self.stock.cells();
+            let front = (0..cells.len())
+                .rev()
+                .find(|&i| cells[i].outer.upper_mm > cells[i].inner.lower_mm)
+                .map(|i| self.stock.bin(i)[1]);
+            let end = tool
+                .insert
+                .iter()
+                .flatten()
+                .map(|p| p[0])
+                .fold(f64::INFINITY, f64::min);
+            let deepest = steps
+                .iter()
+                .flat_map(|step| &step.points)
+                .map(|p| p[0] + end)
+                .fold(f64::INFINITY, f64::min);
+            if let Some(front) = front
+                && front - deepest > reach + self.guard
+            {
+                return Err(format!(
+                    "{op}: the solid boring bar {:?} would reach {:.3} mm into the bore (its head's end at z {deepest:.3}, the stock's front at z {front:.3}) moving to r {:.3}, z {:.3}, beyond its declared maximum bore depth of {reach} mm; use a bar with more usable length",
+                    tool.id,
+                    front - deepest,
+                    to[1],
+                    to[0]
+                ));
+            }
+        }
         for step in &steps {
             let points = &step.points;
             let swept = |pieces: &[Vec<[f64; 2]>]| {
@@ -1173,6 +1213,30 @@ impl Planner<'_> {
                     to[1],
                     to[0]
                 ));
+            }
+            // A solid boring bar's minimum bore (#114), a catalogue premise
+            // held besides the geometry above: where its corner cuts, the
+            // bore this step leaves (as far as the stock may be open there)
+            // is at least the catalogue's.
+            if let Some([least, _]) = tool.solid_bar
+                && kind != MoveKind::Rapid
+            {
+                let spec = after.spec();
+                for c in points {
+                    if !(spec.z_min_mm..=spec.z_max_mm).contains(&c[0]) {
+                        continue;
+                    }
+                    let i = (((c[0] - spec.z_min_mm) / spec.cell_mm) as usize)
+                        .min(after.cells().len() - 1);
+                    let cell = after.cells()[i];
+                    let bore = 2. * cell.inner.upper_mm;
+                    if cell.outer.upper_mm > cell.inner.lower_mm && bore < least - 2. * self.guard {
+                        return Err(format!(
+                            "{op}: the solid boring bar {:?} would cut in a bore of {bore:.3} mm at z {:.3}, below its declared minimum bore of {least} mm, moving to r {:.3}, z {:.3}; open the hole to at least the minimum first, or use a smaller bar",
+                            tool.id, c[0], to[1], to[0]
+                        ));
+                    }
+                }
             }
             touches |= insert.iter().any(|piece| {
                 if tool.inner {
@@ -3623,6 +3687,7 @@ mod tests {
             }),
             holder_y_mm: if inner { [-1.5, 1.] } else { [-10., 2.] },
             bar_axis_y_mm: 0.,
+            solid_bar: None,
         }
     }
     fn rebuild_holder(tool: &mut TurningTool, width: f64, length: f64, offset: f64) {
@@ -5426,5 +5491,204 @@ test_tool("groove_in".into(), Insert::Groove { width_mm: 3.,
             replay.motion(&m).unwrap();
         }
         assert!(refused);
+    }
+
+    // Solid (one-piece) boring bars (#114).
+
+    /// A Ø5.6 pilot hole to bore out to Ø6.5, 4 mm deep, with the tests'
+    /// solid Ø5 bar (`side_clearance_deg` below its side cutting edge, the
+    /// catalogue minimum bore `min_bore_mm`).
+    fn solid_bar_job(side_clearance_deg: f64, min_bore_mm: f64) -> TurningJob {
+        let mut j = bore_job();
+        j.stock.bore_radius_mm = 2.8;
+        j.bore = Some(TurnProfile {
+            points: vec![
+                [3.25, 0., 0.],
+                [3.25, -4., 0.],
+                [2.8, -4., 0.],
+                [2.8, -35., 0.],
+            ],
+        });
+        j.tools = vec![TurnToolSetting {
+            tool: crate::turning::body::test_solid_bar(side_clearance_deg, min_bore_mm),
+            number: 7,
+            offset: 7,
+        }];
+        j.initial_position_mm = [0.5, 20.];
+        j.controlled_point = ControlledPoint::NoseCenter;
+        // Room to back off the wall inside a small bore.
+        j.clearance_mm = 0.3;
+        j.operations = vec![
+            TurnOperation::BoreRough {
+                id: "bore_rough".into(),
+                tool: "solid".into(),
+                depth_of_cut_mm: 0.2,
+                allowance_mm: 0.05,
+                z_end_mm: -3.5,
+                feed_mm_rev: 0.03,
+                rpm: 3000.,
+                surface_speed_m_min: None,
+                retract_mm: 0.1,
+            },
+            TurnOperation::BoreFinish {
+                id: "bore_finish".into(),
+                tool: "solid".into(),
+                allowance_mm: 0.,
+                z_end_mm: -3.5,
+                feed_mm_rev: 0.02,
+                rpm: 3000.,
+                surface_speed_m_min: None,
+                compensation: Default::default(),
+            },
+        ];
+        j
+    }
+
+    #[test]
+    fn a_solid_boring_bar_bores_where_a_prism_of_its_outline_is_refused() {
+        let j = solid_bar_job(20., 5.5);
+        let plan = plan(&j).unwrap();
+        inner_radius_is(&plan, -3., -0.5, 3.25);
+        // Independent of the planner and of the checked polytope: dense
+        // points of the true head (the cylinder, the cutting face and the
+        // ground faces themselves), carried along every planned move and
+        // mapped to their radius, stay inside the finished bore.
+        let samples = crate::turning::body::solid_head_samples(&j.tools[0].tool, 0.05);
+        assert!(samples.len() > 100_000);
+        let bore = |z: f64| {
+            if z > 0. {
+                f64::INFINITY
+            } else if z >= -4. {
+                3.25
+            } else {
+                2.8
+            }
+        };
+        let (mut moves, mut cuts, mut nearest) = (0, 0, f64::INFINITY);
+        for e in &plan.events {
+            let Event::Motion { motion } = e else {
+                continue;
+            };
+            let Curve::Line { start, end } = motion.curve else {
+                panic!("a straight bore is bored with lines");
+            };
+            moves += 1;
+            cuts += usize::from(motion.kind != MoveKind::Rapid);
+            for k in 0..=20 {
+                let t = k as f64 / 20.;
+                // The nose center (the controlled point of this job): r, z.
+                let (r, z) = (
+                    start[0] + t * (end[0] - start[0]),
+                    start[2] + t * (end[2] - start[2]),
+                );
+                for p in &samples {
+                    // A boring tool is its drawing mirrored in x.
+                    let radius = (r - p[0]).hypot(p[2]);
+                    let wall = bore(z + p[1]).max(bore(z + p[1] + 1e-9));
+                    assert!(
+                        radius <= wall + 1e-9,
+                        "move {}: {p:?} at r {radius} in a bore of {wall}",
+                        motion.id
+                    );
+                    nearest = nearest.min(wall - radius);
+                }
+            }
+        }
+        assert!(moves > 10 && cuts >= 4, "{moves} {cuts}");
+        // The finishing pass has the nose on the wall.
+        assert!(nearest < 1e-6, "{nearest}");
+        // The same head as #103 can describe it (a prism of its outline as
+        // deep as the bar reaches below the face, clearance 0) is refused:
+        // its full-width corner 2.5 mm below the face is outside the bore.
+        let mut prism = j.clone();
+        let tool = &mut prism.tools[0].tool;
+        let body = tool.body.as_mut().unwrap();
+        body.solid_bar = None;
+        body.insert = Some(crate::turning::body::InsertBody {
+            insert_thickness_mm: 2.5,
+            insert_clearance_deg: 0.,
+            rake_deg: 0.,
+            inclination_deg: 0.,
+            edge_deg: 90.,
+            curved_for_diameter_mm: None,
+            blade_clearance: None,
+        });
+        let err = plan_err(&prism);
+        assert!(
+            err.contains("rub the stock") || err.contains("into the part"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_solid_boring_bar_is_held_to_its_minimum_bore_reach_and_geometry() {
+        // The catalogue's minimum bore, where the geometry would pass: the
+        // first roughing pass opens the Ø5.6 pilot to Ø6.0, below a
+        // declared minimum of Ø6.2.
+        let err = plan_err(&solid_bar_job(20., 6.2));
+        assert!(
+            err.contains("below its declared minimum bore of 6.2 mm") && err.contains("6.000"),
+            "{err}"
+        );
+        // A bore below the minimum is refused for the premise: a Ø4.6
+        // pilot to bore to Ø5.2, the first pass at Ø5.0.
+        let mut small = solid_bar_job(20., 5.5);
+        small.stock.bore_radius_mm = 2.3;
+        small.bore = Some(TurnProfile {
+            points: vec![[2.6, 0., 0.], [2.6, -40., 0.]],
+        });
+        let err = plan_err(&small);
+        assert!(
+            err.contains("below its declared minimum bore of 5.5 mm"),
+            "{err}"
+        );
+        // The geometry is checked whatever the premises say: backing 2 mm
+        // off the wall of the Ø6.5 bore puts the far side of the Ø5 round
+        // into the opposite wall.
+        let mut wide = solid_bar_job(20., 5.5);
+        wide.clearance_mm = 2.;
+        let err = plan_err(&wide);
+        assert!(err.contains("bore_finish: the insert would cut"), "{err}");
+        // A head that fouls: 7 degrees below the side edge clears a bore's
+        // curvature down to Ø7.47 only. Declared for Ø5.5 it contradicts
+        // itself; declared honestly (Ø7.6) it is refused in the Ø6.5 bore.
+        let err = plan_err(&solid_bar_job(7., 5.5));
+        assert!(err.contains("contradicts its head"), "{err}");
+        let err = plan_err(&solid_bar_job(7., 7.6));
+        assert!(
+            err.contains("below its declared minimum bore of 7.6 mm"),
+            "{err}"
+        );
+        // Deeper than the usable length (6 mm): refused for the reach.
+        let mut deep = solid_bar_job(20., 5.5);
+        deep.bore = Some(TurnProfile {
+            points: vec![
+                [3.25, 0., 0.],
+                [3.25, -10., 0.],
+                [2.8, -10., 0.],
+                [2.8, -35., 0.],
+            ],
+        });
+        for op in &mut deep.operations {
+            if let TurnOperation::BoreRough { z_end_mm, .. }
+            | TurnOperation::BoreFinish { z_end_mm, .. } = op
+            {
+                *z_end_mm = -7.;
+            }
+        }
+        let err = plan_err(&deep);
+        assert!(
+            err.contains("beyond its declared maximum bore depth of 6 mm"),
+            "{err}"
+        );
+        // Within it, the same bore is bored.
+        for op in &mut deep.operations {
+            if let TurnOperation::BoreRough { z_end_mm, .. }
+            | TurnOperation::BoreFinish { z_end_mm, .. } = op
+            {
+                *z_end_mm = -5.5;
+            }
+        }
+        plan(&deep).unwrap();
     }
 }

@@ -158,6 +158,7 @@ _EXPORTS = {
             "TurningHolder",
             "TurningBar",
             "TurningSeat",
+            "SolidBarHead",
             "GrooveInsert",
             "ThreadInsert",
             "TurnToolSetting",

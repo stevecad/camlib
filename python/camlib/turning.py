@@ -357,6 +357,59 @@ class Seat:
 TurningSeat = Seat
 
 
+@dataclass(frozen=True)
+class SolidBarHead:
+    """The ground head of a solid (one-piece) boring bar (#114): a solid
+    carbide boring bar, a brazed tool or a ground HSS bar. Such a tool has no
+    insert and no seat: its tip is ground into the end of a round bar, so
+    its body below the cutting face is the bar's cylinder cut by the ground
+    faces, which narrows toward the bottom. The tool's ``insert`` is an
+    ``InsertOutline``, the head's (convex) outline at its cutting face.
+
+    Every value is required, from the tool's catalogue or drawing:
+
+    - ``diameter_mm``: the diameter of the round the head is ground from:
+      the bar's, where the head keeps the bar's surface (the catalogue's
+      shank diameter), or of any cylinder along the bar that contains the
+      head below its cutting face.
+    - ``axis_x_mm``, ``axis_y_mm``: that cylinder's axis in the outline's
+      frame: its x (the catalogue's f or WF is the distance from the bar's
+      centreline to the cutting edge) and its offset across the centre plane
+      (the cutting face at 0; minus the catalogue's cutting edge height
+      above the bar's centre).
+    - ``clearance_deg``: one angle per segment of the outline, at which the
+      ground face below that side recedes under the cutting face: the end
+      clearance below the end cutting edge, the side clearance below the
+      side cutting edge, at most the lesser of the two below the nose
+      between them, 0 where the head is not relieved (the cylinder alone
+      bounds it there). Catalogue tables do not list them: an angle not
+      known is declared 0, which contains the real head.
+    - ``min_bore_diameter_mm``: the catalogue's minimum bore diameter
+      (Dmin). No cut in a smaller bore, and a head that cannot itself enter
+      it is refused as a contradiction.
+    - ``max_bore_depth_mm``: the catalogue's maximum bore depth (the usable
+      length), from the head's front end. No move deeper into the stock.
+
+    The geometry is checked whatever the catalogue values say."""
+
+    diameter_mm: float
+    axis_x_mm: float
+    axis_y_mm: float
+    clearance_deg: tuple
+    min_bore_diameter_mm: float
+    max_bore_depth_mm: float
+
+    def to_dict(self):
+        return dict(
+            diameter_mm=float(self.diameter_mm),
+            axis_x_mm=float(self.axis_x_mm),
+            axis_y_mm=float(self.axis_y_mm),
+            clearance_deg=[float(a) for a in self.clearance_deg],
+            min_bore_diameter_mm=float(self.min_bore_diameter_mm),
+            max_bore_depth_mm=float(self.max_bore_depth_mm),
+        )
+
+
 class TurningTool:
     """A turning tool: ``id``, ``insert`` (an ``InsertOutline``, e.g. from
     ``TurningInsert.iso``/``iso_code``, or a ``GrooveInsert``,
@@ -395,7 +448,12 @@ class TurningTool:
     - ``curved_for_diameter_mm``: a face grooving blade curved to follow
       the groove, its maker's (min, max) diameter range; without it the
       blade is checked as straight.
-    - the holder's ``y_mm`` (and a ``Bar``'s ``axis_y_mm``)."""
+    - the holder's ``y_mm`` (and a ``Bar``'s ``axis_y_mm``).
+
+    A solid (one-piece) boring bar (#114) has no insert and no seat: give
+    ``solid_bar=SolidBarHead(...)`` instead of the seat and insert values,
+    with ``insert`` the head's outline at its cutting face and
+    ``side="inner"``."""
 
     __slots__ = (
         "id",
@@ -411,6 +469,7 @@ class TurningTool:
         "curved_for_diameter_mm",
         "insert_front_clearance_deg",
         "insert_side_clearance_deg",
+        "solid_bar",
     )
 
     def __init__(
@@ -429,6 +488,7 @@ class TurningTool:
         curved_for_diameter_mm=None,
         insert_front_clearance_deg=None,
         insert_side_clearance_deg=None,
+        solid_bar=None,
         **removed,
     ):
         if removed:
@@ -450,6 +510,33 @@ class TurningTool:
         elif nose_radius_mm is None:
             missing.append("nose_radius_mm")
         drill = isinstance(insert, DrillInsert)
+        if solid_bar is not None:
+            # A solid boring bar's ground head (#114): the whole body below
+            # the cutting face, with no insert and no seat.
+            if not isinstance(solid_bar, SolidBarHead) or not isinstance(insert, InsertOutline):
+                raise TypeError(
+                    f"TurningTool {id!r}: solid_bar is a SolidBarHead, for a boring head drawn as an InsertOutline "
+                    "(the head's outline at its cutting face); solid grooving and threading bars are not modelled "
+                    "as solid heads (give such a blade as a GrooveInsert or ThreadInsert with its insert body)"
+                )
+            given = [
+                name
+                for name, value in (
+                    ("seat", seat),
+                    ("insert_thickness_mm", insert_thickness_mm),
+                    ("insert_clearance_deg", insert_clearance_deg),
+                    ("edge_deg", edge_deg),
+                    ("curved_for_diameter_mm", curved_for_diameter_mm),
+                    ("insert_front_clearance_deg", insert_front_clearance_deg),
+                    ("insert_side_clearance_deg", insert_side_clearance_deg),
+                )
+                if value is not None
+            ]
+            if given:
+                raise TypeError(
+                    f"TurningTool {id!r}: a solid boring bar has no insert and no seat: its head (solid_bar) is its "
+                    f"whole body below the cutting face; leave out {', '.join(given)}"
+                )
         if insert_front_clearance_deg is not None or insert_side_clearance_deg is not None:
             # A grooving blade's own front and side clearance (#170).
             if not isinstance(insert, (GrooveInsert, FaceGrooveInsert)):
@@ -488,7 +575,7 @@ class TurningTool:
                     f"insert_side_clearance_deg={insert_side_clearance_deg!r}: it is the insert's least clearance "
                     f"({least!r} here); leave it out or give {least!r}"
                 )
-        if not drill and insert is not None:
+        if not drill and insert is not None and solid_bar is None:
             if isinstance(insert, InsertOutline):
                 insert_thickness_mm = insert.thickness_mm if insert_thickness_mm is None else insert_thickness_mm
                 insert_clearance_deg = insert.clearance_deg if insert_clearance_deg is None else insert_clearance_deg
@@ -530,6 +617,7 @@ class TurningTool:
             ("curved_for_diameter_mm", None if curved_for_diameter_mm is None else tuple(curved_for_diameter_mm)),
             ("insert_front_clearance_deg", insert_front_clearance_deg),
             ("insert_side_clearance_deg", insert_side_clearance_deg),
+            ("solid_bar", solid_bar),
         ):
             object.__setattr__(self, name, value)
 
@@ -549,7 +637,8 @@ class TurningTool:
             f"insert_thickness_mm={self.insert_thickness_mm!r}, insert_clearance_deg={self.insert_clearance_deg!r}, "
             f"edge_deg={self.edge_deg!r}, curved_for_diameter_mm={self.curved_for_diameter_mm!r}, "
             f"insert_front_clearance_deg={self.insert_front_clearance_deg!r}, "
-            f"insert_side_clearance_deg={self.insert_side_clearance_deg!r})"
+            f"insert_side_clearance_deg={self.insert_side_clearance_deg!r}"
+            + (f", solid_bar={self.solid_bar!r})" if self.solid_bar is not None else ")")
         )
 
     def to_dict(self):
@@ -572,6 +661,8 @@ class TurningTool:
                     front_deg=self.insert_front_clearance_deg, side_deg=list(self.insert_side_clearance_deg)
                 )
             body["insert"] = insert
+        if self.solid_bar is not None:
+            body["solid_bar"] = self.solid_bar.to_dict()
         return dict(
             id=self.id,
             insert=self.insert.to_dict(),

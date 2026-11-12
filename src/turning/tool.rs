@@ -1287,6 +1287,11 @@ impl TurningTool {
                 "tool {id}: a boring bar needs a positive diameter, a finite axis and z_mm from low to high"
             ));
         }
+        // A solid boring bar's ground head (#114): its declaration against
+        // its outline, and its minimum bore against its geometry.
+        if let Some(head) = self.body.as_ref().and_then(|b| b.solid_bar.as_ref()) {
+            super::body::solid_bar_vertices(self, head)?;
+        }
         Ok(())
     }
 
@@ -1320,6 +1325,74 @@ impl TurningTool {
             programming_point: s.programming_point,
         })
     }
+}
+
+/// A solid boring bar head's outline at its cutting face (#114), the nose
+/// center at the origin: the containing polygon (as `ToolShape::insert`),
+/// for each of its sides the outline segment it belongs to, the outline's
+/// exact extent in x (lines by their ends, arcs by their ends and their
+/// extreme points) and its largest arc radius.
+pub(crate) struct HeadOutline {
+    pub points: Vec<[f64; 2]>,
+    pub owners: Vec<usize>,
+    pub segments: usize,
+    pub x_mm: [f64; 2],
+    pub arc_radius_mm: f64,
+    /// The nose center in the insert's own frame.
+    pub nose: [f64; 2],
+}
+
+/// The head outline of an `Insert::Outline` (None for the other kinds, or
+/// when its corner is not an arc). The caller validates the tool.
+pub(crate) fn head_outline(insert: &Insert) -> Option<HeadOutline> {
+    let Insert::Outline {
+        outline, corner, ..
+    } = insert
+    else {
+        return None;
+    };
+    let Some(Segment::Arc { center_mm, .. }) = outline.segments.get(*corner) else {
+        return None;
+    };
+    let nose = *center_mm;
+    let local = outline.translated([-nose[0], -nose[1]]);
+    let polygon = local.polygon();
+    let (mut lo, mut hi, mut arc) = (f64::INFINITY, f64::NEG_INFINITY, 0f64);
+    let mut reach = |x: f64| {
+        lo = lo.min(x);
+        hi = hi.max(x);
+    };
+    reach(local.start_mm[0]);
+    for (s, (start, end)) in local.segments.iter().zip(local.ends()) {
+        reach(start[0]);
+        reach(end[0]);
+        if let Segment::Arc {
+            center_mm,
+            radius_mm,
+            start_deg,
+            end_deg,
+        } = s
+        {
+            arc = arc.max(*radius_mm);
+            // Its extremes in x: at 0 and 180 degrees (any turn), where the
+            // sweep passes them.
+            let (a, b) = (start_deg.min(*end_deg), start_deg.max(*end_deg));
+            for (base, sign) in [(0., 1.), (180., -1.)] {
+                let first = ((a - base) / 360.).ceil();
+                if base + 360. * first <= b {
+                    reach(center_mm[0] + sign * radius_mm);
+                }
+            }
+        }
+    }
+    Some(HeadOutline {
+        points: polygon.points,
+        owners: polygon.owners,
+        segments: outline.segments.len(),
+        x_mm: [lo, hi],
+        arc_radius_mm: arc,
+        nose,
+    })
 }
 
 /// Convex pieces whose union is the simple polygon `p` (itself, if convex;
@@ -1425,6 +1498,7 @@ mod tests {
                 }),
                 holder_y_mm: [-10., 2.],
                 bar_axis_y_mm: 0.,
+                solid_bar: None,
             }),
         }
     }

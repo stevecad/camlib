@@ -1710,6 +1710,82 @@ roughing setup its allowance.
     face does: a heel rubbing the wall just cut is refused. The insert's
     in-plane size tolerance (ISO 1832 d and m) is not yet applied (issue
     #113).
+  - Solid (one-piece) boring bars (#114): a solid carbide boring bar, a
+    brazed tool or a ground HSS bar has no insert and no seat; its tip is
+    ground into the end of a round bar. Declared as an insert body (a prism
+    of the head's outline as deep as the head, clearance 0) it is sound but
+    keeps its full-width corners at full depth, and is refused in the small
+    bores these tools are made for. Declare the head instead:
+    `TurningTool(id, insert=InsertOutline(...), side="inner", hand=,
+    holder=, solid_bar=SolidBarHead(diameter_mm=, axis_x_mm=, axis_y_mm=,
+    clearance_deg=, min_bore_diameter_mm=, max_bore_depth_mm=))`, with no
+    seat and no insert thickness or clearance. `insert` is the head's
+    outline at its cutting face (convex: the head only; its nose arc, the
+    side and end cutting edges in `cutting`), and the holder is what lies
+    behind the head (the plain bar as a `TurningBar`, the sleeve as the
+    outline).
+    - The body below the cutting face is the cylinder of `diameter_mm`
+      about the axis (`axis_x_mm` in the outline's frame, `axis_y_mm`
+      across the centre plane, the cutting face at 0), cut by the cutting
+      face and by the ground face below each segment of the outline, which
+      recedes under the face at that segment's `clearance_deg` (each angle
+      declares that the whole head lies behind that plane; a rounded
+      corner's angle applies to every tangent plane of the corner, so it
+      must be at most that of the two straight sides it joins, or 0, and
+      anything else is refused). It is
+      convex, so the checks above apply unchanged. They need vertices, so
+      the cylinder is checked as the prism of a polygon circumscribed about
+      its circle in 2 degree steps (every side tangent, the corners
+      1 / cos 1° = 1.00015 radii out: it contains the cylinder and stands
+      at most 0.000076 x the diameter outside it), like the round bar of a
+      holder and the nose arcs of every insert.
+    - Catalogue values (KYOCERA, "EZ Bar: Series for Small Internal
+      Machining" catalogue, 2022: p. 12 "EZ Bar Dimensions" tabulates DMIN,
+      DCON, H, LF, LU, WF, WF2 and RE per bar, e.g. EZBR 055050ST-008H:
+      5.5, 5.0, 4.80, 58.2, 25.0, 2.44, 0.33, 0.08 mm; p. 8 "Bar
+      Tolerances" gives the offset (WF), the cutting edge height (Y, e.g.
+      "+0.06 / 0 mm") and "Min. Bore Dia.: Same as Shank Dia." for the HP
+      bars, "Different from Shank Dia." for the ST bars):
+
+      | Catalogue | Declared as |
+      |---|---|
+      | Minimum bore diameter (DMIN) | `min_bore_diameter_mm` |
+      | Usable length, maximum bore depth (LU) | `max_bore_depth_mm`, from the head's front end |
+      | Offset from the bar's centreline to the cutting edge (WF, f) | `axis_x_mm` = the edge's x in the outline + WF |
+      | Cutting edge height above the bar's centre (Y) | `axis_y_mm` = -Y (its tolerance's worst case) |
+      | Shank diameter (DCON) | the holder's `TurningBar`; `diameter_mm` where the head keeps the bar's surface |
+      | Corner radius (RE) | the outline's corner arc |
+
+      The tables give neither the head's outline nor the clearance angles
+      of its ground faces (the drawings show them, e.g. a 5 degree end
+      cutting edge angle): they are declared, from the tool's drawing or by
+      measuring. An angle that is not known is declared 0, and a head whose
+      section is not known is declared as the catalogue's promise itself:
+      `diameter_mm` = DMIN, the axis DMIN / 2 from the cutting edge at the
+      cutting face's height, every clearance 0 (the head enters a bore of
+      DMIN with its edge on the wall, so it lies in that cylinder). Both
+      contain the real head.
+    - The catalogue's premises are held besides the geometry: a cutting
+      move that leaves a bore below `min_bore_diameter_mm` where the corner
+      cuts, and any move with the head's front end more than
+      `max_bore_depth_mm` behind the front of the stock, are refused. A
+      declaration that contradicts itself is refused too: an outline that
+      reaches off the bar's section at the cutting face, and a minimum
+      bore the declared head cannot enter with its edge on the wall (the
+      message gives the least bore it does enter). A body point `a` behind
+      the edge and `y` below the face enters a bore of diameter
+      (a² + y²) / a, so a face receding at the angle α clears the bore's
+      curvature only down to (bore radius) x sin 2α below the face: the
+      rest must be the bar's own round or a steeper face.
+    - The polygon stands outside the true cylinder by up to 0.000076 x its
+      diameter: a head declared exactly tangent to the bore it cuts (no
+      relief, the edge on the bar's surface, a bore of the bar's own
+      diameter) is planned only with a `tolerance_mm` of at least that.
+    - Boring only (`TurnBoreRough`, `TurnBoreFinish`, and any operation
+      that takes a boring tool with an `InsertOutline`): solid grooving,
+      face grooving and threading bars are refused as solid heads; declare
+      such a blade as a `GrooveInsert`, `FaceGrooveInsert` or `ThreadInsert`
+      with its insert body.
   - ISO values: shapes and corner angles from ISO 1832:1991 section 4.1
     table 1; size codes (inscribed circle per shape) and corner radius codes
     from the Sumitomo Electric Hardmetal general catalog, section B
