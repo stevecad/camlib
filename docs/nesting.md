@@ -1,0 +1,164 @@
+# Nesting sheet parts: `Nest`
+
+`camlib.Nest` places copies of parts on a sheet for plasma or laser cutting and
+returns their placements and the placed parts as one `PlanarRegion`, which is
+the `parts` of a [`ThermalCut`](operations.md#plasma-and-laser-cutting-thermalcut).
+Nesting is a planning step on geometry only: it produces no motion, and the
+same request always gives the same nest.
+
+Nothing is assumed about the machine or the job. The caller declares the sheet,
+the kerf and leads of the cut, the spacing between parts, the margin to the
+sheet's edge, and for every part its quantity and the rotations it may take.
+
+```python
+import dataclasses
+import camlib
+from camlib.planar import Boundary, Component, PlanarRegion
+
+sheet = PlanarRegion("sheet", (Component(Boundary.polygon(((0, 0), (1250, 0), (1250, 625), (0, 625)))),))
+torch = camlib.Torch("torch", kerf_width=1.5)
+cut = camlib.ThermalCut("plasma", torch, None, feed_mm_min=2500, cut_height_mm=1.5,
+                        lead_in=camlib.Lead(length_mm=2, radius_mm=3),
+                        lead_out=camlib.Lead(length_mm=1, radius_mm=2),
+                        pierce_delay_s=0.5, power_percent=100, tool_number=1, length_register=1)
+
+nest = camlib.Nest.for_cut(
+    cut, sheet,
+    parts=(camlib.NestPart(bracket, quantity=12, rotations_deg=(0, 90, 180, 270)),
+           camlib.NestPart(washer, quantity=30, rotations_deg=(0,))),
+    part_spacing_mm=3, edge_margin_mm=10, resolution_mm=1)
+result = nest.run()                       # refused if a part does not fit
+print(result.utilisation, result.check["min_part_distance_mm"])
+cut = dataclasses.replace(cut, parts=result.region)   # cut the nest
+```
+
+## Inputs
+
+| Field | Meaning |
+|---|---|
+| `sheet` | A `PlanarRegion` of one outline; its holes are areas already cut out of a remnant |
+| `parts` | `NestPart(region, quantity, rotations_deg, mirror=False)`: a `PlanarRegion` of one outline with holes, the number of copies, the allowed rotations (degrees counter-clockwise; `(0,)` keeps the part as drawn), and whether it may also be turned over |
+| `kerf_mm`, `lead_in`, `lead_out`, `pierce_clearance_mm` | What the cut will use. `Nest.for_cut(cut, ...)` reads them, and the tolerances, from a `ThermalCut` |
+| `part_spacing_mm` | Material left between what is cut for two parts |
+| `edge_margin_mm` | Material left between what is cut for a part and the sheet's outline or holes |
+| `resolution_mm` | Column spacing of the placement (see Limits) |
+| `part_in_part` | Parts may be placed in holes of other parts (default `True`) |
+| `allow_unplaced` | Return a partial nest listing what did not fit instead of refusing (default `False`) |
+| `search_iterations`, `seed` | Exchanges of the placement order to try (default 0) |
+
+There are no defaults for the sheet, kerf, leads, spacing, margin, resolution,
+quantities or rotations.
+
+## What a nest guarantees
+
+A thermal cut runs the beam center half a kerf plus an allowance (the parts'
+`boundary_error_mm` and half the cut's `boundary_tolerance_mm`) outside each
+part. A lead starts where its loop starts; its pierce point lies the lead's arc
+radius along the loop and radius + length away from it, so at most
+`hypot(radius, radius + length)` from the loop, and the pierce crater reaches
+`pierce_clearance_mm` beyond half a kerf round it. The larger of the lead-in's
+and the lead-out's reach is the result's `lead_reach_mm`. Everything cut for a
+part therefore lies within `kerf + allowance + lead_reach` of the part, and a
+nest keeps
+
+- any two parts at least `2 × (kerf + allowance + lead_reach) + part_spacing_mm`
+  apart: the kerfs, leads and pierce craters of two parts stay
+  `part_spacing_mm` apart wherever the cut starts its loops (see Limits for
+  center pierces in small holes);
+- every part at least `kerf + allowance + lead_reach + edge_margin_mm` (plus
+  the sheet's `boundary_error_mm`) from the sheet's outline and holes.
+
+Both distances are **proven on the finished layout by a check that does not
+trust the planner** (`src/nesting/check.rs`). It reads the placed parts as the
+lines and arcs that will be cut and
+
+- confirms each placed part is a rigid (or, where declared, mirrored) copy of
+  its source, measured in the part's own frame, at the reported placement;
+- computes the distance between every two parts, and from every part to the
+  sheet's outline and holes, in closed form (line-line, line-arc, arc-arc;
+  crossings by exact orientation predicates; nothing is sampled), adding a
+  bound on floating-point rounding to each requirement;
+- decides containment by winding numbers: a part inside another part's outline
+  is accepted only when it lies in one of that part's holes and `part_in_part`
+  allows it; a part must lie on the sheet and must not cover a sheet hole.
+
+A layout that fails is refused; it is never returned with a warning.
+`result.check` reports the required and the smallest found distances.
+`Nest.verify(placements, region)` runs the same check on a layout from anywhere
+(an edited or manual nest).
+
+The thermal cut then proves its own leads, kerf paths and pierce craters clear
+of every part, as it does for any `parts`.
+
+## Placement
+
+Bottom-left fill, after Burke, Hellier, Kendall and Whitwell, "A new
+bottom-left-fill heuristic algorithm for the two-dimensional irregular packing
+problem" (Operations Research 54(3), 2006): parts are placed one at a time,
+largest area first, each at the lowest free position of the leftmost column
+that has one; columns are `resolution_mm` apart. The left is the sheet's
+smallest x, the bottom its smallest y.
+
+The lowest free position of a column is exact for the planning outlines (each
+part grown by its clearance, arcs enclosed in polygons). The positions where a
+part would overlap a placed part are a slice of the two parts' no-fit polygon
+(Bennell and Oliveira, "The geometry of nesting problems: a tutorial", European
+Journal of Operational Research 184(2), 2008). camlib uses the decomposition
+approach described there: both outlines are cut into convex pieces
+(trapezoids), each pair of pieces forbids one interval of the column, and the
+part goes to the lowest position outside all of them. The area outside the
+sheet's outline and inside its holes is handled as obstacles in the same way.
+
+Of a part's allowed rotations (and mirror image) the one that ends furthest
+left is taken. Parts fall into holes of placed parts, and into notches of a
+remnant, whenever that is the lowest free position.
+
+`search_iterations` exchanges of two parts in the placement order are tried
+(the paper's hill climbing): an exchange is kept when fewer parts are left over
+or the nest ends further left. The exchanges come from `seed` by a fixed
+generator, and the search is bounded by iterations, not time, so it is
+reproducible. Rotations of multiples of 90° are exact; other angles use the
+platform's sine and cosine, so their last digits may differ between platforms.
+
+## Parts that do not fit
+
+`run()` raises `ValueError` naming every part that does not fit and how many
+copies. With `allow_unplaced=True` it returns the partial nest and lists them
+in `result.unplaced` as `(part, quantity)`. No part is dropped silently: placed
+and unplaced copies always add up to the declared quantities.
+
+## Result
+
+| Field | Meaning |
+|---|---|
+| `placements` | `NestPlacement(part, copy, rotation_deg, mirrored, translation_mm)`: a point `p` of the part moves to `R(rotation_deg) · M(p) + translation_mm`, where `M` mirrors x when `mirrored` |
+| `region` | The placed parts, one component per placement in the same order: the `parts` of the `ThermalCut` |
+| `unplaced` | `(part, quantity)` that did not fit |
+| `utilisation` | Placed part area over sheet area (`placed_area_mm2`, `sheet_area_mm2`) |
+| `used_bounds_mm` | The box round the placed parts |
+| `lead_reach_mm` | How far leads and pierce craters may reach beyond a kerf's edge |
+| `check` | The independent check's report |
+
+## Limits
+
+- **A heuristic, not an optimum.** Bottom-left fill gives a good nest quickly;
+  it does not find the densest one, and camlib makes no claim about how close
+  it comes. The search improves the order only, by exchanges.
+- **Resolution.** Columns are `resolution_mm` apart, and curved planning
+  outlines stand up to a quarter of `resolution_mm` outside the required
+  clearance. A finer resolution nests tighter and takes longer; more than a
+  million columns across the sheet are refused.
+- **Leads.** Room for leads and pierce craters is reserved all round every
+  part, not only where the cut will put them. This is safe for any lead
+  position and wastes material compared with nesting at the kerf and placing
+  leads into gaps afterwards.
+- **Center pierces.** In a hole too small for its leads the `ThermalCut`
+  pierces at the hole's center, which is further from the loop than
+  `lead_reach_mm`. A part nested in such a hole keeps the part distance to the
+  hole's edge, but its spacing to that pierce and lead is not part of the
+  nest's proof: the cut proves them clear of the part, or refuses.
+- **Declared rotations only.** No free rotation.
+- **One sheet.** Nest the unplaced parts on the next sheet with another request.
+- **Not modeled:** common-line cutting between neighbours, grain direction
+  beyond the allowed rotations, heat distribution and cut order (the
+  `ThermalCut` orders the loops), tip-up of cut parts, skeleton cut-up.

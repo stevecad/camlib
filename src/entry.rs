@@ -1055,6 +1055,16 @@ pub(crate) fn entry_line(
     }
 }
 
+/// How close to its level a proven entry start counts as reaching it: 0.01
+/// mm, or 64 tolerances where that is more. The searches for a start
+/// (`cleared_entry_start`, `cleared_path_start`) stop within it, and every
+/// caller that asks "is this start at the level" compares with it, so the two
+/// cannot drift apart (#237: a search that stopped coarser than its callers
+/// accepted refused every entry on a deep layer).
+pub(crate) fn skin(tolerance_mm: f64) -> f64 {
+    0.01_f64.max(64. * tolerance_mm)
+}
+
 #[cfg(test)]
 mod compact_tests {
     use super::*;

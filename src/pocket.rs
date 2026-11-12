@@ -2097,7 +2097,7 @@ impl PocketPlan {
             return o.top_z_mm;
         }
         let above = (o.top_z_mm - pass as f64 * o.stepdown_mm).max(self.report.target_z_mm);
-        (above + 0.01_f64.max(64. * o.tolerance_mm)).min(o.top_z_mm)
+        (above + crate::entry::skin(o.tolerance_mm)).min(o.top_z_mm)
     }
     /// The path a ramp `depth` deep to the start of `s` follows: `s` and the
     /// strokes that continue it without a gap (`chain_from` on), as far as
@@ -2195,7 +2195,7 @@ impl PocketPlan {
             .cleared_path_start(&chain, z, stock, cancel)?
             .min(self.cell_path_height(stock, &path, pad))
             .clamp(z, o.top_z_mm);
-        let skin = 0.01_f64.max(64. * o.tolerance_mm);
+        let skin = crate::entry::skin(o.tolerance_mm);
         let (curves, slope) = if from - z <= skin {
             // The whole path is proven air down to the depth (within the
             // skin every straight entry is allowed): no ramp to make.

@@ -300,21 +300,21 @@
      "toolpath": "Roughing",
      "issue": 27,
      "moves": 2169,
-     "cut_mm": 27414.475,
+     "cut_mm": 27414.455,
      "rapid_mm": 614.199,
-     "air_cut_mm": 21291.088,
+     "air_cut_mm": 21291.068,
      "plunges": 13,
      "retracts": 24,
      "removed_mm3": 5765.95,
-     "cycle_seconds_exact_stop": 7932.344,
-     "cycle_seconds_tangent": 7931.579,
+     "cycle_seconds_exact_stop": 7932.337,
+     "cycle_seconds_tangent": 7931.572,
      "engine_seconds": 0.0433
     }
    },
    "toolpath": {
     "moves": 2169,
-    "cycle_seconds_exact_stop": 7932.344,
-    "cycle_seconds_tangent": 7931.579,
+    "cycle_seconds_exact_stop": 7932.337,
+    "cycle_seconds_tangent": 7931.572,
     "posted_blocks": 2192,
     "post_error": null,
     "removed_mm3": [
@@ -323,7 +323,7 @@
     ],
     "material": {
      "leftover_mm3": [
-      930.8210736466043,
+      930.821474006398,
       1505.4823377094317
      ],
      "overcut_mm3": [
@@ -362,21 +362,21 @@
      "toolpath": "Roughing",
      "issue": 27,
      "moves": 924,
-     "cut_mm": 10665.255,
+     "cut_mm": 10665.257,
      "rapid_mm": 250.41,
-     "air_cut_mm": 6073.475,
+     "air_cut_mm": 6073.477,
      "plunges": 5,
      "retracts": 8,
      "removed_mm3": 5765.95,
-     "cycle_seconds_exact_stop": 1439.816,
-     "cycle_seconds_tangent": 1436.823,
+     "cycle_seconds_exact_stop": 1439.817,
+     "cycle_seconds_tangent": 1436.824,
      "engine_seconds": 0.0284
     }
    },
    "toolpath": {
     "moves": 924,
-    "cycle_seconds_exact_stop": 1439.816,
-    "cycle_seconds_tangent": 1436.823,
+    "cycle_seconds_exact_stop": 1439.817,
+    "cycle_seconds_tangent": 1436.824,
     "posted_blocks": 947,
     "post_error": null,
     "removed_mm3": [
@@ -424,20 +424,20 @@
      "toolpath": "Roughing",
      "issue": 27,
      "moves": 4501,
-     "cut_mm": 15978.541,
+     "cut_mm": 15978.543,
      "rapid_mm": 390.448,
-     "air_cut_mm": 1372.382,
+     "air_cut_mm": 1372.384,
      "plunges": 25,
      "retracts": 25,
      "removed_mm3": 5724.767,
-     "cycle_seconds_exact_stop": 1752.563,
+     "cycle_seconds_exact_stop": 1752.564,
      "cycle_seconds_tangent": 1752.232,
      "engine_seconds": 28.4249
     }
    },
    "toolpath": {
     "moves": 4501,
-    "cycle_seconds_exact_stop": 1752.563,
+    "cycle_seconds_exact_stop": 1752.564,
     "cycle_seconds_tangent": 1752.232,
     "posted_blocks": 4524,
     "post_error": null,
@@ -1838,15 +1838,15 @@
     "finish-steep": {
      "toolpath": "Steep-and-shallow",
      "issue": 47,
-     "moves": 964,
-     "cut_mm": 667.548,
-     "rapid_mm": 1006.283,
-     "air_cut_mm": 21.975,
-     "plunges": 40,
-     "retracts": 40,
+     "moves": 866,
+     "cut_mm": 1035.45,
+     "rapid_mm": 475.883,
+     "air_cut_mm": 68.251,
+     "plunges": 23,
+     "retracts": 23,
      "removed_mm3": 249.055,
-     "cycle_seconds_exact_stop": 186.177,
-     "cycle_seconds_tangent": 180.807,
+     "cycle_seconds_exact_stop": 171.478,
+     "cycle_seconds_tangent": 168.058,
      "engine_seconds": 0.3919
     },
     "finish-shallow": {
@@ -1854,25 +1854,25 @@
      "issue": 47,
      "moves": 780,
      "cut_mm": 847.455,
-     "rapid_mm": 215.327,
+     "rapid_mm": 215.565,
      "air_cut_mm": 51.882,
      "plunges": 24,
      "retracts": 24,
      "removed_mm3": 1255.632,
-     "cycle_seconds_exact_stop": 156.617,
-     "cycle_seconds_tangent": 152.917,
+     "cycle_seconds_exact_stop": 156.623,
+     "cycle_seconds_tangent": 152.923,
      "engine_seconds": 0.0803
     }
    },
    "toolpath": {
-    "moves": 1744,
-    "cycle_seconds_exact_stop": 342.794,
-    "cycle_seconds_tangent": 333.724,
-    "posted_blocks": 1775,
+    "moves": 1646,
+    "cycle_seconds_exact_stop": 328.101,
+    "cycle_seconds_tangent": 320.981,
+    "posted_blocks": 1677,
     "post_error": null,
     "removed_mm3": [
      1504.686,
-     1596.834
+     1648.473
     ],
     "material": {
      "leftover_mm3": [
@@ -1881,7 +1881,7 @@
      ],
      "overcut_mm3": [
       0.0,
-      100.34042392700681
+      151.97876052781558
      ],
      "leftover_cells": [
       0,

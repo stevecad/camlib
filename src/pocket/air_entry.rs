@@ -169,7 +169,7 @@ impl PocketPlan {
         cancel: &impl CancelSignal,
     ) -> Result<f64, String> {
         let top = self.operation.top_z_mm;
-        let skin = 0.01_f64.max(64. * self.operation.tolerance_mm);
+        let skin = crate::entry::skin(self.operation.tolerance_mm);
         let clear = |tip: f64| -> Result<bool, String> {
             let mut work = 1_000_000;
             for &stroke in path {
@@ -197,14 +197,17 @@ impl PocketPlan {
         if high - low > skin && clear(low + skin)? {
             return Ok(low + skin);
         }
-        for _ in 0..12 {
+        // Halve until the bracket is within the skin its callers accept:
+        // each step is a proof, and the number of steps follows from the
+        // depth instead of a fixed count.
+        while high - low > skin {
             if cancel.is_cancelled() {
                 return Err("committed entry search cancelled".into());
             }
-            if high - low <= skin {
+            let middle = (low + high) / 2.;
+            if !(middle > low && middle < high) {
                 break;
             }
-            let middle = (low + high) / 2.;
             if clear(middle)? {
                 high = middle;
             } else {
@@ -252,7 +255,7 @@ impl PocketPlan {
             }
         }
         let scene = &cache.insert((scene, cursor)).0;
-        let skin = 0.01_f64.max(64. * self.operation.tolerance_mm);
+        let skin = crate::entry::skin(self.operation.tolerance_mm);
         let guard = 32. * self.operation.tolerance_mm
             + 4096.
                 * f64::EPSILON
@@ -331,17 +334,19 @@ impl PocketPlan {
             // A supported flat pocket has cylindrical cutter/neck/shank sections
             // and linear holder tapers. Maximum endpoint radius encloses every
             // section, from its lowest Z through the entire vertical descent.
-            for _ in 0..12 {
-                if cancel.is_cancelled() {
-                    return Err("committed entry search cancelled".into());
-                }
-                if high - low <= 0.01_f64.max(64. * self.operation.tolerance_mm) {
-                    break;
-                }
-                let middle = (low + high) / 2.;
-                let mut clear = true;
+            // Halve until the bracket is within the skin the callers accept
+            // (`entry::skin`, the one definition both sides use). A fixed 12
+            // halvings left (top - floor) / 4096, over that skin once the
+            // floor was ~41 mm below the top, so every deep entry was
+            // refused (#237). Each step is a proof; the bracket halves, so
+            // the loop ends, and a bracket that can no longer be halved (or
+            // is not a number) ends it too.
+            let skin = crate::entry::skin(self.operation.tolerance_mm);
+            // Whether every tool section is proven clear with the tip at
+            // `tip`; `None` when the work ran out (nothing is proven then).
+            let mut clear_at = |tip: f64| -> Result<Option<bool>, String> {
                 for &(radius, bottom) in &self.air_entry_parts {
-                    let height = middle + bottom - guard;
+                    let height = tip + bottom - guard;
                     if height > stock.spec().max_mm[2] {
                         continue;
                     }
@@ -354,18 +359,43 @@ impl PocketPlan {
                         cancel,
                     ) {
                         Ok(true) => (),
-                        Ok(false) => {
-                            clear = false;
-                            break;
-                        }
-                        Err(_) if work == 0 && !cancel.is_cancelled() => return Ok(high),
+                        Ok(false) => return Ok(Some(false)),
+                        Err(_) if work == 0 && !cancel.is_cancelled() => return Ok(None),
                         Err(e) => return Err(e),
                     }
                 }
-                if clear {
-                    high = middle;
-                } else {
-                    low = middle;
+                Ok(Some(true))
+            };
+            // The level itself first: "this start reaches the level" is one
+            // proof at one height, the skin above the floor, so the answer
+            // does not depend on where the halving below happens to land
+            // (the same column was otherwise accepted under one top and
+            // refused under another).
+            if high - low > skin {
+                // The height its callers accept: no more than the skin above
+                // the floor after rounding too.
+                let mut level = low + skin;
+                if level - low > skin {
+                    level = level.next_down();
+                }
+                match clear_at(level)? {
+                    Some(true) => return Ok(level),
+                    Some(false) => low = level,
+                    None => return Ok(high),
+                }
+            }
+            while high - low > skin {
+                if cancel.is_cancelled() {
+                    return Err("committed entry search cancelled".into());
+                }
+                let middle = (low + high) / 2.;
+                if !(middle > low && middle < high) {
+                    break;
+                }
+                match clear_at(middle)? {
+                    Some(true) => high = middle,
+                    Some(false) => low = middle,
+                    None => return Ok(high),
                 }
             }
             // High is either the unchanged authored top or a whole-assembly proof.
@@ -376,7 +406,7 @@ impl PocketPlan {
         // The fitted disk admits the complete circle, independent of phase.
         // Its +X extremity may sit on an old sweep's uncertainty band. Try the
         // opposite phase before deciding to repeat a deep cutting descent.
-        if positive - floor <= 0.01_f64.max(64. * self.operation.tolerance_mm) {
+        if positive - floor <= crate::entry::skin(self.operation.tolerance_mm) {
             return Ok((positive, false));
         }
         let negative = height([center[0] - orbit, center[1]])?;

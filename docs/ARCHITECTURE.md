@@ -346,6 +346,21 @@ replay of the decoded program.
   tolerance.
 - Different CadQuery/OCP versions tessellate the same solid differently. That
   is why the benchmark freezes its geometry (`bench/fixtures/`).
+- Mesh seams. A mesh whose neighbouring facets do not share their edge
+  vertices (faces tessellated separately, or refined facet by facet) has
+  hairline seams; projected, they are slivers and near-touching boundaries
+  the planar kernel refuses as ambiguous. Two things keep them out (#241).
+  The CadQuery adapter (`python/camlib/_cad_surface.py`) meshes a solid
+  watertight: one point per mesh node of the solid (edge-curve points on CAD
+  edges, for all faces of the edge), every edge bisected in all its facets
+  at once, and the result checked edge by edge before it is returned. And
+  every part shadow (`PreparedRoughingTarget::shadow_simplified`: roughing,
+  rest roughing, waterline flat and bull-nose levels, `silhouette_region`)
+  is closed by the mesh's declared `surface_error_mm`
+  (`planar::close_protectively`: square-join dilation, round-join erosion,
+  so it contains the exact shadow), which bridges seams narrower than twice
+  that error for meshes from anywhere. A mesh declaring an error of 0 is
+  taken as exact and its seams are refused.
 - The Python extension targets CPython 3.12+ (abi3); the Rust MSRV is 1.88.
 - Some tests exercise large inputs on purpose: run suites with memory and time
   limits.

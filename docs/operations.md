@@ -514,10 +514,27 @@ narrow a gap the cutter still fits until no entry reaches it; that layer then
 keeps the exact shadow, as it would with `contour_tolerance_mm` 0, and
 `shadow.simplified.reason` says so with the entry refusal it avoided. Holes in that projection smaller than a
 disk of half the cutter's radius are protected too, since the cutter cannot
-enter them (the layer report's `shadow.filled_holes`). A target mesh whose faces
-were tessellated separately leaves such slivers between neighbouring faces; a
-gap that still makes the layer's topology ambiguous is refused with its
-location. `clearing` is one of:
+enter them (the layer report's `shadow.filled_holes`).
+
+A target mesh whose faces were tessellated separately has hairline seams
+between neighbouring faces (their shared edge is subdivided differently on
+each side). A mesh declares how far the part's surface may be from its facets
+(`surface_error_mm`), so two facet edges that should be one may lie up to
+twice that error apart, and a gap that narrow says nothing about the part.
+Every shadow is therefore closed by the mesh's declared error: gaps, channels
+and notches narrower than twice the error are protected, concave corners are
+rounded to the error, and nothing is removed (the closed shadow contains the
+exact one). Its boundary is then simplified at the scale of eight times
+`tolerance_mm`, again only by adding area: shorter edges are absorbed (a seam
+leaves the two faces' vertices a hair apart along the outline), and a concave
+vertex that stands out by less than that is dropped. The layer report's
+`shadow.seam_closing` gives the distance and the area it added. Roughing keeps at least the error clear of the shadow
+anyway, so its cutter positions are the same as from the exact shadow. A
+seam wider than twice the declared error, and any seam of a mesh declaring an
+error of 0 (an exact mesh), still makes the layer's topology ambiguous and is
+refused with its location: export the mesh with shared edge vertices
+(`camlib.cadquery.export_surface_mesh` does), or declare its real error.
+`clearing` is one of:
 
 - `RasterClearing(stepover_mm, routing=None)`: parallel passes;
   `routing="economical"` orders and joins the rows to shorten links,
@@ -797,8 +814,13 @@ itself with `Flat` or a pocket.
 **Refused:** a silhouette whose error exceeds `max_error_mm` (the message
 gives its parts; supply a finer mesh), a depth with nothing at or above it,
 an invalid mesh, and a mesh whose facets' projections touch within the
-construction tolerance without sharing vertices (not watertight), as for
-`Roughing`. `max_error_mm` has no default.
+construction tolerance without sharing vertices (not watertight) across a
+seam wider than twice its declared `surface_error_mm`, as for `Roughing`.
+Narrower seams are closed, as for every shadow (see `Roughing`): channels
+narrower than twice the declared error are part of the silhouette and its
+concave corners are rounded to the error, which the operations' clearance
+(they add the region's `boundary_error_mm`) already covers. `max_error_mm`
+has no default.
 
 ## Drilling: `Drilling`
 
@@ -1490,6 +1512,19 @@ with a vertical plunge onto the surface. Over a convex edge the contact
 normal turns gradually, so a shallow pass may roll over the edge until the
 limit.
 
+The contact is the one the tool has where it is. A drop-cutter pass
+(`Parallel`, `Spiral`, `Radial`, `Project`) rests on the part from above, so
+its contact is the dropped ball's. A `Waterline` pass is on its level: its
+contact is the nearest point of the part to the ball's center at that level,
+90 degrees against a vertical wall at any height below the wall's top edge, a
+face's own slope on a sloped face, the roll-over angle on an edge. (A ball
+dropped at a wall's foot lands on the floor, which would call the wall flat.)
+Where the ball touches a wall and a floor at once, as on the level that
+finishes a wall down to its floor, both contacts count, and the contour is
+kept if either lies within the limits. With both definitions a steep pass
+above `t − o` and a shallow pass below `t + o` cover every reachable surface
+with the declared overlap.
+
 `camlib.steep_and_shallow(id, tool, surface, floor_z_mm, clearance_z_mm,
 top_z_mm=, bottom_z_mm=, stepdown_mm=, stepover_mm=, threshold_deg=45,
 overlap_deg=5, shallow="parallel")` returns the two operations of the usual
@@ -1656,6 +1691,10 @@ holes), `feed_mm_min`, `cut_height_mm`, and a beam tool:
 `camlib.Torch(id, kerf_width=...)` or `camlib.LaserHead(id, kerf_width=...)`
 (the kerf is the beam's diameter; the nozzle and body are collision geometry).
 The setup's stock is the sheet (its top and thickness).
+
+`parts` can come from [`camlib.Nest`](nesting.md), which places copies of
+parts on a sheet with declared spacing, margin and rotations and proves the
+layout.
 
 ```python
 torch = camlib.Torch("torch", kerf_width=1.5)
