@@ -100,6 +100,15 @@ can say clear, violation or uncertain honestly.
   become possible material. `Stock::finished_mesh` returns the closed mesh of
   each cell's upper bound, without T-junctions, which reads back on the same
   grid as the same bounds; it is approximate (`HEIGHT_FIELD_APPROXIMATION`).
+  Beside the cells, a natively committed flat cut leaves a record of the
+  column it emptied (path, cutter radius, floor). Whole cells cannot show
+  that a tool body as wide as the cutter fits where the cutter has been, so
+  `Stock::history_clearance` proves it from those records: the body's sweep
+  along a move lies inside the union of the emptied columns
+  (`src/engagement/cover.rs` states the claim and the proof; exact where the
+  move runs on earlier paths, otherwise with the sweeps' own path error and
+  no other allowance). The roughing planner's shank check, the sweep's
+  cutting-length check and stock contact all use this one proof (#200).
 - **Turning** (`src/turning/stock.rs`, `TurnStock`): per z bin, bounds of the
   outer radius and of the bore radius, plus rings certainly removed inside the
   material (face grooves). Lathe moves carry their changes computed by the

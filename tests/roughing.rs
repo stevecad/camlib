@@ -395,6 +395,231 @@ fn deep_roughing_of_a_tapered_part_is_cleared_by_the_stock_its_upper_layers_cut(
     assert!(deep > 10, "{deep} cuts deeper than the flutes");
 }
 
+/// The #122 fixture with its 20 mm square boss drafted: `draft_mm` wider
+/// on every side at its foot (Z-78) than at its top.
+fn drafted_boss(draft_mm: f64, offset: bool) -> StreamManifest {
+    let mut m: StreamManifest = serde_json::from_str(include_str!(
+        "../fixtures/operations/roughing-layer-depth.json"
+    ))
+    .unwrap();
+    let Operation::Roughing(op) = &mut m.operations[0] else {
+        panic!("fixture")
+    };
+    if offset {
+        op.clearing = camlib::roughing::RoughingClearing::Offset {
+            stepover_mm: 6.,
+            coverage_margin_mm: 0.01,
+        };
+    }
+    op.omit_empty_cuts = false;
+    for tri in std::sync::Arc::make_mut(&mut op.target.triangles) {
+        for p in tri {
+            if (p[0] == 30. || p[0] == 50.) && (p[1] == 30. || p[1] == 50.) && p[2] != 0. {
+                p[0] += draft_mm * (p[0] - 40.).signum();
+                p[1] += draft_mm * (p[1] - 40.).signum();
+            }
+        }
+    }
+    m.validate().unwrap();
+    m
+}
+
+/// The XY distance from `p` to the path of `c`, written out here.
+fn path_distance(c: &Curve, p: [f64; 2]) -> f64 {
+    let (a, b) = (c.start(), c.end());
+    let ends = (a[0] - p[0])
+        .hypot(a[1] - p[1])
+        .min((b[0] - p[0]).hypot(b[1] - p[1]));
+    match circle(c) {
+        None => {
+            let e = [b[0] - a[0], b[1] - a[1]];
+            let w = [p[0] - a[0], p[1] - a[1]];
+            let l = e[0] * e[0] + e[1] * e[1];
+            let t = if l > 0. {
+                (w[0] * e[0] + w[1] * e[1]) / l
+            } else {
+                -1.
+            };
+            if (0. ..=1.).contains(&t) {
+                (w[0] * e[1] - w[1] * e[0]).abs() / l.sqrt()
+            } else {
+                ends
+            }
+        }
+        Some((o, sweep)) => {
+            let r = (a[0] - o[0]).hypot(a[1] - o[1]);
+            let turn =
+                ((p[1] - o[1]).atan2(p[0] - o[0]) - (a[1] - o[1]).atan2(a[0] - o[0])).rem_euclid(TAU);
+            let on = sweep.abs() >= TAU
+                || if sweep >= 0. {
+                    turn <= sweep
+                } else {
+                    TAU - turn <= -sweep
+                };
+            if on {
+                ((p[0] - o[0]).hypot(p[1] - o[1]) - r).abs()
+            } else {
+                ends
+            }
+        }
+    }
+}
+
+/// #200: a straight-shank end mill (shank as wide as the cutter) deeper
+/// than its flutes beside a drafted wall. Each layer's passes lie a little
+/// inside those of the layers above, so the wall passes repeat no earlier
+/// move, and the shank clears the cut of the top layers by the draft across
+/// them only: about 9 um for the 0.01 mm draft and 0.09 um for the 0.0001 mm
+/// one (the sweeps' own path error is 0.01 um each). It is clear all the
+/// same, because the layers above cut everything it passes through. The
+/// planner used to refuse the first layer deeper than the flutes (0.01 mm
+/// draft, contour-parallel and raster), or admit a move that the stock
+/// sweep then refused and stock contact could not resolve (0.2 mm).
+#[test]
+fn deep_roughing_beside_a_drafted_wall_runs_with_a_shank_as_wide_as_the_cutter() {
+    let cancel = AtomicBool::new(false);
+    for (draft, offset) in [(0.01, true), (0.2, true), (0.01, false), (0.0001, true)] {
+        let m = drafted_boss(draft, offset);
+        assert_eq!(
+            m.tools[0].cutter.shank_diameter_mm,
+            m.tools[0].cutter.diameter_mm
+        );
+        let prepared = m.tools[0].prepare().unwrap();
+        let mut stock = Stock::new(m.stock.height().unwrap().clone()).unwrap();
+        stock.enable_contact_queries(&cancel).unwrap();
+        let mut plan = OperationPlan::prepare_with_stock(
+            m.operations[0].clone(),
+            &m.tools[0],
+            &stock,
+            m.initial_position_mm,
+            1,
+            &cancel,
+        )
+        .unwrap();
+        // Every flat move so far: the cutter (radius 6) emptied the column
+        // over its footprint from the move's Z up.
+        let mut cut: Vec<Curve> = vec![];
+        let (mut minimum_z, mut deep, mut new_paths) = (0_f64, 0, 0);
+        while let Some(motion) = plan
+            .next_motion_with_stock(&stock, &cancel)
+            .unwrap_or_else(|e| panic!("draft {draft}, offset {offset}: {e}"))
+        {
+            let (a, b) = (motion.curve.start(), motion.curve.end());
+            let z = a[2].min(b[2]);
+            minimum_z = minimum_z.min(z);
+            if z < -75. && !motion.kind.is_rapid() {
+                deep += 1;
+                // Independent of the planner and of the proof: the shank
+                // (radius 6, from 75 mm above the tip) sampled along the
+                // move; every sample inside the stock is within the cutter
+                // radius of the path of an earlier flat move at or below
+                // the shank's bottom.
+                let bottom = z + 75.;
+                // A move along one earlier move's path (to a nanometre) is a
+                // repeat; the others are the case at issue.
+                let repeat = cut.iter().any(|c| {
+                    c.start()[2] <= bottom
+                        && (0..=16).all(|i| {
+                            let p = position(&motion.curve, i as f64 / 16.);
+                            path_distance(c, [p[0], p[1]]) <= 1e-9
+                        })
+                });
+                for i in 0..=16 {
+                    let p = position(&motion.curve, i as f64 / 16.);
+                    for ring in 1..=3 {
+                        for j in 0..24 {
+                            let angle = TAU * j as f64 / 24.;
+                            let rho = 2. * ring as f64;
+                            let q = [p[0] + rho * angle.cos(), p[1] + rho * angle.sin()];
+                            assert!(
+                                q.iter().any(|v| !(0. ..=80.).contains(v))
+                                    || cut.iter().any(|c| c.start()[2] <= bottom
+                                        && path_distance(c, q) <= 6. + 1e-9),
+                                "shank at {q:?} above Z{bottom} is in uncut stock: {:?}",
+                                motion.curve
+                            );
+                        }
+                    }
+                }
+                new_paths += usize::from(!repeat);
+                // The independent stock-contact verification of the move,
+                // against the stock as committed before it.
+                let report = camlib::stock_contact::check(
+                    &stock,
+                    &prepared,
+                    &motion,
+                    camlib::stock_contact::Options::default(),
+                    &cancel,
+                )
+                .unwrap();
+                assert_eq!(
+                    report.status,
+                    camlib::verification::Status::Clear,
+                    "{:?}: {:?}",
+                    motion.curve,
+                    report.findings.first().map(|f| &f.finding.detail)
+                );
+            }
+            // The stock sweep's own cutting-length check admits it too.
+            let delta = stock
+                .preview_sweep(&prepared, &motion, 1., m.sweep, &cancel)
+                .unwrap_or_else(|e| panic!("draft {draft}: {:?}: {e}", motion.curve));
+            stock.apply_delta(&delta).unwrap();
+            if a[2] == b[2] {
+                cut.push(motion.curve);
+            }
+        }
+        assert!(
+            minimum_z < -77.,
+            "did not reach the final layer: {minimum_z}"
+        );
+        assert!(deep > 20, "{deep} moves deeper than the flutes");
+        // The case at issue: moves that lie on no earlier move's path.
+        assert!(new_paths > 0, "{new_paths} of {deep} deep moves are new");
+    }
+}
+
+/// #200: the proof gives nothing away. A shank 0.1 mm wider than the
+/// cutter does not fit where the cutter alone has been (the 0.01 mm draft
+/// leaves it 9 um, it needs 50): the first move deeper than the flutes
+/// that passes the wall is refused, with the typed refusal.
+#[test]
+fn deep_roughing_refuses_a_shank_a_hair_wider_than_the_cut_above() {
+    let cancel = AtomicBool::new(false);
+    for offset in [true, false] {
+        let mut m = drafted_boss(0.01, offset);
+        m.tools[0].cutter.shank_diameter_mm = 12.1;
+        let prepared = m.tools[0].prepare().unwrap();
+        let mut stock = Stock::new(m.stock.height().unwrap().clone()).unwrap();
+        let mut plan = OperationPlan::prepare_with_stock(
+            m.operations[0].clone(),
+            &m.tools[0],
+            &stock,
+            m.initial_position_mm,
+            1,
+            &cancel,
+        )
+        .unwrap();
+        let error = loop {
+            match plan.next_motion_with_stock(&stock, &cancel) {
+                Ok(Some(motion)) => {
+                    let delta = stock
+                        .preview_sweep(&prepared, &motion, 1., m.sweep, &cancel)
+                        .unwrap();
+                    stock.apply_delta(&delta).unwrap();
+                }
+                Ok(None) => panic!("a shank wider than the cut ran to the floor"),
+                Err(error) => break error,
+            }
+        };
+        let refusal = camlib::reach::ReachRefusal::parse(&error).expect(&error);
+        assert_eq!(refusal.limit, camlib::reach::ReachLimit::Shank);
+        assert_eq!(refusal.depth_available_mm, 75.);
+        assert!(refusal.z_mm < -75. && refusal.top_z_mm > refusal.z_mm + 75.);
+        assert!(error.contains("would meet remaining stock"), "{error}");
+    }
+}
+
 fn circle(c: &Curve) -> Option<([f64; 3], f64)> {
     match *c {
         Curve::Arc {

@@ -2138,7 +2138,7 @@ impl PocketPlan {
                     feed_mm_min: Some(o.feed_mm_min),
                 };
                 let mut work = u64::MAX;
-                if !stock.repeated_clearance(&swept, self.radius, 0., &mut work, cancel)? {
+                if !stock.history_clearance(&swept, self.radius, 0., &mut work, cancel)? {
                     return Err(format!(
                         "pocket {}: planner defect: the ramp entry at ({:.4}, {:.4}) for the level at Z{z} starts at Z{from}, but the committed stock does not show the path ({:.4}, {:.4}) -> ({:.4}, {:.4}) cut to that height by the level above; refusing rather than descending straight into material. Please report this",
                         o.id, s.a[0], s.a[1], stroke.a[0], stroke.a[1], stroke.b[0], stroke.b[1]

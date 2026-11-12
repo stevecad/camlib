@@ -726,7 +726,7 @@ impl<C: CancelSignal> Search<'_, C> {
                 let radius = part.radius.at(part.min).max(part.radius.at(part.max));
                 let mut work = self.options.max_nodes.saturating_sub(self.stats.nodes);
                 let before = work;
-                let clear = self.stock.repeated_clearance(
+                let clear = self.stock.history_clearance(
                     self.motion,
                     radius,
                     part.min,

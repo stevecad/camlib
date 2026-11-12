@@ -28,8 +28,8 @@
 //! every inner one. The neck, shank and holder never cut: a move whose
 //! non-cutting sweep may meet possible material (before the move) is
 //! refused, unless one grid proves that sweep empty (or the height view's
-//! native proof that the same path was cleared before,
-//! `Stock::repeated_clearance`).
+//! native proof that committed cutter sweeps hold it,
+//! `Stock::history_clearance`).
 use super::{DexelDelta, DexelGrid, DexelStock, RayChange, Spans, intersect, normalize, subtract};
 use crate::{
     motion::{Curve, Motion, Plane, Vec3},
@@ -664,7 +664,7 @@ impl DexelStock {
         }
         if kernel.perm == [0, 1, 2] && kernel.sign[2] > 0. {
             let mut work = kernel.max_visits.saturating_sub(kernel.visits);
-            if self.view.repeated_clearance(
+            if self.view.history_clearance(
                 motion,
                 profile.radius,
                 profile.cutting,

@@ -419,14 +419,35 @@ cleared. Further options:
 Total roughing depth may exceed the flute length: each deeper layer is
 prepared for its actual increment below the preceding layer, with a reserve
 for conservative stock bounds. Above the flutes, every emitted move must keep
-the declared shank and holder clear of committed stock. An exactly repeated
-path can reuse a native committed cutter footprint above its cleared floor,
-including a shank of the same radius. This proof requires exact path
-containment; it does not infer clearance from nearby paths, samples or decoded
-cell heights. Otherwise whole-cell bounds must prove clearance. An unresolved
-assembly check refuses the move, naming the layer, tool part and tip height
-needed to keep that part above the original stock. A wider shank or low holder
-can therefore still prevent reaching the requested floor.
+the declared shank and holder clear of committed stock. A move is admitted
+when one of these proves each section above the flutes clear over the whole
+move:
+
+- whole-cell stock bounds (nothing in reach stands as high as the section);
+- the cutter sweeps already committed. The section's sweep, everything within
+  its radius of the move's path, must lie inside the union of the sweeps cut
+  at or below the section's bottom, or outside the stock. A straight-shank
+  end mill (shank as wide as the cutter) is therefore clear wherever the
+  layers above cut: on a path that repeats theirs, exactly, with no margin
+  (a line may run along several collinear earlier moves; an arc must be the
+  same arc), and anywhere between their passes, as on a drafted or stepped
+  wall where each layer's passes lie inside those above. Apart from exact
+  repeats, the section is grown by the move's path error and every sweep is
+  shrunk by its own (both of the order of the stock sweep's `tolerance_mm`);
+  no other allowance is made, and nothing is inferred from samples.
+
+The same proof decides the stock sweep's cutting-length check and the
+stock-contact verification of the shank, so a move the planner admits is not
+flagged afterwards. A move whose shank or holder would enter stock that no
+layer above removed is refused with a typed reach refusal naming the layer,
+the tool part, the stock it would meet and the tip height. A wider shank or
+low holder can therefore still prevent reaching the requested floor. In the
+terms of Autodesk Fusion's shaft and holder modes (Fusion help, "Shaft and
+Holder Modes reference": separate shaft and holder clearances; "Fail on
+collision" aborts the toolpath when the safe distance is violated), this is
+fail-on-collision with no added clearance, judged against the stock as the
+run has cut it: the tool body may pass exactly where the cutter has been, and
+nowhere else.
 
 ## Contour: `Contour`
 
