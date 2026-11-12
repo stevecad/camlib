@@ -202,21 +202,23 @@ class PlanningProgressTest(unittest.TestCase):
                 sim.cancel()
         return gaps, time.perf_counter() - started
 
-    def test_a_slow_plan_reports_at_least_every_second_before_its_first_move(self):
+    def test_a_plan_reports_at_its_interval_before_its_first_move(self):
         # The adaptive roughing fixture plans for seconds before it moves.
-        interval = 0.5
+        # The interval is far below the planning time on any machine, so the
+        # test does not depend on how fast this one is.
+        interval = 0.05
         gaps, planned = self.gaps("roughing-adaptive", interval, until_first_move=True)
-        self.assertGreater(planned, 2, "no longer a slow planning call: use a slower one here")
+        self.assertGreater(planned, 10 * interval, "planning no longer spans several intervals: use a slower plan")
         self.assertGreaterEqual(len(gaps), planned / interval / 2)
         self.assertLess(max(gaps), 2 * interval + 0.5, gaps)
 
-    def test_a_slow_plan_reports_at_least_every_second_between_moves(self):
+    def test_a_plan_reports_at_its_interval_between_moves(self):
         # On a fine grid the engagement front spends over a second choosing
         # a pass between two moves (its scan of cached start candidates):
         # the timer sends progress through it.
-        interval = 0.25
+        interval = 0.05
         gaps, planned = self.gaps("roughing-open-block", interval, cell_size_mm=0.15)
-        self.assertGreater(planned, 2, "no longer a slow planning call: use a slower one here")
+        self.assertGreater(planned, 10 * interval, "planning no longer spans several intervals: use a slower plan")
         self.assertGreaterEqual(len(gaps), planned / interval / 2)
         self.assertLess(max(gaps), 2 * interval + 0.5, gaps)
 
