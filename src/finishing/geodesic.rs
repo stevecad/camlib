@@ -1174,11 +1174,16 @@ fn level_peaks(
         cancel,
         |c, signal| {
             let mut out = vec![];
-            for f in c * nf / chunks..(c + 1) * nf / chunks {
+            let (first, end) = (c * nf / chunks, (c + 1) * nf / chunks);
+            for (f, edges) in drive.topo.tri_edges[first..end]
+                .iter()
+                .enumerate()
+                .map(|(i, edges)| (first + i, edges))
+            {
                 if f % 1024 == 0 && signal.is_cancelled() {
                     return Err("geodesic planning cancelled".into());
                 }
-                let lb = drive.topo.tri_edges[f]
+                let lb = edges
                     .iter()
                     .map(|&e| emax[e as usize])
                     .fold(f64::NEG_INFINITY, f64::max);
