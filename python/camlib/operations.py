@@ -1804,6 +1804,17 @@ class MicroJoints:
 
 
 @dataclass(frozen=True)
+class CommonLine:
+    """Common-line cutting for ``ThermalCut``: two parts whose facing straight
+    edges are exactly ``ThermalCut.common_line_spacing_mm()`` apart (one kerf
+    path between them) share a single cut along that edge. The shared edge
+    must be a complete edge of both parts, at least ``min_length_mm`` long,
+    with the parts flush at both ends (pairs and rows)."""
+
+    min_length_mm: float
+
+
+@dataclass(frozen=True)
 class ThermalCut:
     """Plasma or laser profile cutting of sheet parts (``parts``: a
     PlanarRegion whose components are the parts to keep, each with holes)
@@ -1823,7 +1834,13 @@ class ThermalCut:
     ``pierce_height_mm`` and ``cut_height_mm`` above the sheet top itself.
     ``height_control`` turns torch height control on for each loop (not over
     leads, nor in ``small_holes``). ``compensation="wear"`` posts G41/G42 so
-    the kerf can be trimmed at the controller."""
+    the kerf can be trimmed at the controller.
+
+    ``common_line=CommonLine(min_length_mm)`` cuts the shared straight edge
+    of parts placed ``common_line_spacing_mm()`` apart once: holes first,
+    then each common line (pierced in the scrap on its extension), then the
+    one outline of the group. Parts whose kerf paths coincide in any other
+    way are refused; the report lists the ``common_lines``."""
 
     id: str
     tool: object
@@ -1850,6 +1867,14 @@ class ThermalCut:
     work_offset: int = 1
     tool_number: int = field(kw_only=True)
     length_register: int = field(kw_only=True)
+    common_line: CommonLine | None = field(default=None, kw_only=True)
+
+    def common_line_spacing_mm(self):
+        """The gap between two parts whose facing edges are a common line:
+        twice the applied offset, so that the one kerf path between them is
+        the compensated path of both (the kerf width plus the boundary
+        allowance the cut leaves on each part)."""
+        return self.tool.cutter.diameter_mm + 2 * self.parts.boundary_error_mm + self.boundary_tolerance_mm
 
     def to_dict(self):
         result = {field: getattr(self, field) for field in self.__dataclass_fields__}
@@ -1874,6 +1899,8 @@ class ThermalCut:
                 for k, v in dict(width_mm=m.width_mm, count=m.count, spacing_mm=m.spacing_mm, holes=m.holes).items()
                 if v is not None
             }
+        if self.common_line is not None:
+            result["common_line"] = dict(min_length_mm=self.common_line.min_length_mm)
         for key in (
             "pierce_height_mm",
             "travel_height_mm",
@@ -1881,6 +1908,7 @@ class ThermalCut:
             "pierce_clearance_mm",
             "small_holes",
             "micro_joints",
+            "common_line",
         ):
             if result[key] is None:
                 result.pop(key)

@@ -747,7 +747,7 @@ impl DefaultPost {
                     .work_offset
                     .ok_or("probing a work offset needs the active work offset selected first")?;
                 let mut words = vec!["G10 L2".to_string(), format!("P{number}")];
-                for axis in 0..3 {
+                for (axis, letter) in d.axes.iter().enumerate().take(3) {
                     let used: Vec<usize> = touches
                         .iter()
                         .enumerate()
@@ -762,7 +762,7 @@ impl DefaultPost {
                     };
                     words.push(format!(
                         "{}[#{} + {error}]",
-                        d.axes[axis],
+                        letter,
                         5201 + 20 * active as usize + axis
                     ));
                 }

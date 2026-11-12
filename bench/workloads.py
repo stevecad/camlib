@@ -407,6 +407,12 @@ def _plasma():
     return _options(t.job())
 
 
+def _plasma_common_line():
+    import test_thermal_common_line as t
+
+    return _options(t.job(t.cut(count=4)))
+
+
 # --- turning ----------------------------------------------------------------
 
 
@@ -755,6 +761,13 @@ WORKLOADS = (
         "Plasma-cut a plate with holes and a nested washer",
         {"plasma": ("ThermalCut", 48)},
         _plasma,
+    ),
+    Workload(
+        "plasma-common-line",
+        "thermal",
+        "Plasma-cut a row of four flush rectangles with common lines",
+        {"plasma": ("ThermalCut common line", 17)},
+        _plasma_common_line,
     ),
     Workload(
         "lathe-shaft",

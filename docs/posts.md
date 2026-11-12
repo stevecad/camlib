@@ -53,6 +53,17 @@ gauge length, and `Machine.verification_limits()` gives the planned-move
 checks the same limits. See
 [Machine travel with tools of different lengths](python.md).
 
+The decoded words are compared with the travel by the same rule as the
+planned moves ([the travel rule](python.md#the-travel-rule)): a position on a
+limit is inside, a decoded position beyond one is refused however small the
+step. Words are rounded to `decimals`, so a planned position on a limit is
+written exactly only when the work offset and the limit are multiples of the
+output step; otherwise it can round beyond the limit and the post refuses,
+naming the axis, the decoded position and the limit.
+An arc whose rounded words leave its end off the circle drawn from the start
+about the centre (an endpoint gap) must be inside the limit by that gap: an
+arc tangent to a travel limit posts only when its words are exact.
+
 Key settings:
 
 - **`tools`**: the machine tool table. `position_after_mm` is where the tool

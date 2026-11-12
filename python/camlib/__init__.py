@@ -79,6 +79,7 @@ _EXPORTS = {
             "Lead",
             "SmallHoles",
             "MicroJoints",
+            "CommonLine",
             "Flat",
             "Pencil",
             "Scallop",

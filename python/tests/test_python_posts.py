@@ -698,6 +698,159 @@ class PythonPosts(unittest.TestCase):
         with self.assertRaises(ValueError):
             list(post_program(p, replace(m, tools=(replace(m.tools[0], gauge_length_mm=99),))))
 
+    def test_one_travel_rule_a_limit_is_inside_and_a_word_rounded_beyond_it_is_refused(self):
+        # 246: the posted-output check holds the decoded words (what the
+        # controller executes) to the plan check's travel rule. Travel
+        # X 0..300, Y 0..200, Z -300..-150 (machine).
+        from camlib.verification import Scene, Verifier
+
+        travel = ((0, 0, -300), (300, 200, -150))
+        start = (5, 0, 3)
+
+        def run(machine, *points):
+            p, m = machine
+            moves, at = [], start
+            for i, point in enumerate(points):
+                moves.append(Motion(i + 1, 'pocket', 't1', Line(at, point), 1200))
+                at = point
+            return ''.join(c.text for c in post_program(replace(p, events=(*p.events[:4], *moves)), m))
+
+        def scene(m):
+            return Scene('mill', '1', machine=m.verification_limits(), work_to_machine=m.work_to_machine)
+
+        def planned(m, *points):
+            with Verifier(scene(m)) as verifier:
+                at = start
+                for point in points:
+                    report = verifier.check(fixture()[0].tools[0], Motion(1, 'pocket', 't1', Line(at, point), 1200))
+                    if any(f['kind'] == 'machine_travel' for f in report['findings']):
+                        return False
+                    at = point
+            return True
+
+        on_grid = self.machine(tip_travel_mm=travel, work_to_machine=WorkFrame((100, 50, -200)))
+        for decoder in (GCodeDecoder, NativeGCodeDecoder):
+            # Into the corner of three limits: on them, so inside, in both checks.
+            p, m = on_grid
+            corner = (200, 150, 50)
+            self.assertTrue(planned(m, corner))
+            text = ''.join(
+                c.text
+                for c in post_program(
+                    replace(p, events=(*p.events[:4], Motion(1, 'pocket', 't1', Line(start, corner), 1200))),
+                    m,
+                    decoder=decoder,
+                )
+            )
+            self.assertIn('X200', text)
+        # 1e-6 mm beyond a limit, written as it is (six decimals): refused, as the plan check reports it.
+        fine = self.machine(tip_travel_mm=travel, work_to_machine=WorkFrame((100, 50, -200)), decimals=6)
+        for beyond, axis, side in (
+            ((200.000001, 150, 50), 'X', 'above'),
+            ((200, 150.000001, 50), 'Y', 'above'),
+            ((200, 150, 50.000001), 'Z', 'above'),
+            ((-100.000001, 0, 3), 'X', 'below'),
+        ):
+            self.assertFalse(planned(fine[1], beyond))
+            with self.assertRaisesRegex(ValueError, f'machine travel on machine {axis}: .* {side} its limit'):
+                run(fine, beyond)
+        run(fine, (200, 150, 50))
+        # A work offset off the 0.001 mm output grid: the plan ends on the X
+        # limit (machine X 300); its word, rounded to three decimals, is
+        # 0.0004 mm beyond. Refused, never tolerated.
+        off_grid = self.machine(tip_travel_mm=travel, work_to_machine=WorkFrame((100.0004, 50, -200)))
+        end = (199.9996, 150, 50)
+        self.assertTrue(planned(off_grid[1], end))
+        with self.assertRaisesRegex(
+            ValueError, 'machine X: tip at 300.000400 mm, above its limit 300.000000 mm.*rounded beyond'
+        ):
+            run(off_grid, end)
+        # Written with a fourth decimal the position is exact and inside.
+        self.assertIn('X199.9996', run((off_grid[0], replace(off_grid[1], decimals=4)), end))
+        # A rotated work frame: the move itself is decided, not a box around
+        # it (the corners of this diagonal's work-axis box are outside).
+        angle = math.pi / 6
+        c, s = math.cos(angle), math.sin(angle)
+        frame = WorkFrame((140, 90, -200), (c, s, 0), (-s, c, 0), (0, 0, 1))
+
+        def work(q):
+            d = [q[i] - frame.origin_mm[i] for i in range(3)]
+            return tuple(sum(d[i] * axis[i] for i in range(3)) for axis in (frame.x, frame.y, frame.z))
+
+        turned = self.machine(tip_travel_mm=travel, work_to_machine=frame)
+        a, b = work((1, 20, -195)), work((250, 180, -160))
+        self.assertTrue(planned(turned[1], a, b))
+        run(turned, a, b)
+        out = work((300.002, 180, -160))
+        self.assertFalse(planned(turned[1], a, out))
+        with self.assertRaisesRegex(ValueError, 'machine travel on machine X'):
+            run(turned, a, out)
+
+    def test_a_decoded_arc_is_inside_travel_only_by_its_endpoint_gap(self):
+        # 246: a decoded arc whose words leave an endpoint gap is not one
+        # curve (controllers reconcile the two radii differently), so the
+        # posted check admits it only when its nominal circle is inside the
+        # limit by the gap. Travel Y 0..200 (machine), work Y 150 at the limit.
+        from camlib.verification import Scene, Verifier
+
+        travel = ((0, 0, -300), (300, 200, -150))
+        start = (5, 0, 3)
+
+        def program(machine, top, to_deg):
+            # Radius 10 about (55, top - 10), clockwise from 180 degrees over the top to `to_deg`.
+            p, m = machine
+            cy, a = top - 10, math.radians(to_deg)
+            begin, end = (45, cy, 3), (55 + 10 * math.cos(a), cy + 10 * math.sin(a), 3)
+            arc = Motion(2, 'pocket', 't1', Arc(begin, end, (55, cy, 3), a - math.pi), 1200)
+            return replace(p, events=(*p.events[:4], Motion(1, 'pocket', 't1', Line(start, begin), 1200), arc)), m, arc
+
+        def planned(m, arc):
+            scene = Scene('mill', '1', machine=m.verification_limits(), work_to_machine=m.work_to_machine)
+            with Verifier(scene) as verifier:
+                return verifier.check(fixture()[0].tools[0], arc)['status']
+
+        def decoded_reach(p, m):
+            # Independent of the checker: the highest work Y the decoded arc's
+            # nominal circle reaches (it passes over the top), plus its gap.
+            (arc,) = [x.curve for c in post_program(p, m) for x in c.motions if isinstance(x.curve, Arc)]
+            radius = math.hypot(arc.start[0] - arc.center[0], arc.start[1] - arc.center[1])
+            angle = math.atan2(arc.start[1] - arc.center[1], arc.start[0] - arc.center[0]) + arc.sweep_rad
+            nominal = (arc.center[0] + radius * math.cos(angle), arc.center[1] + radius * math.sin(angle))
+            gap = math.hypot(nominal[0] - arc.end[0], nominal[1] - arc.end[1])
+            return arc.center[1] + radius + gap, gap
+
+        for decimals in (3, 6):
+            machine = self.machine(tip_travel_mm=travel, work_to_machine=WorkFrame((100, 50, -200)), decimals=decimals)
+            # A half turn tangent to the limit: every word is exact, no gap, it posts.
+            p, m, arc = program(machine, 150, 0)
+            self.assertEqual(planned(m, arc), 'clear')
+            self.assertRegex(''.join(c.text for c in post_program(p, m)), r'G0?2 .*I10')
+            self.assertEqual(decoded_reach(p, m), (150, 0))
+            # Tangent, ending at 60 degrees: the end is not on the output
+            # grid. The plan is clear. Whatever words the post writes, the
+            # program is released only if the decoded arc is inside by its gap:
+            # at three decimals the post's closing words put the arc a few
+            # micrometres inside; at six they leave a gap at the limit.
+            p, m, arc = program(machine, 150, 60)
+            self.assertEqual(planned(m, arc), 'clear')
+            try:
+                reach, gap = decoded_reach(p, m)
+            except ValueError as refused:
+                self.assertRegex(
+                    str(refused),
+                    'decoded arc of tool t1 is not inside configured machine travel on machine Y: its nominal '
+                    'extreme at 200.000000 mm .* maximum 200.000000 mm.* endpoint gap of .*more decimals.*lower it to lines',
+                )
+                self.assertEqual(decimals, 6)
+            else:
+                self.assertLessEqual(reach, 150)
+                self.assertEqual(decimals, 3)
+            # Well inside the limit (by far more than a rounding gap): it posts, inside by its gap.
+            p, m, arc = program(machine, 149.9, 60)
+            reach, gap = decoded_reach(p, m)
+            self.assertLess(gap, 10**-decimals)
+            self.assertLessEqual(reach, 150)
+
     def test_gauge_line_travel_checks_each_decoded_tool_at_its_own_length(self):
         # 176: the gauge line travels Z -400..0 (machine); the work origin is
         # at machine Z -300. The 60 mm tool's tip reaches work Z 240, the

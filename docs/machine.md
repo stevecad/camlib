@@ -29,7 +29,7 @@ a mill and a lathe, not dimensions suitable for a real machine.
 | --- | --- |
 | `id`, `revision`, `controller_reference` | Stable model identity and the manual/settings that establish its controller behavior |
 | `process` | `milling` or `turning`; thermal equipment is refused |
-| `axes` | Three `Axis(drive, min_mm, max_mm)`, XYZ machine-axis travel. Drive is `head`, `table` or `fixed`; a fixed axis has equal limits |
+| `axes` | Three `Axis(drive, min_mm, max_mm)`, XYZ machine-axis travel, limits included ([the travel rule](python.md#the-travel-rule)). Drive is `head`, `table` or `fixed`; a fixed axis has equal limits |
 | `work_offset`, `work_to_machine` | Selected G54..G59.3 and the physical work-to-machine frame, matching the bound post definition. Work X/Y may rotate about upright Z; turning uses upright XZ. `Machine.frame` identifies the CAD/setup frame, not a second physical transform |
 | `work_error_min_mm`, `work_error_max_mm` | A common calibration interval around the declared work frame, enclosing zero. Stock, fixtures and commanded work coordinates share this error; it cancels in relative checks where appropriate |
 | `initial_axes_mm`, `initial_tool` | Actual expected initial machine-axis coordinates and preloaded tool ID, or explicit `None` for an empty spindle/turret station |
@@ -97,6 +97,20 @@ motion ID/event index or controller route. For independent-axis envelopes, the
 fraction is an enclosure parameter, not a reconstructed controller time. A
 later incomplete phase preserves
 any definite collision already found.
+
+**Axis travel** is decided by [the travel rule](python.md#the-travel-rule),
+the same one the planned-move check and the posted-program check use: the
+travel is closed (a position on a limit is inside) and a decoded position is
+exact. `options.tolerance_mm` plays no part in it. A decoded move's axis
+position is known to the declared calibration interval (`work_error_*_mm` and
+the tool's gauge-offset bounds), so it is an interval on each axis: `clear`
+only if the whole interval is inside, a `violation` only if the whole interval
+is beyond a limit, `uncertain` while it straddles one; the finding states the
+interval and the limit. With no calibration interval a position is inside or
+a violation, never uncertain. The initial position and route waypoints are
+declared machine-axis positions: no interval, compared exactly. A decoded arc
+whose words leave an endpoint gap is known to that gap either side of its
+nominal circle.
 
 Continuous separation uses convex face normals and edge cross products.
 Linear relative translation is clipped over the whole time interval; curves

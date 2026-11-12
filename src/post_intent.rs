@@ -369,48 +369,100 @@ impl IntentChecker {
         check_chunk_size(&output)?;
         Ok((state, output))
     }
-    /// `point` (a tip position, work coordinates) against the machine's
-    /// travel, with `tool` in the spindle. The start pose has no program
-    /// tool (`None`): on the gauge line it is checked as the start of the
-    /// first move, with that move's tool; the machine is already there.
-    fn check_point(&self, point: Vec3, tool: Option<&str>) -> Result<(), String> {
-        let machine = self.settings.work_to_machine.to_design(point);
+    /// The travel of `tool`'s tip, when one is checked: the declared tip
+    /// box, or the gauge line's box lowered by the tool's gauge length. The
+    /// start pose has no program tool (`None`): on the gauge line it is
+    /// checked as the start of the first move, with that move's tool; the
+    /// machine is already there.
+    fn tip_travel(&self, tool: Option<&str>) -> Result<Option<crate::travel::Travel>, String> {
         if let Some([min, max]) = self.settings.tip_travel_mm {
-            if (0..3).any(|i| machine[i] < min[i] || machine[i] > max[i]) {
-                return Err("decoded tool tip exceeds configured machine travel".into());
-            }
-            return Ok(());
+            return Ok(Some(crate::travel::Travel::tip(min, max)));
         }
         let (Some([min, max]), Some(tool)) = (self.settings.gauge_travel_mm, tool) else {
-            return Ok(());
+            return Ok(None);
         };
         let length = *self
             .gauge_lengths
             .get(tool)
             .ok_or_else(|| format!("gauge-line travel: tool {tool} is not a program tool"))?;
         // The gauge line is the tip raised by the gauge length (G43).
-        let gauge = [machine[0], machine[1], machine[2] + length];
-        // As the planned-move check (verification::check_travel): a limit
-        // is inside, and binary64 representation error of the transformed
-        // position is not a step any controller commands.
-        let scale = point
-            .into_iter()
-            .chain(self.settings.work_to_machine.origin_mm)
-            .map(f64::abs)
-            .sum::<f64>()
-            .max(1.)
-            + length;
-        let guard = 256. * f64::EPSILON * scale;
-        if let Some(i) = (0..3).find(|&i| gauge[i] < min[i] - guard || gauge[i] > max[i] + guard) {
-            return Err(format!(
-                "decoded tool {tool} (gauge length {length} mm) exceeds configured machine travel on machine {}: gauge line at {:.6} mm, travel {:.6} to {:.6} mm",
-                ["X", "Y", "Z"][i],
-                gauge[i],
-                min[i],
-                max[i]
-            ));
+        Ok(Some(crate::travel::Travel::gauge_line(min, max, length)))
+    }
+    /// The refusal for a decoded position outside the travel. The decoded
+    /// words are what the controller executes, so this is never tolerated,
+    /// whatever put the position there (`crate::travel`).
+    fn travel_refusal(&self, found: &crate::travel::Outside, tool: Option<&str>) -> String {
+        let axis = ["X", "Y", "Z"][found.axis];
+        let k = found.axis;
+        if let Some(gap) = found.nominal_gap_mm {
+            // A point of a decoded arc's nominal circle, not a decoded end.
+            let side = if found.low { "minimum" } else { "maximum" };
+            let (at, limit) = (found.machine_mm[k], found.limit_mm);
+            let tool = tool.unwrap_or("?");
+            let state = if found.beyond_mm > 0. {
+                format!("{:.3e} mm beyond", found.beyond_mm)
+            } else {
+                format!("{:.3e} mm inside", found.beyond_mm.abs())
+            };
+            return format!(
+                "decoded arc of tool {tool} is not inside configured machine travel on machine {axis}: its nominal extreme at {at:.6} mm is {state} the tip's travel {side} {limit:.6} mm, and its words leave an endpoint gap of {gap:.3e} mm (the end is that far off the circle drawn from the start about the centre). Controllers reconcile the two radii differently, so the executed path is only known within the gap of the nominal circle and must be inside the limit by the gap. Write the arc with more decimals, keep it the gap inside the limit, or lower it to lines (a machine with arcs=False, posted with lowering)"
+            );
         }
-        Ok(())
+        let subject = match (self.settings.gauge_travel_mm, tool) {
+            (Some([min, max]), Some(tool)) => {
+                let length = self.gauge_lengths.get(tool).copied().unwrap_or(0.);
+                let raise = if k == 2 { length } else { 0. };
+                format!(
+                    "decoded tool {tool} (gauge length {length} mm) exceeds configured machine travel on machine {axis}: gauge line at {:.6} mm, travel {:.6} to {:.6} mm",
+                    found.machine_mm[k] + raise,
+                    min[k],
+                    max[k]
+                )
+            }
+            _ => format!(
+                "decoded tool tip exceeds configured machine travel on machine {axis}: tip at {:.6} mm, {} its limit {:.6} mm",
+                found.machine_mm[k],
+                if found.low { "below" } else { "above" },
+                found.limit_mm
+            ),
+        };
+        format!(
+            "{subject} (beyond by {:.3e} mm). The controller executes the posted words and stops on its travel limit. A limit itself is inside; if the planned position is inside, the word was rounded beyond the limit: keep the plan one output step inside it, or put the work offset and the limit on the output grid, so a position on the limit is written exactly",
+            found.beyond_mm
+        )
+    }
+    /// A decoded position (a tip position, work coordinates) against the
+    /// machine's travel, with `tool` in the spindle: the one travel rule
+    /// (`crate::travel`), as the plan check (`verification::check_travel`).
+    fn check_point(&self, point: Vec3, tool: Option<&str>) -> Result<(), String> {
+        let Some(travel) = self.tip_travel(tool)? else {
+            return Ok(());
+        };
+        match crate::travel::point_outside(&self.settings.work_to_machine, &travel, point) {
+            Some(found) => Err(self.travel_refusal(&found, tool)),
+            None => Ok(()),
+        }
+    }
+    /// A decoded move against the machine's travel, in closed form: its
+    /// declared ends and, for an arc or helix, where each machine coordinate
+    /// is stationary, in any work frame.
+    fn check_curve(&self, curve: &Curve, tool: &str) -> Result<(), String> {
+        let Some(travel) = self.tip_travel(Some(tool))? else {
+            return Ok(());
+        };
+        let path = curve.prepare(self.settings.tolerance_mm)?;
+        // A decoded arc is inside only by its endpoint gap: the controller's
+        // path between a start and an end radius that disagree is not known
+        // closer than that (`travel::ArcGap::Executed`).
+        match crate::travel::curve_outside(
+            &self.settings.work_to_machine,
+            &travel,
+            &path,
+            crate::travel::ArcGap::Executed,
+        )? {
+            Some(found) => Err(self.travel_refusal(&found, Some(tool))),
+            None => Ok(()),
+        }
     }
     fn checked_normal_acceleration(
         &self,
@@ -706,19 +758,7 @@ impl IntentChecker {
                         index
                     ));
                 }
-                let bounds = b.curve.prepare(self.settings.tolerance_mm)?.bounds();
-                // Rigid-image AABB encloses the complete line/arc/helix. It can
-                // conservatively reject a rotated box, never verify by endpoints.
-                for bits in 0..8 {
-                    let p = std::array::from_fn(|axis| {
-                        if bits & (1 << axis) == 0 {
-                            bounds.min[axis]
-                        } else {
-                            bounds.max[axis]
-                        }
-                    });
-                    self.check_point(p, Some(&b.tool))?;
-                }
+                self.check_curve(&b.curve, &b.tool)?;
                 (Some(b.clone()), Some(bound))
             }
             (
@@ -1885,3 +1925,7 @@ mod gauge_travel_tests {
 #[cfg(test)]
 #[path = "post_intent/scheduling_tests.rs"]
 mod scheduling_tests;
+
+#[cfg(test)]
+#[path = "post_intent/travel_tests.rs"]
+mod travel_tests;

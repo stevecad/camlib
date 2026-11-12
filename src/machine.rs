@@ -238,14 +238,26 @@ impl Model {
                 || a.max_mm.abs() > 1e6
                 || a.min_mm > a.max_mm
                 || (a.drive == Drive::Fixed) != (a.min_mm == a.max_mm)
-                || self.initial_axes_mm[k] < a.min_mm
-                || self.initial_axes_mm[k] > a.max_mm
             {
                 return Err(format!(
                     "machine axis {} needs ordered travel and an initial position inside it; fixed axes have equal limits",
                     ["X", "Y", "Z"][k]
                 ));
             }
+        }
+        // The start position by the travel rule (`crate::travel`): a declared
+        // machine-axis position, compared exactly; on a limit is inside.
+        if let Some(found) = crate::travel::axes_outside(
+            &crate::travel::Travel::tip(
+                std::array::from_fn(|k| self.axes[k].min_mm),
+                std::array::from_fn(|k| self.axes[k].max_mm),
+            ),
+            self.initial_axes_mm,
+        ) {
+            return Err(format!(
+                "machine axis {} needs ordered travel and an initial position inside it; fixed axes have equal limits",
+                ["X", "Y", "Z"][found.axis]
+            ));
         }
         o.stock_contact.validate()?;
         let mut tool_ids = BTreeSet::new();

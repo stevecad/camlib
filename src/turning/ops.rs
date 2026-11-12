@@ -684,10 +684,18 @@ pub fn validate_tool(tool: &TurningTool) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread built a tool's geometry (#214).
+    static GEOMETRY_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(crate) fn tool_geometry(
     t: &TurningTool,
     controlled_point: ControlledPoint,
 ) -> Result<ToolGeom, String> {
+    #[cfg(test)]
+    GEOMETRY_BUILDS.with(|n| n.set(n.get() + 1));
     let shape = t.shape()?;
     // Tool frame (r, z) to (u, v) = (z, r); a left-hand tool mirrors z,
     // a boring tool (cutting outward, inside a bore) mirrors r.
@@ -3248,6 +3256,13 @@ pub struct TurnReplay {
     stock: Option<TurnStock>,
     last_cut: Option<([f64; 2], [f64; 2])>,
     last_thread: Option<[f64; 2]>,
+    /// Each tool's geometry, built when its first move is replayed and
+    /// reused for the rest (#214): one slot per entry of `job.tools`. The
+    /// geometry is a function of the tool setting's tool and the job's
+    /// controlled point only (`tool_geometry`), and the job is this
+    /// replay's own and never changes, so the entry's index is the whole
+    /// key. A tool whose geometry is refused is not stored.
+    geometry: Vec<Option<ToolGeom>>,
 }
 
 impl TurnReplay {
@@ -3263,6 +3278,7 @@ impl TurnReplay {
                 .map(|b| b.envelope(tol / 4.))
                 .transpose()?,
             stock: Some(TurnStock::new(job.stock.clone())?),
+            geometry: job.tools.iter().map(|_| None).collect(),
             job,
             last_cut: None,
             last_thread: None,
@@ -3298,17 +3314,18 @@ impl TurnReplay {
         if start[1] != 0. || end[1] != 0. || arc.is_some_and(|(c, _)| c[1] != 0.) {
             return Err("lathe moves lie in the XZ plane (y 0)".into());
         }
-        let setting = self
+        let index = self
             .job
             .tools
             .iter()
-            .find(|t| t.tool.id == motion.tool)
+            .position(|t| t.tool.id == motion.tool)
             .ok_or_else(|| {
                 format!(
                     "{}: tool {:?} is not in the setup",
                     motion.operation, motion.tool
                 )
             })?;
+        let setting = &self.job.tools[index];
         let never = std::sync::atomic::AtomicBool::new(false);
         let mut planner = Planner {
             job: &self.job,
@@ -3333,8 +3350,12 @@ impl TurnReplay {
             .iter()
             .find(|o| o.id() == motion.operation);
         let plain = (planner.part.clone(), planner.bore.clone());
+        let slot = &mut self.geometry[index];
         let result = (|| {
-            let geom = planner.geometry(&setting.tool)?;
+            let geom: &ToolGeom = match slot {
+                Some(geom) => geom,
+                None => slot.insert(planner.geometry(&setting.tool)?),
+            };
             if let Some(op) = operation {
                 let (part, bore) = thread_relief(
                     op,
@@ -3363,7 +3384,7 @@ impl TurnReplay {
             // with it.
             let arc = arc.map(|(c, sweep)| ([c[2] - t[0], c[0] - t[1]], sweep));
             planner.travel(
-                &geom,
+                geom,
                 &motion.operation,
                 arc,
                 to,
@@ -6557,6 +6578,245 @@ test_tool("groove_in".into(), Insert::Groove { width_mm: 3.,
         };
         let err = plan_err(&j);
         assert!(err.contains("the holder would hit"), "{err}");
+    }
+
+    /// The replay builds each tool's geometry once and reuses it (#214).
+    mod replay_tool_geometry {
+        use super::*;
+        use crate::turning::model::testing::*;
+
+        /// Jobs over every kind of tool geometry: outline inserts outside
+        /// and in a bore, a drill, a grooving blade, a threading insert
+        /// (its moves replayed against the part with the thread cut), arcs,
+        /// an insert with a size tolerance (#113), a solid boring bar (#114)
+        /// and a holder from a supplied model (#110).
+        fn jobs() -> Vec<(&'static str, TurningJob)> {
+            let mut thread = job();
+            thread.tools.push(TurnToolSetting {
+                tool: test_tool(
+                    "thread60".into(),
+                    Insert::Thread {
+                        profile_angle_deg: 60.,
+                        depth_mm: 3.,
+                    },
+                    0.1,
+                    TurnSide::Outer,
+                    Hand::Right,
+                    16.,
+                    60.,
+                    0.,
+                ),
+                number: 3,
+                offset: 3,
+            });
+            thread.operations.push(TurnOperation::Thread {
+                id: "thread".into(),
+                tool: "thread60".into(),
+                z_start_mm: -20.,
+                z_end_mm: -38.,
+                major_radius_mm: 15.,
+                pitch_mm: 2.,
+                depth_mm: 1.227,
+                passes: 6,
+                infeed_angle_deg: 29.5,
+                spring_passes: 1,
+                rpm: 600.,
+                surface_speed_m_min: None,
+            });
+            let code = "CNMG120408";
+            let (insert, rn) = Insert::iso_code(code, 95.).unwrap();
+            let mut sized = shaft_with(insert, rn);
+            sized.clearance_mm = rn + 1.;
+            sized.tools[0].tool = with_size_tolerance(sized.tools[0].tool.clone(), code);
+            let mut modelled = job();
+            let holder = tool_geometry(&modelled.tools[0].tool, modelled.controlled_point)
+                .unwrap()
+                .holder_body;
+            let (lo, hi) = holder.iter().flatten().fold(
+                ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]),
+                |(lo, hi), p| {
+                    (
+                        std::array::from_fn(|k| lo[k].min(p[k])),
+                        std::array::from_fn(|k| hi[k].max(p[k])),
+                    )
+                },
+            );
+            modelled.tools[0].tool.body.as_mut().unwrap().model =
+                Some(model(box_mesh(lo, hi), 0., 0.5));
+            vec![
+                ("shaft", job()),
+                ("bore", bore_job()),
+                ("groove", groove_job()),
+                ("thread", thread),
+                ("arcs", rounded_job()),
+                ("size tolerance", sized),
+                ("solid bar", solid_bar_job(20., 5.5)),
+                ("model body", modelled),
+            ]
+        }
+
+        fn motions(plan: &TurnPlan) -> Vec<&Motion> {
+            plan.events
+                .iter()
+                .filter_map(|e| match e {
+                    Event::Motion { motion } => Some(motion),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// Everything a replayed move leaves, as bytes: its stock change or
+        /// its refusal, the stock after it and the state the next move
+        /// reads.
+        fn outcome(result: &Result<TurnDelta, String>, replay: &TurnReplay) -> String {
+            let stock = replay.stock.as_ref().unwrap();
+            format!(
+                "{} {} {} {:?} {:?}",
+                match result {
+                    Ok(delta) => serde_json::to_string(delta).unwrap(),
+                    Err(refusal) => format!("refused: {refusal}"),
+                },
+                serde_json::to_string(stock.cells()).unwrap(),
+                serde_json::to_string(stock.rings()).unwrap(),
+                replay.last_cut,
+                replay.last_thread
+            )
+        }
+
+        /// A replay that has built no geometry yet, at `from`'s state: its
+        /// next move builds the tool's geometry anew, as every move did
+        /// before #214.
+        fn rebuilt(j: &TurningJob, from: &TurnReplay) -> TurnReplay {
+            let mut replay = TurnReplay::new(j.clone()).unwrap();
+            replay.stock = from.stock.clone();
+            replay.last_cut = from.last_cut;
+            replay.last_thread = from.last_thread;
+            replay
+        }
+
+        /// `motion` moved 3 mm toward the axis: into the part for most
+        /// outside cuts.
+        fn deeper(motion: &Motion) -> Motion {
+            let mut deep = motion.clone();
+            match &mut deep.curve {
+                Curve::Line { start, end } => {
+                    start[0] -= 3.;
+                    end[0] -= 3.;
+                }
+                Curve::Arc {
+                    start, end, center, ..
+                } => {
+                    start[0] -= 3.;
+                    end[0] -= 3.;
+                    center[0] -= 3.;
+                }
+                _ => panic!("lathe moves are lines and arcs"),
+            }
+            deep
+        }
+
+        #[test]
+        fn the_replay_builds_each_tools_geometry_once() {
+            for (name, j) in jobs() {
+                let plan = plan(&j).unwrap_or_else(|e| panic!("{name}: {e}"));
+                let motions = motions(&plan);
+                let used: std::collections::BTreeSet<&str> =
+                    motions.iter().map(|m| m.tool.as_str()).collect();
+                let mut replay = TurnReplay::new(j.clone()).unwrap();
+                let before = GEOMETRY_BUILDS.get();
+                for motion in &motions {
+                    // A move the checks may refuse builds nothing either
+                    // (offered from this state, which is then put back).
+                    let state = (replay.stock.clone(), replay.last_cut, replay.last_thread);
+                    let _ = replay.motion(&deeper(motion));
+                    (replay.stock, replay.last_cut, replay.last_thread) = state;
+                    replay.motion(motion).unwrap();
+                }
+                let builds = GEOMETRY_BUILDS.get() - before;
+                assert_eq!(builds, used.len(), "{name}: {} moves", motions.len());
+                assert!(motions.len() > 10 * builds, "{name}");
+            }
+        }
+
+        #[test]
+        fn reused_geometry_replays_every_move_exactly_as_rebuilt_geometry() {
+            let mut refused = 0;
+            for (name, j) in jobs() {
+                let plan = plan(&j).unwrap_or_else(|e| panic!("{name}: {e}"));
+                let mut replay = TurnReplay::new(j.clone()).unwrap();
+                for motion in motions(&plan) {
+                    // A move the checks may refuse, from the same state: the
+                    // same refusal, word for word, and the same state after.
+                    let state = (replay.stock.clone(), replay.last_cut, replay.last_thread);
+                    let deep = deeper(motion);
+                    let mut reference = rebuilt(&j, &replay);
+                    let expected = reference.motion(&deep);
+                    let result = replay.motion(&deep);
+                    refused += usize::from(result.is_err());
+                    assert_eq!(
+                        outcome(&result, &replay),
+                        outcome(&expected, &reference),
+                        "{name}: move {} moved 3 mm in",
+                        motion.id
+                    );
+                    (replay.stock, replay.last_cut, replay.last_thread) = state;
+                    // The planned move.
+                    let mut reference = rebuilt(&j, &replay);
+                    let expected = reference.motion(motion);
+                    let result = replay.motion(motion);
+                    assert!(result.is_ok(), "{name}: {result:?}");
+                    assert_eq!(
+                        outcome(&result, &replay),
+                        outcome(&expected, &reference),
+                        "{name}: move {}",
+                        motion.id
+                    );
+                }
+                let stock = replay.stock.as_ref().unwrap();
+                assert_eq!(stock.cells(), plan.stock.cells(), "{name}");
+                assert_eq!(stock.rings(), plan.stock.rings(), "{name}");
+            }
+            assert!(refused > 50, "{refused} refusals compared");
+        }
+
+        /// The replay's time per move with the geometry reused and built
+        /// anew for every move, the moves alone timed, the least of 20
+        /// replays each (run with --ignored --nocapture, in release).
+        #[test]
+        #[ignore = "measurement"]
+        fn replay_time_per_move() {
+            use std::time::{Duration, Instant};
+            for (name, j) in jobs() {
+                let plan = plan(&j).unwrap();
+                let motions = motions(&plan);
+                let (mut reused, mut anew) = (Duration::MAX, Duration::MAX);
+                for _ in 0..20 {
+                    let mut replay = TurnReplay::new(j.clone()).unwrap();
+                    let started = Instant::now();
+                    for motion in &motions {
+                        replay.motion(motion).unwrap();
+                    }
+                    reused = reused.min(started.elapsed());
+                    let mut replay = TurnReplay::new(j.clone()).unwrap();
+                    let mut spent = Duration::ZERO;
+                    for motion in &motions {
+                        let mut next = rebuilt(&j, &replay);
+                        let started = Instant::now();
+                        next.motion(motion).unwrap();
+                        spent += started.elapsed();
+                        replay = next;
+                    }
+                    anew = anew.min(spent);
+                }
+                let moves = motions.len() as u32;
+                println!(
+                    "{name}: {moves} moves, per move {:?} reused, {:?} built anew ({:.2}x)",
+                    reused / moves,
+                    anew / moves,
+                    anew.as_secs_f64() / reused.as_secs_f64()
+                );
+            }
+        }
     }
 
     /// Tool bodies from supplied models (#110).

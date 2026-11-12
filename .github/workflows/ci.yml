@@ -17,6 +17,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# The Rust version is pinned (dtolnay/rust-toolchain@1.100 below), not
+# "stable": clippy gains lints with every release, and with -D warnings a new
+# release failed every open pull request on code none of them touched. Raise
+# it in a pull request of its own, with whatever the new clippy asks for.
+# The minimum supported version (1.88) has its own job.
 env:
   CARGO_TERM_COLOR: always
 
@@ -68,7 +73,7 @@ jobs:
         if: needs.changes.outputs.code == 'true'
         with:
           python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100
         if: needs.changes.outputs.code == 'true'
         with:
           components: rustfmt, clippy
@@ -128,7 +133,7 @@ jobs:
         if: needs.changes.outputs.code == 'true'
         with:
           python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100
         if: needs.changes.outputs.code == 'true'
       - uses: Swatinem/rust-cache@v2
         if: needs.changes.outputs.code == 'true'
@@ -166,7 +171,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100
       - uses: Swatinem/rust-cache@v2
       - name: Install CadQuery
         run: python -m pip install cadquery
@@ -206,7 +211,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100
       - uses: Swatinem/rust-cache@v2
       - name: Build wheel
         run: python -m pip wheel . --no-deps --wheel-dir dist

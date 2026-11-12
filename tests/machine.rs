@@ -256,6 +256,90 @@ fn machine_travel_uses_offset_and_gauge_and_checks_curve_interiors() {
             .any(|f| f.kind == "machine_travel")
     );
 }
+fn travel_finding(s: &mut Session, motions: u64) -> Option<Finding> {
+    s.finish(motions, &|| false)
+        .unwrap()
+        .findings
+        .iter()
+        .find(|f| f.kind == "machine_travel")
+        .cloned()
+}
+#[test]
+fn axis_travel_follows_the_one_travel_rule() {
+    // #246. The tool (gauge 25) starts at axis Z 60 and feeds to tip Z 40,
+    // axis Z 65. The travel is closed, a decoded position is exact, and the
+    // check's tolerance (1e-5 mm) decides nothing.
+    let run = |m: Model, tip_z: f64| {
+        let mut s = session(m);
+        s.event(motion([10., 0., tip_z], false), 1, &|| false)
+            .unwrap();
+        travel_finding(&mut s, 1)
+    };
+    let mut m = model();
+    m.axes[2].max_mm = 65.;
+    assert!(run(m.clone(), 40.).is_none());
+    let found = run(m.clone(), 40. + 1e-6).unwrap();
+    assert_eq!(found.status, Status::Violation);
+    assert_eq!(found.bodies[0], "axis_z");
+    assert_eq!((found.motion_id, found.fraction), (Some(7), 1.));
+    // The start pose on its limit is inside too (a machine at home).
+    let mut home = model();
+    home.axes[2].max_mm = 60.;
+    assert!(run(home, 30.).is_none());
+    // A gauge offset known to +-0.01 mm: the axis position is an interval.
+    // Inside only if the whole interval is inside, a violation only if the
+    // whole interval is beyond the limit, uncertain while it straddles it;
+    // the finding states the interval and the limit.
+    m.tools[0].gauge_offset_min_mm = [0., 0., 24.99];
+    m.tools[0].gauge_offset_max_mm = [0., 0., 25.01];
+    let found = run(m.clone(), 40.).unwrap();
+    assert_eq!(found.status, Status::Uncertain);
+    assert!(
+        found.detail.contains("interval 64.990000 to 65.010000 mm")
+            && found.detail.contains("straddles the maximum 65.000000 mm"),
+        "{}",
+        found.detail
+    );
+    assert!(run(m.clone(), 39.99).is_none());
+    assert_eq!(
+        run(m.clone(), 39.99 + 1e-6).unwrap().status,
+        Status::Uncertain
+    );
+    assert_eq!(run(m.clone(), 40.01).unwrap().status, Status::Uncertain);
+    let found = run(m.clone(), 40.01 + 1e-6).unwrap();
+    assert_eq!(found.status, Status::Violation);
+    assert!(
+        found.detail.contains("whole interval is beyond the maximum"),
+        "{}",
+        found.detail
+    );
+    // A declared route waypoint is a machine-axis position: no calibration
+    // interval, compared exactly. On the limit is inside, 1e-6 mm beyond is
+    // a violation.
+    for (x, expected) in [(200., None), (200. + 1e-6, Some(Status::Violation))] {
+        let mut m = model();
+        m.program_end_route_mm = vec![[Some(x), None, None]];
+        let mut s = session(m);
+        let found = travel_finding(&mut s, 0);
+        assert_eq!(found.as_ref().map(|f| f.status), expected, "{x}");
+        if let Some(found) = found {
+            assert_eq!(found.route.as_deref(), Some("program_end"));
+            assert_eq!(found.bodies[0], "axis_x");
+        }
+    }
+    // The start position is declared the same way: on a limit it is inside,
+    // beyond it the model is refused.
+    let mut m = model();
+    m.axes[2].max_mm = 60.;
+    m.prepare(&|| false).map(|_| ()).unwrap();
+    m.axes[2].max_mm = 60. - 1e-9;
+    assert!(
+        m.prepare(&|| false)
+            .map(|_| ())
+            .unwrap_err()
+            .contains("initial position inside")
+    );
+}
 #[test]
 fn tool_change_routes_and_complete_index_enclosures_are_checked() {
     let mut m = model();

@@ -1713,8 +1713,70 @@ cut = camlib.ThermalCut("plasma", torch, parts, feed_mm_min=2500, cut_height_mm=
 Every lead and kerf path is proven not to touch any part, and every pierce
 crater to stay clear of them, before any motion is produced. The simulated
 sheet is cut through wherever the kerf passes. Not modeled: tipped-up parts
-after they are cut free (plan travel heights accordingly), bevel and
-common-line cutting.
+after they are cut free (plan travel heights accordingly) and bevel cutting.
+
+### Common-line cutting
+
+`common_line=camlib.CommonLine(min_length_mm=...)` cuts the shared straight
+edge of two parts once instead of twice. It is off unless set.
+
+```python
+cut = camlib.ThermalCut("plasma", torch, parts, feed_mm_min=2500, cut_height_mm=1.5,
+                        lead_in=camlib.Lead(length_mm=3, radius_mm=3),
+                        common_line=camlib.CommonLine(min_length_mm=10), ...)
+gap = cut.common_line_spacing_mm()   # place the parts this far apart
+```
+
+- **Spacing**: a common line is one cut between two parts placed a kerf apart
+  (Autodesk Fabrication CAMduct, *Common Line Cutting*: the margin between
+  parts is the kerf, along straight edges; Hypertherm ProNest, *Common Line
+  Cutting*). In camlib the kerf path runs the applied offset (half a kerf plus
+  the boundary allowance) outside every part, so the spacing is exactly twice
+  that: `common_line_spacing_mm()` (the kerf plus `boundary_tolerance_mm`, plus
+  twice the parts' `boundary_error_mm`). The one cut is then the ordinary
+  compensated path of both parts, and the kerf proof covers both sides of it.
+- **Detection is exact**: the kerf paths of the two parts must coincide, to
+  the operation's `tolerance_mm`, along a complete straight edge of both, at
+  least `min_length_mm` long, ending at outside corners where the two parts
+  are flush (their neighbouring edges in line). That covers pairs and rows of
+  parts.
+- **Refused, never cut twice**: kerf paths that coincide in any other way
+  (part of an edge, parts not flush, a shorter edge than `min_length_mm`,
+  common lines meeting at a corner as in a grid, a part against a hole wall,
+  arcs), and facing edges closer than the spacing. The message names the parts
+  and the spacing. Facing edges further apart are cut separately as always;
+  where their kerfs overlap this is reported. With no common line at all the
+  operation plans exactly as without the option, and says so in the report.
+- **Order**: the holes of the parts first, then each common line, then the one
+  outline of the group, so every part is held by the sheet until its last edge
+  (Kinetic PrimeCut, *Common Line and Common Crop Cutting*: "Holes in the
+  parts are always cut before the common lines"). The outline runs straight
+  across each end of a common line as one move.
+- **Pierce and lead**: each common line is pierced in the scrap on its own
+  extension, `lead_in.length_mm` beyond the outline, and entered straight along
+  the line (no arc); it ends on the outline without a lead-out. The pierce
+  keeps `pierce_clearance_mm` from both parts and the lead is proven clear of
+  them, or the operation refuses and asks for a longer lead. The outline is
+  pierced and led as any outline. It crosses the
+  lead-in kerf of each common line, which suits plasma and laser (PrimeCut
+  advises against cuts that cross gaps for flame cutting only).
+- **Kerf paths apart**: parts with common lines are offset one by one, so
+  what the offset of the whole sheet proves in an ordinary job is proven here
+  by exact line and arc distances: outside the declared common lines no two
+  parts' kerf paths touch or cross, and none runs inside another part's
+  applied offset (a curved stretch closer than the spacing is refused).
+- **Leads and earlier kerfs**: in a job with common lines every pierce lies
+  in uncut sheet and every lead-in and lead-out keeps a full kerf width from
+  the center of every kerf cut before it, so no lead runs over an open slot;
+  otherwise the operation refuses, naming the lead. Only the group's outline
+  meets earlier kerfs, at the ends of its common lines.
+- **Kerf side**: a common line has a part on both sides, so one of the two is
+  on the poorer side of a plasma arc ("it is impossible to preserve the kerf
+  side", PrimeCut) and the controller cannot trim the kerf: `compensation="wear"`
+  is refused with `common_line`. So are `micro_joints`.
+- **Report**: `common_lines` lists each one in cutting order (`parts`,
+  `start_mm`, `end_mm`, `shared_length_mm`); `pierces` counts them, `loops` and
+  `order` the closed loops (a group's outline is listed under its first part).
 
 ## Plasma and laser marking: `ThermalMark`
 
