@@ -124,6 +124,7 @@ comparable only on the same machine; CI runs the same benchmark on every push.
 | TurnFaceGroove | [#57](https://github.com/stevecad/camlib/issues/57) | `lathe-face-groove` (fg) | 29 | 22 | 22 (100%) | 98 | 12 | 13 | 308 | 75.0 / 75.0 | 0.003 |
 | Geodesic | [#118](https://github.com/stevecad/camlib/issues/118) | `geodesic` (geodesic) | 5336 | 767 | 79 (10%) | 22 | 1 | 1 | 1506 | 131.0 / 127.9 | 0.222 |
 | Geodesic | [#118](https://github.com/stevecad/camlib/issues/118) | `geodesic-boundary` (geodesic) | 713 | 712 | 5 (1%) | 53 | 3 | 3 | 1504 | 84.2 / 81.0 | 0.079 |
+| Roughing | [#202](https://github.com/stevecad/camlib/issues/202) | `roughing-adaptive-large` (rough) | 3724 | 59206 | 5451 (9%) | 21426 | 156 | 156 | 2397632 | 4533.3 / 4532.4 | 14.520 |
 
 ## Per workload
 
@@ -160,6 +161,7 @@ comparable only on the same machine; CI runs the same benchmark on every push.
 | `waterline` | Waterline finishing of a tapered island | 112 | 33.0 / 33.0 | 135 | 369.9 / 809.3 | 0.0 / 89.3 | 0.135 | 0.129 | 0.009 | 389 |
 | `steep-and-shallow` | Steep-and-shallow finishing of a roof | 1744 | 342.8 / 333.7 | 1775 | 0.0 / 149.8 | 0.0 / 100.3 | 0.481 | 0.379 | 0.107 | 388 |
 | `facing-large` | Face a 300 x 200 block 2 mm (production size) | 140 | 2153.3 / 2153.3 | 163 | – | – | 0.408 | 0.048 | 0.009 | 69 |
+| `roughing-adaptive-large` | 3D adaptive roughing of a 420 x 300 mm plate with bosses (production size) | 3724 | 4533.3 / 4532.4 | 3861 | 88997.1 / 159192.3 | 0.0 / 115.4 | 14.610 | 2.526 | 48.296 | 134 |
 | `pocket-dense` | Pocket around a round island, 0.4 mm stepover, 0.25 mm stepdown | 9088 | 11873.8 / 11873.4 | 9111 | 3.8 / 541.5 | 0.0 / 489.6 | 0.344 | 0.010 | 0.532 | 44 |
 | `parallel-dense` | Parallel finishing of a roof, 0.1 mm stepover | 14023 | 1618.0 / 1555.9 | 14046 | 0.0 / 143.9 | 0.0 / 101.0 | 0.638 | 0.004 | 0.838 | 415 |
 | `spiral-dense` | Spiral finishing of a roof, 0.15 mm stepover | 12767 | 1125.9 / 1123.9 | 12790 | 0.0 / 144.2 | 0.0 / 86.6 | 0.498 | 0.007 | 0.748 | 417 |

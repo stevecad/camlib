@@ -158,6 +158,88 @@ def _boss_target():
     return ("surface", _boss_roughing()["operations"][0].target, 0)
 
 
+def _box(x0, y0, x1, y1, z0, z1):
+    """The twelve triangles of an axis-aligned box."""
+    v = [(x, y, z) for z in (z0, z1) for y in (y0, y1) for x in (x0, x1)]
+    quads = ((0, 2, 3, 1), (4, 5, 7, 6), (0, 1, 5, 4), (2, 6, 7, 3), (0, 4, 6, 2), (1, 3, 7, 5))
+    return [t for a, b, c, d in quads for t in ((v[a], v[b], v[c]), (v[a], v[c], v[d]))]
+
+
+def _large_plate():
+    """A 420 x 300 mm plate, 4 mm thick, with 20 mm bosses on it: two blocks,
+    a round boss (a 48-sided prism) and a rectangular frame around an
+    enclosed pocket. Built here, so the benchmark needs no fixture for it."""
+    from camlib.surface import SurfaceMesh
+
+    floor, top = 4.0, 24.0
+    triangles = _box(0, 0, 420, 300, 0, floor)
+    for x0, y0, x1, y1 in (
+        (40, 40, 120, 110),
+        (160, 50, 200, 250),
+        (250, 170, 390, 190),
+        (250, 250, 390, 270),
+        (250, 170, 270, 270),
+        (370, 170, 390, 270),
+    ):
+        triangles += _box(x0, y0, x1, y1, 0, top)
+    n, (cx, cy, radius) = 48, (300.0, 90.0, 40.0)
+    ring = [(cx + radius * math.cos(math.tau * i / n), cy + radius * math.sin(math.tau * i / n)) for i in range(n)]
+    for i in range(n):
+        (ax, ay), (bx, by) = ring[i], ring[(i + 1) % n]
+        triangles += [
+            ((ax, ay, 0.0), (bx, by, 0.0), (bx, by, top)),
+            ((ax, ay, 0.0), (bx, by, top), (ax, ay, top)),
+            ((cx, cy, top), (ax, ay, top), (bx, by, top)),
+            ((cx, cy, 0.0), (bx, by, 0.0), (ax, ay, 0.0)),
+        ]
+    return SurfaceMesh(triangles, 1e-6, dict(model="benchmark plate with bosses", revision="1"))
+
+
+def _roughing_large():
+    """Adaptive roughing of a production-size part in one 20 mm layer: the
+    planner's time must follow the path it plans, not the size of the part
+    (#202: 276 s for a 420 mm part, against 10 s for raster)."""
+    import camlib
+    from camlib.operations import AdaptiveClearing, Roughing
+    from camlib.tools import HolderSection, ToolAssembly
+
+    tool = ToolAssembly(
+        "mill12",
+        camlib.EndMill("em12", diameter=12, flute_length=30, overall_length=75),
+        45,
+        115,
+        (HolderSection(45, 115, 20, 20),),
+    )
+    op = Roughing(
+        "rough",
+        tool,
+        _large_plate(),
+        top_z_mm=24,
+        floor_z_mm=4,
+        stepdown_mm=20,
+        clearance_z_mm=30,
+        clearing=AdaptiveClearing(3.0),
+        radial_allowance_mm=0.3,
+        feed_mm_min=1000,
+        plunge_mm_min=300,
+        spindle_rpm=9000,
+        tool_number=1,
+        length_register=1,
+        coolant="flood",
+    )
+    return dict(
+        stock=camlib.StockSpec((-15, -15, 0), (435, 315, 24), 0.5),
+        tools=(tool,),
+        operations=(op,),
+        revision="bench",
+        initial_position_mm=(-30, -30, 60),
+    )
+
+
+def _large_plate_target():
+    return ("surface", _large_plate(), 0)
+
+
 def _contour():
     return _options(_support("contour").contour_job())
 
@@ -708,6 +790,15 @@ WORKLOADS = (
         "Face a 300 x 200 block 2 mm (production size)",
         {"face": ("Facing", 24)},
         _dense(_facing, stock_max=(300, 200, 10)),
+        tags=("dense",),
+    ),
+    Workload(
+        "roughing-adaptive-large",
+        "mill",
+        "3D adaptive roughing of a 420 x 300 mm plate with bosses (production size)",
+        {"rough": ("Roughing", 202)},
+        _roughing_large,
+        _large_plate_target,
         tags=("dense",),
     ),
     Workload(

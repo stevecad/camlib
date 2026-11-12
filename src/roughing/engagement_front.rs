@@ -61,8 +61,9 @@ impl Grid {
         (i >= 0. && j >= 0. && i < self.nx as f64 && j < self.ny as f64)
             .then_some((i as usize, j as usize))
     }
-    /// Cells whose centres lie within `rad` of `p`.
-    fn for_disk(&self, p: Point, rad: f64, mut f: impl FnMut(usize, Point, f64)) {
+    /// The box of cells `for_disk(p, rad)` looks at: lowest and highest
+    /// column and row (empty when a low exceeds its high).
+    fn disk_box(&self, p: Point, rad: f64) -> Option<([usize; 2], [usize; 2])> {
         let lo = [
             ((p[0] - rad - self.x0) / self.c - 0.5).ceil().max(0.) as usize,
             ((p[1] - rad - self.y0) / self.c - 0.5).ceil().max(0.) as usize,
@@ -72,17 +73,237 @@ impl Grid {
             (((p[1] + rad - self.y0) / self.c - 0.5).floor()).min(self.ny as f64 - 1.),
         ];
         if hi[0] < 0. || hi[1] < 0. {
-            return;
+            return None;
         }
-        for j in lo[1]..=hi[1] as usize {
+        Some((lo, [hi[0] as usize, hi[1] as usize]))
+    }
+    /// Whether a cell centre `dx`, `dy` from a point is within `rad` of it,
+    /// as `dx.hypot(dy) <= rad` decides. The squared distance settles all
+    /// but the cells within `DISTANCE_SLACK` of the rim (`sure` and `rim`
+    /// from `rim_bounds`); only those need the root.
+    #[inline]
+    fn within(dx: f64, dy: f64, rad: f64, sure: f64, rim: f64) -> bool {
+        let d2 = dx * dx + dy * dy;
+        d2 <= sure || (d2 <= rim && dx.hypot(dy) <= rad)
+    }
+    /// Squared distances surely within `rad`, and the largest that can be.
+    /// Nothing is within a negative radius.
+    fn rim_bounds(rad: f64) -> (f64, f64) {
+        if rad < 0. {
+            return (-1., -1.);
+        }
+        (
+            rad * rad * (1. - DISTANCE_SLACK),
+            rad * rad * (1. + DISTANCE_SLACK),
+        )
+    }
+    /// The cells `for_disk` visits, in its order, with their centres and
+    /// without their distances (so without a square root per cell, #202).
+    fn for_disk_cells(&self, p: Point, rad: f64, mut f: impl FnMut(usize, Point)) {
+        let Some((lo, hi)) = self.disk_box(p, rad) else {
+            return;
+        };
+        let (sure, rim) = Self::rim_bounds(rad);
+        for j in lo[1]..=hi[1] {
             let cy = self.y0 + (j as f64 + 0.5) * self.c;
-            for i in lo[0]..=hi[0] as usize {
+            for i in lo[0]..=hi[0] {
+                let cx = self.x0 + (i as f64 + 0.5) * self.c;
+                if Self::within(cx - p[0], cy - p[1], rad, sure, rim) {
+                    f(self.idx(i, j), [cx, cy]);
+                }
+            }
+        }
+    }
+    /// Cells whose centres lie within `rad` of `p`, row by row, with their
+    /// distances: the definition the faster searches are tested against.
+    #[cfg(test)]
+    fn for_disk(&self, p: Point, rad: f64, mut f: impl FnMut(usize, Point, f64)) {
+        let Some((lo, hi)) = self.disk_box(p, rad) else {
+            return;
+        };
+        for j in lo[1]..=hi[1] {
+            let cy = self.y0 + (j as f64 + 0.5) * self.c;
+            for i in lo[0]..=hi[0] {
                 let cx = self.x0 + (i as f64 + 0.5) * self.c;
                 let d = (cx - p[0]).hypot(cy - p[1]);
                 if d <= rad {
                     f(self.idx(i, j), [cx, cy], d);
                 }
             }
+        }
+    }
+    /// The cells from `lo` to `hi` along one axis (origin `o`) whose centres
+    /// can lie within `half` of the coordinate `at`: a whole cell wider at
+    /// each end than the arithmetic says, so rounding never loses one.
+    fn span(&self, o: f64, at: f64, half: f64, lo: usize, hi: usize) -> Option<(usize, usize)> {
+        let a = (((at - half - o) / self.c - 0.5).floor() - 1.).max(lo as f64);
+        let b = (((at + half - o) / self.c - 0.5).ceil() + 1.).min(hi as f64);
+        (a <= b).then_some((a as usize, b as usize))
+    }
+}
+
+/// Relative slack on a squared distance when cells are ruled out without
+/// their exact distance (`Layer::nearest_set`): far above the rounding of
+/// `dx * dx + dy * dy` and of `hypot` (a few parts in 1e16), far below the
+/// spacing of distinct cell distances.
+const DISTANCE_SLACK: f64 = 1e-6;
+
+/// The highest set bit of `row` at or below `i`, not below `lo`.
+fn bit_at_or_below(row: &[u64], i: usize, lo: usize) -> Option<usize> {
+    let mut w = i / 64;
+    let mut word = row[w] & (u64::MAX >> (63 - i % 64));
+    loop {
+        if word != 0 {
+            let b = w * 64 + 63 - word.leading_zeros() as usize;
+            return (b >= lo).then_some(b);
+        }
+        if w == 0 || w * 64 <= lo {
+            return None;
+        }
+        w -= 1;
+        word = row[w];
+    }
+}
+/// The lowest set bit of `row` at or above `i`, not above `hi`.
+fn bit_at_or_above(row: &[u64], i: usize, hi: usize) -> Option<usize> {
+    let mut w = i / 64;
+    if i > hi || w >= row.len() {
+        return None;
+    }
+    let mut word = row[w] & (u64::MAX << (i % 64));
+    loop {
+        if word != 0 {
+            let b = w * 64 + word.trailing_zeros() as usize;
+            return (b <= hi).then_some(b);
+        }
+        w += 1;
+        if w >= row.len() || w * 64 > hi {
+            return None;
+        }
+        word = row[w];
+    }
+}
+
+/// The largest whole squared distance in cells, `D`, whose distance in mm
+/// as `edt` reports it, `sqrt(D) * c`, is below `t` (at most `t` when
+/// `inclusive`); `None` when not even 0 is. So "a set cell within `t`" can
+/// be asked of whole numbers and answers exactly as a comparison of `edt`'s
+/// output with `t` does. (`t` is a few cutter radii: far below the 1e9
+/// `edt` reports where there is no set cell at all.)
+fn cells2_within(c: f64, t: f64, inclusive: bool) -> Option<usize> {
+    let near = |d2: usize| {
+        let d = (d2 as f64).sqrt() * c;
+        if inclusive { d <= t } else { d < t }
+    };
+    if !near(0) {
+        return None;
+    }
+    let mut d2 = ((t / c) * (t / c)).floor().max(0.) as usize;
+    while !near(d2) {
+        d2 -= 1;
+    }
+    while near(d2 + 1) {
+        d2 += 1;
+    }
+    Some(d2)
+}
+
+/// The cells of a window of the grid (columns `i[0]..=i[1]`, rows
+/// `j[0]..=j[1]`) that have a set cell of `bits` within a whole squared
+/// distance (`Near::new`): the set cells grown by a disk, row by row with
+/// word operations. It answers what a comparison of the window's distance
+/// transform (`edt`) with a distance answers, without computing a distance
+/// for every cell (#202, #192). Set cells outside the window are not seen,
+/// as `edt` of the window does not see them.
+struct Near {
+    /// Rows of `words` words; the first holds column `64 * first_word`.
+    grown: Vec<u64>,
+    words: usize,
+    first_word: usize,
+    first_row: usize,
+}
+impl Near {
+    fn new(bits: &[u64], stride: usize, i: [usize; 2], j: [usize; 2], cells2: usize) -> Self {
+        let (w0, w1) = (i[0] / 64, i[1] / 64);
+        let (words, rows) = (w1 - w0 + 1, j[1] - j[0] + 1);
+        let radius = cells2.isqrt();
+        // The rows each half-width of the disk belongs to.
+        let mut rows_of_width = vec![vec![]; radius + 1];
+        for dy in 0..=radius {
+            rows_of_width[(cells2 - dy * dy).isqrt()].push(dy);
+        }
+        let mut grown = vec![0u64; words * rows];
+        let mut cur = vec![0u64; words];
+        for s in 0..rows {
+            let from = (j[0] + s) * stride + w0;
+            cur.copy_from_slice(&bits[from..from + words]);
+            cur[0] &= u64::MAX << (i[0] % 64);
+            cur[words - 1] &= u64::MAX >> (63 - i[1] % 64);
+            if cur.iter().all(|&w| w == 0) {
+                continue;
+            }
+            for (width, dys) in rows_of_width.iter().enumerate() {
+                // `cur` is this row's set cells grown `width` cells each way.
+                for &dy in dys {
+                    let targets = [Some(s + dy), (dy > 0).then(|| s.checked_sub(dy)).flatten()];
+                    for t in targets.into_iter().flatten().filter(|&t| t < rows) {
+                        for (o, c) in grown[t * words..(t + 1) * words].iter_mut().zip(&cur) {
+                            *o |= c;
+                        }
+                    }
+                }
+                if width < radius {
+                    let mut below = 0u64;
+                    for w in 0..words {
+                        let old = cur[w];
+                        let above = if w + 1 < words { cur[w + 1] } else { 0 };
+                        cur[w] = old | old << 1 | below >> 63 | old >> 1 | above << 63;
+                        below = old;
+                    }
+                }
+            }
+        }
+        Self {
+            grown,
+            words,
+            first_word: w0,
+            first_row: j[0],
+        }
+    }
+    /// Whether cell (`i`, `j`) of the window is near a set cell.
+    fn at(&self, i: usize, j: usize) -> bool {
+        let w = (j - self.first_row) * self.words + i / 64 - self.first_word;
+        self.grown[w] >> (i % 64) & 1 == 1
+    }
+}
+
+/// One bit per fine cell, in rows of whole words: where the layer has
+/// material (`Layer::material`), and where that material is reachable.
+/// Kept current by everything that changes a cleared height (`Layer::cut`,
+/// `Layer::undo`), so a search for material reads set bits instead of
+/// testing every cell of a disk (#202).
+#[derive(Default)]
+struct MaterialBits {
+    /// Words per row.
+    stride: usize,
+    any: Vec<u64>,
+    reach: Vec<u64>,
+}
+impl MaterialBits {
+    fn assign(&mut self, g: &Grid, k: usize, material: bool, reachable: bool) {
+        let (w, bit) = (
+            (k / g.nx) * self.stride + (k % g.nx) / 64,
+            1u64 << (k % g.nx % 64),
+        );
+        if material {
+            self.any[w] |= bit;
+        } else {
+            self.any[w] &= !bit;
+        }
+        if material && reachable {
+            self.reach[w] |= bit;
+        } else {
+            self.reach[w] &= !bit;
         }
     }
 }
@@ -291,12 +512,32 @@ struct Layer {
     /// Cleared heights overwritten since the journal was last emptied, so a
     /// pass whose engagement was not proven can be planned again.
     journal: Vec<(usize, f64)>,
+    /// `material` and `reachable` as bits (see `sync_bits`).
+    bits: MaterialBits,
 }
 impl Layer {
+    /// Rebuild the material bits from the heights. Needed once, when the
+    /// layer is made: `cut` and `undo` keep them current after that.
+    fn sync_bits(&mut self) {
+        let g = self.g;
+        let stride = g.nx.div_ceil(64);
+        self.bits = MaterialBits {
+            stride,
+            any: vec![0; stride * g.ny],
+            reach: vec![0; stride * g.ny],
+        };
+        for k in 0..g.nx * g.ny {
+            if self.material(k) {
+                self.bits.assign(&g, k, true, self.reachable[k]);
+            }
+        }
+    }
     fn undo(&mut self, to: usize) {
         while self.journal.len() > to {
             let (k, old) = self.journal.pop().unwrap();
             self.cleared[k] = old;
+            let material = self.material(k);
+            self.bits.assign(&self.g, k, material, self.reachable[k]);
         }
     }
     fn material(&self, k: usize) -> bool {
@@ -310,23 +551,207 @@ impl Layer {
     /// Mark the disk cleared; returns how many material cells it cleared.
     fn cut(&mut self, p: Point, rad: f64) -> usize {
         let (z, floor) = (self.z, self.z + self.material_guard);
+        let g = self.g;
         let (cleared, top, journal) = (&mut self.cleared, &self.top, &mut self.journal);
+        let (bits, reachable) = (&mut self.bits, &self.reachable);
         let mut removed = 0;
-        self.g.for_disk(p, rad, |k, _, _| {
+        g.for_disk_cells(p, rad, |k, _| {
             if cleared[k] > z {
                 removed += usize::from(top[k].min(cleared[k]) > floor);
                 journal.push((k, cleared[k]));
                 cleared[k] = z;
+                bits.assign(&g, k, top[k].min(z) > floor, reachable[k]);
             }
         });
         removed
+    }
+    /// What a `for_disk(p, rad)` scan keeping the first cell of the smallest
+    /// distance finds among the cells whose bit is set in `bits`: that
+    /// cell, its centre and its distance. The same cell, to the bit:
+    ///
+    /// 1. Rows outward from `p`, the set bit nearest `p`'s column on each
+    ///    side, give an upper bound on the smallest squared distance.
+    /// 2. Every set cell of the scan's own box within that bound (and
+    ///    `DISTANCE_SLACK`) is then measured exactly as the scan measures
+    ///    it (`hypot`, `d <= rad`), in the scan's order, and the first of
+    ///    the smallest kept. A cell left out is farther than a measured
+    ///    one by more than the slack, so the scan would not have kept it;
+    ///    cells at equal distance are all measured, so the scan's choice
+    ///    between them stands.
+    fn nearest_set(&self, bits: &[u64], p: Point, rad: f64) -> Option<(usize, Point, f64)> {
+        let g = &self.g;
+        let (lo, hi) = g.disk_box(p, rad)?;
+        if lo[0] > hi[0] || lo[1] > hi[1] {
+            return None;
+        }
+        let stride = self.bits.stride;
+        let row = |j: usize| &bits[j * stride..(j + 1) * stride];
+        let cx = |i: usize| g.x0 + (i as f64 + 0.5) * g.c;
+        let cy = |j: usize| g.y0 + (j as f64 + 0.5) * g.c;
+        let mut bound = rad * rad * (1. + DISTANCE_SLACK);
+        let column = ((p[0] - g.x0) / g.c - 0.5).round();
+        let look = |j: usize, bound: &mut f64| {
+            let dy = cy(j) - p[1];
+            let h2 = *bound - dy * dy;
+            if h2 < 0. {
+                return;
+            }
+            let Some((i0, i1)) = g.span(g.x0, p[0], h2.sqrt(), lo[0], hi[0]) else {
+                return;
+            };
+            let ic = column.clamp(i0 as f64, i1 as f64) as usize;
+            let sides = [
+                bit_at_or_below(row(j), ic, i0),
+                bit_at_or_above(row(j), ic, i1),
+            ];
+            for i in sides.into_iter().flatten() {
+                let dx = cx(i) - p[0];
+                *bound = bound.min(dx * dx + dy * dy);
+            }
+        };
+        let middle = ((p[1] - g.y0) / g.c - 0.5)
+            .round()
+            .clamp(lo[1] as f64, hi[1] as f64) as usize;
+        let (mut up, mut down) = (middle, middle);
+        let (mut more_up, mut more_down) = (true, true);
+        while more_up || more_down {
+            if more_up {
+                let dy = cy(up) - p[1];
+                if dy > 0. && dy * dy > bound {
+                    more_up = false;
+                } else {
+                    look(up, &mut bound);
+                    up += 1;
+                    more_up = up <= hi[1];
+                }
+            }
+            if more_down {
+                if down == lo[1] {
+                    more_down = false;
+                } else {
+                    down -= 1;
+                    let dy = cy(down) - p[1];
+                    if dy < 0. && dy * dy > bound {
+                        more_down = false;
+                    } else {
+                        look(down, &mut bound);
+                    }
+                }
+            }
+        }
+        let within = bound * (1. + DISTANCE_SLACK);
+        let (j0, j1) = g.span(g.y0, p[1], within.sqrt(), lo[1], hi[1])?;
+        let mut best: Option<(usize, Point, f64)> = None;
+        for j in j0..=j1 {
+            let y = cy(j);
+            let h2 = within - (y - p[1]) * (y - p[1]);
+            if h2 < 0. {
+                continue;
+            }
+            let Some((i0, i1)) = g.span(g.x0, p[0], h2.sqrt(), lo[0], hi[0]) else {
+                continue;
+            };
+            let mut from = i0;
+            while let Some(i) = bit_at_or_above(row(j), from, i1) {
+                let x = cx(i);
+                let d = (x - p[0]).hypot(y - p[1]);
+                if d <= rad && best.is_none_or(|(_, _, b)| d < b) {
+                    best = Some((g.idx(i, j), [x, y], d));
+                }
+                from = i + 1;
+            }
+        }
+        best
+    }
+    /// Whether a `for_disk(p, rad)` scan meets a cell whose bit is set in
+    /// `bits` at a distance of at most `limit`: each set cell that can be
+    /// that near is measured exactly as the scan measures it.
+    fn any_set_within(&self, bits: &[u64], p: Point, rad: f64, limit: f64) -> bool {
+        let g = &self.g;
+        let Some((lo, hi)) = g.disk_box(p, rad) else {
+            return false;
+        };
+        if lo[0] > hi[0] || lo[1] > hi[1] {
+            return false;
+        }
+        let stride = self.bits.stride;
+        let within = limit * limit * (1. + DISTANCE_SLACK);
+        let Some((j0, j1)) = g.span(g.y0, p[1], within.sqrt(), lo[1], hi[1]) else {
+            return false;
+        };
+        for j in j0..=j1 {
+            let y = g.y0 + (j as f64 + 0.5) * g.c;
+            let h2 = within - (y - p[1]) * (y - p[1]);
+            if h2 < 0. {
+                continue;
+            }
+            let Some((i0, i1)) = g.span(g.x0, p[0], h2.sqrt(), lo[0], hi[0]) else {
+                continue;
+            };
+            let row = &bits[j * stride..(j + 1) * stride];
+            let mut from = i0;
+            while let Some(i) = bit_at_or_above(row, from, i1) {
+                let x = g.x0 + (i as f64 + 0.5) * g.c;
+                let d = (x - p[0]).hypot(y - p[1]);
+                if d <= rad && d <= limit {
+                    return true;
+                }
+                from = i + 1;
+            }
+        }
+        false
     }
     /// Material cell centres a step of up to `reach` from `p` can meet.
     /// Only reachable material counts: stock no allowed centre can cut (the
     /// part and its allowance beyond the region) lies just past the cutter
     /// along every wall, and counting it made a pass ride the wall through
     /// cleared air on material it could never remove.
+    ///
+    /// Read from the material bits: the cells a scan of the disk
+    /// (`gather_scan`) collects, in the same order.
     fn gather(&self, p: Point, reach: f64, out: &mut Vec<Point>) {
+        out.clear();
+        let g = &self.g;
+        let Some((lo, hi)) = g.disk_box(p, reach) else {
+            return;
+        };
+        if lo[0] > hi[0] {
+            return;
+        }
+        let (sure, rim) = Grid::rim_bounds(reach);
+        let stride = self.bits.stride;
+        for j in lo[1]..=hi[1] {
+            let y = g.y0 + (j as f64 + 0.5) * g.c;
+            let dy = y - p[1];
+            let h2 = rim - dy * dy;
+            if h2 < 0. {
+                continue;
+            }
+            let Some((i0, i1)) = g.span(g.x0, p[0], h2.sqrt(), lo[0], hi[0]) else {
+                continue;
+            };
+            let row = &self.bits.reach[j * stride..(j + 1) * stride];
+            let mut from = i0;
+            while let Some(i) = bit_at_or_above(row, from, i1) {
+                let x = g.x0 + (i as f64 + 0.5) * g.c;
+                if Grid::within(x - p[0], dy, reach, sure, rim) {
+                    out.push([x, y]);
+                }
+                from = i + 1;
+            }
+        }
+        #[cfg(test)]
+        {
+            let mut scan = vec![];
+            self.gather_scan(p, reach, &mut scan);
+            let exact =
+                |v: &[Point]| -> Vec<[u64; 2]> { v.iter().map(|q| q.map(f64::to_bits)).collect() };
+            assert_eq!(exact(out), exact(&scan), "gather at {p:?} within {reach}");
+        }
+    }
+    /// `gather` as a scan of every cell of the disk.
+    #[cfg(test)]
+    fn gather_scan(&self, p: Point, reach: f64, out: &mut Vec<Point>) {
         out.clear();
         self.g.for_disk(p, reach, |k, q, _| {
             if self.reachable[k] && self.material(k) {
@@ -336,8 +761,187 @@ impl Layer {
     }
 }
 
+/// A cached start candidate (cell `k`, at index `at` of `Layer::candidates`)
+/// and its distance from the cutter. Ordered as the planner chooses: the
+/// nearest, and of equally near ones the first in the list.
+struct NearStart {
+    d: f64,
+    at: usize,
+    k: usize,
+}
+impl Ord for NearStart {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.d.total_cmp(&other.d).then(self.at.cmp(&other.at))
+    }
+}
+impl PartialOrd for NearStart {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl PartialEq for NearStart {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+impl Eq for NearStart {}
+
+/// The cached start candidates of a layer by distance from `pos`, measured
+/// once. `take` hands out what a scan of the whole list for the nearest
+/// would (`nearest_start_scan`), and removes it from the list the same way,
+/// so the list stays in the same order.
+struct StartQueue {
+    pos: Point,
+    heap: std::collections::BinaryHeap<std::cmp::Reverse<NearStart>>,
+}
+impl StartQueue {
+    fn near(layer: &Layer, pos: Point, at: usize) -> std::cmp::Reverse<NearStart> {
+        let k = layer.candidates[at];
+        let q = layer.g.center(k);
+        std::cmp::Reverse(NearStart {
+            d: (q[0] - pos[0]).hypot(q[1] - pos[1]),
+            at,
+            k,
+        })
+    }
+    fn new(layer: &Layer, pos: Point) -> Self {
+        let all: Vec<_> = (0..layer.candidates.len())
+            .map(|at| Self::near(layer, pos, at))
+            .collect();
+        Self {
+            pos,
+            heap: all.into(),
+        }
+    }
+    /// Remove the nearest candidate from the layer's list and return it.
+    fn take(&mut self, layer: &mut Layer) -> Option<usize> {
+        // The list fills a removed slot with its last entry. That entry is
+        // queued again under its new slot (below); its old queue entry
+        // names a slot past the list's end from then on (the list only
+        // shrinks here) and is skipped.
+        let best = loop {
+            match self.heap.pop() {
+                Some(std::cmp::Reverse(n)) if layer.candidates.get(n.at) == Some(&n.k) => {
+                    break Some((n.at, n.k));
+                }
+                Some(_) => {}
+                None => break None,
+            }
+        };
+        #[cfg(test)]
+        assert_eq!(best, nearest_start_scan(layer, self.pos));
+        let (at, k) = best?;
+        layer.candidates.swap_remove(at);
+        if at < layer.candidates.len() {
+            self.heap.push(Self::near(layer, self.pos, at));
+        }
+        Some(k)
+    }
+}
+
+/// The nearest cached start candidate to `pos` by a scan of the whole list
+/// (index in the list, cell): the definition the queue in `plan_pass` is
+/// tested against.
+#[cfg(test)]
+fn nearest_start_scan(layer: &Layer, pos: Point) -> Option<(usize, usize)> {
+    layer
+        .candidates
+        .iter()
+        .enumerate()
+        .map(|(i, &k)| {
+            let q = layer.g.center(k);
+            (i, k, (q[0] - pos[0]).hypot(q[1] - pos[1]))
+        })
+        .min_by(|a, b| a.2.total_cmp(&b.2))
+        .map(|(i, k, _)| (i, k))
+}
+
 /// Smoothed material area (mm²) inside the cutter disk centred at `p`.
+///
+/// A cell counts 1 when its centre is half a cell or more inside the disk,
+/// 0 when half a cell or more outside, and in between by its distance.
+/// Only the cells in between need that distance (a square root): the
+/// squared distance tells the others apart (`smoothing_band`), and they add
+/// exactly 1 or nothing, as the formula gives for them (`area_plain`).
 fn area(cells: &[Point], p: Point, r: f64, c: f64) -> f64 {
+    let (full, none) = smoothing_band(r, c, 0.5);
+    let mut n = 0.;
+    for q in cells {
+        let (dx, dy) = (q[0] - p[0], q[1] - p[1]);
+        let d2 = dx * dx + dy * dy;
+        if d2 >= none {
+            continue;
+        }
+        if d2 <= full {
+            n += 1.;
+            continue;
+        }
+        n += ((r - dx.hypot(dy)) / c + 0.5).clamp(0., 1.);
+    }
+    #[cfg(test)]
+    assert_eq!((n * c * c).to_bits(), area_plain(cells, p, r, c).to_bits());
+    n * c * c
+}
+
+/// Smoothed count of the cells inside the cutter disk at `p` that were not
+/// inside it at `prev` (farther than `r` from there): what a link step from
+/// `prev` to `p` newly meets. Roots only where the answer depends on them,
+/// as in `area` (`fresh_cells_plain` is the formula).
+fn fresh_cells(cells: &[Point], prev: Point, p: Point, r: f64, c: f64) -> f64 {
+    let (full, none) = smoothing_band(r, c, 0.5);
+    let (sure, rim) = Grid::rim_bounds(r);
+    let mut new = 0.;
+    for q in cells {
+        let (dx, dy) = (q[0] - p[0], q[1] - p[1]);
+        let d2 = dx * dx + dy * dy;
+        if d2 >= none || Grid::within(q[0] - prev[0], q[1] - prev[1], r, sure, rim) {
+            continue;
+        }
+        new += if d2 <= full {
+            1.
+        } else {
+            ((r - dx.hypot(dy)) / c + 0.5).clamp(0., 1.)
+        };
+    }
+    #[cfg(test)]
+    assert_eq!(
+        f64::to_bits(new),
+        fresh_cells_plain(cells, prev, p, r, c).to_bits()
+    );
+    new
+}
+
+/// `fresh_cells` by its formula, every cell measured.
+#[cfg(test)]
+fn fresh_cells_plain(cells: &[Point], prev: Point, p: Point, r: f64, c: f64) -> f64 {
+    let mut new = 0.;
+    for q in cells {
+        if (q[0] - prev[0]).hypot(q[1] - prev[1]) > r {
+            new += ((r - (q[0] - p[0]).hypot(q[1] - p[1])) / c + 0.5).clamp(0., 1.);
+        }
+    }
+    new
+}
+
+/// Squared distances from a disk's centre at which a cell centre is surely
+/// half a cell or more inside its radius `r` (so `((r - d) / c + 0.5)`
+/// clamps to 1), and surely `outside` cells or more beyond it (so the
+/// smoothed count out to there clamps to 0). `DISTANCE_SLACK` keeps both
+/// clear of rounding; the cells between are measured.
+fn smoothing_band(r: f64, c: f64, outside: f64) -> (f64, f64) {
+    let (inner, outer) = (r - 0.5 * c, r + outside * c);
+    // (Only for a disk of some cells: the slack is relative to its radius.)
+    let full = if inner >= c {
+        inner * inner * (1. - DISTANCE_SLACK)
+    } else {
+        -1.
+    };
+    (full, outer * outer * (1. + DISTANCE_SLACK))
+}
+
+/// `area` by its formula, every cell measured.
+#[cfg(test)]
+fn area_plain(cells: &[Point], p: Point, r: f64, c: f64) -> f64 {
     let mut n = 0.;
     for q in cells {
         let d = (q[0] - p[0]).hypot(q[1] - p[1]);
@@ -353,7 +957,46 @@ fn area(cells: &[Point], p: Point, r: f64, c: f64) -> f64 {
 /// the widest point the ring holds the wall the pass leaves beside its own
 /// trail, which the cutter no longer touches.) The exact bound is proven
 /// afterwards (`EngagementFrontPlan::prove`).
+///
+/// As in `area`, only the cells whose count depends on their distance are
+/// measured: those from half a cell inside the cutter to a cell and a half
+/// outside it. Nearer cells add 1 to the area and nothing to the ring;
+/// farther cells add nothing to either (`step_load_plain` is the formula).
 fn step_load(cells: &[Point], p: Point, u: Point, r: f64, c: f64) -> (f64, f64) {
+    let (full, none) = smoothing_band(r, c, 1.5);
+    let (mut inside, mut ring) = (0., 0.);
+    for q in cells {
+        let v = [q[0] - p[0], q[1] - p[1]];
+        let d2 = v[0] * v[0] + v[1] * v[1];
+        if d2 >= none {
+            continue;
+        }
+        if d2 <= full {
+            inside += 1.;
+            continue;
+        }
+        let d = v[0].hypot(v[1]);
+        let within = ((r - d) / c + 0.5).clamp(0., 1.);
+        inside += within;
+        if v[0] * u[0] + v[1] * u[1] >= 0. {
+            ring += ((r + c - d) / c + 0.5).clamp(0., 1.) - within;
+        }
+    }
+    let load = (inside * c * c, ring * c / (r + c / 2.));
+    #[cfg(test)]
+    {
+        let plain = step_load_plain(cells, p, u, r, c);
+        assert_eq!(
+            (load.0.to_bits(), load.1.to_bits()),
+            (plain.0.to_bits(), plain.1.to_bits())
+        );
+    }
+    load
+}
+
+/// `step_load` by its formula, every cell measured.
+#[cfg(test)]
+fn step_load_plain(cells: &[Point], p: Point, u: Point, r: f64, c: f64) -> (f64, f64) {
     let (mut inside, mut ring) = (0., 0.);
     for q in cells {
         let v = [q[0] - p[0], q[1] - p[1]];
@@ -1049,16 +1692,74 @@ impl EngagementFrontPlan {
             z: self.z,
             material_guard: 16. * self.op.tolerance_mm,
             journal: vec![],
+            bits: MaterialBits::default(),
         });
+        self.layer.as_mut().unwrap().sync_bits();
         Ok(())
     }
 
     /// Recompute air/cleared start candidates: allowed centres whose cutter
     /// disk is clear of material while reachable material is within a few
     /// grid cells. Returns the reachable material area left.
+    ///
+    /// The two distances are asked of the material bits grown by a disk
+    /// (`Near`) rather than of two distance transforms of the whole grid;
+    /// `refresh_scan` is the definition by distance transforms.
     fn refresh(&mut self) -> f64 {
         let r = self.r;
         let layer = self.layer.as_mut().unwrap();
+        let g = layer.g;
+        let stride = layer.bits.stride;
+        let cells: usize = layer
+            .bits
+            .reach
+            .iter()
+            .map(|w| w.count_ones() as usize)
+            .sum();
+        let left = cells as f64 * g.c * g.c;
+        let whole = ([0, g.nx - 1], [0, g.ny - 1]);
+        // Material within r + c blocks a start; reachable material within
+        // r + 3 c makes one.
+        let near = |bits: &[u64], t: f64| {
+            cells2_within(g.c, t, true).map(|d2| Near::new(bits, stride, whole.0, whole.1, d2))
+        };
+        let blocked = near(&layer.bits.any, r + g.c);
+        let beside = near(&layer.bits.reach, r + 3. * g.c);
+        let mut candidates = vec![];
+        if let Some(beside) = &beside {
+            for j in 0..g.ny {
+                for w in 0..stride {
+                    let mut word = beside.grown[j * stride + w];
+                    if let Some(blocked) = &blocked {
+                        word &= !blocked.grown[j * stride + w];
+                    }
+                    while word != 0 {
+                        let i = w * 64 + word.trailing_zeros() as usize;
+                        word &= word - 1;
+                        if i < g.nx {
+                            let k = g.idx(i, j);
+                            if layer.allowed[k] && !layer.dead[k] {
+                                candidates.push(k);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        #[cfg(test)]
+        {
+            let (area, scan) = Self::refresh_scan(layer, r);
+            assert_eq!((left.to_bits(), &candidates), (area.to_bits(), &scan));
+        }
+        layer.candidates = candidates;
+        self.report.grid_refreshes += 1;
+        left
+    }
+
+    /// `refresh` by two distance transforms of the whole grid: the area
+    /// left and the candidates.
+    #[cfg(test)]
+    fn refresh_scan(layer: &Layer, r: f64) -> (f64, Vec<usize>) {
         let g = layer.g;
         let n = g.nx * g.ny;
         let mat: Vec<bool> = (0..n).map(|k| layer.material(k)).collect();
@@ -1066,18 +1767,49 @@ impl EngagementFrontPlan {
         let left = reach.iter().filter(|&&b| b).count() as f64 * g.c * g.c;
         let dmat = edt(&g, &mat);
         let dk = edt(&g, &reach);
-        layer.candidates = (0..n)
+        let candidates = (0..n)
             .filter(|&k| {
                 layer.allowed[k] && !layer.dead[k] && dmat[k] > r + g.c && dk[k] <= r + 3. * g.c
             })
             .collect();
-        self.report.grid_refreshes += 1;
-        left
+        (left, candidates)
     }
 
     /// Validate candidate `k` locally against the current grid: returns the
     /// unit direction towards the nearest reachable material.
+    ///
+    /// Read from the layer's material bits (#202); `candidate_direction_scan`
+    /// is the plain scan of the disk it replaces and must agree with it to
+    /// the bit, since the answer decides where a pass starts.
     fn candidate_direction(&self, k: usize) -> Option<Point> {
+        let layer = self.layer.as_ref().unwrap();
+        let found = (|| {
+            if !layer.allowed[k] || layer.dead[k] {
+                return None;
+            }
+            let p = layer.g.center(k);
+            let c = layer.g.c;
+            let rad = self.r + 3. * c;
+            if layer.any_set_within(&layer.bits.any, p, rad, self.r + c) {
+                return None;
+            }
+            let (_, q, d) = layer.nearest_set(&layer.bits.reach, p, rad)?;
+            Some([(q[0] - p[0]) / d.max(1e-12), (q[1] - p[1]) / d.max(1e-12)])
+        })();
+        #[cfg(test)]
+        assert_eq!(
+            found.map(|u| u.map(f64::to_bits)),
+            self.candidate_direction_scan(k)
+                .map(|u| u.map(f64::to_bits)),
+            "candidate {k}"
+        );
+        found
+    }
+
+    /// `candidate_direction` as a scan of every cell of the disk: the
+    /// definition the fast search is tested against.
+    #[cfg(test)]
+    fn candidate_direction_scan(&self, k: usize) -> Option<Point> {
         let layer = self.layer.as_ref().unwrap();
         if !layer.allowed[k] || layer.dead[k] {
             return None;
@@ -1104,8 +1836,31 @@ impl EngagementFrontPlan {
     }
 
     /// Nearest reachable material to `p` within `reach`: its distance and
-    /// the unit direction to it.
+    /// the unit direction to it. Read from the material bits, like
+    /// `candidate_direction`, and tested against `nearest_material_scan`.
     fn nearest_material(&self, p: Point, reach: f64) -> Option<(f64, Point)> {
+        let layer = self.layer.as_ref().unwrap();
+        let found = layer
+            .nearest_set(&layer.bits.reach, p, reach)
+            .map(|(_, q, d)| {
+                (
+                    d,
+                    [(q[0] - p[0]) / d.max(1e-12), (q[1] - p[1]) / d.max(1e-12)],
+                )
+            });
+        #[cfg(test)]
+        assert_eq!(
+            found.map(|(d, u)| (d.to_bits(), u.map(f64::to_bits))),
+            self.nearest_material_scan(p, reach)
+                .map(|(d, u)| (d.to_bits(), u.map(f64::to_bits))),
+            "nearest material to {p:?} within {reach}"
+        );
+        found
+    }
+
+    /// `nearest_material` as a scan of every cell of the disk.
+    #[cfg(test)]
+    fn nearest_material_scan(&self, p: Point, reach: f64) -> Option<(f64, Point)> {
         let layer = self.layer.as_ref().unwrap();
         let mut nearest: Option<(f64, Point)> = None;
         layer.g.for_disk(p, reach, |q, qc, d| {
@@ -1383,24 +2138,42 @@ impl EngagementFrontPlan {
             ny: j1 - j0 + 1,
         };
         let n = w.nx * w.ny;
-        let global = |k: usize| g.idx(i0 + k % w.nx, j0 + k / w.nx);
-        let mat: Vec<bool> = (0..n).map(|k| layer.material(global(k))).collect();
-        let dmat = edt(&w, &mat);
+        // Material of the window nearer than a distance, from the material
+        // bits (`Near`): what `dmat[k] < t` says of the window's distance
+        // transform `dmat`, which used to be computed for every link.
+        let nearer = |t: f64| {
+            cells2_within(c, t, false)
+                .map(|d2| Near::new(&layer.bits.any, layer.bits.stride, [i0, i1], [j0, j1], d2))
+        };
+        let (tight, loose) = (nearer(r - 0.5 * self.width), nearer(r - self.width));
+        // (By window column and row: the search below knows them.)
+        let clear = |near: &Option<Near>, i: usize, j: usize| {
+            !near.as_ref().is_some_and(|n| n.at(i0 + i, j0 + j))
+        };
         // Material beyond the window is unseen: its border ring is closed.
         let ring = ((r + c) / c).ceil() as usize + 1;
-        let passable: Vec<bool> = (0..n)
-            .map(|k| {
+        let passable = |i: usize, j: usize| {
+            let border = (i < ring && i0 > 0)
+                || (j < ring && j0 > 0)
+                || (i + ring >= w.nx && i1 + 1 < g.nx)
+                || (j + ring >= w.ny && j1 + 1 < g.ny);
+            !border && layer.allowed[g.idx(i0 + i, j0 + j)] && clear(&tight, i, j)
+        };
+        #[cfg(test)]
+        {
+            let mat: Vec<bool> = (0..n)
+                .map(|k| layer.material(g.idx(i0 + k % w.nx, j0 + k / w.nx)))
+                .collect();
+            let dmat = edt(&w, &mat);
+            for (k, &d) in dmat.iter().enumerate() {
                 let (i, j) = (k % w.nx, k / w.nx);
-                let border = (i < ring && i0 > 0)
-                    || (j < ring && j0 > 0)
-                    || (i + ring >= w.nx && i1 + 1 < g.nx)
-                    || (j + ring >= w.ny && j1 + 1 < g.ny);
-                !border && layer.allowed[global(k)] && dmat[k] >= r - 0.5 * self.width
-            })
-            .collect();
+                assert_eq!(clear(&tight, i, j), d >= r - 0.5 * self.width);
+                assert_eq!(clear(&loose, i, j), d >= r - self.width);
+            }
+        }
         let start = w.idx(ia - i0, ja - j0);
         let goal = w.idx(ib - i0, jb - j0);
-        if !passable[goal] {
+        if !passable(ib - i0, jb - j0) {
             return None;
         }
         // Dijkstra on the window (the start may still touch the front).
@@ -1433,17 +2206,22 @@ impl EngagementFrontPlan {
                 if ni < 0 || nj < 0 || ni >= w.nx as i64 || nj >= w.ny as i64 {
                     continue;
                 }
-                let nk = w.idx(ni as usize, nj as usize);
-                let near_start = d < 2. * self.width / c;
-                if !passable[nk] && !(near_start && dmat[nk] >= r - self.width) {
+                let (ni, nj) = (ni as usize, nj as usize);
+                let nk = w.idx(ni, nj);
+                // A cell reached no sooner than before is left alone: asked
+                // first, since most neighbours are (the answer is the same
+                // in either order).
+                let nd = d + step;
+                if nd >= dist[nk] || nd.is_nan() {
                     continue;
                 }
-                let nd = d + step;
-                if nd < dist[nk] {
-                    dist[nk] = nd;
-                    prev[nk] = k;
-                    heap.push((std::cmp::Reverse((nd * 1024.) as u64), nk));
+                let near_start = d < 2. * self.width / c;
+                if !passable(ni, nj) && !(near_start && clear(&loose, ni, nj)) {
+                    continue;
                 }
+                dist[nk] = nd;
+                prev[nk] = k;
+                heap.push((std::cmp::Reverse((nd * 1024.) as u64), nk));
             }
         }
         if !dist[goal].is_finite() || dist[goal] * c > max_len {
@@ -1515,12 +2293,7 @@ impl EngagementFrontPlan {
                 return None;
             }
             layer.gather(p, r + c, &mut cells);
-            let mut new = 0.;
-            for q in &cells {
-                if (q[0] - prev[0]).hypot(q[1] - prev[1]) > r {
-                    new += ((r - (q[0] - p[0]).hypot(q[1] - p[1])) / c + 0.5).clamp(0., 1.);
-                }
-            }
+            let mut new = fresh_cells(&cells, prev, p, r, c);
             new *= c * c;
             if new > self.width * h + 0.5 * c * c {
                 return None;
@@ -1862,24 +2635,18 @@ impl EngagementFrontPlan {
             let pos = [self.position[0], self.position[1]];
             // Nearest valid start among the cached candidates.
             let mut found = None;
+            // The candidates by distance, measured once: a stale candidate
+            // is dropped and the next nearest taken from the queue, where
+            // every drop used to scan the whole list again (#192).
+            let mut queue = StartQueue::new(self.layer.as_ref().unwrap(), pos);
             loop {
-                // Each turn scans every cached candidate, and a stale one is
-                // dropped and the scan repeated: seconds on a fine grid.
+                // A fine grid has many stale candidates to drop in a row.
                 if cancel.is_cancelled() {
                     return Err("engagement_front planning cancelled".into());
                 }
-                let layer = self.layer.as_ref().unwrap();
-                let best = layer
-                    .candidates
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &k)| {
-                        let q = layer.g.center(k);
-                        (i, k, (q[0] - pos[0]).hypot(q[1] - pos[1]))
-                    })
-                    .min_by(|a, b| a.2.total_cmp(&b.2));
-                let Some((i, k, _)) = best else { break };
-                self.layer.as_mut().unwrap().candidates.swap_remove(i);
+                let Some(k) = queue.take(self.layer.as_mut().unwrap()) else {
+                    break;
+                };
                 if let Some(dir) = self.candidate_direction(k) {
                     found = Some((k, dir));
                     break;
@@ -3129,7 +3896,9 @@ mod tests {
             z: 0.,
             material_guard: 1e-4,
             journal: vec![],
+            bits: MaterialBits::default(),
         };
+        layer.sync_bits();
         let (p, r) = ([8., 8.], 3.);
         let before = (0..n).filter(|&k| layer.material(k)).count();
         let first = layer.cut(p, r);
@@ -3142,6 +3911,7 @@ mod tests {
         // Cells already below the layer (no material) are not progress.
         layer.top = vec![-1.; n];
         layer.cleared = vec![f64::INFINITY; n];
+        layer.sync_bits();
         assert_eq!(layer.cut(p, r), 0);
     }
 
@@ -3166,7 +3936,7 @@ mod tests {
         let reachable: Vec<bool> = (0..n)
             .map(|k| y(k) <= 4.875 + r - 0.5 * g.c + 1e-9)
             .collect();
-        let layer = Layer {
+        let mut layer = Layer {
             g,
             top: vec![10.; n],
             cleared: (0..n)
@@ -3181,7 +3951,9 @@ mod tests {
             z: 0.,
             material_guard: 1e-4,
             journal: vec![],
+            bits: MaterialBits::default(),
         };
+        layer.sync_bits();
         let (p, q) = ([8., 4.9], [8.9, 4.9]);
         assert!(layer.allowed_at(p) && layer.allowed_at(q));
         // The part's material is there, inside the cutter's smoothing band.
@@ -3189,5 +3961,505 @@ mod tests {
         let mut cells = vec![];
         layer.gather(p, r + g.c, &mut cells);
         assert_eq!(area(&cells, q, r, g.c), 0.);
+    }
+
+    /// A layer whose material and reachable cells are given (top 10 over a
+    /// level at 0), every centre allowed.
+    fn layer_of(
+        g: Grid,
+        material: impl Fn(usize) -> bool,
+        reachable: impl Fn(usize) -> bool,
+    ) -> Layer {
+        let n = g.nx * g.ny;
+        let mut layer = Layer {
+            g,
+            top: (0..n)
+                .map(|k| if material(k) { 10. } else { -1. })
+                .collect(),
+            cleared: vec![f64::INFINITY; n],
+            allowed: vec![true; n],
+            reachable: (0..n).map(reachable).collect(),
+            room: vec![100.; n],
+            dead: vec![false; n],
+            candidates: vec![],
+            thin: vec![],
+            z: 0.,
+            material_guard: 1e-4,
+            journal: vec![],
+            bits: MaterialBits::default(),
+        };
+        layer.sync_bits();
+        layer
+    }
+
+    /// Deterministic pseudo-random numbers in 0..1 (SplitMix64).
+    struct Random(u64);
+    impl Random {
+        fn next(&mut self) -> f64 {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
+        }
+        fn below(&mut self, n: usize) -> usize {
+            ((self.next() * n as f64) as usize).min(n - 1)
+        }
+    }
+
+    type Found = Option<(usize, [u64; 2], u64)>;
+    fn exact(found: Option<(usize, Point, f64)>) -> Found {
+        found.map(|(k, q, d)| (k, q.map(f64::to_bits), d.to_bits()))
+    }
+    /// The definition: scan the disk, keep the first cell of the smallest
+    /// distance among those `keep` accepts.
+    fn nearest_scan(layer: &Layer, keep: impl Fn(usize) -> bool, p: Point, rad: f64) -> Found {
+        let mut nearest: Option<(usize, Point, f64)> = None;
+        layer.g.for_disk(p, rad, |k, q, d| {
+            if keep(k) && nearest.is_none_or(|(_, _, b)| d < b) {
+                nearest = Some((k, q, d));
+            }
+        });
+        exact(nearest)
+    }
+    fn bits_are_current(layer: &Layer) {
+        let g = layer.g;
+        for k in 0..g.nx * g.ny {
+            let (w, bit) = (
+                (k / g.nx) * layer.bits.stride + (k % g.nx) / 64,
+                k % g.nx % 64,
+            );
+            let material = layer.material(k);
+            assert_eq!(layer.bits.any[w] >> bit & 1 == 1, material, "cell {k}");
+            assert_eq!(
+                layer.bits.reach[w] >> bit & 1 == 1,
+                material && layer.reachable[k],
+                "cell {k}"
+            );
+        }
+    }
+
+    /// #202: the searches that read the material bits return exactly what
+    /// a scan of the disk returns: the same cell, centre and distance to
+    /// the bit, with the scan's choice between cells at equal distance
+    /// (queries from cell centres make many), at the edge of the disk and
+    /// of the grid, and after cuts and their undoing.
+    #[test]
+    fn bit_searches_match_a_scan_of_the_disk() {
+        let mut random = Random(202);
+        let grids = [
+            Grid {
+                x0: -17.3,
+                y0: 4.1,
+                c: 0.3,
+                nx: 150,
+                ny: 97,
+            },
+            Grid {
+                x0: 0.,
+                y0: 0.,
+                c: 0.25,
+                nx: 64,
+                ny: 130,
+            },
+            Grid {
+                x0: 1000.7,
+                y0: -2000.2,
+                c: 0.07,
+                nx: 201,
+                ny: 77,
+            },
+        ];
+        let (mut compared, mut found, mut tied) = (0, 0, 0);
+        for g in grids {
+            let n = g.nx * g.ny;
+            let r = 20. * g.c;
+            let centre = g.center(g.idx(g.nx / 2, g.ny / 2));
+            let noise: Vec<f64> = (0..n).map(|_| random.next()).collect();
+            let off = |k: usize| {
+                let q = g.center(k);
+                (q[0] - centre[0]).hypot(q[1] - centre[1])
+            };
+            type Pattern<'a> = Box<dyn Fn(usize) -> bool + 'a>;
+            let patterns: Vec<Pattern> = vec![
+                Box::new(|_| false),
+                Box::new(|k| noise[k] < 0.004),
+                Box::new(|k| noise[k] < 0.5),
+                // A straight front along a column, and along a row.
+                Box::new(|k| k % g.nx > g.nx / 2 + 21),
+                Box::new(|k| k / g.nx < g.ny / 2 - 23),
+                // A ring about a cell centre: many cells at equal distance.
+                Box::new(|k| off(k) >= r + g.c && off(k) <= r + 2. * g.c),
+                Box::new(|k| off(k) > 1.5 * r),
+                // One cell exactly a disk radius away along a row.
+                Box::new(|k| k == g.idx(g.nx / 2 + 23, g.ny / 2)),
+                Box::new(|_| true),
+            ];
+            for material in &patterns {
+                let mut layer = layer_of(g, material, |k| noise[k] > 0.2);
+                bits_are_current(&layer);
+                for round in 0..3 {
+                    for _ in 0..150 {
+                        let k = match random.below(3) {
+                            0 => g.idx(g.nx / 2, g.ny / 2),
+                            _ => random.below(n),
+                        };
+                        let mut p = g.center(k);
+                        if random.below(2) == 0 {
+                            p = [
+                                p[0] + (random.next() - 0.5) * 3. * g.c,
+                                p[1] + (random.next() - 0.5) * 3. * g.c,
+                            ];
+                        }
+                        if random.below(20) == 0 {
+                            // Off the grid.
+                            p[0] = g.x0 - random.next() * 2. * r;
+                        }
+                        let rad = match random.below(4) {
+                            0 => r + 3. * g.c,
+                            1 => 1.5 * r + 2. * g.c,
+                            2 => 23. * g.c,
+                            _ => random.next() * 2. * r,
+                        };
+                        let limit = if random.below(2) == 0 {
+                            r + g.c
+                        } else {
+                            random.next() * rad
+                        };
+                        for reach in [false, true] {
+                            let bits = if reach {
+                                &layer.bits.reach
+                            } else {
+                                &layer.bits.any
+                            };
+                            let keep =
+                                |q: usize| layer.material(q) && (!reach || layer.reachable[q]);
+                            let want = nearest_scan(&layer, keep, p, rad);
+                            assert_eq!(
+                                exact(layer.nearest_set(bits, p, rad)),
+                                want,
+                                "nearest to {p:?} within {rad} on {g:?}"
+                            );
+                            let mut near = false;
+                            let mut ties = 0;
+                            layer.g.for_disk(p, rad, |q, _, d| {
+                                near |= keep(q) && d <= limit;
+                                ties += usize::from(
+                                    keep(q) && want.is_some_and(|w| w.2 == d.to_bits()),
+                                );
+                            });
+                            assert_eq!(
+                                layer.any_set_within(bits, p, rad, limit),
+                                near,
+                                "within {limit} of {p:?} in {rad} on {g:?}"
+                            );
+                            // The disk's cells without their distances.
+                            let (mut cells, mut scan) = (vec![], vec![]);
+                            layer.g.for_disk_cells(p, rad, |q, c| cells.push((q, c)));
+                            layer.g.for_disk(p, rad, |q, c, _| scan.push((q, c)));
+                            assert_eq!(cells, scan, "disk at {p:?} of {rad} on {g:?}");
+                            // (`gather` checks itself against its scan.)
+                            layer.gather(p, rad, &mut vec![]);
+                            compared += 1;
+                            found += usize::from(want.is_some());
+                            tied += usize::from(ties > 1);
+                        }
+                    }
+                    // Cut a few disks, then (last round) undo some of them.
+                    let mark = layer.journal.len();
+                    for i in 0..4 {
+                        let p = g.center(random.below(n));
+                        layer.cut(p, r * (0.5 + random.next()));
+                        if round == 1 && i == 1 {
+                            layer.undo((mark + layer.journal.len()) / 2);
+                        }
+                    }
+                    bits_are_current(&layer);
+                }
+            }
+        }
+        // The cases meant to be covered were: answers, and equal distances.
+        assert!(
+            compared > 20000 && found > compared / 3 && tied > 500,
+            "{compared} {found} {tied}"
+        );
+    }
+
+    /// #192: the queue of start candidates hands them out in the order a
+    /// scan of the whole list for the nearest does, candidates at equal
+    /// distance and repeated candidates included, and leaves the list in
+    /// the same order.
+    #[test]
+    fn start_queue_takes_candidates_in_the_order_of_a_scan() {
+        let g = Grid {
+            x0: -3.,
+            y0: 2.,
+            c: 0.3,
+            nx: 40,
+            ny: 30,
+        };
+        let mut random = Random(192);
+        for pos in [g.center(g.idx(20, 15)), [1.234, 5.678], [-40., 90.]] {
+            let mut layer = layer_of(g, |_| false, |_| true);
+            // A ring about the position (equal distances), scattered cells
+            // and some of them twice (`revive_thin_starts` may repeat one).
+            layer.candidates = (0..g.nx * g.ny)
+                .filter(|&k| k % 7 == 3 || (k % g.nx).abs_diff(20) + (k / g.nx).abs_diff(15) == 6)
+                .collect();
+            for _ in 0..40 {
+                let k = layer.candidates[random.below(layer.candidates.len())];
+                layer.candidates.push(k);
+            }
+            let mut list = layer.candidates.clone();
+            let mut queue = StartQueue::new(&layer, pos);
+            let mut taken = 0;
+            loop {
+                // The scan, as `plan_pass` did it.
+                let want = list
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &k)| {
+                        let q = g.center(k);
+                        (i, k, (q[0] - pos[0]).hypot(q[1] - pos[1]))
+                    })
+                    .min_by(|a, b| a.2.total_cmp(&b.2));
+                let got = queue.take(&mut layer);
+                assert_eq!(got, want.map(|(_, k, _)| k));
+                let Some((i, _, _)) = want else { break };
+                list.swap_remove(i);
+                assert_eq!(layer.candidates, list);
+                taken += 1;
+            }
+            assert!(taken > 200 && layer.candidates.is_empty());
+        }
+    }
+
+    /// Plan a fixture's first operation against its committed stock, up to
+    /// `limit` motions. In a test build every search of the planner checks
+    /// itself against the scan it replaced (`candidate_direction`,
+    /// `nearest_material`, `StartQueue::take`), so a run is a comparison
+    /// of the two on every decision it makes.
+    fn plan_checked(text: &str, limit: usize) -> (usize, serde_json::Value) {
+        let m: crate::stream::StreamManifest = serde_json::from_str(text).unwrap();
+        m.validate().unwrap();
+        let tool = m.tools[0].prepare().unwrap();
+        let mut stock = Stock::new(m.stock.height().unwrap().clone()).unwrap();
+        let mut plan = crate::operation::OperationPlan::prepare_with_stock(
+            m.operations[0].clone(),
+            &m.tools[0],
+            &stock,
+            m.initial_position_mm,
+            1,
+            &|| false,
+        )
+        .unwrap();
+        let mut motions = 0;
+        while motions < limit
+            && let Some(motion) = plan.next_motion_with_stock(&stock, &|| false).unwrap()
+        {
+            let delta = stock
+                .preview_sweep(&tool, &motion, 1., m.sweep, &|| false)
+                .unwrap();
+            stock.apply_delta(&delta).unwrap();
+            motions += 1;
+        }
+        (motions, serde_json::to_value(plan.report()).unwrap())
+    }
+
+    /// The twelve triangles of a box.
+    fn box_triangles(lo: [f64; 3], hi: [f64; 3]) -> Vec<[[f64; 3]; 3]> {
+        let v: Vec<[f64; 3]> = (0..8)
+            .map(|n| {
+                [
+                    if n & 1 == 0 { lo[0] } else { hi[0] },
+                    if n & 2 == 0 { lo[1] } else { hi[1] },
+                    if n & 4 == 0 { lo[2] } else { hi[2] },
+                ]
+            })
+            .collect();
+        [
+            [0, 2, 3, 1],
+            [4, 5, 7, 6],
+            [0, 1, 5, 4],
+            [2, 6, 7, 3],
+            [0, 4, 6, 2],
+            [1, 3, 7, 5],
+        ]
+        .iter()
+        .flat_map(|q| [[v[q[0]], v[q[1]], v[q[2]]], [v[q[0]], v[q[2]], v[q[3]]]])
+        .collect()
+    }
+
+    /// A plate with two bosses and a frame, in the open block's stock:
+    /// links routed around the bosses, passes planned again, candidate
+    /// refreshes.
+    #[test]
+    fn plate_with_bosses_plan_matches_the_scans_at_every_decision() {
+        let mut m: serde_json::Value = serde_json::from_str(include_str!(
+            "../../fixtures/operations/roughing-open-block.json"
+        ))
+        .unwrap();
+        let mut triangles = box_triangles([0., 0., 0.], [100., 60., 14.]);
+        for (lo, hi) in [
+            ([8., 8.], [30., 24.]),
+            ([40., 6.], [52., 54.]),
+            ([62., 30.], [96., 36.]),
+            ([62., 50.], [96., 56.]),
+            ([62., 30.], [68., 56.]),
+            ([90., 30.], [96., 56.]),
+        ] {
+            triangles.extend(box_triangles([lo[0], lo[1], 0.], [hi[0], hi[1], 21.]));
+        }
+        let op = &mut m["operations"][0];
+        op["target"]["triangles"] = serde_json::to_value(triangles).unwrap();
+        op["entry"]["kind"] = "stock_edge_or_helix".into();
+        let (motions, report) = plan_checked(&m.to_string(), 1500);
+        let clearing = &report["layers"][0]["clearing"];
+        let count = |name: &str| clearing[name].as_u64().unwrap();
+        assert!(count("passes") >= 20, "{clearing}");
+        assert!(count("routed_links") >= 1, "{clearing}");
+        assert!(count("grid_refreshes") >= 2, "{clearing}");
+        assert!(
+            motions > 300 && count("engagement_replans") >= 1,
+            "{clearing}"
+        );
+    }
+
+    #[test]
+    fn open_block_plan_matches_the_scans_at_every_decision() {
+        let (motions, report) = plan_checked(
+            include_str!("../../fixtures/operations/roughing-open-block.json"),
+            usize::MAX,
+        );
+        let clearing = &report["layers"][0]["clearing"];
+        assert_eq!(clearing["strategy"], "engagement_front");
+        assert!(motions > 100 && clearing["passes"].as_u64().unwrap() >= 5);
+    }
+
+    #[test]
+    fn frustum_plan_matches_the_scans_at_every_decision() {
+        // The first passes of each of the first layers of the benchmark's
+        // `roughing-adaptive` part (the whole run is the benchmark's).
+        let (motions, _) = plan_checked(
+            include_str!("../../fixtures/operations/roughing-adaptive.json"),
+            600,
+        );
+        assert_eq!(motions, 600);
+    }
+
+    /// #202: growing the set cells by a disk answers "is a set cell within
+    /// this distance" exactly as the distance transform compared with the
+    /// distance does: on whole grids and on windows of them (set cells
+    /// outside a window unseen), for distances that fall exactly on cell
+    /// distances (3, 4, 5 cells) and between them, either comparison.
+    #[test]
+    fn grown_bits_match_the_distance_transform() {
+        let mut random = Random(7);
+        let mut compared = 0;
+        for (nx, ny, c) in [
+            (150, 97, 0.3),
+            (64, 130, 0.25),
+            (201, 40, 0.07),
+            (70, 70, 1. / 6.),
+        ] {
+            let g = Grid {
+                x0: -3.3,
+                y0: 9.1,
+                c,
+                nx,
+                ny,
+            };
+            let n = nx * ny;
+            for density in [0., 0.0005, 0.01, 0.3] {
+                // The reachable bits are the set cells here.
+                let set: Vec<bool> = (0..n).map(|_| random.next() < density).collect();
+                let layer = layer_of(g, |_| true, |k| set[k]);
+                for _ in 0..6 {
+                    let (i0, j0) = (random.below(nx), random.below(ny));
+                    let (i1, j1) = (i0 + random.below(nx - i0), j0 + random.below(ny - j0));
+                    let (i, j) = if random.below(3) == 0 {
+                        ([0, nx - 1], [0, ny - 1])
+                    } else {
+                        ([i0, i1], [j0, j1])
+                    };
+                    let w = Grid {
+                        x0: g.x0 + i[0] as f64 * c,
+                        y0: g.y0 + j[0] as f64 * c,
+                        c,
+                        nx: i[1] - i[0] + 1,
+                        ny: j[1] - j[0] + 1,
+                    };
+                    let mask: Vec<bool> = (0..w.nx * w.ny)
+                        .map(|k| set[g.idx(i[0] + k % w.nx, j[0] + k / w.nx)])
+                        .collect();
+                    let distance = edt(&w, &mask);
+                    for t in [
+                        0.,
+                        c,
+                        3. * c,
+                        5. * c,
+                        2f64.sqrt() * c,
+                        (0.2 + 12. * random.next()) * c,
+                        20. * c + c,
+                        20. * c - 0.6,
+                    ] {
+                        for inclusive in [false, true] {
+                            let near = cells2_within(c, t, inclusive).map(|d2| {
+                                Near::new(&layer.bits.reach, layer.bits.stride, i, j, d2)
+                            });
+                            for (k, &d) in distance.iter().enumerate() {
+                                let want = if inclusive { d <= t } else { d < t };
+                                let got = near
+                                    .as_ref()
+                                    .is_some_and(|n| n.at(i[0] + k % w.nx, j[0] + k / w.nx));
+                                assert_eq!(got, want, "cell {k} of {i:?} {j:?}, within {t}");
+                            }
+                            compared += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(compared > 1000);
+    }
+
+    /// #192: the load sums take a square root only for the cells whose
+    /// count depends on it, and return what the formula over every cell
+    /// returns, to the bit (each checks itself against the formula in a
+    /// test build): cells exactly half a cell inside and outside the
+    /// cutter and a cell and a half outside it included.
+    #[test]
+    fn load_sums_match_their_formulas() {
+        let mut random = Random(26);
+        for (r, c) in [(1., 0.05), (6., 1. / 6.), (5., 0.25), (0.3, 0.25)] {
+            let g = Grid {
+                x0: -2. * r,
+                y0: -2. * r,
+                c,
+                nx: (4. * r / c) as usize + 1,
+                ny: (4. * r / c) as usize + 1,
+            };
+            let mut cells: Vec<Point> = (0..g.nx * g.ny).map(|k| g.center(k)).collect();
+            for _ in 0..200 {
+                let centre = cells[random.below(g.nx * g.ny)];
+                let p = if random.below(2) == 0 {
+                    centre
+                } else {
+                    [random.next() - 0.5, random.next() - 0.5]
+                };
+                // Cells on the edges of the smoothing bands, exactly.
+                for edge in [r - 0.5 * c, r + 0.5 * c, r + 1.5 * c, r] {
+                    cells.push([p[0] + edge, p[1]]);
+                    cells.push([p[0], p[1] - edge]);
+                    cells.push([p[0] + 0.6 * edge, p[1] + 0.8 * edge]);
+                }
+                let a = std::f64::consts::TAU * random.next();
+                let prev = [p[0] - 0.3 * r * a.cos(), p[1] - 0.3 * r * a.sin()];
+                assert!(area(&cells, p, r, c) > 0.);
+                assert!(step_load(&cells, p, [a.cos(), a.sin()], r, c).0 > 0.);
+                assert!(fresh_cells(&cells, prev, p, r, c) > 0.);
+                cells.truncate(g.nx * g.ny);
+            }
+        }
     }
 }

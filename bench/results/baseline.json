@@ -1950,6 +1950,69 @@
    }
   },
   {
+   "name": "roughing-adaptive-large",
+   "family": "mill",
+   "description": "3D adaptive roughing of a 420 x 300 mm plate with bosses (production size)",
+   "operations": {
+    "rough": {
+     "toolpath": "Roughing",
+     "issue": 202,
+     "moves": 3724,
+     "cut_mm": 59205.725,
+     "rapid_mm": 21425.742,
+     "air_cut_mm": 5450.585,
+     "link_mm": 6550.554,
+     "plunges": 156,
+     "retracts": 156,
+     "removed_mm3": 2397631.835,
+     "cycle_seconds_exact_stop": 4533.32,
+     "cycle_seconds_tangent": 4532.354,
+     "engine_seconds": 14.5197
+    }
+   },
+   "toolpath": {
+    "moves": 3724,
+    "cycle_seconds_exact_stop": 4533.32,
+    "cycle_seconds_tangent": 4532.354,
+    "posted_blocks": 3861,
+    "post_error": null,
+    "removed_mm3": [
+     2397631.835,
+     2418574.087
+    ],
+    "material": {
+     "leftover_mm3": [
+      88997.14193706622,
+      159192.29016893287
+     ],
+     "overcut_mm3": [
+      0.0,
+      115.35042588449403
+     ],
+     "leftover_cells": [
+      87477,
+      17193
+     ],
+     "overcut_cells": [
+      0,
+      1050
+     ],
+     "max_residual_height_mm": 4.000652000120451,
+     "complete": true
+    }
+   },
+   "engine": {
+    "run_seconds": 14.6096,
+    "first_move_seconds": 2.526,
+    "post_seconds": 48.2964,
+    "repeats": 3,
+    "peak_rss_kib": {
+     "python": 168224.0,
+     "native": 136888.0
+    }
+   }
+  },
+  {
    "name": "pocket-dense",
    "family": "mill",
    "description": "Pocket around a round island, 0.4 mm stepover, 0.25 mm stepdown",
