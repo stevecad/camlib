@@ -129,24 +129,24 @@ comparable only on the same machine; CI runs the same benchmark on every push.
 | Workload | What | Moves | Cycle s (exact / tangent) | Blocks | Leftover mm³ | Over-cut mm³ | Run s | First move s | Post s | Peak memory MiB |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | `facing` | Face a 40 x 24 block 2 mm | 20 | 47.1 / 47.1 | 43 | 0.0 / 254.0 | 0.0 / 0.0 | 0.011 | 0.005 | 0.003 | 26 |
-| `pocket` | Pocket around a round island (CAD region) | 352 | 508.3 / 508.3 | 383 | 3.8 / 541.5 | 0.0 / 489.6 | 0.035 | 0.009 | 0.024 | 31 |
+| `pocket` | Pocket around a round island (CAD region) | 352 | 508.3 / 508.3 | 375 | 3.8 / 541.5 | 0.0 / 489.6 | 0.035 | 0.009 | 0.024 | 31 |
 | `rest-pocket` | Face, 4 mm pocket, 2 mm rest pocket | 130 | 69.9 / 69.6 | 169 | 0.0 / 267.0 | 0.0 / 66.0 | 0.008 | 0.003 | 0.011 | 26 |
-| `adaptive-pocket` | Adaptive clearing of an L pocket | 522 | 144.4 / 144.1 | 777 | 0.0 / 481.6 | 0.0 / 56.0 | 1.822 | 0.105 | 3.489 | 385 |
-| `roughing-raster` | 3D raster roughing around a frustum | 2169 | 7932.3 / 7931.6 | 2400 | 930.8 / 1505.5 | 0.0 / 83.1 | 0.054 | 0.010 | 0.188 | 389 |
-| `roughing-offset` | 3D offset roughing around a frustum | 924 | 1439.8 / 1436.8 | 1219 | 930.8 / 1505.5 | 0.0 / 83.1 | 0.048 | 0.018 | 0.293 | 388 |
-| `roughing-adaptive` | 3D adaptive roughing around a frustum | 4501 | 1752.6 / 1752.2 | 7500 | 939.5 / 1546.7 | 0.0 / 53.8 | 28.443 | 4.817 | 44.237 | 395 |
-| `roughing-fine-mesh` | 3D offset roughing of a filleted boss from a fine mesh | 3295 | 554.3 / 531.4 | 4874 | 816.3 / 1385.3 | 0.0 / 0.4 | 0.314 | 0.227 | 10.079 | 406 |
-| `contour` | Outer and inner walls of an annulus | 40 | 55.8 / 55.7 | 79 | 0.0 / 831.6 | 0.0 / 430.2 | 0.011 | 0.005 | 0.010 | 384 |
-| `holes` | Pilot drilling then helical bore milling | 62 | 51.0 / 50.9 | 111 | 0.0 / 413.1 | 0.0 / 125.1 | 0.025 | 0.005 | 0.013 | 388 |
+| `adaptive-pocket` | Adaptive clearing of an L pocket | 522 | 144.4 / 144.1 | 545 | 0.0 / 481.6 | 0.0 / 56.0 | 1.822 | 0.105 | 3.489 | 385 |
+| `roughing-raster` | 3D raster roughing around a frustum | 2169 | 7932.3 / 7931.6 | 2192 | 930.8 / 1505.5 | 0.0 / 83.1 | 0.054 | 0.010 | 0.188 | 389 |
+| `roughing-offset` | 3D offset roughing around a frustum | 924 | 1439.8 / 1436.8 | 947 | 930.8 / 1505.5 | 0.0 / 83.1 | 0.048 | 0.018 | 0.293 | 388 |
+| `roughing-adaptive` | 3D adaptive roughing around a frustum | 4501 | 1752.6 / 1752.2 | 4524 | 939.5 / 1546.7 | 0.0 / 53.8 | 28.443 | 4.817 | 44.237 | 395 |
+| `roughing-fine-mesh` | 3D offset roughing of a filleted boss from a fine mesh | 3295 | 554.3 / 531.4 | 3318 | 816.3 / 1385.3 | 0.0 / 0.4 | 0.314 | 0.227 | 10.079 | 406 |
+| `contour` | Outer and inner walls of an annulus | 40 | 55.8 / 55.7 | 63 | 0.0 / 831.6 | 0.0 / 430.2 | 0.011 | 0.005 | 0.010 | 384 |
+| `holes` | Pilot drilling then helical bore milling | 62 | 51.0 / 50.9 | 93 | 0.0 / 413.1 | 0.0 / 125.1 | 0.025 | 0.005 | 0.013 | 388 |
 | `reaming` | Drill then ream two holes | 16 | 28.7 / 28.7 | 46 | – | – | 0.010 | 0.006 | 0.004 | 29 |
 | `tapping` | Drill then rigid-tap two holes | 18 | 14.8 / 14.8 | 49 | – | – | 0.009 | 0.005 | 0.004 | 29 |
-| `thread-milling` | Bore then thread-mill M14 x 1.5 | 35 | 47.7 / 47.7 | 85 | – | – | 0.316 | 0.009 | 0.011 | 31 |
-| `trochoidal-slot` | Straight trochoidal slot | 356 | 125.4 / 121.9 | 555 | 0.0 / 407.8 | 0.0 / 53.6 | 0.013 | 0.005 | 0.083 | 27 |
-| `chamfer` | Chamfer the top edges of an annulus | 50 | 66.7 / 66.6 | 101 | 0.0 / 725.6 | 0.0 / 343.4 | 0.034 | 0.006 | 0.012 | 384 |
-| `trace` | Engrave a rectangle and a hook | 24 | 15.5 / 15.5 | 49 | – | – | 0.006 | 0.004 | 0.004 | 26 |
+| `thread-milling` | Bore then thread-mill M14 x 1.5 | 35 | 47.7 / 47.7 | 66 | – | – | 0.316 | 0.009 | 0.011 | 31 |
+| `trochoidal-slot` | Straight trochoidal slot | 356 | 125.4 / 121.9 | 379 | 0.0 / 407.8 | 0.0 / 53.6 | 0.013 | 0.005 | 0.083 | 27 |
+| `chamfer` | Chamfer the top edges of an annulus | 50 | 66.7 / 66.6 | 81 | 0.0 / 725.6 | 0.0 / 343.4 | 0.034 | 0.006 | 0.012 | 384 |
+| `trace` | Engrave a rectangle and a hook | 24 | 15.5 / 15.5 | 47 | – | – | 0.006 | 0.004 | 0.004 | 26 |
 | `vcarve` | V-carve an L-shaped letter | 1986 | 28.8 / 20.5 | 2009 | – | – | 2.498 | 0.019 | 0.107 | 33 |
 | `flat` | Flat areas of a stepped part | 156 | 165.2 / 165.2 | 179 | 28.5 / 175.8 | 0.0 / 14.3 | 0.013 | 0.007 | 0.012 | 384 |
-| `rough-parallel` | Rough then parallel ball finish a roof | 6248 | 9268.7 / 9249.5 | 6549 | 0.0 / 146.1 | 0.0 / 99.6 | 0.264 | 0.010 | 0.484 | 396 |
+| `rough-parallel` | Rough then parallel ball finish a roof | 6248 | 9268.7 / 9249.5 | 6279 | 0.0 / 146.1 | 0.0 / 99.6 | 0.264 | 0.010 | 0.484 | 396 |
 | `parallel` | Parallel finishing of a roof | 3321 | 334.8 / 316.9 | 3344 | 0.0 / 146.1 | 0.0 / 99.6 | 0.135 | 0.004 | 0.184 | 392 |
 | `spiral` | Spiral finishing of a roof | 2552 | 225.9 / 225.5 | 2575 | 0.0 / 149.9 | 0.0 / 79.0 | 0.093 | 0.005 | 0.150 | 390 |
 | `radial` | Radial finishing of a roof | 610 | 104.7 / 104.0 | 633 | 9.8 / 202.6 | 0.0 / 67.2 | 0.040 | 0.004 | 0.041 | 385 |
@@ -159,14 +159,14 @@ comparable only on the same machine; CI runs the same benchmark on every push.
 | `waterline` | Waterline finishing of a tapered island | 112 | 33.0 / 33.0 | 135 | 369.9 / 809.3 | 0.0 / 89.3 | 0.135 | 0.129 | 0.009 | 389 |
 | `steep-and-shallow` | Steep-and-shallow finishing of a roof | 1744 | 342.8 / 333.7 | 1775 | 0.0 / 149.8 | 0.0 / 100.3 | 0.481 | 0.379 | 0.107 | 388 |
 | `facing-large` | Face a 300 x 200 block 2 mm (production size) | 140 | 2153.3 / 2153.3 | 163 | – | – | 0.408 | 0.048 | 0.009 | 69 |
-| `pocket-dense` | Pocket around a round island, 0.4 mm stepover, 0.25 mm stepdown | 9088 | 11873.8 / 11873.4 | 9175 | 3.8 / 541.5 | 0.0 / 489.6 | 0.344 | 0.010 | 0.532 | 44 |
+| `pocket-dense` | Pocket around a round island, 0.4 mm stepover, 0.25 mm stepdown | 9088 | 11873.8 / 11873.4 | 9111 | 3.8 / 541.5 | 0.0 / 489.6 | 0.344 | 0.010 | 0.532 | 44 |
 | `parallel-dense` | Parallel finishing of a roof, 0.1 mm stepover | 14023 | 1618.0 / 1555.9 | 14046 | 0.0 / 143.9 | 0.0 / 101.0 | 0.638 | 0.004 | 0.838 | 415 |
 | `spiral-dense` | Spiral finishing of a roof, 0.15 mm stepover | 12767 | 1125.9 / 1123.9 | 12790 | 0.0 / 144.2 | 0.0 / 86.6 | 0.498 | 0.007 | 0.748 | 417 |
 | `scallop-dense` | Scallop finishing of a roof, 0.15 mm stepover | 27025 | 1678.2 / 1565.8 | 27048 | 0.0 / 143.6 | 0.0 / 81.0 | 2.998 | 1.026 | 1.552 | 444 |
 | `waterline-dense` | Waterline finishing of a tapered island, 0.1 mm stepdown | 1847 | 460.2 / 460.2 | 1870 | 369.9 / 797.6 | 0.0 / 100.4 | 1.008 | 0.382 | 0.104 | 392 |
-| `plasma` | Plasma-cut a plate with holes and a nested washer | 66 | 26.5 / 25.5 | 294 | – | – | 0.082 | 0.068 | 0.064 | 45 |
-| `lathe-shaft` | Face, rough and finish a stepped shaft | 46 | 111.6 / 111.6 | 73 | 0.9 / 194.2 | 0.0 / 0.0 | 0.075 | 0.016 | 0.011 | 31 |
+| `plasma` | Plasma-cut a plate with holes and a nested washer | 66 | 26.5 / 25.5 | 270 | – | – | 0.082 | 0.068 | 0.064 | 45 |
+| `lathe-shaft` | Face, rough and finish a stepped shaft | 46 | 111.6 / 111.6 | 71 | 0.9 / 194.2 | 0.0 / 0.0 | 0.075 | 0.016 | 0.011 | 31 |
 | `lathe-groove` | Rough, groove and part off a shaft | 84 | 173.2 / 173.2 | 115 | 857.3 / 1386.6 | 0.0 / 0.0 | 0.035 | 0.007 | 0.008 | 29 |
-| `lathe-thread` | Turn and single-point thread M30 x 2 | 77 | 124.5 / 124.5 | 111 | 0.9 / 194.2 | 0.0 / 0.0 | 0.094 | 0.018 | 0.017 | 31 |
+| `lathe-thread` | Turn and single-point thread M30 x 2 | 77 | 124.5 / 124.5 | 109 | 0.9 / 194.2 | 0.0 / 0.0 | 0.094 | 0.018 | 0.017 | 31 |
 | `lathe-bore` | Drill on the axis, rough and finish bore | 29 | 63.8 / 63.8 | 61 | 9596.7 / 10035.8 | 0.0 / 0.0 | 0.019 | 0.007 | 0.004 | 29 |
 | `lathe-face-groove` | Face and cut a face groove | 35 | 83.3 / 83.3 | 66 | 3122.0 / 3254.7 | 0.0 / 0.0 | 0.015 | 0.006 | 0.004 | 29 |

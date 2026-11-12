@@ -101,7 +101,7 @@
     "moves": 352,
     "cycle_seconds_exact_stop": 508.314,
     "cycle_seconds_tangent": 508.274,
-    "posted_blocks": 383,
+    "posted_blocks": 375,
     "post_error": null,
     "removed_mm3": [
      8693.749,
@@ -253,7 +253,7 @@
     "moves": 522,
     "cycle_seconds_exact_stop": 144.388,
     "cycle_seconds_tangent": 144.112,
-    "posted_blocks": 777,
+    "posted_blocks": 545,
     "post_error": null,
     "removed_mm3": [
      472.318,
@@ -315,7 +315,7 @@
     "moves": 2169,
     "cycle_seconds_exact_stop": 7932.344,
     "cycle_seconds_tangent": 7931.579,
-    "posted_blocks": 2400,
+    "posted_blocks": 2192,
     "post_error": null,
     "removed_mm3": [
      5765.95,
@@ -377,7 +377,7 @@
     "moves": 924,
     "cycle_seconds_exact_stop": 1439.816,
     "cycle_seconds_tangent": 1436.823,
-    "posted_blocks": 1219,
+    "posted_blocks": 947,
     "post_error": null,
     "removed_mm3": [
      5765.95,
@@ -439,7 +439,7 @@
     "moves": 4501,
     "cycle_seconds_exact_stop": 1752.563,
     "cycle_seconds_tangent": 1752.232,
-    "posted_blocks": 7500,
+    "posted_blocks": 4524,
     "post_error": null,
     "removed_mm3": [
      5724.767,
@@ -501,7 +501,7 @@
     "moves": 3295,
     "cycle_seconds_exact_stop": 554.341,
     "cycle_seconds_tangent": 531.423,
-    "posted_blocks": 4874,
+    "posted_blocks": 3318,
     "post_error": null,
     "removed_mm3": [
      5417.771,
@@ -563,7 +563,7 @@
     "moves": 40,
     "cycle_seconds_exact_stop": 55.776,
     "cycle_seconds_tangent": 55.696,
-    "posted_blocks": 79,
+    "posted_blocks": 63,
     "post_error": null,
     "removed_mm3": [
      2185.997,
@@ -639,7 +639,7 @@
     "moves": 62,
     "cycle_seconds_exact_stop": 50.955,
     "cycle_seconds_tangent": 50.941,
-    "posted_blocks": 111,
+    "posted_blocks": 93,
     "post_error": null,
     "removed_mm3": [
      1288.318,
@@ -829,7 +829,7 @@
     "moves": 35,
     "cycle_seconds_exact_stop": 47.703,
     "cycle_seconds_tangent": 47.683,
-    "posted_blocks": 85,
+    "posted_blocks": 66,
     "post_error": null,
     "removed_mm3": [
      683.567,
@@ -872,7 +872,7 @@
     "moves": 356,
     "cycle_seconds_exact_stop": 125.416,
     "cycle_seconds_tangent": 121.949,
-    "posted_blocks": 555,
+    "posted_blocks": 379,
     "post_error": null,
     "removed_mm3": [
      268.999,
@@ -948,7 +948,7 @@
     "moves": 50,
     "cycle_seconds_exact_stop": 66.71,
     "cycle_seconds_tangent": 66.61,
-    "posted_blocks": 101,
+    "posted_blocks": 81,
     "post_error": null,
     "removed_mm3": [
      2274.151,
@@ -1010,7 +1010,7 @@
     "moves": 24,
     "cycle_seconds_exact_stop": 15.517,
     "cycle_seconds_tangent": 15.517,
-    "posted_blocks": 49,
+    "posted_blocks": 47,
     "post_error": null,
     "removed_mm3": [
      169.623,
@@ -1172,7 +1172,7 @@
     "moves": 6248,
     "cycle_seconds_exact_stop": 9268.726,
     "cycle_seconds_tangent": 9249.467,
-    "posted_blocks": 6549,
+    "posted_blocks": 6279,
     "post_error": null,
     "removed_mm3": [
      2276.38,
@@ -1973,7 +1973,7 @@
     "moves": 9088,
     "cycle_seconds_exact_stop": 11873.766,
     "cycle_seconds_tangent": 11873.446,
-    "posted_blocks": 9175,
+    "posted_blocks": 9111,
     "post_error": null,
     "removed_mm3": [
      8693.749,
@@ -2283,7 +2283,7 @@
     "moves": 66,
     "cycle_seconds_exact_stop": 26.47,
     "cycle_seconds_tangent": 25.487,
-    "posted_blocks": 294,
+    "posted_blocks": 270,
     "post_error": null,
     "removed_mm3": [
      4689.375,
@@ -2354,7 +2354,7 @@
     "moves": 46,
     "cycle_seconds_exact_stop": 111.618,
     "cycle_seconds_tangent": 111.61,
-    "posted_blocks": 73,
+    "posted_blocks": 71,
     "post_error": null,
     "removed_mm3": [
      36892.82,
@@ -2550,7 +2550,7 @@
     "moves": 77,
     "cycle_seconds_exact_stop": 124.547,
     "cycle_seconds_tangent": 124.539,
-    "posted_blocks": 111,
+    "posted_blocks": 109,
     "post_error": null,
     "removed_mm3": [
      36892.82,
