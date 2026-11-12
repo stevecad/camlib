@@ -144,7 +144,7 @@ These rarely need changing; each failure names the budget it hit.
 | `DexelStockSpec` | `max_rays` caps the three ray grids together; `max_intervals` the stored intervals (two per uncut ray) |
 | `StockContactOptions` | `spatial_resolution_mm` (0.001) smallest region examined; `max_nodes`, `max_cell_reads` work per move; `max_findings` per move |
 | verification `Options` | the same for fixture/part checks, and `target_floor_tolerance_mm` (floor allowance on protected parts) |
-| `MachineLimits` | Travel, declared once: `min_tip_mm`, `max_tip_mm` (the tip travel box of one tool length) or `min_gauge_mm`, `max_gauge_mm` (`MachineLimits.gauge_line(min, max, max_feed_mm_min)`: the spindle gauge line's travel; each tool is checked against it lowered by its gauge length, see below). Limits included: a tip on a limit, such as a mill at home in a corner of its travel, is inside, and every move (line, arc or helix, in any work frame) is decided as inside or as a violation at the point that leaves; travel is never reported `uncertain`. `max_feed_mm_min`, `max_normal_accel_mm_s2`, `max_axis_feed_mm_min` |
+| `MachineLimits` | Travel, declared once: `min_tip_mm`, `max_tip_mm` (the tip travel box of one tool length) or `min_gauge_mm`, `max_gauge_mm` (`MachineLimits.gauge_line(min, max, max_feed_mm_min)`: the spindle gauge line's travel; each tool is checked against it lowered by its gauge length, see below). Limits included: a tip on a limit, such as a mill at home in a corner of its travel, is inside, and every move (line, arc or helix, in any work frame) is decided as inside or as a violation at the point that leaves; travel is never reported `uncertain`. A declared end is compared exactly: the motion tolerance is not a travel allowance (see [the travel rule](#the-travel-rule)). `max_feed_mm_min`, `max_normal_accel_mm_s2`, `max_axis_feed_mm_min` |
 | `RegenerationCache` | `max_entry_bytes`, `max_total_bytes` disk limits |
 
 **Machine travel with tools of different lengths.** A machine's travel is its
@@ -162,6 +162,48 @@ by that tool's `gauge_length_mm`), and a finding names the tool and the axis.
 Declare one or the other, never both. Gauge-line travel needs the work Z axis
 along machine Z and spindle-held tools: a tilted work frame, a beam (plasma or
 laser) tool or a lathe is refused, and declares a tip box.
+
+### The travel rule
+
+The planned-move check and the posted-program check compare a tool position
+with the machine's travel by one rule (`src/travel.rs`), so they cannot
+disagree about a position on a limit:
+
+- **The travel box is closed.** A position on a limit is inside: a machine at
+  home sits on its limits, often on three at once.
+- **Declared positions are exact.** The ends of every move, a tool-change
+  pose and the start pose are compared as declared. The only allowance is the
+  bound on the binary64 evaluation of the work-to-machine transform
+  (`origin + x·X + y·Y + z·Z`: three products and three sums, at most
+  `5 · 2⁻⁵³ · (|origin| + |x·X| + |y·Y| + |z·Z|)` on each machine axis, about
+  1e-13 mm at a metre of travel), plus one rounding of `limit − gauge length`
+  on machine Z with gauge-line travel. A line end 1e-6 mm beyond a limit is a
+  violation. `Options.tolerance_mm` and the post's `tolerance_mm` are not
+  travel allowances.
+- **An arc or helix keeps what its representation needs.** Besides its two
+  declared ends (exact), it is tested where each machine coordinate of its
+  nominal circle is extreme, and at the nominal end. The nominal circle is
+  drawn from the start about the centre, and the declared end may be off it by
+  the move's own endpoint gap, which the motion tolerance bounds. Those
+  nominal points are outside only beyond that gap (the gap of this move, not
+  the tolerance) plus the evaluation bound of a circle point (about 1e-13 mm
+  for a 10 mm radius). An arc whose end lies on its circle is held as exactly
+  as a line.
+- **The posted program is held to its decoded words.** The controller
+  executes the words, rounded to the machine's `decimals`, and stops on its
+  travel limit (LinuxCNC `MIN_LIMIT`/`MAX_LIMIT`; FANUC stored stroke check 1,
+  B-63534EN/02 section 6.3). A decoded position beyond a limit is refused,
+  however small the step; rounding is never given a tolerance. A position on
+  a limit is written exactly when the work offset and the limit are on the
+  output grid (multiples of the output step). If they are not, a planned
+  position on the limit can round beyond it, and the post refuses with the
+  axis, the decoded position and the limit: keep the plan one output step
+  inside, or put the offset and the limit on the grid.
+
+A rotated work frame is decided on the move itself, not on a box around it.
+Through a general rotation the machine coordinate of a position is a rounded
+computation, so "on the limit" holds only to that evaluation bound; with the
+work axes along the machine's it is exact.
 
 `CadSource.from_shape(id, revision, shape, document_id=None, reference="body")`
 records where CAD input came from (document, reference, geometry SHA-256,

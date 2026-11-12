@@ -1014,6 +1014,82 @@ fn curved_moves_in_any_work_frame_are_decided_against_the_closed_travel() {
 }
 
 #[test]
+fn a_declared_end_is_compared_exactly_with_the_travel() {
+    // #246: the travel box is closed and a declared end is exact; the motion
+    // tolerance (1e-5 mm by default) is not a travel allowance. Travel
+    // X 0..450, Y 0..280, Z -400..0.
+    let quarter = WorkFrame {
+        origin_mm: [225.3, 140.7, -300.1],
+        x: [0., 1., 0.],
+        y: [-1., 0., 0.],
+        z: [0., 0., 1.],
+    };
+    let mut offset = WorkFrame::identity();
+    offset.origin_mm = [123.456, 77.1, -250.3];
+    for frame in [offset, quarter] {
+        let mut s = scene(vec![]);
+        s.machine = Some(tip_limits([0., 0., -400.], [450., 280., 0.]));
+        s.work_to_machine = frame.clone();
+        // A machine point in work coordinates: one rounded difference, and
+        // signs and swaps (the frames have axes along the machine's).
+        let work = |q: [f64; 3]| -> [f64; 3] {
+            let d: [f64; 3] = std::array::from_fn(|i| q[i] - frame.origin_mm[i]);
+            [frame.x, frame.y, frame.z].map(|axis| (0..3).map(|i| d[i] * axis[i]).sum())
+        };
+        let inside = work([100., 100., -100.]);
+        for (axis, low) in [(0, true), (0, false), (1, true), (1, false), (2, true), (2, false)] {
+            let limit = if low { [0., 0., -400.][axis] } else { [450., 280., 0.][axis] };
+            let at = |beyond: f64| {
+                let mut q = [100., 100., -100.];
+                q[axis] = limit + if low { -beyond } else { beyond };
+                work(q)
+            };
+            let r = check(s.clone(), &line(inside, at(0.)));
+            assert_eq!(r.status, Status::Clear, "{frame:?} {axis} {low}: {:?}", r.findings);
+            for (m, fraction) in [(line(inside, at(1e-6)), 1.), (line(at(1e-6), inside), 0.)] {
+                let r = check(s.clone(), &m);
+                assert_eq!(r.status, Status::Violation, "{frame:?} {axis} {low}");
+                let w = travel_finding(&r).unwrap().witness.clone().unwrap();
+                assert_eq!(w.fraction, fraction);
+                // The reported margin is the 1e-6 mm, less a guard far below
+                // a nanometre.
+                assert!((w.margin_lower_mm - 1e-6).abs() < 1e-9, "{}", w.margin_lower_mm);
+            }
+        }
+        // An exact arc tangent to the Y maximum is inside; 1e-6 mm beyond it
+        // is a violation where the arc is extreme.
+        let tangent = |beyond: f64| {
+            let at = |x: f64, y: f64| work([x, y + beyond, -100.]);
+            let (start, end, center) = (at(90., 270.), at(110., 270.), at(100., 270.));
+            // Clockwise over the top; both frames are rotations about Z,
+            // so the sense is the same in work coordinates.
+            motion(Curve::Arc {
+                start,
+                end,
+                center,
+                plane: Plane::Xy,
+                sweep_rad: -PI,
+            })
+        };
+        let r = check(s.clone(), &tangent(0.));
+        assert_eq!(r.status, Status::Clear, "{frame:?}: {:?}", r.findings);
+        let r = check(s.clone(), &tangent(1e-6));
+        assert_eq!(r.status, Status::Violation, "{frame:?}");
+        let fraction = travel_finding(&r).unwrap().witness.as_ref().unwrap().fraction;
+        assert!((fraction - 0.5).abs() < 1e-9, "{fraction}");
+    }
+    // The gauge line: a tool at Z home is on its limit, 1e-6 mm above is not.
+    let mut s = scene(vec![]);
+    s.machine = Some(gauge_limits([0., 0., -400.], [500., 400., 0.]));
+    s.work_to_machine.origin_mm = [200., 150., -300.];
+    let home = 300. - tool().gauge_length_mm;
+    let r = check(s.clone(), &line([0., 0., 100.], [0., 0., home]));
+    assert_eq!(r.status, Status::Clear, "{:?}", r.findings);
+    let r = check(s, &line([0., 0., 100.], [0., 0., home + 1e-6]));
+    assert_eq!(r.status, Status::Violation);
+}
+
+#[test]
 fn budgets_truncation_and_mid_query_cancellation_cannot_fabricate_completion() {
     let s = scene(vec![body("small", [4.9, -0.1, 5.1, 0.1], [0., 2.])]);
     let m = line([-10., 0., 0.], [10., 0., 0.]);

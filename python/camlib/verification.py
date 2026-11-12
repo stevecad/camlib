@@ -57,7 +57,12 @@ class MachineLimits:
       active). Each tool's tip is checked against that box lowered along
       machine Z by the tool's ``gauge_length_mm``, so tools of different
       lengths each get their own travel. Needs the work Z axis along machine
-      Z, and tools held in a spindle (not a beam)."""
+      Z, and tools held in a spindle (not a beam).
+
+    A position on a limit is inside, and a declared end is compared exactly:
+    the motion tolerance is not a travel allowance (a line end 1e-6 mm beyond
+    a limit is a violation). The posted-program check holds the decoded words
+    to the same rule; see "The travel rule" in docs/python.md."""
 
     min_tip_mm: tuple | None
     max_tip_mm: tuple | None

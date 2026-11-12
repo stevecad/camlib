@@ -126,7 +126,10 @@ endpoints) against:
   (`Prism(role="protected_target")`),
 - cutter, shank and holder geometry,
 - declared machine travel (one tip box, or the gauge line's travel with each
-  tool checked at its own gauge length) and feed limits.
+  tool checked at its own gauge length) and feed limits. Planned moves and
+  the decoded words of the posted program are compared with travel by
+  [one rule](python.md#the-travel-rule): a position on a limit is inside, a
+  declared end is exact.
 
 Also available:
 

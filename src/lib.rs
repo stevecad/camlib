@@ -115,6 +115,7 @@ pub mod thermal;
 pub mod thermal_mark;
 pub mod tool;
 pub mod trace;
+mod travel;
 pub mod turning;
 pub mod undercut;
 pub mod vcarve;
