@@ -122,6 +122,14 @@ pub struct InsertBody {
     /// to the corners between the flanks).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blade_clearance: Option<BladeClearance>,
+    /// The insert's in-plane size tolerance (#113): ± on its inscribed
+    /// circle d and its corner dimension m (its ISO 1832 tolerance class,
+    /// or its maker's values), for an outline insert of the ISO form. With
+    /// it the body is everything an insert of that tolerance can occupy
+    /// relative to its measured nose (`size.rs`). None: the insert is its
+    /// outline exactly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_tolerance: Option<super::size::SizeTolerance>,
 }
 
 /// A grooving blade's clearance per flank (degrees), from its maker's
@@ -163,6 +171,10 @@ pub struct Body {
     pub insert: Pieces3,
     pub holder: Pieces3,
     pub flanks: Vec<FlankPiece>,
+    /// With a size tolerance (#113): the insert's body at its nominal
+    /// size (`insert` is then the body of the largest insert the tolerance
+    /// allows), for telling a refusal the tolerance causes.
+    pub nominal_insert: Option<Pieces3>,
 }
 
 impl ToolBody {
@@ -255,15 +267,16 @@ pub fn iso_insert_body(code: &str) -> Result<(f64, f64), String> {
             ));
         }
     };
-    let tolerance = match c[2] {
-        'A' | 'F' | 'C' | 'H' | 'E' | 'J' | 'K' | 'L' | 'N' => 0.025,
-        'G' | 'M' | 'U' => 0.13,
-        other => {
-            return Err(format!(
-                "insert code {code:?}: tolerance class {other:?} is not an ISO 1832 class: declare insert_thickness_mm"
-            ));
-        }
-    };
+    // The class's tolerance on s (the class table is with the size
+    // tolerances it also gives: `size::class`).
+    let tolerance = super::size::class(c[2])
+        .ok_or_else(|| {
+            format!(
+                "insert code {code:?}: tolerance class {:?} is not an ISO 1832 class: declare insert_thickness_mm",
+                c[2]
+            )
+        })?
+        .s_mm;
     let symbol: String = c[6..8].iter().collect();
     // [n, n + 1) mm by the symbol rule; T1/T3 are 1.98 and 3.97 mm.
     let below = match symbol.as_str() {
@@ -610,12 +623,10 @@ pub fn body(tool: &TurningTool) -> Result<Body, String> {
             .is_some_and(|b| b.curved_for_diameter_mm.is_some());
     let shape = tool.shape()?;
     let polygon = &shape.insert;
-    let pieces = convex_pieces(polygon);
-    let mut insert: Vec<Vec<[f64; 3]>>;
     let Some(body) = tool_body.insert.as_ref().filter(|_| !curved) else {
         // A drill: its outline is its radial section. A curved face
         // grooving blade: it follows the groove's radius off the plane.
-        insert = pieces
+        let insert = convex_pieces(polygon)
             .iter()
             .map(|piece| piece.iter().map(|p| [p[0], p[1], 0.]).collect())
             .collect();
@@ -623,8 +634,32 @@ pub fn body(tool: &TurningTool) -> Result<Body, String> {
             insert,
             holder: holder_pieces(tool, &shape, tool_body),
             flanks: vec![],
+            nominal_insert: None,
         });
     };
+    let (insert, flanks) = insert_pieces(tool, body, &shape.insert, blade)?;
+    let nominal_insert = match &shape.nominal {
+        Some(nominal) => Some(insert_pieces(tool, body, nominal, blade)?.0),
+        None => None,
+    };
+    Ok(Body {
+        insert,
+        holder: holder_pieces(tool, &shape, tool_body),
+        flanks,
+        nominal_insert,
+    })
+}
+
+/// The insert's body below the face polygon `polygon`, seated: its convex
+/// 3D pieces and, for a straight grooving blade, its flanks.
+fn insert_pieces(
+    tool: &TurningTool,
+    body: &InsertBody,
+    polygon: &[[f64; 2]],
+    blade: bool,
+) -> Result<(Pieces3, Vec<FlankPiece>), String> {
+    let pieces = convex_pieces(polygon);
+    let mut insert: Vec<Vec<[f64; 3]>>;
     let s = body.insert_thickness_mm;
     // A blade's sides by their outward direction in its frame: the front
     // toward -x, the top (where the blade goes on into its holder) toward
@@ -767,11 +802,7 @@ pub fn body(tool: &TurningTool) -> Result<Body, String> {
     for flank in &mut flanks {
         flank.points.iter_mut().for_each(seat);
     }
-    Ok(Body {
-        insert,
-        holder: holder_pieces(tool, &shape, tool_body),
-        flanks,
-    })
+    Ok((insert, flanks))
 }
 
 fn holder_pieces(
@@ -1543,6 +1574,7 @@ mod tests {
                 edge_deg: edge,
                 curved_for_diameter_mm: None,
                 blade_clearance: None,
+                size_tolerance: None,
             }),
             holder_y_mm: [-10., 0.],
             bar_axis_y_mm: 0.,

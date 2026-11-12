@@ -132,8 +132,10 @@ pub struct TurningTool {
     pub body: Option<super::body::ToolBody>,
 }
 
-/// A non-cutting side of an insert (its two ends) and its outward normal.
-pub type BackSide = ([[f64; 2]; 2], [f64; 2]);
+/// A non-cutting part of an insert and the outward normals it can have: a
+/// side (its two ends, its normal) or, for an insert with a size tolerance
+/// (#113), the zone a side or a corner can lie in.
+pub type BackSide = super::size::BackZone;
 
 /// The tool's geometry in its frame, the nose center at the origin, for an
 /// outside, right-hand tool; the caller mirrors z for a left-hand tool and
@@ -141,17 +143,22 @@ pub type BackSide = ([[f64; 2]; 2], [f64; 2]);
 #[derive(Clone, Debug)]
 pub struct ToolShape {
     /// A polygon containing the insert (convex arcs circumscribed, concave
-    /// arcs by their chords).
+    /// arcs by their chords): with a size tolerance (#113), every insert
+    /// the tolerance allows, relative to the measured nose.
     pub insert: Vec<[f64; 2]>,
+    /// With a size tolerance: the polygon of the insert at its nominal
+    /// size.
+    pub nominal: Option<Vec<[f64; 2]>>,
     /// A polygon containing the holder, and the bar's section if any.
     pub holder: Vec<[f64; 2]>,
     pub bar: Option<Vec<[f64; 2]>>,
     /// The insert's straight sides, exact (its outline is these and its
     /// arcs): what sweeps the material besides the nose.
     pub edges: Vec<[[f64; 2]; 2]>,
-    /// Sides of the insert that must not meet the stock when they lead,
-    /// each with its outward normal: an outline insert's non-cutting
-    /// segments, a grooving blade's top.
+    /// Parts of the insert that must not meet the stock when they lead,
+    /// each with its outward normals: an outline insert's non-cutting
+    /// segments (with a size tolerance, where they can lie), a grooving
+    /// blade's top.
     pub back: Option<Vec<BackSide>>,
     /// An outline insert's programming point (from the nose center).
     pub programming_point: Option<[f64; 2]>,
@@ -162,7 +169,7 @@ fn dir(angle_deg: f64) -> [f64; 2] {
     let a = angle_deg.to_radians();
     [a.cos(), a.sin()]
 }
-fn at(center: [f64; 2], radius: f64, angle_deg: f64) -> [f64; 2] {
+pub(super) fn at(center: [f64; 2], radius: f64, angle_deg: f64) -> [f64; 2] {
     let d = dir(angle_deg);
     [center[0] + radius * d[0], center[1] + radius * d[1]]
 }
@@ -181,7 +188,7 @@ fn orient(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
 /// around `center` (in steps of at most 2 degrees: within 0.00015 x the
 /// radius of it): the tangent points at both ends and, between them, the
 /// corners where the tangent lines at successive sample angles meet.
-fn circumscribed(center: [f64; 2], radius: f64, from: f64, to: f64) -> Vec<[f64; 2]> {
+pub(super) fn circumscribed(center: [f64; 2], radius: f64, from: f64, to: f64) -> Vec<[f64; 2]> {
     let n = (((to - from).abs() / 2.).ceil() as usize).max(1);
     let step = (to - from) / n as f64;
     let grow = radius / (step.abs().to_radians() / 2.).cos();
@@ -200,7 +207,8 @@ struct Polygon {
 }
 
 impl Outline {
-    fn ends(&self) -> Vec<([f64; 2], [f64; 2])> {
+    /// Each segment's start and end.
+    pub(super) fn ends(&self) -> Vec<([f64; 2], [f64; 2])> {
         let mut from = self.start_mm;
         self.segments
             .iter()
@@ -232,7 +240,7 @@ impl Outline {
     }
 
     /// Twice the signed area, arcs included (counterclockwise positive).
-    fn signed_area2(&self) -> f64 {
+    pub(super) fn signed_area2(&self) -> f64 {
         let mut area = 0.;
         let mut from = self.start_mm;
         for (s, (start, end)) in self.segments.iter().zip(self.ends()) {
@@ -396,6 +404,12 @@ impl Outline {
             owners,
             ccw,
         }
+    }
+
+    /// The vertices of the outline's containing polygon.
+    #[cfg(test)]
+    pub(super) fn polygon_points(&self) -> Vec<[f64; 2]> {
+        self.polygon().points
     }
 
     fn translated(&self, by: [f64; 2]) -> Outline {
@@ -591,8 +605,10 @@ impl Insert {
     /// (letters 5-6): the cutting edge length in whole mm, which names one
     /// inscribed circle diameter per shape (round: the diameter). Nose
     /// radius (letters 9-10): tenths of a mm (00 sharp, M0 round).
-    /// Clearance, tolerance, type and thickness do not change the outline
-    /// in the XZ plane and are not used.
+    /// Clearance, type and thickness do not change the outline in the XZ
+    /// plane and are not used. This is the insert at its nominal size: its
+    /// tolerance class (letter 3) gives the size tolerance
+    /// (`size::iso_size_tolerance`) the tool's body declares.
     pub fn iso_code(code: &str, approach_angle_deg: f64) -> Result<(Insert, f64), String> {
         let code = code.trim().to_ascii_uppercase();
         let chars: Vec<char> = code.chars().collect();
@@ -921,6 +937,12 @@ mod iso {
     }
 }
 
+/// The inscribed circle (mm) of an ISO 1832 shape letter and size code
+/// camlib outlines (not round inserts).
+pub(super) fn iso_inscribed_circle(letter: char, size: u32) -> Option<f64> {
+    iso::inscribed_circle(letter, size)
+}
+
 /// The cutting edge angle (approach angle, kappa r) of an ISO 5608 holder
 /// designation (e.g. "PCLNR2525M12": style L, 95 degrees), from its third
 /// letter.
@@ -978,7 +1000,7 @@ impl Holder {
         let rn = nose_radius_mm;
         Ok(match insert {
             Insert::Outline { .. } => {
-                let shape = insert_shape(insert, rn)?;
+                let shape = insert_shape(insert, rn, None)?;
                 let reach = shape.insert.iter().map(|p| p[0]).fold(0., f64::max);
                 let r0 = reach + offset_mm;
                 rect(r0, r0 + length_mm, 0., width_mm)
@@ -1012,6 +1034,7 @@ impl Holder {
 /// nose center at the origin.
 struct InsertShape {
     insert: Vec<[f64; 2]>,
+    nominal: Option<Vec<[f64; 2]>>,
     edges: Vec<[[f64; 2]; 2]>,
     back: Option<Vec<BackSide>>,
     programming_point: Option<[f64; 2]>,
@@ -1024,7 +1047,13 @@ fn outward(a: [f64; 2], b: [f64; 2], ccw: bool) -> [f64; 2] {
     if ccw { [d[1], -d[0]] } else { [-d[1], d[0]] }
 }
 
-fn insert_shape(insert: &Insert, rn: f64) -> Result<InsertShape, String> {
+/// `tolerance`: the insert's size tolerance (#113), for an outline insert
+/// of the ISO form.
+fn insert_shape(
+    insert: &Insert,
+    rn: f64,
+    tolerance: Option<&super::size::SizeTolerance>,
+) -> Result<InsertShape, String> {
     let end = |angle: f64, side: f64, length: f64| {
         let d = dir(angle);
         let t = dir(angle + side * 90.);
@@ -1060,15 +1089,26 @@ fn insert_shape(insert: &Insert, rn: f64) -> Result<InsertShape, String> {
                 from = end;
             }
             let n = polygon.points.len();
-            let back = (0..n)
+            let back: Vec<BackSide> = (0..n)
                 .filter(|i| !cutting.contains(&polygon.owners[*i]))
                 .map(|i| {
                     let (a, b) = (polygon.points[i], polygon.points[(i + 1) % n]);
-                    ([a, b], outward(a, b, polygon.ccw))
+                    (vec![a, b], vec![outward(a, b, polygon.ccw)])
                 })
                 .collect();
+            // With a size tolerance (#113): everything the tolerance lets
+            // the insert be, relative to its measured nose. The nose and
+            // the edges at it (what cuts) stay as they are.
+            let (insert, nominal, back) = match tolerance.filter(|t| !t.exact()) {
+                Some(t) => {
+                    let envelope = super::size::envelope(&local, *corner, cutting, t)?;
+                    (envelope.largest, Some(polygon.points), envelope.back)
+                }
+                None => (polygon.points, None, back),
+            };
             InsertShape {
-                insert: polygon.points,
+                insert,
+                nominal,
                 edges,
                 back: Some(back),
                 programming_point: Some([
@@ -1096,11 +1136,13 @@ fn insert_shape(insert: &Insert, rn: f64) -> Result<InsertShape, String> {
             // A grooving blade's top, at its depth (outward: +x), must stay
             // clear of the stock; a face grooving blade is checked against
             // its declared groove instead.
-            let top = [insert[0], insert[1]];
+            let top = vec![insert[0], insert[1]];
             InsertShape {
                 edges,
-                back: matches!(insert_kind, Insert::Groove { .. }).then(|| vec![(top, [1., 0.])]),
+                back: matches!(insert_kind, Insert::Groove { .. })
+                    .then(|| vec![(top, vec![[1., 0.]])]),
                 insert,
+                nominal: None,
                 programming_point: None,
                 nose: [0., 0.],
             }
@@ -1118,6 +1160,7 @@ fn insert_shape(insert: &Insert, rn: f64) -> Result<InsertShape, String> {
             insert.push(end(-half, -1., length));
             InsertShape {
                 insert,
+                nominal: None,
                 edges: vec![],
                 back: None,
                 programming_point: None,
@@ -1141,6 +1184,7 @@ fn insert_shape(insert: &Insert, rn: f64) -> Result<InsertShape, String> {
                     [r, *flute_length_mm],
                     [0., *flute_length_mm],
                 ],
+                nominal: None,
                 edges: vec![],
                 back: None,
                 programming_point: None,
@@ -1277,6 +1321,25 @@ impl TurningTool {
         {
             return Err(super::body::blade_only(id));
         }
+        // A size tolerance (#113) is an outline insert's of the ISO form.
+        if let Some(tolerance) = self.size_tolerance() {
+            tolerance.validate(id)?;
+            let Insert::Outline {
+                outline,
+                corner,
+                cutting,
+                ..
+            } = &self.insert
+            else {
+                return Err(format!(
+                    "turning tool {id:?}: a size tolerance (ISO 1832 d and m) is an outline insert's; a grooving, threading or drilling tool's size is its declared width, profile or diameter"
+                ));
+            };
+            if !tolerance.exact() {
+                super::size::envelope(outline, *corner, cutting, tolerance)
+                    .map_err(|e| format!("turning tool {id:?}: {e}"))?;
+            }
+        }
         if let Some(bar) = &self.holder.bar
             && (!positive(bar.diameter_mm)
                 || !(bar.axis_x_mm.is_finite() && bar.axis_x_mm.abs() <= 1e4)
@@ -1295,12 +1358,20 @@ impl TurningTool {
         Ok(())
     }
 
+    /// The insert's declared size tolerance (#113).
+    pub fn size_tolerance(&self) -> Option<&super::size::SizeTolerance> {
+        self.body
+            .as_ref()
+            .and_then(|b| b.insert.as_ref())
+            .and_then(|b| b.size_tolerance.as_ref())
+    }
+
     /// The tool's shape in its frame (nose center at the origin), for an
     /// outside, right-hand tool; the caller mirrors z for a left-hand tool
     /// and x for a boring tool.
     pub fn shape(&self) -> Result<ToolShape, String> {
         self.validate()?;
-        let s = insert_shape(&self.insert, self.nose_radius_mm)?;
+        let s = insert_shape(&self.insert, self.nose_radius_mm, self.size_tolerance())?;
         let nose = s.nose;
         let holder = self
             .holder
@@ -1318,6 +1389,7 @@ impl TurningTool {
         });
         Ok(ToolShape {
             insert: s.insert,
+            nominal: s.nominal,
             holder,
             bar,
             edges: s.edges,
@@ -1495,6 +1567,7 @@ mod tests {
                     edge_deg: 5.,
                     curved_for_diameter_mm: None,
                     blade_clearance: None,
+                    size_tolerance: None,
                 }),
                 holder_y_mm: [-10., 2.],
                 bar_axis_y_mm: 0.,

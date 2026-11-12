@@ -1699,7 +1699,7 @@ roughing setup its allowance.
     outline. `TurningTool(..., seat=TurningSeat(rake_deg, inclination_deg),
     insert_thickness_mm=, insert_clearance_deg=, edge_deg=,
     curved_for_diameter_mm=, insert_front_clearance_deg=,
-    insert_side_clearance_deg=)`:
+    insert_side_clearance_deg=, insert_size_tolerance_mm=)`:
     - `seat`: the holder seat's orthogonal rake and inclination (ISO 3002-1,
       about the major cutting edge), from the holder maker (ISO 5608 codes
       do not carry them; ISO 5610 gives only recommended values).
@@ -1760,9 +1760,112 @@ roughing setup its allowance.
     vertices against material beyond it (in a bore; the radius is convex, so
     exact at the vertices and never under-reporting). The insert's body
     must also reach the stock left by a cut no farther than its cutting
-    face does: a heel rubbing the wall just cut is refused. The insert's
-    in-plane size tolerance (ISO 1832 d and m) is not yet applied (issue
-    #113).
+    face does: a heel rubbing the wall just cut is refused.
+  - The insert's in-plane size tolerance (#113). An insert is not exactly
+    its nominal size: its ISO 1832 tolerance class (the code's third
+    letter) bounds its inscribed circle d and its corner dimension m, as
+    well as its thickness. `TurningInsert.iso_code` reads the class and
+    the tool is then checked as **the largest insert the tolerance allows,
+    relative to its measured nose**; `insert_size_tolerance_mm=(d, m)` on
+    the `TurningTool` (or `size_tolerance_mm=` on `iso_code`) states the ±
+    tolerances instead (the insert maker's values; `(0, 0)` for an insert
+    measured to be exactly its outline).
+    - What d and m are (ISO 1832:2017, 5.3, figures 1 and 2): d is the
+      diameter of the inscribed circle; m, for an insert with an odd number
+      of sides (triangle), is the distance from a corner's tip to the side
+      opposite it, and for an even number of sides (square, rhombic, the
+      80 degree hexagon W) the distance along the corner's bisector from
+      the inscribed circle to the corner's tip. The class does not
+      tolerance the corner radius or the corner angles: the nose radius is
+      the tool's declared value, and the sides keep their directions.
+    - The values (ISO 1832:2017 tables 3, 4 and 5, ± mm on d / m):
+      classes A 0.025 / 0.005, F 0.013 / 0.005, C 0.025 / 0.013,
+      H 0.013 / 0.013, E and G 0.025 / 0.025; J, K, L: d by size, m 0.005,
+      0.013, 0.025; M and N: d and m by size; U: d and m by size. By
+      inscribed circle, for shapes S, T, C, W (table 4; d for J to N, d
+      for U, m for M and N, m for U): 4.76 to 10 mm 0.05, 0.08, 0.08,
+      0.13; 12.7 mm 0.08, 0.13, 0.13, 0.2; 15.875 and 19.05 mm 0.1, 0.18,
+      0.15, 0.27; 25.4 mm 0.13, 0.25, 0.18, 0.38; 31.75 mm 0.15, 0.25,
+      0.2, 0.38. For classes M and N of shape D (table 5; d, m): 5.56 to
+      9.525 mm 0.05, 0.11; 12.7 mm 0.08, 0.15; 15.875 and 19.05 mm 0.1,
+      0.18; of shape V: 6.35 to 9.525 mm 0.05, 0.16; 12.7 mm 0.08, 0.25.
+      Where the standard gives no value (D and V in classes J, K, L and U;
+      a size not in its table), the code is refused, naming
+      `size_tolerance_mm`: camlib does not guess one.
+    - Why the tolerance is not a growth of the outline. The tool is
+      measured at its nose (presetting, touch-off): the program moves the
+      nose's imaginary tip (or its centre, `controlled_point`), and the
+      operator's offsets put the real nose there whatever the insert's
+      size. The seat locates the insert by its flanks, so the two cutting
+      edges at the nose keep their lines. Relative to the measured nose,
+      the nose arc and the two edge lines are therefore fixed, and a
+      larger insert reaches farther back along those lines: only the far
+      sides and far corners move. The cut (the nose, the edges, the
+      material they remove, the posted program) is the same as without the
+      tolerance; a finishing pass with the edge along the profile is
+      accepted as before.
+    - The envelope (derivation and tests in `src/turning/size.rs`). With u
+      the nose's bisector into the insert, ε its corner angle, and a = n·u
+      for a far side of outward normal n:
+      - Size: a true-to-form insert of inscribed circle d ± Δd is the
+        nominal one scaled about the point where the edge lines meet, so
+        the side moves out Δd (a / sin(ε/2) + 1)/2 (Δd for a rhombic or
+        square insert's far sides, 1.5 Δd for a triangle's). The scaled
+        inserts are nested: their union is the largest.
+      - Corner position: m locates a corner's tip against its datum. The
+        nose is such a corner and is where the tool is measured, so a nose
+        standing Δm farther from its datum puts the insert's body Δm
+        farther back. Even number of sides (datum: the inscribed circle,
+        to which the far sides are tangent): the side moves out up to
+        |a| Δm + (1 + a) Δd/2, and a far corner like the nose (bisector b,
+        c = b·u) has its tip up to (|c| + 1) Δm + (1 + c) Δd/2 beyond
+        nominal. Triangle (datum: the opposite side): the far side moves
+        out up to Δm, and each far corner's tip, measured from the fixed
+        edge line opposite it, up to Δm.
+      - d and m are independent, and both cases are possible: each far
+        side is moved out by the larger of its two displacements; far
+        corners unlike the nose keep their rounding between the moved
+        sides; a far corner like the nose is the sharp corner of its moved
+        sides cut off square at its farthest tip (m locates the tip, not
+        the corner's form). For a CNMG1204 of class M (d ±0.08, m ±0.13)
+        the far sides move out 0.149 mm and the far 80 degree corner's tip
+        0.34 mm. The tests sample the model's inserts, built from the
+        shape's angles and the definitions of d and m alone, and compare:
+        every one lies inside the envelope, and each far side and checked
+        corner of the envelope is reached by one.
+    - What uses it. The insert's body (its taper, thickness and seat as
+      above) is built on the envelope and checked against the part, the
+      bore, the chuck and the stock; a refusal that the nominal insert
+      would not have caused says so and names the tolerance. An insert at
+      the small end of its tolerance has its far corner nearer the nose:
+      the bands the far sides and corners can lie in, between the least
+      and the largest insert, must be clear of the stock where they lead
+      (the depth of cut must end short of where the least insert's cutting
+      edge ends).
+    - Covered: outlines of the ISO form (straight sides each tangent to
+      the inscribed circle, rounded corners) with a triangle's three sides
+      or an even number of sides: C, D, V, S, T and W from `iso_code`, and
+      a drawn `InsertOutline` of that form (the 75 and 86 degree
+      rhombic E and M, say) with a declared tolerance. Not covered, and refused by name when a tolerance is
+      declared for them: the pentagon (P), outlines with a side that is
+      not tangent to the inscribed circle (parallelograms A, B, K,
+      rectangles L, wiper edges, `TurningInsert.iso`'s wedge), and round
+      inserts (R): a round insert's d is its nose diameter, so its
+      tolerance is a nose radius error, which changes the cut itself and
+      is not a matter of the far side of the body; `iso_code` gives a
+      round insert no size tolerance. A drawn outline, a grooving, face
+      grooving or threading blade and a drill have no class: they are
+      checked as declared, so state the largest outline (width, diameter)
+      the tool can have.
+    - Sources: the tolerance tables and the figures defining m, ISO
+      1832:2017 5.3 as shown in the standard's public preview
+      (standards.iteh.ai, "ISO 1832:2017" sample; the ISO 1832:1991
+      preview, 4.3, gives the same values, without shape V); the same
+      class table and class M values by shape and inscribed circle in
+      Mitsubishi Materials' technical information "3. Symbol for
+      Tolerance Class" (turning insert identification); the same class
+      table in Kyocera's general catalogue, section B "Turning Indexable
+      Inserts Identification System".
   - Solid (one-piece) boring bars (#114): a solid carbide boring bar, a
     brazed tool or a ground HSS bar has no insert and no seat; its tip is
     ground into the end of a round bar. Declared as an insert body (a prism

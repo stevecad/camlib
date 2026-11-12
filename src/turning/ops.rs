@@ -547,6 +547,12 @@ pub(crate) struct ToolGeom {
     /// their images (projection or radial), the 2D outline only the cut.
     pub(crate) insert_body: Vec<Vec<[f64; 3]>>,
     pub(crate) holder_body: Vec<Vec<[f64; 3]>>,
+    /// With a size tolerance (#113), the insert's body at its nominal size
+    /// (`insert` and `insert_body` are then the largest insert the
+    /// tolerance allows, relative to the measured nose), and the tolerance
+    /// (± on d and m, mm): a refusal names the tolerance when the nominal
+    /// insert would have cleared.
+    pub(crate) nominal_body: Option<(super::body::Pieces3, [f64; 2])>,
     /// A straight grooving blade's flanks (#170): what each is called and
     /// the body's vertices on it, so a refusal names the flank that reaches
     /// the material.
@@ -565,7 +571,9 @@ pub(crate) struct ToolGeom {
     /// corner's offset along r).
     axial: bool,
     /// The insert's non-cutting sides (an outline insert's segments that do
-    /// not cut, a grooving blade's top), each with its outward normal:
+    /// not cut, a grooving blade's top), each with its outward normal; with
+    /// a size tolerance, the zones those sides and corners can lie in, each
+    /// with the normals its boundary can have there:
     /// material reaching one that leads means the depth of cut exceeds the
     /// cutting edges. With them, the stock removal is the whole region the
     /// insert sweeps.
@@ -691,6 +699,10 @@ pub(crate) fn tool_geometry(
         model.check_insert(&t.id, &insert_body, t.nose_radius_mm, drill)?;
         holder_body = model.pieces(&t.id, boring || drill)?;
     }
+    let nominal_body = body
+        .nominal_insert
+        .zip(t.size_tolerance())
+        .map(|(pieces, tolerance)| (mapped3(pieces), [tolerance.d_mm, tolerance.m_mm]));
     let flanks = body
         .flanks
         .into_iter()
@@ -733,7 +745,7 @@ pub(crate) fn tool_geometry(
     let back = shape.back.as_ref().map(|pieces| {
         pieces
             .iter()
-            .map(|(e, n)| ([map(&e[0]), map(&e[1])], map(n)))
+            .map(|(piece, normals)| (mapped(piece), mapped(normals)))
             .collect()
     });
     let edges = shape
@@ -748,6 +760,7 @@ pub(crate) fn tool_geometry(
         insert: super::tool::convex_pieces(&mapped(&shape.insert)),
         insert_body,
         holder_body,
+        nominal_body,
         flanks,
         solid_bar: t
             .body
@@ -1048,8 +1061,28 @@ impl Planner<'_> {
                 } else {
                     String::new()
                 };
+                // With a size tolerance (#113): say so when the insert at
+                // its nominal size would have cleared.
+                let size = match &tool.nominal_body {
+                    Some((nominal, [d, m])) => {
+                        let far = image(nominal, true);
+                        let near = if tool.inner {
+                            far.clone()
+                        } else {
+                            image(nominal, false)
+                        };
+                        if into_part(&near, &far)? <= 0. {
+                            format!(
+                                "; at its nominal size the insert clears: this is the reach of the largest insert its size tolerance allows (inscribed circle ±{d} mm, corner dimension m ±{m} mm), relative to its measured nose"
+                            )
+                        } else {
+                            String::new()
+                        }
+                    }
+                    None => String::new(),
+                };
                 return Err(format!(
-                    "{op}: the insert would cut {part:.4} mm into the part moving to r {:.3}, z {:.3}; check the insert's angles against the profile{note}",
+                    "{op}: the insert would cut {part:.4} mm into the part moving to r {:.3}, z {:.3}; check the insert's angles against the profile{note}{size}",
                     to[1], to[0]
                 ));
             }
@@ -1120,9 +1153,12 @@ impl Planner<'_> {
                     // the motion turns between its end tangents: a side that
                     // faces neither faces no direction between them.)
                     let mut reach = f64::NEG_INFINITY;
-                    for (piece, normal) in back {
-                        let leads = points.windows(2).any(|w| {
-                            normal[0] * (w[1][0] - w[0][0]) + normal[1] * (w[1][1] - w[0][1]) > 0.
+                    for (piece, normals) in back {
+                        let leads = normals.iter().any(|normal| {
+                            points.windows(2).any(|w| {
+                                normal[0] * (w[1][0] - w[0][0]) + normal[1] * (w[1][1] - w[0][1])
+                                    > 0.
+                            })
                         });
                         if !leads {
                             continue;
@@ -3715,6 +3751,7 @@ mod tests {
                 curved_for_diameter_mm: matches!(insert, Insert::FaceGroove { .. })
                     .then_some([8., 14.]),
                 blade_clearance: None,
+                size_tolerance: None,
             }),
             holder_y_mm: if inner { [-1.5, 1.] } else { [-10., 2.] },
             bar_axis_y_mm: 0.,
@@ -4884,6 +4921,290 @@ test_tool("groove_in".into(), Insert::Groove { width_mm: 3.,
                 }
             }
         }
+    }
+
+    /// `tool` with the size tolerance of its insert's ISO 1832 `code`.
+    fn with_size_tolerance(mut tool: TurningTool, code: &str) -> TurningTool {
+        let tolerance = crate::turning::size::iso_size_tolerance(code)
+            .unwrap()
+            .unwrap();
+        tool.body
+            .as_mut()
+            .unwrap()
+            .insert
+            .as_mut()
+            .unwrap()
+            .size_tolerance = Some(tolerance);
+        tool
+    }
+    /// A straight move of `tool`'s nose centre from (z, r) to (z, r), as the
+    /// program's (the controlled point's) motion.
+    fn nose_move(
+        j: &TurningJob,
+        tool: &str,
+        kind: MoveKind,
+        from: [f64; 2],
+        to: [f64; 2],
+    ) -> Motion {
+        let setting = j.tools.iter().find(|t| t.tool.id == tool).unwrap();
+        let t = tool_geometry(&setting.tool, j.controlled_point)
+            .unwrap()
+            .tip;
+        Motion {
+            id: 1,
+            operation: "check".into(),
+            tool: tool.into(),
+            curve: Curve::Line {
+                start: [from[1] + t[1], 0., from[0] + t[0]],
+                end: [to[1] + t[1], 0., to[0] + t[0]],
+            },
+            kind,
+            feed_mm_min: (kind != MoveKind::Rapid).then_some(100.),
+        }
+    }
+
+    #[test]
+    fn a_size_tolerance_leaves_the_cut_as_it_is() {
+        // #113: the nose and the edges at it are where the tool is
+        // measured, so they do not move with the insert's size: roughing
+        // and finishing (the edge along the profile, the nose on it) plan
+        // exactly as for the nominal insert, move for move.
+        for (code, approach) in [
+            ("CNMG120408", 95.),
+            ("WNMG080408", 95.),
+            ("DNMG150608", 93.),
+            ("TNMG160408", 93.),
+        ] {
+            let (insert, rn) = Insert::iso_code(code, approach).unwrap();
+            let mut j = shaft_with(insert, rn);
+            j.clearance_mm = rn + 1.;
+            let nominal = plan(&j).unwrap_or_else(|e| panic!("{code}: {e}"));
+            j.tools[0].tool = with_size_tolerance(j.tools[0].tool.clone(), code);
+            let sized = plan(&j).unwrap_or_else(|e| panic!("{code} with its tolerance: {e}"));
+            assert_eq!(nominal.events, sized.events, "{code}");
+            assert_eq!(nominal.stock.cells(), sized.stock.cells(), "{code}");
+            // The body the checks used is larger: the far sides moved out,
+            // the nose and its edges did not.
+            let geometry = |t: &TurningTool| tool_geometry(t, j.controlled_point).unwrap();
+            let mut plain = j.tools[0].tool.clone();
+            plain
+                .body
+                .as_mut()
+                .unwrap()
+                .insert
+                .as_mut()
+                .unwrap()
+                .size_tolerance = None;
+            let (small, large) = (geometry(&plain), geometry(&j.tools[0].tool));
+            let reach = |g: &ToolGeom, n: [f64; 2]| {
+                g.insert
+                    .iter()
+                    .flatten()
+                    .map(|p| p[0] * n[0] + p[1] * n[1])
+                    .fold(f64::NEG_INFINITY, f64::max)
+            };
+            // (u, v) = (z, r): toward the chuck and toward the axis (the
+            // nose's side) nothing grows; away from both the insert does.
+            assert!((reach(&large, [-1., 0.]) - reach(&small, [-1., 0.])).abs() < 1e-9);
+            assert!((reach(&large, [0., -1.]) - reach(&small, [0., -1.])).abs() < 1e-9);
+            assert!(
+                reach(&large, [1., 0.]) > reach(&small, [1., 0.]) + 0.04,
+                "{code}"
+            );
+            assert!(
+                reach(&large, [0., 1.]) > reach(&small, [0., 1.]) + 0.04,
+                "{code}"
+            );
+            assert!(large.nominal_body.is_some() && small.nominal_body.is_none());
+        }
+    }
+
+    #[test]
+    fn the_largest_insert_of_a_size_tolerance_is_checked_in_a_bore() {
+        // #113: a boring insert (CCMT060204, class M: d ±0.05, m ±0.08 mm)
+        // passing down a finished bore that its nominal body just fits.
+        // Relative to its measured nose its far corner may stand farther
+        // across the bore: the largest insert of the tolerance is what is
+        // checked, and it is refused where the nominal one clears.
+        let code = "CCMT060204";
+        let (insert, rn) = Insert::iso_code(code, 95.).unwrap();
+        let nominal = test_tool(
+            "bar".into(),
+            insert,
+            rn,
+            TurnSide::Inner,
+            Hand::Right,
+            2.,
+            60.,
+            1.,
+        );
+        let sized = with_size_tolerance(nominal.clone(), code);
+        // The nose centre 2 mm off the axis: the far side of the insert
+        // lies across the axis. How far from the axis each body reaches
+        // there (its vertices' radii; the checks use the same image).
+        let center = 2.;
+        let reach = |t: &TurningTool| {
+            tool_geometry(t, ControlledPoint::Tip)
+                .unwrap()
+                .insert_body
+                .iter()
+                .flatten()
+                .map(|p| (center + p[1]).hypot(p[2]))
+                .fold(0., f64::max)
+        };
+        let (small, large) = (reach(&nominal), reach(&sized));
+        assert!(large > small + 0.1, "{small} {large}");
+        assert!(small > center + rn + 1., "the far side reaches farthest");
+        let radius = (small + large) / 2.;
+        let job = |tool: TurningTool| {
+            let mut j = bore_job();
+            j.stock.bore_radius_mm = radius;
+            j.bore = Some(TurnProfile {
+                points: vec![[radius, 0., 0.], [radius, -35., 0.]],
+            });
+            j.tools.pop();
+            j.tools.push(TurnToolSetting {
+                tool,
+                number: 5,
+                offset: 5,
+            });
+            j
+        };
+        let pass = |j: &TurningJob| {
+            let mut replay = TurnReplay::new(j.clone()).unwrap();
+            replay.motion(&nose_move(
+                j,
+                "bar",
+                MoveKind::Rapid,
+                [5., center],
+                [-10., center],
+            ))
+        };
+        pass(&job(nominal)).unwrap();
+        let err = pass(&job(sized)).unwrap_err();
+        assert!(err.contains("into the part"), "{err}");
+        assert!(
+            err.contains("at its nominal size the insert clears")
+                && err.contains("inscribed circle ±0.05 mm, corner dimension m ±0.08 mm"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn the_far_end_of_the_cutting_edge_is_where_the_least_insert_has_it() {
+        // #113: an insert at the small end of its tolerance has its far
+        // corner nearer the nose: a depth of cut the nominal insert's edge
+        // just takes reaches that corner. The band the corner and the far
+        // side can lie in must be clear of the stock when it leads.
+        let code = "CNMG120408";
+        let (insert, rn) = Insert::iso_code(code, 95.).unwrap();
+        let mut j = shaft_with(insert, rn);
+        j.part.points = vec![[0., 0., 0.], [5., 0., 0.], [5., -40., 0.]];
+        let nominal = j.tools[0].tool.clone();
+        let sized = with_size_tolerance(nominal.clone(), code);
+        // The lowest point (toward the axis) of the parts of the insert
+        // that lead, and must not, when it feeds toward the chuck.
+        let lowest = |t: &TurningTool| {
+            tool_geometry(t, ControlledPoint::Tip)
+                .unwrap()
+                .back
+                .unwrap()
+                .iter()
+                .filter(|(_, normals)| normals.iter().any(|n| n[0] < 0.))
+                .flat_map(|(piece, _)| piece.iter().map(|p| p[1]))
+                .fold(f64::INFINITY, f64::min)
+        };
+        let (plain, least) = (lowest(&nominal), lowest(&sized));
+        // The far corner of the least insert is about (0.13 sin 40 +
+        // 0.08 (1 + sin 40)/2)/sin 80 = 0.15 mm nearer along the edge.
+        assert!(
+            plain - least > 0.1 && plain - least < 0.25,
+            "{plain} {least}"
+        );
+        // The stock's diameter between the two.
+        let center = j.stock.outer_radius_mm - (plain + least) / 2.;
+        let cut = |tool: TurningTool| {
+            let mut j = j.clone();
+            j.tools[0].tool = tool;
+            let mut replay = TurnReplay::new(j.clone()).unwrap();
+            replay.motion(&nose_move(
+                &j,
+                "cnmg",
+                MoveKind::Cut,
+                [4., center],
+                [-10., center],
+            ))
+        };
+        cut(nominal).unwrap();
+        let err = cut(sized).unwrap_err();
+        assert!(err.contains("the insert's back"), "{err}");
+    }
+
+    #[test]
+    fn a_size_tolerance_is_an_iso_form_outline_inserts() {
+        let size = |tool: &mut TurningTool| {
+            tool.body
+                .as_mut()
+                .unwrap()
+                .insert
+                .as_mut()
+                .unwrap()
+                .size_tolerance = Some(crate::turning::size::SizeTolerance {
+                d_mm: 0.08,
+                m_mm: 0.13,
+            });
+        };
+        // A grooving blade, the wedge and a round insert: refused by name.
+        let mut j = groove_job();
+        let groove = j
+            .tools
+            .iter_mut()
+            .find(|t| matches!(t.tool.insert, Insert::Groove { .. }))
+            .unwrap();
+        size(&mut groove.tool);
+        assert!(plan_err(&j).contains("is an outline insert's"));
+        let mut j = job();
+        size(&mut j.tools[0].tool);
+        assert!(plan_err(&j).contains("ISO 1832 form"));
+        let (round, r) = Insert::iso_code("RCMT0803M0", 95.).unwrap();
+        let mut j = shaft_with(round, r);
+        size(&mut j.tools[0].tool);
+        assert!(plan_err(&j).contains("ISO 1832 form"));
+        // Zero tolerances: the insert as measured, exactly its outline.
+        let (insert, rn) = Insert::iso_code("CNMG120408", 95.).unwrap();
+        let mut j = shaft_with(insert, rn);
+        j.clearance_mm = rn + 1.;
+        let nominal = plan(&j).unwrap();
+        j.tools[0]
+            .tool
+            .body
+            .as_mut()
+            .unwrap()
+            .insert
+            .as_mut()
+            .unwrap()
+            .size_tolerance = Some(crate::turning::size::SizeTolerance { d_mm: 0., m_mm: 0. });
+        assert!(
+            tool_geometry(&j.tools[0].tool, j.controlled_point)
+                .unwrap()
+                .nominal_body
+                .is_none()
+        );
+        assert_eq!(plan(&j).unwrap().events, nominal.events);
+        // Out of range.
+        j.tools[0]
+            .tool
+            .body
+            .as_mut()
+            .unwrap()
+            .insert
+            .as_mut()
+            .unwrap()
+            .size_tolerance = Some(crate::turning::size::SizeTolerance {
+            d_mm: -0.1,
+            m_mm: 0.,
+        });
+        assert!(plan_err(&j).contains("0..1 mm"));
     }
 
     /// A holder whose head reaches `ahead` mm ahead of the nose (toward -z)

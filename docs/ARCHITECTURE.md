@@ -117,7 +117,12 @@ can say clear, violation or uncertain honestly.
   and the holder and rapids against the stock. An arc is checked in pieces
   (each inside the triangle of its ends and their tangents' corner, within a
   quarter of the tolerance), each against the stock the pieces before it
-  leave, and committed as one move.
+  leave, and committed as one move. The insert that is checked is its body
+  off the centre plane (`src/turning/body.rs`) and, where the tool declares
+  its insert's size tolerance (ISO 1832 d and m), everything an insert of
+  that tolerance can occupy relative to its measured nose
+  (`src/turning/size.rs`): the nose and the two cutting edges at it are
+  fixed, so the cut and the program do not change with it.
 
 - **Tri-dexel** (`src/dexel.rs`, `DexelStock`; issue #1): three grids of rays
   along X, Y and Z, each ray a prism (its cell's rectangle times its line)

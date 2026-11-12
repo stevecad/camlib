@@ -56,6 +56,16 @@ def _pair(value, what):
     return pair
 
 
+def _size_tolerance(value, what):
+    pair = tuple(float(v) for v in value)
+    if len(pair) != 2:
+        raise ValueError(
+            f"{what} must be (d, m): the ± tolerances in mm on the insert's inscribed circle and on its corner "
+            "dimension m (ISO 1832)"
+        )
+    return pair
+
+
 @dataclass(frozen=True)
 class Line:
     """A straight segment to ``to_mm`` (x, z)."""
@@ -137,6 +147,9 @@ class InsertOutline:
     edge_deg: float | None = None
     thickness_mm: float | None = None
     clearance_deg: float | None = None
+    # From an ISO 1832 code: the tolerance (d, m) in mm on the inscribed
+    # circle and the corner dimension, of the code's tolerance class (#113).
+    size_tolerance_mm: tuple | None = None
 
     @property
     def nose_radius_mm(self):
@@ -193,7 +206,7 @@ class TurningInsert:
         return replace(insert, edge_deg=float(approach_angle_deg) - 90)
 
     @staticmethod
-    def iso_code(code, *, approach_angle_deg=None, holder=None):
+    def iso_code(code, *, approach_angle_deg=None, holder=None, size_tolerance_mm=None):
         """The whole insert from its ISO 1832 designation (e.g.
         ``"CNMG120408"``): shape C, D, V, S, T, W (negative) or R, size and
         nose radius; every corner rounded, the cutting corner at the nose.
@@ -201,7 +214,19 @@ class TurningInsert:
         ``holder`` as an ISO 5608 designation (e.g. ``"PCLNR2525M12"``, style
         L: 95 degrees). Values: ISO 1832:1991 and ISO 5608:1995 tables, and
         the size and corner radius tables of Sumitomo's code key (see
-        docs/operations.md)."""
+        docs/operations.md).
+
+        The outline is the insert at its nominal size. Its tolerance class
+        (the code's third letter) gives the tolerance on its inscribed
+        circle d and its corner dimension m (ISO 1832:2017 tables 3 to 5):
+        a ``TurningTool`` with this insert is checked as the largest insert
+        that tolerance allows, relative to its measured nose (the nose and
+        the two edges at it stay where they are; the far sides and corners
+        move out). Where the standard gives no value for the code's class,
+        shape and size, the code is refused: give
+        ``size_tolerance_mm=(d, m)``, the ± tolerances from the insert
+        maker's data (also to use a maker's closer tolerances). A round
+        insert (R) has none: its d is its nose diameter."""
         if (approach_angle_deg is None) == (holder is None):
             raise ValueError(
                 "TurningInsert.iso_code needs the holder's approach angle: approach_angle_deg= or holder= (an ISO 5608 code)"
@@ -210,11 +235,16 @@ class TurningInsert:
             approach_angle_deg = native.turning_holder_approach(str(holder))
         data, _ = native.turning_iso_code(str(code), float(approach_angle_deg))
         thickness, clearance = native.turning_iso_insert_body(str(code))
+        if size_tolerance_mm is None:
+            size_tolerance_mm = native.turning_iso_size_tolerance(str(code))
+        else:
+            size_tolerance_mm = _size_tolerance(size_tolerance_mm, "size_tolerance_mm")
         return replace(
             InsertOutline.from_dict(json.loads(data)),
             edge_deg=float(approach_angle_deg) - 90,
             thickness_mm=thickness,
             clearance_deg=clearance,
+            size_tolerance_mm=size_tolerance_mm,
         )
 
 
@@ -601,6 +631,18 @@ class TurningTool:
       an ``insert_clearance_deg`` that is not their least is refused. Other
       inserts have one normal clearance (ISO 1832) and take only
       ``insert_clearance_deg``.
+    - ``insert_size_tolerance_mm``: the insert's in-plane size tolerance,
+      (d, m): ± mm on its inscribed circle and on its corner dimension m
+      (ISO 1832). From ``TurningInsert.iso_code`` it is the code's
+      tolerance class; give it to use the insert maker's values, or
+      ``(0, 0)`` for an insert measured to be exactly its outline. With
+      it, every check uses the largest insert the tolerance allows relative
+      to its measured nose: the nose and the two cutting edges at it stay
+      where they are (the tool is measured there), the far sides and
+      corners move out. Only for an ``InsertOutline`` of the ISO form
+      (straight sides tangent to one inscribed circle, rounded corners);
+      any other outline is taken as given: state the largest outline the
+      insert can have.
     - ``edge_deg``: the major cutting edge's direction in the tool frame,
       for an ``InsertOutline`` not built by ``TurningInsert`` (grooving,
       threading and face grooving inserts know theirs).
@@ -630,6 +672,7 @@ class TurningTool:
         "insert_front_clearance_deg",
         "insert_side_clearance_deg",
         "solid_bar",
+        "insert_size_tolerance_mm",
     )
 
     def __init__(
@@ -649,6 +692,7 @@ class TurningTool:
         insert_front_clearance_deg=None,
         insert_side_clearance_deg=None,
         solid_bar=None,
+        insert_size_tolerance_mm=None,
         **removed,
     ):
         if removed:
@@ -735,6 +779,16 @@ class TurningTool:
                     f"insert_side_clearance_deg={insert_side_clearance_deg!r}: it is the insert's least clearance "
                     f"({least!r} here); leave it out or give {least!r}"
                 )
+        if insert_size_tolerance_mm is not None:
+            # The in-plane size tolerance (#113): an outline insert's.
+            if not isinstance(insert, InsertOutline):
+                raise TypeError(
+                    f"TurningTool {id!r}: insert_size_tolerance_mm (ISO 1832 d and m) is an InsertOutline's; a "
+                    "grooving, threading or drilling tool's size is its declared width, profile or diameter"
+                )
+            insert_size_tolerance_mm = _size_tolerance(insert_size_tolerance_mm, "insert_size_tolerance_mm")
+        elif isinstance(insert, InsertOutline):
+            insert_size_tolerance_mm = insert.size_tolerance_mm
         if not drill and insert is not None and solid_bar is None:
             if isinstance(insert, InsertOutline):
                 insert_thickness_mm = insert.thickness_mm if insert_thickness_mm is None else insert_thickness_mm
@@ -778,6 +832,7 @@ class TurningTool:
             ("insert_front_clearance_deg", insert_front_clearance_deg),
             ("insert_side_clearance_deg", insert_side_clearance_deg),
             ("solid_bar", solid_bar),
+            ("insert_size_tolerance_mm", insert_size_tolerance_mm),
         ):
             object.__setattr__(self, name, value)
 
@@ -797,7 +852,8 @@ class TurningTool:
             f"insert_thickness_mm={self.insert_thickness_mm!r}, insert_clearance_deg={self.insert_clearance_deg!r}, "
             f"edge_deg={self.edge_deg!r}, curved_for_diameter_mm={self.curved_for_diameter_mm!r}, "
             f"insert_front_clearance_deg={self.insert_front_clearance_deg!r}, "
-            f"insert_side_clearance_deg={self.insert_side_clearance_deg!r}"
+            f"insert_side_clearance_deg={self.insert_side_clearance_deg!r}, "
+            f"insert_size_tolerance_mm={self.insert_size_tolerance_mm!r}"
             + (f", solid_bar={self.solid_bar!r})" if self.solid_bar is not None else ")")
         )
 
@@ -822,6 +878,9 @@ class TurningTool:
                 insert["blade_clearance"] = dict(
                     front_deg=self.insert_front_clearance_deg, side_deg=list(self.insert_side_clearance_deg)
                 )
+            if self.insert_size_tolerance_mm is not None:
+                d, m = self.insert_size_tolerance_mm
+                insert["size_tolerance"] = dict(d_mm=float(d), m_mm=float(m))
             body["insert"] = insert
         if self.solid_bar is not None:
             body["solid_bar"] = self.solid_bar.to_dict()
