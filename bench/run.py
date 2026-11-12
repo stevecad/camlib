@@ -224,7 +224,8 @@ def _run_once(workload):
         total = time.perf_counter() - start - paused
         state = sim.state.clone()
         volume = sim.state.volume()
-        grid = (state.min_mm[0], state.min_mm[1], state.dx, state.dy, state.nx, state.ny)
+        # Only a milling height field is replayed; a lathe run measures none.
+        grid = (state.min_mm[0], state.min_mm[1], state.dx, state.dy, state.nx, state.ny) if replay else None
     tools = tuple(ToolAssembly.from_dict(t) for t in manifest["tools"])
     program = Program(workload.name, "bench", tools, tuple(manifest["initial_position_mm"]), tuple(events))
     return dict(
