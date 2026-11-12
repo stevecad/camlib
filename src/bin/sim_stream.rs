@@ -100,8 +100,11 @@ fn run() -> Result<(), String> {
         StreamProducer::new(manifest.clone())?
     };
     let mut producer = Some(producer);
-    let mut output = io::stdout().lock();
-    let mut send = |bytes: &[u8]| -> Result<(), String> {
+    // Locked for each frame, not for the run: a run that reports planning
+    // progress writes those frames from its timer thread.
+    let output = io::stdout();
+    let send = |bytes: &[u8]| -> Result<(), String> {
+        let mut output = output.lock();
         output
             .write_all(bytes)
             .and_then(|()| output.flush())

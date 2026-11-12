@@ -123,8 +123,9 @@ for update in simulation.run_operations(progress_interval_s=0.25):
 | `job.post(...)`, `job.post_nc(...)` | `on_progress=callback` is called with each update, on the thread that produces the run (`progress_interval_s`, 0.25 s unless given) |
 
 `progress_interval_s` is 0.001 to 1 second: an update goes out when an
-operation's planning starts and ends and at that interval between, also while
-the planner is busy before the operation's first move. `0` sends one whenever
+operation's planning starts and ends and at that interval between, from a
+timer in the stream process, so also while the planner is busy before the
+operation's first move or between two moves. `0` sends one whenever
 the planner's counts change instead (after a move), which is deterministic.
 
 A progress update is not part of the run. It carries no frame, is never

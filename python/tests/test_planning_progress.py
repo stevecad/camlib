@@ -213,12 +213,36 @@ class PlanningProgressTest(unittest.TestCase):
     def test_a_slow_plan_reports_at_least_every_second_between_moves(self):
         # On a fine grid the engagement front spends over a second choosing
         # a pass between two moves (its scan of cached start candidates):
-        # that stretch polls for cancellation, so progress keeps coming.
+        # the timer sends progress through it.
         interval = 0.25
         gaps, planned = self.gaps("roughing-open-block", interval, cell_size_mm=0.15)
         self.assertGreater(planned, 2, "no longer a slow planning call: use a slower one here")
         self.assertGreaterEqual(len(gaps), planned / interval / 2)
         self.assertLess(max(gaps), 2 * interval + 0.5, gaps)
+
+    def test_updates_between_a_move_and_its_check_leave_the_checked_run_unchanged(self):
+        # The timer may send an update between any two frames of the run,
+        # also between a move and its verification record.
+        from camlib.verification import StockContactOptions, StreamChecks
+
+        def frames(interval):
+            progress, rest = 0, []
+            options = fixture("roughing")
+            with Simulation(**options, verification=StreamChecks(stock_contact=StockContactOptions())) as sim:
+                for update in sim.run_operations(progress_interval_s=interval):
+                    if isinstance(update, ProgressUpdate):
+                        progress += 1
+                    else:
+                        rest.append(update.frame.raw)
+                self.assertTrue(sim.state.finished)
+            return progress, rest
+
+        _, plain = frames(None)
+        self.assertTrue(any(raw[10] == 8 for raw in plain))  # verification records
+        for _ in range(3):
+            progress, rest = frames(0.001)
+            self.assertGreater(progress, 2)
+            self.assertEqual(rest, plain)
 
     def test_the_interval_is_checked(self):
         for interval in (-1, 0.0001, 1.5, float("nan"), True, "1"):

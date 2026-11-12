@@ -97,21 +97,19 @@ reachable area), else none.
   12, so a journal can never hold one. Dropping the progress frames of a run
   leaves exactly the frames of the same run without progress
   (`tests/progress.rs`).
-- **No new parameter in the planners.** The run's `Meter` wraps the caller's
-  cancel signal and is what a run's planners, sweeps and checks poll. A timer
-  thread only sets a flag; the planning thread sends the frame from its next
-  cancellation poll while an operation is being planned. So one thread writes
-  the output, and an update is at most the interval plus one cancellation
-  latency late: a planner stretch that does not poll delays progress exactly
-  as it delays cancellation (`python/tests/test_planning_progress.py` measures
-  the gaps on slow plans). The planners report nothing themselves: the driver
-  reads `OperationPlan::progress` after `prepare` and after each move.
-- **One signal type for every run.** `Meter` holds the caller's signal as
-  `&dyn CancelSignal` and the output as `&mut dyn FnMut`, with or without
-  progress, and the run bodies in `regeneration.rs` are not generic. The
-  engine is therefore compiled for a run once, in the library, instead of
-  once per signal type in every crate that starts a run (#194). A poll costs
-  one relaxed atomic load and one indirect call to the caller's signal.
+- **A timer thread sends the updates.** The run's `Meter` owns the output.
+  With progress at an interval, a scoped thread sends the operation's
+  current update at each interval while the planning thread plans, so an
+  update is due however long one planner call takes and whether or not it
+  polls for cancellation (`python/tests/test_planning_progress.py` measures
+  the gaps on slow plans). Both threads write whole frames under one lock,
+  and an operation's updates all precede its end control. `cam-sim-stream`
+  therefore locks stdout per frame, not for the run.
+- **The planners are not involved.** They take no new parameter and keep
+  the caller's own cancel signal: the driver reads `OperationPlan::progress`
+  after `prepare` and after each move. So a run instantiates the engine for
+  exactly the signal types it did before (#194), and a run without progress
+  starts no thread and takes no lock.
 - **Monotonic in one place.** `Meter::report` keeps the largest fraction seen
   in the operation; `Meter::end` sends 1. The Python reader checks the same
   independently and refuses a stream whose fraction goes backwards.

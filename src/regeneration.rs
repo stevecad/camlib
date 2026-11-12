@@ -677,7 +677,7 @@ pub fn run_uncached(
     cancel: &impl CancelSignal,
     mut send: impl FnMut(&[u8]) -> Result<(), String>,
 ) -> Result<(), String> {
-    uncached(producer, cancel, None, &mut send)
+    uncached(producer, cancel, &Meter::plain(&mut send))
 }
 /// Plan and stream a run as `run`, `run_uncached` or `run_turning` do (a
 /// lathe run by its turning setup, otherwise with the cache when one is
@@ -688,25 +688,24 @@ pub fn run_with_progress(
     cache: Option<CacheOptions>,
     cancel: &impl CancelSignal,
     progress: Cadence,
-    mut send: impl FnMut(&[u8]) -> Result<(), String>,
+    mut send: impl FnMut(&[u8]) -> Result<(), String> + Send,
 ) -> Result<(), String> {
-    if producer.manifest().turning.is_some() {
-        return turning(producer, cancel, Some(progress), &mut send);
-    }
-    match cache {
-        Some(cache) => cached(producer, cache, cancel, Some(progress), &mut send),
-        None => uncached(producer, cancel, Some(progress), &mut send),
-    }
+    let lathe = producer.manifest().turning.as_ref();
+    let operations = lathe.map_or(producer.manifest().operations.len(), |t| t.operations.len());
+    let lathe = lathe.is_some();
+    let meter = Meter::new(producer.manifest(), operations, progress, &mut send)?;
+    meter.run(|| match cache {
+        _ if lathe => turning(producer, cancel, &meter),
+        Some(cache) => cached(producer, cache, cancel, &meter),
+        None => uncached(producer, cancel, &meter),
+    })
 }
-/// The run bodies are not generic: they, and the engine below them for their
-/// one signal type (`Meter`), are compiled once in this crate, whatever the
-/// caller's signal and output closure are (#194).
-type Output<'a> = &'a mut dyn FnMut(&[u8]) -> Result<(), String>;
-fn uncached(
+/// The run bodies are generic over the caller's cancel signal only, which
+/// the planners get unchanged; the output and the progress are the `Meter`.
+fn uncached<C: CancelSignal>(
     producer: &mut StreamProducer,
-    cancel: &dyn CancelSignal,
-    progress: Option<Cadence>,
-    send: Output<'_>,
+    cancel: &C,
+    meter: &Meter<'_>,
 ) -> Result<(), String> {
     producer.writable()?;
     if producer.completed() != 0
@@ -718,9 +717,6 @@ fn uncached(
         );
     }
     let manifest = producer.manifest().clone();
-    // The planners poll `meter` for cancellation: a progress frame that is
-    // due goes out from those polls, also before an operation's first move.
-    let meter = Meter::new(cancel, &manifest, manifest.operations.len(), progress, send)?;
     let send = |bytes: &[u8]| meter.send(bytes);
     let mut active: Option<&str> = None;
     for (index, operation) in manifest.operations.iter().enumerate() {
@@ -735,25 +731,24 @@ fn uncached(
             .iter()
             .find(|t| t.id == operation.tool())
             .ok_or("operation tool missing")?;
-        let mut plan = meter
-            .result(OperationPlan::prepare_with_stock(
-                operation.clone(),
-                tool,
-                producer.stock().unwrap(),
-                producer.position(),
-                producer
-                    .completed()
-                    .checked_add(1)
-                    .ok_or("motion ID overflow")?,
-                &meter,
-            ))
-            .map_err(|e| {
-                if changed {
-                    producer.explain_tool_change(e)
-                } else {
-                    e
-                }
-            })?;
+        let mut plan = OperationPlan::prepare_with_stock(
+            operation.clone(),
+            tool,
+            producer.stock().unwrap(),
+            producer.position(),
+            producer
+                .completed()
+                .checked_add(1)
+                .ok_or("motion ID overflow")?,
+            cancel,
+        )
+        .map_err(|e| {
+            if changed {
+                producer.explain_tool_change(e)
+            } else {
+                e
+            }
+        })?;
         meter.report(plan.progress())?;
         send(&encode_operation_control(
             &manifest,
@@ -783,9 +778,7 @@ fn uncached(
         }
         let guard =
             crate::limits::LinkGuard::new(operation.limits(), tool, manifest.sweep.tolerance_mm)?;
-        while let Some(motion) =
-            meter.result(plan.next_motion_with_stock(producer.stock().unwrap(), &meter))?
-        {
+        while let Some(motion) = plan.next_motion_with_stock(producer.stock().unwrap(), cancel)? {
             let motion = manifest.retract_policy(
                 motion,
                 producer.stock().unwrap(),
@@ -795,7 +788,7 @@ fn uncached(
                 g.check(&motion)?;
             }
             let (chunk, check) =
-                meter.result(producer.push_checked_motion(motion, DEFAULT_FRAME_LIMIT, &meter))?;
+                producer.push_checked_motion(motion, DEFAULT_FRAME_LIMIT, cancel)?;
             send(&chunk)?;
             if let Some(check) = check {
                 send(&check)?;
@@ -816,7 +809,7 @@ fn uncached(
             }
             meter.report(plan.progress())?;
         }
-        meter.result(plan.finish_report(&meter))?;
+        plan.finish_report(cancel)?;
         meter.end()?;
         send(&encode_operation_control(
             &manifest,
@@ -831,13 +824,13 @@ fn uncached(
         )?)?;
         while let Some(start) = producer.start_material_verification(Some(operation.id()))? {
             send(&start)?;
-            send(&producer.finish_material_verification(&meter)?)?;
+            send(&producer.finish_material_verification(cancel)?)?;
         }
     }
 
     while let Some(start) = producer.start_material_verification(None)? {
         send(&start)?;
-        send(&producer.finish_material_verification(&meter)?)?;
+        send(&producer.finish_material_verification(cancel)?)?;
     }
     send(&producer.finish(DEFAULT_FRAME_LIMIT)?)?;
     Ok(())
@@ -850,18 +843,17 @@ pub fn run(
     cancel: &impl CancelSignal,
     mut send: impl FnMut(&[u8]) -> Result<(), String>,
 ) -> Result<(), String> {
-    cached(producer, options, cancel, None, &mut send)
+    cached(producer, options, cancel, &Meter::plain(&mut send))
 }
-fn cached(
+fn cached<C: CancelSignal>(
     producer: &mut StreamProducer,
     options: CacheOptions,
-    cancel: &dyn CancelSignal,
-    progress: Option<Cadence>,
-    send: Output<'_>,
+    cancel: &C,
+    meter: &Meter<'_>,
 ) -> Result<(), String> {
     producer.writable()?;
     if producer.manifest().turning.is_some() {
-        return turning(producer, cancel, progress, send);
+        return turning(producer, cancel, meter);
     }
     if producer.manifest().stock.dexel().is_some() {
         return Err("tri-dexel runs have no regeneration cache (it holds height-field stock changes); plan the run without a cache".into());
@@ -886,13 +878,6 @@ fn cached(
     // It cannot authorize replay; present hints still use full kernel identity.
     let mut first_operation = true;
     let operations = producer.manifest().operations.clone();
-    let meter = Meter::new(
-        cancel,
-        producer.manifest(),
-        operations.len(),
-        progress,
-        send,
-    )?;
     let mut send = |bytes: &[u8]| meter.send(bytes);
     let mut active: Option<String> = None;
     for (index, op) in operations.into_iter().enumerate() {
@@ -942,7 +927,7 @@ fn cached(
             for record in entry.records() {
                 // A reused operation is replayed, not planned: its progress
                 // updates carry no fraction.
-                if meter.result(Ok(meter.is_cancelled()))? {
+                if cancel.is_cancelled() {
                     return Err("job regeneration cancelled".into());
                 }
                 let id = producer
@@ -952,9 +937,8 @@ fn cached(
                 let mut record = record?;
                 let events = std::mem::take(&mut record.events);
                 let record = entry.verified_motion(record, &op, id)?;
-                let (frame, check, validated) = meter.result(
-                    producer.push_verified_cache_motion(record, DEFAULT_FRAME_LIMIT, &meter),
-                )?;
+                let (frame, check, validated) =
+                    producer.push_verified_cache_motion(record, DEFAULT_FRAME_LIMIT, cancel)?;
                 stats["validated_cached_columns"] =
                     (stats["validated_cached_columns"].as_u64().unwrap() + validated.columns)
                         .into();
@@ -998,22 +982,21 @@ fn cached(
             let mut plan = {
                 #[cfg(feature = "profile-planning")]
                 let _profile = crate::planning_profile::span("regeneration.plan.prepare");
-                meter
-                    .result(OperationPlan::prepare_with_stock(
-                        op.clone(),
-                        &tool,
-                        producer.stock()?,
-                        producer.position(),
-                        base.checked_add(1).ok_or("motion ID overflow")?,
-                        &meter,
-                    ))
-                    .map_err(|e| {
-                        if changed {
-                            producer.explain_tool_change(e)
-                        } else {
-                            e
-                        }
-                    })?
+                OperationPlan::prepare_with_stock(
+                    op.clone(),
+                    &tool,
+                    producer.stock()?,
+                    producer.position(),
+                    base.checked_add(1).ok_or("motion ID overflow")?,
+                    cancel,
+                )
+                .map_err(|e| {
+                    if changed {
+                        producer.explain_tool_change(e)
+                    } else {
+                        e
+                    }
+                })?
             };
             meter.report(plan.progress())?;
             let begin = serde_json::to_value(plan.report()).map_err(|e| e.to_string())?;
@@ -1057,7 +1040,7 @@ fn cached(
             while let Some(motion) = {
                 #[cfg(feature = "profile-planning")]
                 let _profile = crate::planning_profile::span("regeneration.plan.next");
-                meter.result(plan.next_motion_with_stock(producer.stock()?, &meter))?
+                plan.next_motion_with_stock(producer.stock()?, cancel)?
             } {
                 let motion = producer.manifest().retract_policy(
                     motion,
@@ -1073,7 +1056,7 @@ fn cached(
                         motion.clone(),
                         None,
                         DEFAULT_FRAME_LIMIT,
-                        &meter,
+                        cancel,
                     )?;
                     let overflow = recording.append(&Record {
                         motion,
@@ -1091,11 +1074,8 @@ fn cached(
                     // optional cache identity/file work on an empty-cache run.
                     recording.after_publish(overflow)?;
                 } else {
-                    let (frame, check) = meter.result(producer.push_checked_motion(
-                        motion,
-                        DEFAULT_FRAME_LIMIT,
-                        &meter,
-                    ))?;
+                    let (frame, check) =
+                        producer.push_checked_motion(motion, DEFAULT_FRAME_LIMIT, cancel)?;
                     send(&frame)?;
                     if let Some(check) = check {
                         send(&check)?;
@@ -1107,7 +1087,7 @@ fn cached(
                 count += 1;
                 meter.report(plan.progress())?;
             }
-            meter.result(plan.finish_report(&meter))?;
+            plan.finish_report(cancel)?;
             meter.end()?;
             let report = serde_json::to_value(plan.report()).map_err(|e| e.to_string())?;
             let footer = Footer {
@@ -1134,12 +1114,12 @@ fn cached(
         }
         while let Some(start) = producer.start_material_verification(Some(op.id()))? {
             send(&start)?;
-            send(&producer.finish_material_verification(&meter)?)?;
+            send(&producer.finish_material_verification(cancel)?)?;
         }
     }
     while let Some(start) = producer.start_material_verification(None)? {
         send(&start)?;
-        send(&producer.finish_material_verification(&meter)?)?;
+        send(&producer.finish_material_verification(cancel)?)?;
     }
     send(&producer.finish(DEFAULT_FRAME_LIMIT)?)?;
     Ok(())
@@ -1153,13 +1133,12 @@ pub fn run_turning(
     cancel: &impl CancelSignal,
     mut send: impl FnMut(&[u8]) -> Result<(), String>,
 ) -> Result<(), String> {
-    turning(producer, cancel, None, &mut send)
+    turning(producer, cancel, &Meter::plain(&mut send))
 }
-fn turning(
+fn turning<C: CancelSignal>(
     producer: &mut StreamProducer,
-    cancel: &dyn CancelSignal,
-    progress: Option<Cadence>,
-    send: Output<'_>,
+    cancel: &C,
+    meter: &Meter<'_>,
 ) -> Result<(), String> {
     if producer.completed() != 0 {
         return Err("a lathe run starts unstarted".into());
@@ -1178,18 +1157,17 @@ fn turning(
     let count = job.operations.len();
     // A turning operation is planned whole before its first move, with
     // nothing to count: its progress updates carry no fraction.
-    let meter = Meter::new(cancel, &manifest, count, progress, send)?;
     let mut send = |bytes: &[u8]| meter.send(bytes);
-    let signal = || meter.is_cancelled();
-    let mut session = meter.result(crate::turning::ops::TurnSession::new(&job, &signal))?;
+    let signal = || cancel.is_cancelled();
+    let mut session = crate::turning::ops::TurnSession::new(&job, &signal)?;
     for (index, op) in job.operations.iter().enumerate() {
         if cancel.is_cancelled() {
             return Err("lathe run cancelled".into());
         }
         meter.begin(op.id(), index)?;
-        meter.result(session.operation(op, job.operations.get(index + 1).map(|o| o.tool())))?;
+        session.operation(op, job.operations.get(index + 1).map(|o| o.tool()))?;
         if index + 1 == count {
-            meter.result(session.finish())?;
+            session.finish()?;
         }
         let events = session.take_events();
         let mut deltas = session.take_deltas().into_iter();
@@ -1235,12 +1213,7 @@ fn turning(
             let delta = deltas
                 .next()
                 .ok_or("turning move without its stock change")?;
-            send(&meter.result(producer.push_turn_motion(
-                motion,
-                delta,
-                DEFAULT_FRAME_LIMIT,
-                &meter,
-            ))?)?;
+            send(&producer.push_turn_motion(motion, delta, DEFAULT_FRAME_LIMIT, cancel)?)?;
         }
         if deltas.next().is_some() {
             return Err("turning stock change without its move".into());
