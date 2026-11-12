@@ -45,7 +45,7 @@ and writes G-code through a postprocessor you can read and change.
 | --- | --- |
 | Facing | Rectangular stock, zig-zag or one-way passes |
 | Pocket, rest pocket | Line/arc regions with islands; plunge, helical, ramp or stock-edge entry; links kept at depth only through cleared stock |
-| Adaptive pocket | Engagement-limited clearing |
+| Adaptive pocket | Engagement-limited clearing; helical or ramp entry |
 | 3D roughing, rest roughing | Layered clearing above a triangle-mesh part (raster, offset or adaptive) |
 | Contour | Outer walls / holes of a part: climb or conventional, leads, wear compensation (G41/G42), holding tabs, ramp entry; a mesh part's outline at a depth as its region (`Engine.silhouette_region`) |
 | Drilling, peck drilling, spot/counterbore dwell | Canned cycles (G81/G82/G83/G73) where the machine declares them, explicit moves elsewhere |

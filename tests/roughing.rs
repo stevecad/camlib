@@ -448,8 +448,8 @@ fn path_distance(c: &Curve, p: [f64; 2]) -> f64 {
         }
         Some((o, sweep)) => {
             let r = (a[0] - o[0]).hypot(a[1] - o[1]);
-            let turn =
-                ((p[1] - o[1]).atan2(p[0] - o[0]) - (a[1] - o[1]).atan2(a[0] - o[0])).rem_euclid(TAU);
+            let turn = ((p[1] - o[1]).atan2(p[0] - o[0]) - (a[1] - o[1]).atan2(a[0] - o[0]))
+                .rem_euclid(TAU);
             let on = sweep.abs() >= TAU
                 || if sweep >= 0. {
                     turn <= sweep
@@ -1543,6 +1543,172 @@ fn engagement_front_frustum_clears_every_layer_without_touching_the_part() {
         history.len()
     );
     assert!(nominal <= 2400., "nominal cycle {nominal} s");
+}
+
+/// #219: `Roughing` with adaptive clearing takes a `RampEntry`. The frustum's
+/// 4 x 4 mm opening is enclosed, with 1.8 mm of travel for a 2 mm cutter:
+/// each layer ramps into it back and forth instead of boring a helix, from
+/// the floor the layer above left (the flutes span the whole depth, so the
+/// layer's own top is the stock top, 2 to 6 mm of air higher).
+#[test]
+fn engagement_front_ramps_into_the_enclosed_opening_of_the_frustum() {
+    use camlib::pocket::RampEntry;
+    let angle = 10f64;
+    let mut m = engagement_front_frustum();
+    let Operation::Roughing(op) = &mut m.operations[0] else {
+        panic!("fixture")
+    };
+    op.entry = PocketEntry::Ramp(RampEntry {
+        angle_rad: angle.to_radians(),
+        min_length_mm: Some(1.),
+        feed_mm_min: Some(90.),
+    });
+    m.validate().unwrap();
+    let tool = m.tools[0].prepare().unwrap();
+    let mut stock = Stock::new(m.stock.height().unwrap().clone()).unwrap();
+    let mut plan = OperationPlan::prepare_with_stock(
+        m.operations[0].clone(),
+        &m.tools[0],
+        &stock,
+        m.initial_position_mm,
+        1,
+        &|| false,
+    )
+    .unwrap();
+    let mut history: Vec<camlib::motion::Motion> = Vec::new();
+    let mut current = m.initial_position_mm;
+    // The exact height every earlier fed motion left at `p`.
+    let left = |history: &[camlib::motion::Motion], p: [f64; 2]| {
+        history
+            .iter()
+            .filter(|old| old.kind != MoveKind::Rapid)
+            .map(|old| exact_height(&old.curve, p))
+            .fold(10f64, f64::min)
+    };
+    let (mut legs, mut air) = (0, 0f64);
+    while let Some(motion) = plan.next_motion_with_stock(&stock, &|| false).unwrap() {
+        assert!(history.len() < 60000, "unbounded engagement_front path");
+        assert_eq!(motion.curve.start(), current);
+        let start = current;
+        current = motion.curve.end();
+        assert!(!matches!(motion.curve, Curve::Helix { .. }), "{motion:?}");
+        // Independent analytic part certificate (not the planner's region).
+        certify_part(&motion.curve);
+        let travel = (current[0] - start[0]).hypot(current[1] - start[1]);
+        if current[2] < start[2] && travel == 0. {
+            // A straight descent meets nothing under the cutter. (Just
+            // inside its edge: a ramp comes down in the slot the layer
+            // above cut along the same path, whose wall is the cutter's
+            // own edge.)
+            for radial in [0., 0.5, 0.98] {
+                for i in 0..16 {
+                    let a = TAU * i as f64 / 16.;
+                    let p = [current[0] + radial * a.cos(), current[1] + radial * a.sin()];
+                    if p[0] < 0. || p[0] > 32. || p[1] < 0. || p[1] > 28. {
+                        continue;
+                    }
+                    let height = left(&history, p);
+                    assert!(
+                        height <= current[2] + 0.011,
+                        "straight descent into material at {p:?}: {height} > {}",
+                        current[2]
+                    );
+                }
+            }
+        } else if current[2] < start[2] {
+            // A ramp leg: within the angle, at the entry's own feed, inside
+            // the opening, and starting on the material under its path.
+            assert!(
+                (start[2] - current[2]) / travel <= angle.to_radians().tan() * (1. + 1e-9),
+                "{motion:?}"
+            );
+            assert_eq!(motion.kind, MoveKind::Lead);
+            assert_eq!(motion.feed_mm_min, Some(90.));
+            let mut under = f64::NEG_INFINITY;
+            for i in 0..=8 {
+                let t = i as f64 / 8.;
+                let p = [
+                    start[0] + (current[0] - start[0]) * t,
+                    start[1] + (current[1] - start[1]) * t,
+                ];
+                assert!(
+                    p[0] > 15. && p[0] < 17. && p[1] > 13. && p[1] < 15.,
+                    "{motion:?}"
+                );
+                under = under.max(left(&history, p));
+            }
+            air = air.max(start[2] - under);
+            legs += 1;
+        }
+        let delta = stock
+            .preview_sweep(&tool, &motion, 1., m.sweep, &|| false)
+            .unwrap();
+        stock.apply_delta(&delta).unwrap();
+        history.push(motion);
+    }
+    plan.finish_report(&|| false).unwrap();
+    let report = serde_json::to_value(plan.report()).unwrap();
+    assert_eq!(report["completed_layers"], 4);
+    assert_eq!(report["helical_entries"], 0);
+    let mut reported_legs = 0;
+    for layer in report["layers"].as_array().unwrap() {
+        let clearing = &layer["clearing"];
+        assert_eq!(clearing["helical_entries"], 0);
+        // One ramp into the opening per layer. What its pass leaves beside
+        // the slot is cut from the slot at depth, not ramped into again
+        // through the air the slot left.
+        assert_eq!(clearing["ramp_entries"], 1, "{clearing}");
+        assert!(clearing["slot_side_entries"].as_u64().unwrap() >= 1);
+        // 1.8 to 2 mm at 10 degrees needs over 10 mm and the opening has
+        // under 2.6: every ramp reverses.
+        assert!(clearing["ramp_legs"].as_u64().unwrap() >= 4, "{clearing}");
+        assert!(clearing["ramp_slot_mm"].as_f64().unwrap() < 2.6);
+        reported_legs += clearing["ramp_legs"].as_u64().unwrap();
+        assert!(clearing["max_ramp_angle_deg"].as_f64().unwrap() <= angle + 1e-9);
+        let limit = clearing["engagement_limit_deg"].as_f64().unwrap();
+        assert!(clearing["proven_max_engagement_deg"].as_f64().unwrap() <= limit);
+    }
+    assert_eq!(legs, reported_legs as usize);
+    assert!(air <= 0.05, "a ramp starts {air} mm above the material");
+    // The opening's reachable floor is cut.
+    let floor = report["target_z_mm"].as_f64().unwrap();
+    for (i, _) in stock.cells().iter().enumerate() {
+        let p = stock.cell_center(i).unwrap();
+        if p[0] > 15.4 && p[0] < 16.6 && p[1] > 13.4 && p[1] < 14.6 {
+            let height = left(&history, p);
+            assert!(
+                height <= floor + 1e-6,
+                "uncut opening floor {p:?}: {height}"
+            );
+        }
+    }
+    // Offset and raster layers refuse a ramp entry, saying where one is made.
+    for clearing in [
+        serde_json::json!({"kind": "raster", "stepover_mm": 0.8}),
+        serde_json::json!({"kind": "offset", "stepover_mm": 0.8}),
+    ] {
+        let mut refused = m.clone();
+        let Operation::Roughing(op) = &mut refused.operations[0] else {
+            panic!("fixture")
+        };
+        op.clearing = serde_json::from_value(clearing).unwrap();
+        let error = OperationPlan::prepare(
+            refused.operations[0].clone(),
+            &refused.tools[0],
+            refused.stock.height().unwrap(),
+            refused.initial_position_mm,
+            1,
+            &|| false,
+        )
+        .map(|_| ())
+        .unwrap_err();
+        for part in [
+            "roughing rough: RampEntry is not supported here",
+            "AdaptiveClearing",
+        ] {
+            assert!(error.contains(part), "{error}");
+        }
+    }
 }
 
 /// Plan the frustum to the end, committing each motion; returns the motions

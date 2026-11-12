@@ -243,7 +243,8 @@ fn check_slot(seen: &Seen, stock: &Stock, zigzag: bool, floor: f64, outside: Opt
         .motions
         .windows(2)
         .filter(|w| {
-            let slope = |m: &Motion| m.curve.start()[2] > m.curve.end()[2] && horizontal(&m.curve) > 0.;
+            let slope =
+                |m: &Motion| m.curve.start()[2] > m.curve.end()[2] && horizontal(&m.curve) > 0.;
             let x = |m: &Motion| m.curve.end()[0] - m.curve.start()[0];
             slope(&w[0]) && slope(&w[1]) && x(&w[0]) * x(&w[1]) < 0.
         })
@@ -304,7 +305,11 @@ fn pocket_ramp_is_one_leg_at_the_declared_angle_when_the_pass_is_long_enough() {
     let m = pocket_manifest(SLOT, Some(PocketEntry::Ramp(ramp(10.))));
     let (seen, _) = run(&m, 10., 150.);
     // Not shallower than asked either: the ramp is as short as the angle allows.
-    assert!((seen.steepest - 10f64.to_radians().tan()).abs() < 1e-3, "{}", seen.steepest);
+    assert!(
+        (seen.steepest - 10f64.to_radians().tan()).abs() < 1e-3,
+        "{}",
+        seen.steepest
+    );
 }
 
 #[test]
@@ -336,7 +341,12 @@ fn pocket_ramp_report_and_default_serialisation() {
     let plain = report(None);
     assert!(plain.get("ramp_entries").is_none() && plain.get("max_ramp_angle_deg").is_none());
     let m = pocket_manifest(SLOT, None);
-    assert!(serde_json::to_value(&m.operations[0]).unwrap().get("entry").is_none());
+    assert!(
+        serde_json::to_value(&m.operations[0])
+            .unwrap()
+            .get("entry")
+            .is_none()
+    );
     let m = pocket_manifest(SLOT, Some(PocketEntry::Ramp(ramp(4.))));
     let entry = serde_json::to_value(&m.operations[0]).unwrap()["entry"].clone();
     assert_eq!(
@@ -407,14 +417,21 @@ fn pocket_ramp_refuses_a_pass_too_short_to_ramp_on() {
         &cancel,
     )
     .unwrap();
-    assert!(plan.next_motion(&cancel).unwrap_err().contains("committed stock"));
+    assert!(
+        plan.next_motion(&cancel)
+            .unwrap_err()
+            .contains("committed stock")
+    );
     // Invalid angles are refused before planning.
     for angle in [0., -3., 90., f64::NAN] {
         let error = prepare(ramp(angle)).unwrap_err();
         assert!(error.contains("invalid ramp entry"), "{error}");
     }
     let error = prepare(zigzag(4., 0.)).unwrap_err();
-    assert!(error.contains("invalid ramp entry: min_length_mm"), "{error}");
+    assert!(
+        error.contains("invalid ramp entry: min_length_mm"),
+        "{error}"
+    );
 }
 
 /// Replace the fixture pocket's region outline (x, y, bulge vertices).
@@ -562,7 +579,180 @@ fn pocket_ramp_below_a_lower_authored_top_starts_at_that_top() {
         .fold(f64::NEG_INFINITY, f64::max);
     assert_eq!(sloped_top, 8.);
     check_slot(&seen, &stock, true, 4., None);
+}
 
+/// The highest any sloped descent of `motions` starts above the material
+/// under its own path, replayed on `heights` (the map as it was before
+/// them): a ramp that starts where the material does has none.
+fn air_above_ramps(motions: &[Motion], mut heights: Heights) -> f64 {
+    let mut air = 0f64;
+    for motion in motions {
+        let c = &motion.curve;
+        if c.end()[2] < c.start()[2] && horizontal(c) > 0. {
+            let under = samples(c)
+                .iter()
+                .map(|p| heights.under([p[0], p[1]]))
+                .fold(f64::NEG_INFINITY, f64::max);
+            air = air.max(c.start()[2] - under);
+        }
+        for p in samples(c) {
+            heights.cut(p);
+        }
+    }
+    air
+}
+
+/// #219: a rest pocket ramps into each leftover piece along its own guide,
+/// from the material the stock holds there, not from the pocket top.
+#[test]
+fn rest_pocket_ramps_into_leftover_pieces_from_the_material_top() {
+    // Right of X16 the slot is already 2 mm deep.
+    let before = || precut([[16., 9.5], [29., 14.5]], 8.);
+    let rest = |entry: RampEntry| {
+        let mut m = pocket_manifest(SLOT, Some(PocketEntry::Ramp(entry)));
+        let Operation::Pocket(p) = &mut m.operations[0] else {
+            panic!("fixture");
+        };
+        p.rest_tolerance_mm = Some(0.01);
+        m
+    };
+    let m = rest(zigzag(4., 2.));
+    m.validate().unwrap();
+    let (stock, heights) = before();
+    let (seen, stock) = run_on(&m, 4., 150., stock, heights);
+    // `run_on` has checked every descent: straight only through air, sloped
+    // within 4 degrees at the entry feed. Both levels were ramped into.
+    assert!(seen.ramps >= 2, "{} ramps", seen.ramps);
+    check_slot(&seen, &stock, true, 6., Some(10.));
+    // The first level's ramp is where stock was left: left of the earlier
+    // pocket (whose cutter centre came as far as X18), from the pocket top.
+    // It does not run on over that pocket's floor, through air.
+    let first_level: Vec<_> = seen
+        .motions
+        .iter()
+        .filter(|m| {
+            let (a, b) = (m.curve.start(), m.curve.end());
+            b[2] < a[2] && horizontal(&m.curve) > 0. && b[2] >= 8.
+        })
+        .collect();
+    assert!(first_level.len() >= 2, "{} legs", first_level.len());
+    assert_eq!(first_level[0].curve.start()[2], 10.);
+    for motion in first_level {
+        let (a, b) = (motion.curve.start(), motion.curve.end());
+        // (Rest pieces are a cutter radius long: the last one with stock
+        // on it ends at X19.)
+        assert!(a[0].max(b[0]) < 19.01, "a ramp through air: {motion:?}");
+    }
+    // No ramp starts above the material under it: the second level's start
+    // 0.01 mm above the first's floor, not at the pocket top 2 mm higher.
+    let air = air_above_ramps(&seen.motions, before().1);
+    assert!(air <= 0.05, "a ramp starts {air} mm above the material");
+    let lowest_start = seen
+        .motions
+        .iter()
+        .filter(|m| m.curve.end()[2] < m.curve.start()[2] && horizontal(&m.curve) > 0.)
+        .map(|m| m.curve.start()[2])
+        .fold(f64::INFINITY, f64::min);
+    // (The legs of the second level's zigzag start lower still.)
+    assert!(lowest_start < 8., "{lowest_start}");
+    let second_level = seen
+        .motions
+        .iter()
+        .filter(|m| m.curve.end()[2] < 8. && horizontal(&m.curve) > 0.)
+        .map(|m| m.curve.start()[2])
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert!((8. ..8.02).contains(&second_level), "{second_level}");
+
+    // One leg where the leftover's guide is long enough for it.
+    let (stock, heights) = before();
+    let (seen, stock) = run_on(&rest(ramp(10.)), 10., 150., stock, heights);
+    check_slot(&seen, &stock, false, 6., Some(10.));
+
+    // A reversal the tool has not been declared to make is refused when the
+    // piece is reached, naming the place and the fix; nothing is plunged.
+    let cancel = AtomicBool::new(false);
+    let m = rest(ramp(4.));
+    let (mut stock, _) = before();
+    let mut plan = OperationPlan::prepare_with_stock(
+        m.operations[0].clone(),
+        &m.tools[0],
+        &stock,
+        m.initial_position_mm,
+        1,
+        &cancel,
+    )
+    .unwrap();
+    let tool = m.tools[0].prepare().unwrap();
+    let error = loop {
+        match plan.next_motion_with_stock(&stock, &cancel) {
+            Ok(Some(motion)) => {
+                assert!(
+                    motion.curve.end()[2] >= 10.,
+                    "moved into the stock: {motion:?}"
+                );
+                let delta = stock
+                    .preview_sweep(&tool, &motion, 1., SweepOptions::default(), &cancel)
+                    .unwrap();
+                stock.apply_delta(&delta).unwrap();
+            }
+            Ok(None) => panic!("a ramp that has to reverse was accepted"),
+            Err(error) => break error,
+        }
+    };
+    for part in ["pocket slot", "no ramp entry", "min_length_mm is not set"] {
+        assert!(error.contains(part), "{error}");
+    }
+}
+
+/// #219, decided: a ramp entry does not lift the pocket's center-cutting
+/// requirement. Every ramp turns back along the slope it has just cut, and a
+/// cutter that is not center cutting must be lifted a cutter-specific
+/// distance first (Sandvik Coromant, "Ramping: two axis linear and
+/// circular"), which camlib has no data for.
+#[test]
+fn pocket_ramp_does_not_admit_a_cutter_that_is_not_center_cutting() {
+    let prepare = |entry: Option<PocketEntry>, rest: bool| {
+        let mut m = pocket_manifest(SLOT, entry);
+        m.tools[0].cutter.center_cutting = false;
+        let Operation::Pocket(p) = &mut m.operations[0] else {
+            panic!("fixture");
+        };
+        p.rest_tolerance_mm = rest.then_some(0.01);
+        OperationPlan::prepare_with_stock(
+            m.operations[0].clone(),
+            &m.tools[0],
+            &Stock::new(m.stock.height().unwrap().clone()).unwrap(),
+            m.initial_position_mm,
+            1,
+            &AtomicBool::new(false),
+        )
+        .map(|_| ())
+    };
+    // One leg (10 degrees fits the slot) or a zigzag, declared or not, in a
+    // pocket or a rest pocket: refused before any motion, with the reason.
+    for entry in [ramp(10.), ramp(4.), zigzag(4., 2.)] {
+        for rest in [false, true] {
+            let error = prepare(Some(PocketEntry::Ramp(entry.clone())), rest).unwrap_err();
+            for part in [
+                "pocket slot: a RampEntry does not lift the need for a center-cutting end mill",
+                "turning back along the slope",
+                "must first be lifted",
+            ] {
+                assert!(error.contains(part), "{error}");
+            }
+        }
+    }
+    // Without a ramp it is refused as before.
+    let helix = PocketEntry::Helix(HelicalEntry::default());
+    for entry in [None, Some(helix)] {
+        let error = prepare(entry, false).unwrap_err();
+        assert!(error.contains("flat center-cutting end mill"), "{error}");
+    }
+    // The same cutter, center cutting, ramps.
+    let m = pocket_manifest(SLOT, Some(PocketEntry::Ramp(ramp(10.))));
+    assert!(m.tools[0].cutter.center_cutting);
+    let (seen, stock) = run(&m, 10., 150.);
+    check_slot(&seen, &stock, false, 6., Some(10.));
 }
 
 fn contour(entry: Option<PocketEntry>) -> StreamManifest {
@@ -632,7 +822,10 @@ fn contour_ramp_descends_around_each_loop_then_cuts_it_flat() {
             assert!(a[2].min(b[2]) >= 2., "{motion:?}");
         }
         let expected = if hole { 13. } else { 0. };
-        assert!((laps[0] - 4.).abs() < 1e-9 && (laps[1] - expected).abs() < 1e-9, "{laps:?}");
+        assert!(
+            (laps[0] - 4.).abs() < 1e-9 && (laps[1] - expected).abs() < 1e-9,
+            "{laps:?}"
+        );
         // One entry per loop: the tool comes straight down twice, in air.
         let descents = seen
             .motions
@@ -700,7 +893,10 @@ fn contour_ramp_refusals_and_default_serialisation() {
         })
     });
     let error = prepare(&m).unwrap_err();
-    assert!(error.contains("ramp entry cannot be combined with holding tabs"), "{error}");
+    assert!(
+        error.contains("ramp entry cannot be combined with holding tabs"),
+        "{error}"
+    );
     // A helix has nowhere to go on a profile.
     let m = contour(Some(PocketEntry::Helix(HelicalEntry::default())));
     let error = prepare(&m).unwrap_err();
@@ -732,7 +928,9 @@ fn contour_ramp_refusals_and_default_serialisation() {
     blocked(None).unwrap();
     let error = blocked(Some(PocketEntry::Ramp(ramp(3.)))).unwrap_err();
     assert!(
-        error.contains("contour profile: a ramp entry cannot be combined with limits that block part of loop 0"),
+        error.contains(
+            "contour profile: a ramp entry cannot be combined with limits that block part of loop 0"
+        ),
         "{error}"
     );
     let m = contour(Some(PocketEntry::Ramp(ramp(95.))));
@@ -740,10 +938,18 @@ fn contour_ramp_refusals_and_default_serialisation() {
     // More laps than the bound: refused, naming the fix.
     let m = contour(Some(PocketEntry::Ramp(ramp(0.005))));
     let error = prepare(&m).unwrap_err();
-    assert!(error.contains("laps") && error.contains("steeper angle"), "{error}");
+    assert!(
+        error.contains("laps") && error.contains("steeper angle"),
+        "{error}"
+    );
     // Absent unless set.
     let m = contour(None);
-    assert!(serde_json::to_value(&m.operations[0]).unwrap().get("entry").is_none());
+    assert!(
+        serde_json::to_value(&m.operations[0])
+            .unwrap()
+            .get("entry")
+            .is_none()
+    );
 }
 
 #[test]
@@ -786,7 +992,8 @@ fn roughing_and_adaptive_refuse_a_ramp_entry_by_name() {
     .map(|_| ())
     .unwrap_err();
     assert!(
-        error.contains("roughing rough: RampEntry is not supported") && error.contains("StockEdgeEntry"),
+        error.contains("roughing rough: RampEntry is not supported")
+            && error.contains("StockEdgeEntry"),
         "{error}"
     );
 }

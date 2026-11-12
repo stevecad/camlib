@@ -1,4 +1,5 @@
-"""Ramp entry (RampEntry) on Pocket and Contour, checked from the motions alone.
+"""Ramp entry (RampEntry) on Pocket, RestPocket, AdaptivePocket and Contour,
+checked from the motions alone.
 
 An independent height map (numpy, not the engine's stock) decides what is
 material: straight descents must be through air, sloped ones no steeper than
@@ -15,7 +16,7 @@ import unittest
 import numpy as np
 
 from camlib.motion import Program
-from camlib.operations import HelicalEntry, Pocket, RampEntry, Tabs
+from camlib.operations import AdaptivePocket, HelicalEntry, Pocket, RampEntry, Tabs
 from camlib.planar import Boundary, Component, PlanarRegion
 from camlib.post import Machine, ToolSetting, post_events
 from camlib.postprocessor import GCodeDialect
@@ -29,18 +30,53 @@ CELL = 0.1
 SLOT = ((3.0, 9.5), (29.0, 14.5))
 
 
-def tool():
+def tool(**cutter):
     return ToolAssembly(
-        't1', EndMill('em4', diameter=4, flute_length=20, overall_length=50), 30, 60, (HolderSection(30, 60, 4, 4),)
+        't1',
+        EndMill('em4', diameter=4, flute_length=20, overall_length=50, **cutter),
+        30,
+        60,
+        (HolderSection(30, 60, 4, 4),),
     )
 
 
-def slot_job(entry, region=SLOT, outline=None, **changes):
+def slot_job(entry, region=SLOT, outline=None, t=None, **changes):
     (x0, y0), (x1, y1) = region
     outline = outline or Boundary.polygon(((x0, y0), (x1, y0), (x1, y1), (x0, y1)))
     area = PlanarRegion('slot', (Component(outline),))
-    t = tool()
+    t = t or tool()
     op = Pocket(
+        'slot',
+        t,
+        area,
+        10,
+        6,
+        2,
+        1.5,
+        12,
+        entry=entry,
+        feed_mm_min=600,
+        plunge_mm_min=150,
+        spindle_rpm=12000,
+        tool_number=1,
+        length_register=1,
+        coolant='flood',
+        **changes,
+    )
+    return dict(
+        stock=StockSpec((0, 0, 0), (32, 24, 10), 0.4),
+        tools=(t,),
+        operations=(op,),
+        revision='ramp-1',
+        initial_position_mm=(0, 0, 12),
+    )
+
+
+def adaptive_job(entry, region=SLOT, t=None, **changes):
+    (x0, y0), (x1, y1) = region
+    area = PlanarRegion('slot', (Component(Boundary.polygon(((x0, y0), (x1, y0), (x1, y1), (x0, y1)))),))
+    t = t or tool()
+    op = AdaptivePocket(
         'slot',
         t,
         area,
@@ -139,9 +175,14 @@ class Heights:
             window[mask] = np.minimum(window[mask], z)
 
 
-def check_descents(test, motions, size, angle_deg, feed):
-    """Every descent: straight only through air, sloped no steeper than the angle."""
-    heights = Heights(size)
+def check_descents(test, motions, size, angle_deg, feed, kind='plunge', heights=None, air=None):
+    """Every descent: straight only through air, sloped no steeper than the angle.
+
+    ``heights``: the map earlier moves left (default: the uncut stock).
+    ``air``: no sloped descent may start more than this above the material
+    under its own path.
+    """
+    heights = heights or Heights(size)
     limit = math.tan(math.radians(angle_deg))
     ramps = []
     for motion in motions:
@@ -154,8 +195,11 @@ def check_descents(test, motions, size, angle_deg, feed):
             else:
                 slope = (a[2] - b[2]) / travel
                 test.assertLessEqual(slope, limit * (1 + 1e-9), motion)
-                test.assertEqual(motion['kind'], 'plunge')
+                test.assertEqual(motion['kind'], kind)
                 test.assertEqual(motion['feed_mm_min'], feed)
+                if air is not None:
+                    under = max(heights.under(x, y) for x, y, _ in samples(curve))
+                    test.assertLessEqual(a[2] - under, air, motion)
                 ramps.append(slope)
         elif motion['kind'] == 'rapid' and travel > 0:
             # Rapids travel above the stock (a straight rapid up out of the
@@ -289,7 +333,6 @@ class RampEntryTest(unittest.TestCase):
             ),
             (slot_job(RampEntry(4, min_length_mm=0)), ('invalid ramp entry: min_length_mm',)),
             (slot_job(RampEntry(0)), ('invalid ramp entry',)),
-            (slot_job(RampEntry(4), rest_tolerance_mm=0.01), ('RampEntry is not supported with rest_tolerance_mm',)),
         )
         for job, parts in cases:
             with Simulation(**job) as sim:
@@ -426,6 +469,123 @@ class RampEntryTest(unittest.TestCase):
                     list(sim.run_operations())
                 self.assertEqual(sim.state.completed, 0)
             self.assertIn(part, str(raised.exception))
+
+
+class RampEntryIssue219Test(unittest.TestCase):
+    """#219: ramp entry in rest pockets and adaptive clearing, and the
+    decision that it does not admit a cutter that is not center cutting."""
+
+    def test_rest_pocket_ramps_into_what_an_earlier_pocket_left(self):
+        # A pocket takes the right part of the slot to Z8; the rest pocket
+        # then clears the whole slot to Z6 with ramp entries: into the stock
+        # left at the first level, and from that level's floor at the second.
+        before = replace(slot_job(None, region=((16.0, 9.5), (29.0, 14.5)))['operations'][0], id='before', floor_z_mm=8)
+        job = slot_job(RampEntry(4, min_length_mm=2), rest_tolerance_mm=0.01)
+        job['operations'] = (before, job['operations'][0])
+        _, motions, report, _ = run(job)
+        first = next(i for i, m in enumerate(motions) if m['operation'] == 'slot')
+        # The earlier pocket plunges (through uncut stock); the rest pocket
+        # is checked on the map those moves left.
+        heights = Heights((32, 24, 10))
+        for motion in motions[:first]:
+            heights.cut(motion['curve'])
+        heights, ramps = check_descents(self, motions[first:], (32, 24, 10), 4, 150, heights=heights, air=0.05)
+        self.assertGreaterEqual(len(ramps), 2)
+        self.assertGreaterEqual(report['ramp_entries'], 2)
+        self.assertLessEqual(report['max_ramp_angle_deg'], 4 + 1e-9)
+        self.assertGreater(report['rest_skipped_strokes'], 0)
+        inside = (
+            (heights.x[None, :] >= SLOT[0][0] + RADIUS)
+            & (heights.x[None, :] <= SLOT[1][0] - RADIUS)
+            & (heights.y[:, None] >= SLOT[0][1] + 0.2)
+            & (heights.y[:, None] <= SLOT[1][1] - 0.2)
+        )
+        self.assertTrue((heights.top[inside] == 6).all())
+        # (Its ramps are the line moves a Pocket's are, whose posting the
+        # pocket test above decodes.)
+
+    def test_adaptive_pocket_ramps_into_a_slot_no_helix_fits(self):
+        # 26 x 5 mm for a 4 mm cutter: a helix has no room. The ramp opens
+        # the slot; every cutting move after it stays within the engagement
+        # the stepover declares.
+        job = adaptive_job(RampEntry(4, min_length_mm=2))
+        events, motions, report, _ = run(job)
+        heights, ramps = check_descents(self, motions, (32, 24, 10), 4, 150, kind='lead', air=0.05)
+        self.assertGreaterEqual(len(ramps), 2)
+        self.assertEqual(report['helical_entries'], 0)
+        self.assertGreaterEqual(report['ramp_entries'], 2)
+        self.assertLessEqual(report['max_ramp_angle_deg'], 4 + 1e-9)
+        limit = math.degrees(math.acos(1 - 1.5 / RADIUS))
+        for layer in report['layers']:
+            clearing = layer['clearing']
+            self.assertGreaterEqual(clearing['ramp_entries'], 1)
+            self.assertGreater(clearing['ramp_slot_mm'], 0)
+            self.assertLessEqual(clearing['proven_max_engagement_deg'], limit + 1e-9)
+        for motion in motions:
+            curve = motion['curve']
+            self.assertNotEqual(curve['kind'], 'helix', motion)
+            if motion['kind'] == 'rapid':
+                continue
+            for x, y, z in (curve['start'], curve['end']):
+                self.assertTrue(SLOT[0][0] + RADIUS - 1e-6 <= x <= SLOT[1][0] - RADIUS + 1e-6, motion)
+                self.assertTrue(SLOT[0][1] + RADIUS - 1e-6 <= y <= SLOT[1][1] - RADIUS + 1e-6, motion)
+                self.assertGreaterEqual(z, 6)
+        inside = (
+            (heights.x[None, :] >= SLOT[0][0] + RADIUS)
+            & (heights.x[None, :] <= SLOT[1][0] - RADIUS)
+            & (heights.y[:, None] >= SLOT[0][1] + 0.2)
+            & (heights.y[:, None] <= SLOT[1][1] - 0.2)
+        )
+        self.assertTrue((heights.top[inside] == 6).all())
+        decoded, text = posted_motions(job, events)
+        self.assertTrue(text.endswith('M2\n'))
+        posted = [
+            (m['curve']['start'][2] - m['curve']['end'][2]) / horizontal(m['curve'])
+            for m in decoded
+            if m['curve']['end'][2] < m['curve']['start'][2] and horizontal(m['curve']) > 0
+        ]
+        self.assertEqual(len(posted), len(ramps))
+        self.assertLessEqual(max(posted), math.tan(math.radians(4)) + 1e-4)
+        # A job that asks for no ramp is the job it was.
+        self.assertNotIn('ramp_entries', run(adaptive_job(None, region=((3.0, 3.0), (29.0, 21.0))))[2])
+
+    def test_adaptive_and_roughing_refusals_name_the_reason(self):
+        cases = (
+            (adaptive_job(RampEntry(4)), ('no ramp entry into the enclosed material', 'min_length_mm is not set')),
+            (
+                adaptive_job(RampEntry(4, min_length_mm=2), path_strategy='disk_front'),
+                ('RampEntry is not supported here', 'engagement_front ramps into enclosed material'),
+            ),
+        )
+        for job, parts in cases:
+            with Simulation(**job) as sim:
+                with self.assertRaises(SimulationError) as raised:
+                    list(sim.run_operations())
+            for part in parts:
+                self.assertIn(part, str(raised.exception))
+
+    def test_a_ramp_does_not_lift_the_need_for_a_center_cutting_cutter(self):
+        # Decided in #219: every ramp turns back along the slope it has just
+        # cut, and a cutter that is not center cutting must be lifted first.
+        t = tool(center_cutting=False)
+        jobs = (
+            slot_job(RampEntry(10), t=t),
+            slot_job(RampEntry(4, min_length_mm=2), t=t),
+            slot_job(RampEntry(4, min_length_mm=2), t=t, rest_tolerance_mm=0.01),
+            adaptive_job(RampEntry(4, min_length_mm=2), t=t),
+        )
+        for job in jobs:
+            with Simulation(**job) as sim:
+                with self.assertRaises(SimulationError) as raised:
+                    list(sim.run_operations())
+                self.assertEqual(sim.state.completed, 0)
+            self.assertIn('a RampEntry does not lift the need for a center-cutting end mill', str(raised.exception))
+            self.assertIn('must first be lifted', str(raised.exception))
+        for entry in (None, HelicalEntry()):
+            with Simulation(**slot_job(entry, t=t)) as sim:
+                with self.assertRaises(SimulationError) as raised:
+                    list(sim.run_operations())
+            self.assertIn('center-cutting', str(raised.exception))
 
 
 if __name__ == '__main__':

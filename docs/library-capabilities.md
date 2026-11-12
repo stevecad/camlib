@@ -23,8 +23,8 @@ See [Operations](operations.md) for parameters. Summary:
 | --- | --- |
 | Facing | Rectangular stock top; flat mills; zig-zag or one-way |
 | Pocket / rest pocket | Line/arc regions with islands; plunge, helical, ramp (zigzag along the path) or stock-edge entry; rest pocket cuts only what the simulated stock still holds |
-| Adaptive pocket | Engagement-limited clearing of the same regions |
-| 3D roughing / rest roughing | Layered clearing above a mesh part: raster, offset, adaptive; air passes can be omitted |
+| Adaptive pocket | Engagement-limited clearing of the same regions; helical or ramp entry into enclosed material |
+| 3D roughing / rest roughing | Layered clearing above a mesh part: raster, offset, adaptive (stock-edge, helical or ramp entry); air passes can be omitted |
 | Contour | Outer walls and/or hole walls of a part: climb (default) or conventional, tangent leads, wear compensation (G41/G42), holding tabs (triangle or rectangle; spread evenly or at given points), ramp entry around the loop |
 | Silhouette of a mesh part | `Engine.silhouette_region`: the part's plan-view outline at or above a depth as a planar region with a stated error bound, for `Contour` and the other 2D operations |
 | 3D finishing cutters | Ball (all patterns, certified error), flat and bull-nose (raster, spiral, radial, project, waterline; exact contacts, proven no-gouge moves, sampled error) |

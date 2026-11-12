@@ -227,10 +227,95 @@ will remain as such"): it refuses.
   reversal, so `min_length_mm` does not apply, and the tool never comes
   straight down into material. With `compensation="wear"` G41/G42 goes on over
   the lead-in at the stock top and stays on down the whole descent.
-- Ramp moves are `plunge` moves at the entry feed, swept through the stock like
-  any other move.
+- In `Pocket` and `Contour`, ramp moves are `plunge` moves at the entry feed,
+  swept through the stock like any other move.
 - The pocket report gives `ramp_entries` and `max_ramp_angle_deg` (the steepest
   ramp made, never above `angle_deg`).
+- **`RestPocket`** (`Pocket` with `rest_tolerance_mm`): what a rest pass cuts
+  is known only from the stock, so each ramp is planned when its piece is
+  about to be cut. It follows that run of leftover pieces only (a
+  cutter-centre path proven inside the region), one leg or a zigzag as
+  above: the guide beyond it may already be clear, and a ramp over it would
+  run through air. It starts at the lowest height at which the committed
+  stock proves the whole tool clear along that path (the committed cuts, or
+  the stock's whole-cell bounds): the straight descent to it is through
+  air, and the ramp starts no higher than the highest material under it. A
+  piece whose path is proven clear down to the level is entered straight
+  down. Where nothing is proven the ramp starts at the pocket top. Leftover
+  pieces are often short (a corner a larger cutter left), so a rest pocket
+  usually needs `min_length_mm`.
+- **`AdaptivePocket`, and `Roughing` with `AdaptiveClearing`**
+  (`path_strategy="engagement_front"`): the entries from air or from stock
+  already cleared come first, as without a ramp. Material that is enclosed,
+  which a `HelicalEntry` would bore into, is entered by a ramp instead:
+  - along the longest straight path through the most open point of that
+    material that keeps the cutter inside the region (directions a degree
+    apart are tried; the path is then certified exactly against the region),
+    no longer than one leg at the angle needs;
+  - from the lowest height at which the committed stock proves the whole
+    tool clear along the path, so the straight descent is through air and
+    the ramp starts no higher than the highest material under its path: a
+    level below one already cut starts on that level's floor, not at the
+    pocket top (`ramp_clearance_mm` starts it that far higher, as it does a
+    helix); a path proven clear to the level gets a straight descent
+    (`air_entries`);
+  - one leg where the path is long enough, a zigzag over the whole path
+    where it is not (needs `min_length_mm`);
+  - then one pass along the path flat at depth, which removes the sloped
+    floor;
+  - with the tool's sections above the flutes (neck, shank, holder) proven
+    clear of the stock along the path at depth: above the stock, under no
+    stock cell they could meet, or inside what the committed cuts emptied (a
+    shank as wide as the cutter in what the levels above cut);
+  - in a pocket barely wider than the cutter, what the pass after the ramp
+    leaves beside the slot is cut from the slot at depth (a straight descent
+    in the slot, proven clear, and a stroke across no longer than the cutter
+    radius and four grid cells), not ramped into again through the air the
+    slot left (`slot_side_entries`).
+
+  The ramp and that flat pass are a full-width slot. They are entry moves
+  (`lead`) at the entry feed, like a helix and the floor circle under it, and
+  are **not** bounded by the engagement limit; the level's report counts
+  them (`ramp_entries`, `ramp_legs`, `ramp_slot_mm`, `max_ramp_angle_deg`).
+  Every cutting pass after them is proven within the limit, starting from
+  the slot. A helix cuts less at full width (Sandvik, same page: "Circular
+  ramping is always preferred to linear ramping (full slotting)"), so use a
+  ramp where a helix does not fit: a pocket barely wider than the cutter. In
+  Fusion's
+  [2D Adaptive Clearing](https://help.autodesk.com/cloudhelp/ENU/Fusion-CAM/files/GUIDA73542E9-ED9C-4BD9-A87D-3A0ECA8BEB41.htm)
+  the "Ramp Type" ("Specifies how the cutter moves down for each depth
+  cut") likewise offers "Zig-Zag" beside "Helix".
+
+Decisions (#219), with the reason:
+
+- **A ramp entry does not lift the need for a center-cutting cutter**, on
+  `Pocket` or anywhere else. No move of a ramped pocket comes straight down
+  into material, but every ramp ends by turning back along the slope it has
+  just cut: the flat pass after it, and each reversal of a zigzag. Sandvik
+  Coromant,
+  [Ramping: two axis linear and circular](https://www.sandvik.coromant.com/en-gb/knowledge/milling/milling-holes-cavities-pockets/ramping):
+  "When feeding the cutter at the maximum ramping angle, it must be lifted
+  distance h before changing direction. This prevents damage to the central
+  part of the cutter body." That distance belongs to the cutter, and camlib
+  has no data for it and assumes none. A flat cutter with
+  `center_cutting=False` is refused with a `RampEntry` as it is without one,
+  and the message says why.
+- **`Roughing` with `OffsetClearing` or `RasterClearing` refuses a ramp
+  entry.** Their layers are pockets open to the stock's edge: they enter at
+  fitted places (beside the stock, or on a helix) that the order and the
+  links of their passes are built on. A ramp along each pass has no such
+  place, and it would ramp through the air beside the stock and through the
+  air the layers above have cut (a layer's pocket starts at the stock top
+  while the flutes span it). Use `AdaptiveClearing` for a ramp.
+- **`path_strategy="disk_front"` and `"stock_front"` refuse it**: they start
+  every pass from a fitted seed circle, which a helix opens.
+- **A `Contour` ramp with holding tabs stays refused.** A tab is a lift whose
+  far side comes back down into the uncut loop at the tab's own slope (45
+  degrees for a triangle, straight down for a rectangle). A tool that needs a
+  ramp entry has a ramping limit, and those descents would break it; a tab
+  with sides at the ramp angle would be far longer than its width (a 3 mm high
+  tab at 3 degrees: 57 mm a side). The same holds for limits that block part
+  of a loop.
 
 Refused, before any motion:
 
@@ -240,18 +325,25 @@ Refused, before any motion:
   `HelicalEntry`, `entry=None` (plunge), a smaller cutter, or declare
   `min_length_mm` for the tool.
 - More than 1000 zigzag legs or laps (an angle far too small for the path).
-- `RampEntry` on a `Pocket` with `rest_tolerance_mm` (`RestPocket`): rest
-  passes are short leftover pieces a ramp does not fit.
+- A `RampEntry` with a cutter that is not center cutting (see the decisions
+  above).
 - `RampEntry` on a `Contour` with holding tabs, or with limits that block part
   of a loop: the tool comes back down from a tab or a lift steeper than the
   ramp angle. A `Contour` accepts no other entry type.
-- `RampEntry` on `Roughing` and `AdaptivePocket`: their passes are linked and
-  their engagement proven from stock-edge and helical entries, and a ramp along
-  the first pass is a full-width slot outside that model.
+- `RampEntry` on `Roughing` with offset or raster clearing, and with the
+  `disk_front` and `stock_front` strategies (see the decisions above).
 
-Refused while running, as a planner defect, should it ever happen: a ramp whose
-start the simulated stock does not show cut by the level above. The planner
-stops rather than descend straight into material.
+Refused while running (the run stops and no program is written):
+
+- A rest piece, or enclosed material in adaptive clearing, where no ramp
+  fits: the path is shorter than the ramp needs and `min_length_mm` is not
+  set, or is longer than the path; or, in adaptive clearing, the tool above
+  its flutes is not proven clear along the path. The message names the place
+  and the level. These cannot be refused earlier: where they are depends on
+  the stock the run has cut by then.
+- As a planner defect, should it ever happen: a `Pocket` ramp whose start the
+  simulated stock does not show cut by the level above. The planner stops
+  rather than descend straight into material.
 
 ## Adaptive pocket: `AdaptivePocket`
 
@@ -271,7 +363,10 @@ no full-width slotting, for hard materials and high-speed toolpaths.
   angle narrows the width further.
 - **Entry:** each level enters by a helix into uncut material, with `entry`'s
   helix (`HelicalEntry`) or `HelicalEntry`'s defaults when none is given, and
-  straight down only through stock the committed cuts prove is gone.
+  straight down only through stock the committed cuts prove is gone. With
+  `entry=RampEntry(angle_deg)` it ramps in along a straight path instead (see
+  [Ramp entry](#ramp-entry-rampentry)): the entry for a pocket too narrow for
+  a helix.
 - `cutting_sense`: `"climb"` (default) or `"conventional"` with a clockwise
   spindle.
 - **Links and entries** take the options `Roughing`'s adaptive clearing has
@@ -382,13 +477,19 @@ location. `clearing` is one of:
     declared width are cut as lead moves at the entry feed (the helix feed,
     else the plunge feed) and counted (`confined_strokes`,
     `confined_stroke_mm`, `confined_max_engagement_deg`). This needs an entry
-    that allows a helix; with `StockEdgeEntry(helix=None)` the operation
-    stops and names the place.
+    that allows a helix or a ramp; with `StockEdgeEntry(helix=None)` the
+    operation stops and names the place.
   - Every cutting and link move is also checked exactly against the layer
     region before it is emitted, and the run fails rather than emit one that
     does not fit. Orbit options and `omit_empty_cuts` do not apply, the entry
-    must be `StockEdgeEntry`, and the direction is `cutting_sense` (`"climb"`
-    by default, `"conventional"`); `clockwise` does not apply.
+    must be `StockEdgeEntry` or `RampEntry`, and the direction is
+    `cutting_sense` (`"climb"` by default, `"conventional"`); `clockwise` does
+    not apply.
+  - **`entry=RampEntry(angle_deg)`** enters enclosed material by a ramp along
+    a straight path instead of a helix (see
+    [Ramp entry](#ramp-entry-rampentry)); entries from beside the stock or
+    from cleared stock are used first, as with `StockEdgeEntry`. Offset and
+    raster clearing refuse a ramp entry.
   - `path_strategy="disk_front"` is refused in `Roughing`. It covers a region
     it takes to be solid with small orbits and never reads the stock;
     `Roughing`'s region is the stock grown by a margin, so it orbited through
@@ -426,7 +527,8 @@ location. `clearing` is one of:
   and the clearing's radial engagement. Reported as `thinned_links` and
   `thinned_link_mm`.
 
-Default entry is `StockEdgeEntry()`. `retract_z_mm`/`feed_z_mm` work for raster,
+Default entry is `StockEdgeEntry()` (`RampEntry` with `AdaptiveClearing`
+only). `retract_z_mm`/`feed_z_mm` work for raster,
 offset and engagement_front clearing. `RestRoughing` machines only what earlier operations left
 (`rest_tolerance_mm`, 0.01, is ignored), never repeating strokes proven already
 cleared. Further options:

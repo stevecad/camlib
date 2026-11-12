@@ -146,6 +146,26 @@ pub struct EngagementFrontReport {
     pub stock_edge_entries: usize,
     pub helical_entries: usize,
     pub entry_turns: usize,
+    /// Ramp entries (`RampEntry`) into enclosed material: descents along a
+    /// straight path, each followed by one flat pass along it at depth. The
+    /// legs made, the length of full-width slot they opened (entry motion
+    /// at the entry feed, like a helix: not bounded by the engagement
+    /// limit) and the steepest leg in degrees (never above the declared
+    /// angle).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub ramp_entries: usize,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub ramp_legs: usize,
+    #[serde(skip_serializing_if = "is_zero_f64")]
+    pub ramp_slot_mm: f64,
+    #[serde(skip_serializing_if = "is_zero_f64")]
+    pub max_ramp_angle_deg: f64,
+    /// With a `RampEntry`: material left beside a ramp's slot, in a pocket
+    /// too narrow for a pass to start from cleared stock, entered sideways
+    /// from that slot at depth instead of by another ramp through the air
+    /// the first one left.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub slot_side_entries: usize,
     /// Entries the helix search chose whose whole bore was proven air (by
     /// the committed sweeps or the stock cell bounds): a straight plunge.
     pub air_entries: usize,
@@ -219,6 +239,11 @@ impl Default for EngagementFrontReport {
             stock_edge_entries: 0,
             helical_entries: 0,
             entry_turns: 0,
+            ramp_entries: 0,
+            ramp_legs: 0,
+            ramp_slot_mm: 0.,
+            max_ramp_angle_deg: 0.,
+            slot_side_entries: 0,
             air_entries: 0,
             offset_descents: 0,
             remnant_passes: 0,
@@ -622,6 +647,8 @@ pub(crate) struct EngagementFrontPlan {
     /// last candidate refresh: planning progress (#198), read by nothing
     /// that plans.
     area_mm2: Option<(f64, f64)>,
+    /// The paths of this level's ramp entries: slots cut to depth.
+    ramp_slots: Vec<(Point, Point)>,
 }
 
 /// The entry and link options of an engagement_front clearing, as `Roughing`
@@ -692,10 +719,6 @@ impl EngagementFrontPlan {
             .entry
             .clone()
             .ok_or("engagement_front needs an entry policy")?;
-        entry.refuse_ramp(
-            &format!("operation {}", op.id),
-            "engagement_front enters from air or cleared stock and helixes only into enclosed material, which is what its engagement proof covers",
-        )?;
         if entry.policy() == EntryPolicy::Helix {
             return Err("engagement_front enters from air or cleared stock and helixes only into enclosed material; use StockEdgeEntry (stock_edge_or_helix or stock_edge), not HelicalEntry".into());
         }
@@ -714,18 +737,31 @@ impl EngagementFrontPlan {
             spec.max_mm[2].max(op.top_z_mm),
             guard,
         )?;
-        let guides = PocketPlan::prepare(op.clone(), tool, spec, initial, 1, cancel)?;
+        let guides = if entry.ramp().is_some() {
+            // No pass of the guide plan is cut, so none needs a ramp.
+            PocketPlan::prepare_region_guides(op.clone(), tool, spec, initial, 1, cancel)?
+        } else {
+            PocketPlan::prepare(op.clone(), tool, spec, initial, 1, cancel)?
+        };
         let z = guides.report().target_z_mm;
+        let ramped = entry.ramp().is_some();
         let report = EngagementFrontReport {
             strategy: "engagement_front",
             target_z_mm: z,
             target_radial_engagement_mm: width,
             engagement_limit_deg: (1. - width / r).acos().to_degrees(),
             geometric_residual_status: ResidualStatus::Pending,
-            diagnostics: vec![
-                "Engagement is steered on a fine grid seeded from committed whole-cell stock bounds, then every cutting and stay-down link stroke is proven exactly against the committed cleared sweeps: its contact angle, less the cutter's own trail, is at most engagement_limit_deg = acos(1 - w/r). A pass with an unproven stroke is planned again narrower; helical entries cut a full slot and are not bounded by w".into(),
-                "Every cutting and link stroke is certified exactly against the layer region; air entries are proven by committed sweeps; enclosed material is entered by helix".into(),
-            ],
+            diagnostics: if ramped {
+                vec![
+                    "Engagement is steered on a fine grid seeded from committed whole-cell stock bounds, then every cutting and stay-down link stroke is proven exactly against the committed cleared sweeps: its contact angle, less the cutter's own trail, is at most engagement_limit_deg = acos(1 - w/r). A pass with an unproven stroke is planned again narrower; ramp entries cut a full slot at the entry feed and are not bounded by w".into(),
+                    "Every cutting, link and ramp stroke is certified exactly against the layer region; air entries are proven by committed sweeps; enclosed material is entered by a ramp along a straight path, from the material top the committed stock proves".into(),
+                ]
+            } else {
+                vec![
+                    "Engagement is steered on a fine grid seeded from committed whole-cell stock bounds, then every cutting and stay-down link stroke is proven exactly against the committed cleared sweeps: its contact angle, less the cutter's own trail, is at most engagement_limit_deg = acos(1 - w/r). A pass with an unproven stroke is planned again narrower; helical entries cut a full slot and are not bounded by w".into(),
+                    "Every cutting and link stroke is certified exactly against the layer region; air entries are proven by committed sweeps; enclosed material is entered by helix".into(),
+                ]
+            },
             ..Default::default()
         };
         Ok(Self {
@@ -756,6 +792,7 @@ impl EngagementFrontPlan {
             wall_pass: false,
             walls_done: false,
             area_mm2: None,
+            ramp_slots: vec![],
         })
     }
     /// See `RoughingOperation::ramp_clearance_mm` (validated there).
@@ -2410,8 +2447,367 @@ impl EngagementFrontPlan {
         revived
     }
 
+    /// The longest straight path through `q`, at most `want` long, that
+    /// keeps the cutter inside the region: its two ends. Directions are
+    /// tried a degree apart on the steering grid (the first of the longest
+    /// wins), and the path is then certified exactly against the region,
+    /// shortened a little at both ends if the grid was optimistic. None:
+    /// no straight path through `q` at all.
+    fn ramp_line(&self, q: Point, want: f64) -> Option<(Point, Point)> {
+        let layer = self.layer.as_ref().unwrap();
+        let c = layer.g.c;
+        if !layer.allowed_at(q) || !(want.is_finite() && want > 0.) {
+            return None;
+        }
+        // Free travel from `q` along `u`, by the grid's allowed centres.
+        let reach = |u: Point| {
+            let mut d = 0.;
+            while d < want {
+                let next = (d + c).min(want);
+                if !layer.allowed_at([q[0] + next * u[0], q[1] + next * u[1]]) {
+                    break;
+                }
+                d = next;
+            }
+            d
+        };
+        const DIRECTIONS: usize = 180;
+        let mut found: Vec<(f64, f64, f64, Point)> = (0..DIRECTIONS)
+            .map(|i| {
+                let angle = PI * i as f64 / DIRECTIONS as f64;
+                let u = [angle.cos(), angle.sin()];
+                let (ahead, behind) = (reach(u), reach([-u[0], -u[1]]));
+                ((ahead + behind).min(want), ahead, behind, u)
+            })
+            .collect();
+        // Longest first; equal lengths keep their order (stable sort).
+        found.sort_by(|a, b| b.0.total_cmp(&a.0));
+        for (length, ahead, behind, u) in found.into_iter().take(8) {
+            // `length` of the free travel, as evenly about `q` as it allows.
+            let back = behind.min((length / 2.).max(length - ahead));
+            let fore = length - back;
+            for shrink in 0..8 {
+                let trim = 2. * c * shrink as f64;
+                let (back, fore) = ((back - trim).max(0.), (fore - trim).max(0.));
+                if back + fore <= 4. * c {
+                    break;
+                }
+                let a = [q[0] - back * u[0], q[1] - back * u[1]];
+                let b = [q[0] + fore * u[0], q[1] + fore * u[1]];
+                if self
+                    .guides
+                    .stroke_geometry_fits_radius(Stroke::line(a, b), self.r)
+                {
+                    return Some((a, b));
+                }
+            }
+        }
+        None
+    }
+
+    /// Enclosed material with a `RampEntry` (#219): ramp down along a
+    /// straight path through the most open reachable point, then cut that
+    /// path once flat at depth and follow the front from the slot it leaves.
+    ///
+    /// Established practice: adaptive clearing enters enclosed material by
+    /// a helix or, where the tool or the pocket asks for it, by a zig-zag
+    /// ramp (Autodesk Fusion, 2D Adaptive Clearing reference,
+    /// help.autodesk.com/cloudhelp/ENU/Fusion-CAM/files/
+    /// GUIDA73542E9-ED9C-4BD9-A87D-3A0ECA8BEB41.htm: "Ramp Type: Specifies
+    /// how the cutter moves down for each depth cut", with "Zig-Zag" beside
+    /// "Helix", and "Maximum Ramp Stepdown ... allows the tool load to be
+    /// constrained when doing full-width cuts during ramping"). A linear
+    /// ramp is a full-width slot (Sandvik Coromant, "Ramping: two axis
+    /// linear and circular": "Circular ramping is always preferred to
+    /// linear ramping (full slotting)"), so it is never chosen where an
+    /// entry from air or cleared stock exists, and it is entry motion like
+    /// the helix: at the entry feed, not bounded by the engagement limit,
+    /// and reported (`ramp_entries`, `ramp_slot_mm`).
+    ///
+    /// What is proven:
+    /// - the path keeps the cutter inside the region (`certify`, exact);
+    /// - the ramp is `RampEntry::zigzag`, never steeper than the declared
+    ///   angle, one leg where the path is long enough for it and otherwise
+    ///   back and forth over the whole path (which needs `min_length_mm`);
+    /// - it starts at the lowest height at which the committed stock proves
+    ///   the whole tool clear along the whole path (the committed sweeps or
+    ///   the whole-cell bounds), so the straight descent to it is through
+    ///   air and the ramp starts no higher than the highest material under
+    ///   it; a path proven air down to the level needs no ramp at all
+    ///   (`air_entries`);
+    /// - the path is no longer than one leg needs, so the slot is as short
+    ///   as the angle allows;
+    /// - the tool's sections above the flutes are clear of stock along the
+    ///   path at depth (`clear_above_flutes`: `Stock::history_clearance`);
+    /// - every cutting stroke that follows is proven within the engagement
+    ///   limit with the flat pass as its premise (`proven_pass`).
+    ///
+    /// A place where no ramp fits is refused by name, not left uncut.
+    ///
+    /// In a pocket barely wider than the cutter the pass after the ramp
+    /// cannot always take everything, and what it leaves lies beside the
+    /// slot. That is not ramped into again, through the air the slot left:
+    /// `slot_side_entry` cuts it from the slot at depth.
+    fn ramp_pass(
+        &mut self,
+        ramp: &crate::entry::RampEntry,
+        stock: &Stock,
+        cancel: &impl CancelSignal,
+    ) -> Result<bool, String> {
+        let (r, z) = (self.r, self.z);
+        if cancel.is_cancelled() {
+            return Err("engagement_front planning cancelled".into());
+        }
+        let layer = self.layer.as_ref().unwrap();
+        let c = layer.g.c;
+        let need = self.grid_clearance(c);
+        let mut best: Option<(f64, usize)> = None;
+        for k in 0..layer.top.len() {
+            if layer.allowed[k] && !layer.dead[k] && layer.material(k) {
+                let room = layer.room[k] as f64 - need;
+                if best.is_none_or(|(b, _)| room > b) {
+                    best = Some((room, k));
+                }
+            }
+        }
+        let Some((_, k)) = best else {
+            return Ok(false);
+        };
+        let q = layer.g.center(k);
+        let tolerance = self.op.tolerance_mm;
+        let skin = 0.01_f64.max(64. * tolerance);
+        if self.slot_side_entry(q, stock, cancel)? {
+            return Ok(true);
+        }
+        let refuse = |why: String| {
+            format!(
+                "engagement_front: no ramp entry into the enclosed material at ({:.3}, {:.3}) for the level at Z{z}: {why}. Use a helical entry (StockEdgeEntry with a helix, or HelicalEntry on an adaptive pocket), a smaller cutter, or exclude the area",
+                q[0], q[1]
+            )
+        };
+        // The ramp starts no higher than this, whatever the stock holds.
+        let begin_at = |top: f64| {
+            (top + self.ramp_clearance.unwrap_or(0.))
+                .min(self.heights.feed)
+                .max(top)
+        };
+        let tan = ramp.angle_rad.tan();
+        let highest = begin_at(self.op.top_z_mm.max(z));
+        let (mut a, mut b) = self
+            .ramp_line(q, (highest - z).max(skin) / tan)
+            .ok_or_else(|| refuse("the cutter has no straight path there".into()))?;
+        // The material top along the path, and the path no longer than one
+        // leg from there needs: a shorter path has a lower top or the same.
+        let mut top;
+        let mut round = 0;
+        loop {
+            let path = [(a, b)];
+            top = self
+                .guides
+                .cleared_path_start(&[Stroke::line(a, b)], z, stock, cancel)?
+                .min(self.guides.cell_path_height(stock, &path, 0.))
+                .max(z);
+            let length = (b[0] - a[0]).hypot(b[1] - a[1]);
+            let needed = (begin_at(top) - z) / tan;
+            if top - z <= skin || needed >= length {
+                break;
+            }
+            // Keep `needed` of it, as evenly about `q` as it allows.
+            let u = [(b[0] - a[0]) / length, (b[1] - a[1]) / length];
+            let (behind, ahead) = (
+                (q[0] - a[0]).hypot(q[1] - a[1]),
+                (b[0] - q[0]).hypot(b[1] - q[1]),
+            );
+            let back = behind.min((needed / 2.).max(needed - ahead));
+            let fore = needed - back;
+            a = [q[0] - back * u[0], q[1] - back * u[1]];
+            b = [q[0] + fore * u[0], q[1] + fore * u[1]];
+            round += 1;
+            if round == 4 {
+                // Shortened to one leg from a top measured on a longer path
+                // through the same point, which is no lower than this
+                // path's own: the ramp starts no lower than it must.
+                break;
+            }
+        }
+        let air = top - z <= skin;
+        let begin = begin_at(top);
+        let chain = [Stroke::line(b, a)];
+        let total = (b[0] - a[0]).hypot(b[1] - a[1]);
+        // The ramp ends at `b` at depth; the flat pass then runs to `a`.
+        let (curves, legs) = if air {
+            (vec![], 0)
+        } else {
+            let (legs, _) = ramp.legs(total, begin - z).map_err(refuse)?;
+            (ramp.zigzag(&chain, begin, z).map_err(refuse)?, legs)
+        };
+        self.certify(chain[0])?;
+        // Below the start the flutes cut; the sections above them must be
+        // clear of what stands beside the path (the levels above cut it).
+        if !air && !self.guides.clear_above_flutes(a, b, z, stock, cancel)? {
+            return Err(refuse(
+                "the tool above its flutes (neck, shank or holder) is not proven clear of the stock along the ramp's path".into(),
+            ));
+        }
+        let start = curves.first().map_or([a[0], a[1], z], Curve::start);
+        let here = self.position;
+        // The flat pass is a premise for the cuts that follow it.
+        let from = self.pending.len();
+        self.layer.as_mut().unwrap().journal.clear();
+        let proven = self
+            .proven(top)
+            .map(|h| h.max(self.guides.cell_entry_height(stock, [start[0], start[1]])));
+        let above = self.travel(here, [start[0], start[1]], proven, start[2]);
+        if above[2] > start[2] {
+            self.line(above, start, MoveKind::Plunge);
+        } else if above[2] < start[2] {
+            return Err(format!(
+                "engagement_front ramp start Z{:.4} is above the retract height \
+                 Z{:.4}; raise retract_z_mm",
+                start[2], above[2]
+            ));
+        }
+        if air {
+            self.report.air_entries += 1;
+        } else {
+            let feed = Some(ramp.feed_mm_min.unwrap_or(self.op.plunge_mm_min));
+            let mut travel = 0.;
+            for curve in curves {
+                travel += curve.prepare(tolerance)?.length_mm();
+                self.queue(curve, MoveKind::Lead, feed);
+            }
+            let drop = begin - z;
+            let angle = (drop / (travel * travel - drop * drop).max(0.).sqrt())
+                .atan()
+                .to_degrees();
+            self.queue(
+                Curve::Line {
+                    start: [b[0], b[1], z],
+                    end: [a[0], a[1], z],
+                },
+                MoveKind::Lead,
+                feed,
+            );
+            self.report.ramp_entries += 1;
+            self.report.ramp_legs += legs;
+            self.report.ramp_slot_mm += total;
+            self.report.max_ramp_angle_deg = self.report.max_ramp_angle_deg.max(angle);
+        }
+        self.ramp_slots.push((a, b));
+        // The slot on the steering grid.
+        let steps = (total / c).ceil().max(1.) as usize;
+        let layer = self.layer.as_mut().unwrap();
+        for i in 0..=steps {
+            let t = i as f64 / steps as f64;
+            layer.cut([b[0] + (a[0] - b[0]) * t, b[1] + (a[1] - b[1]) * t], r);
+        }
+        self.report.lifts += 1;
+        self.position = [a[0], a[1], z];
+        // Follow the front from the end of the slot: back along it, turning
+        // into one of its walls (the far side of the first step is the slot
+        // itself; 0.6 pi is `follow`'s widest turn).
+        let side = if self.climb { 1. } else { -1. };
+        let heading = (b[1] - a[1]).atan2(b[0] - a[0]) - side * 0.6 * PI;
+        if let Some(pts) = self.proven_pass(stock, a, heading, false, from, cancel)? {
+            let end = *pts.last().unwrap();
+            self.position = [end[0], end[1], z];
+        }
+        self.report.passes += 1;
+        Ok(true)
+    }
+
+    /// Material at `q` beside a slot one of this level's ramps cut: come
+    /// down in the slot and cut straight across to it at depth, then follow
+    /// the front from there. Returns whether that was planned.
+    ///
+    /// What is proven: the committed cuts still show the whole tool clear
+    /// along the whole slot at depth (`cleared_path_start`), so the descent
+    /// at its nearest point to `q` is through air; the stroke across keeps
+    /// the cutter inside the region (`certify`) and is no longer than the
+    /// cutter radius and four grid cells, so it cuts only what lies beside
+    /// the slot; its contact angle is proven within the engagement limit
+    /// like any cutting stroke, and where that fails it is entry motion at
+    /// the entry feed, counted as a confined stroke.
+    fn slot_side_entry(
+        &mut self,
+        q: Point,
+        stock: &Stock,
+        cancel: &impl CancelSignal,
+    ) -> Result<bool, String> {
+        let (r, z) = (self.r, self.z);
+        let c = self.layer.as_ref().unwrap().g.c;
+        let skin = 0.01_f64.max(64. * self.op.tolerance_mm);
+        for index in 0..self.ramp_slots.len() {
+            let (a, b) = self.ramp_slots[index];
+            let d = [b[0] - a[0], b[1] - a[1]];
+            let l2 = d[0] * d[0] + d[1] * d[1];
+            let t = if l2 > 0. {
+                (((q[0] - a[0]) * d[0] + (q[1] - a[1]) * d[1]) / l2).clamp(0., 1.)
+            } else {
+                0.
+            };
+            let p = [a[0] + t * d[0], a[1] + t * d[1]];
+            let across = (q[0] - p[0]).hypot(q[1] - p[1]);
+            if across <= 0.
+                || across > r + 4. * c
+                || !self
+                    .guides
+                    .stroke_geometry_fits_radius(Stroke::line(p, q), r)
+            {
+                continue;
+            }
+            let height = self
+                .guides
+                .cleared_path_start(&[Stroke::line(a, b)], z, stock, cancel)?;
+            if height - z > skin {
+                continue;
+            }
+            let here = self.position;
+            let from = self.pending.len();
+            self.layer.as_mut().unwrap().journal.clear();
+            let proven = self
+                .proven(height)
+                .map(|h| h.max(self.guides.cell_entry_height(stock, p)));
+            let above = self.travel(here, p, proven, z);
+            self.line(above, [p[0], p[1], z], MoveKind::Plunge);
+            self.certify(Stroke::line(p, q))?;
+            self.queue(
+                Curve::Line {
+                    start: [p[0], p[1], z],
+                    end: [q[0], q[1], z],
+                },
+                MoveKind::Cut,
+                None,
+            );
+            let steps = (across / c).ceil().max(1.) as usize;
+            let layer = self.layer.as_mut().unwrap();
+            for i in 0..=steps {
+                let f = i as f64 / steps as f64;
+                layer.cut([p[0] + (q[0] - p[0]) * f, p[1] + (q[1] - p[1]) * f], r);
+            }
+            if self.prove(stock, from, from, false, cancel)?.is_some() {
+                self.prove(stock, from, from, true, cancel)?;
+            }
+            self.report.lifts += 1;
+            self.report.stock_edge_entries += 1;
+            self.report.slot_side_entries += 1;
+            self.position = [q[0], q[1], z];
+            let heading = (q[1] - p[1]).atan2(q[0] - p[0]);
+            if let Some(pts) = self.proven_pass(stock, q, heading, false, from, cancel)? {
+                let end = *pts.last().unwrap();
+                self.position = [end[0], end[1], z];
+            }
+            self.report.passes += 1;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     /// Enclosed material: helix down at the most open reachable point.
     fn helix_pass(&mut self, stock: &Stock, cancel: &impl CancelSignal) -> Result<bool, String> {
+        if let Some(ramp) = self.entry.ramp().cloned() {
+            return self.ramp_pass(&ramp, stock, cancel);
+        }
         let r = self.r;
         let z = self.z;
         loop {

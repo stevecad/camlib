@@ -54,6 +54,7 @@ modules! {
     progress,
     protocol,
     ramp_entry,
+    ramp_entry_front,
     recessed_finishing,
     regeneration,
     roughing,

@@ -1278,6 +1278,25 @@ class RampEntry:
     set, and refused on a pass shorter than it. Contour: one continuous descent
     around each closed loop from the stock top to the floor (a profile ramp),
     no lap deeper than the stepdown, then one lap flat at the floor.
+
+    A ramp entry does not lift the need for a center-cutting cutter: every
+    ramp ends by turning back along the slope it has just cut, which a
+    cutter that is not center cutting cannot do without a lift camlib has no
+    data for.
+
+    RestPocket: each run of leftover pieces is entered along itself, from the
+    lowest height the committed stock proves clear along that path (usually
+    a zigzag: leftover pieces are short, so set ``min_length_mm``).
+
+    AdaptivePocket and Roughing with AdaptiveClearing (engagement_front):
+    entries from air or cleared stock come first; enclosed material is
+    entered by a ramp along the longest straight path through its most open
+    point (no longer than one leg needs), from the material top the stock
+    proves, then one flat pass along it. The ramp and that pass are entry
+    moves at the entry feed, a full-width slot like a helix's bore, and are
+    not bounded by the engagement limit; every cutting pass after them is.
+    Roughing with offset or raster clearing, and the disk_front and
+    stock_front strategies, refuse a ramp entry.
     """
 
     angle_deg: float
@@ -1402,7 +1421,8 @@ class Roughing:
     length_register: int = field(kw_only=True)
     coolant: str = field(kw_only=True)
     clockwise: bool = True
-    entry: StockEdgeEntry | HelicalEntry = StockEdgeEntry()
+    # RampEntry: with AdaptiveClearing (engagement_front) only.
+    entry: StockEdgeEntry | HelicalEntry | RampEntry = StockEdgeEntry()
     clearing_tolerance_mm: float | None = None
     require_part_at_first_depth: bool = False
     omit_empty_cuts: bool = False
@@ -1561,7 +1581,9 @@ class AdaptivePocket(Pocket):
     stepover_mm is the radial width of each pass (at most the cutter radius);
     max_engagement_deg below acos(1 - stepover/r) narrows it further. Each
     level enters by a helix into uncut material (entry's helix, or
-    HelicalEntry's default) and every cutting stroke is proven within that
+    HelicalEntry's default), or with entry=RampEntry(angle_deg) by a ramp
+    along a straight path (for a pocket too narrow for a helix), and every
+    cutting stroke is proven within that
     contact angle against the committed cleared sweeps. Nothing is cut twice.
     Orbit options, max_stay_down_mm and rest_tolerance_mm do not apply; the
     direction is cutting_sense ('climb' by default, or 'conventional').

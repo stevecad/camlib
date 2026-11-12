@@ -73,6 +73,14 @@ pub(crate) enum EntryPolicy {
 /// profile. This parameter allows the tool load to be constrained when
 /// doing full-width cuts during ramping".
 ///
+/// Where it is used (#219): `Pocket` and `Contour` as above; a rest pocket
+/// along each run of leftover pieces, from the material top the committed
+/// stock proves (`PocketPlan::rest_ramp_moves`); adaptive clearing's
+/// engagement front into enclosed material, in place of the helix
+/// (`EngagementFrontPlan::ramp_pass`). Roughing's offset and raster layers
+/// and the orbit strategies refuse it (`refuse_ramp`). It does not lift the
+/// need for a center-cutting cutter (`PocketOperation::validate_authoring`).
+///
 /// The angle is a fact about the tool and material, so it has no default.
 /// Neither has `min_length_mm`, the shortest span the tool may reverse a
 /// ramp on: FreeCAD has no such limit (it zigzags on any edge), and camlib

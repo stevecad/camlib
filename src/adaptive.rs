@@ -556,12 +556,12 @@ impl AdaptivePlan {
             return Err("an engagement_front adaptive pocket is planned by PocketFrontPlan (OperationPlan::prepare)".into());
         }
         if let Some(entry) = &op.pocket.entry {
-            // An adaptive pass is planned for a bounded engagement from a
-            // fitted seed circle; a ramp along the first pass is a full-width
-            // slot, which that model has no proof for.
+            // disk_front and stock_front plan every pass from a fitted seed
+            // circle, which a helix opens; a ramp has no seed circle. The
+            // engagement front ramps into enclosed material (#219).
             entry.refuse_ramp(
                 &format!("adaptive pocket {}", op.pocket.id),
-                "adaptive clearing starts from a fitted helix (or the stock edge) so that every pass keeps its bounded engagement",
+                "the disk_front and stock_front strategies start every pass from a fitted seed circle that a helix opens; path_strategy engagement_front ramps into enclosed material",
             )?;
         }
         let prepared = tool.prepare()?;

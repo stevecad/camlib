@@ -26,7 +26,12 @@ use std::{
 #[derive(Clone, Copy)]
 enum GuideMode {
     Raster(Option<f64>),
-    Offset { coverage_margin_mm: f64 },
+    /// Raster guides another planner uses for its region checks and entry
+    /// proofs only (`prepare_region_guides`): never emitted.
+    Region,
+    Offset {
+        coverage_margin_mm: f64,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -282,6 +287,30 @@ impl PocketOperation {
         initial: Vec3,
         radius: f64,
     ) -> Result<(), String> {
+        if !cutter.center_cutting
+            && matches!(self.entry, Some(PocketEntry::Ramp(_)))
+            && valid_id(&self.id)
+            && self.tool == assembly.id
+            && matches!(cutter.shape, CutterShape::Flat)
+        {
+            // Decided in #219: a ramp entry does not lift the requirement.
+            // No move of a ramped pocket comes straight down into material,
+            // but every ramp ends by turning back along the slope it has
+            // just cut (the flat pass after it, and each reversal of a
+            // zigzag), and a cutter that does not cut at its centre cannot
+            // do that as it stands. Sandvik Coromant, "Ramping: two axis
+            // linear and circular" (sandvik.coromant.com/en-gb/knowledge/
+            // milling/milling-holes-cavities-pockets/ramping): "When
+            // feeding the cutter at the maximum ramping angle, it must be
+            // lifted distance h before changing direction. This prevents
+            // damage to the central part of the cutter body." That
+            // distance belongs to the cutter; camlib has no data for it and
+            // assumes none.
+            return Err(format!(
+                "pocket {}: a RampEntry does not lift the need for a center-cutting end mill: every ramp ends by turning back along the slope it has just cut (the flat pass after it, and each reversal of a zigzag), and a cutter that is not center cutting must first be lifted a distance that belongs to the cutter, which camlib has no data for. Use a center-cutting end mill",
+                self.id
+            ));
+        }
         if !valid_id(&self.id)
             || self.tool != assembly.id
             || !matches!(cutter.shape, CutterShape::Flat)
@@ -427,15 +456,6 @@ impl PocketOperation {
         match &self.entry {
             Some(PocketEntry::Ramp(ramp)) => {
                 ramp.validate(self.tolerance_mm, self.plunge_mm_min)?;
-                if self.rest_tolerance_mm.is_some() {
-                    // Rest passes are cut in pieces no longer than the cutter
-                    // radius, entered wherever stock remains: too short to
-                    // ramp on, and not known before the stock is read.
-                    return Err(format!(
-                        "pocket {}: RampEntry is not supported with rest_tolerance_mm: rest machining enters short leftover pieces a ramp does not fit; use HelicalEntry or the plunge entry (entry=None)",
-                        self.id
-                    ));
-                }
             }
             Some(PocketEntry::Helix(h))
             | Some(PocketEntry::StockEdgeOrHelix(h))
@@ -1387,6 +1407,28 @@ impl PocketPlan {
             cancel,
         )
     }
+    /// The plan of `prepare`, for a planner that uses it only to certify
+    /// strokes against the region and to prove entries (engagement_front):
+    /// its raster passes are never cut, so a `RampEntry` is not checked
+    /// against them.
+    pub(crate) fn prepare_region_guides(
+        op: PocketOperation,
+        assembly: &ToolAssembly,
+        stock: &StockSpec,
+        initial: Vec3,
+        first_motion_id: u64,
+        cancel: &impl CancelSignal,
+    ) -> Result<Self, String> {
+        Self::prepare_core(
+            op,
+            assembly,
+            stock,
+            initial,
+            first_motion_id,
+            GuideMode::Region,
+            cancel,
+        )
+    }
     pub(crate) fn prepare_offset(
         op: PocketOperation,
         assembly: &ToolAssembly,
@@ -1430,7 +1472,7 @@ impl PocketPlan {
         let actual_radius = cutter.diameter_mm / 2.;
         let guide_radius = match mode {
             GuideMode::Raster(radius) => radius,
-            GuideMode::Offset { .. } => None,
+            GuideMode::Offset { .. } | GuideMode::Region => None,
         };
         let radius = guide_radius.unwrap_or(actual_radius);
         if !radius.is_finite() || radius < actual_radius || radius > 2. * actual_radius {
@@ -1745,7 +1787,11 @@ impl PocketPlan {
         if matches!(mode, GuideMode::Offset { .. }) {
             result = result.schedule_guides(RasterRouting::Economical, cancel)?;
         }
-        result.check_ramp_entries(cancel)?;
+        // A rest pocket's ramps follow the pieces the stock leaves, known
+        // only while it runs (`rest_ramp_moves`).
+        if !matches!(mode, GuideMode::Region) && result.operation.rest_tolerance_mm.is_none() {
+            result.check_ramp_entries(cancel)?;
+        }
         if result.operation.rest_tolerance_mm.is_some() {
             result.subdivide_rest_guides(cancel)?;
         }
@@ -2001,8 +2047,9 @@ impl PocketPlan {
     /// (`prepare` requires the stock top there, `StockTop` proves a lower
     /// authored top against the stock). The others start just above the
     /// level before: every level cuts the same strokes (rest machining,
-    /// which skips some, refuses a ramp entry), so that level has had the
-    /// cutter along the whole ramp path. "Just above" is the skin the other
+    /// which skips some, finds the height from the stock instead:
+    /// `rest_ramp_moves`), so that level has had the cutter along the whole
+    /// ramp path. "Just above" is the skin the other
     /// entries allow a straight descent (`cleared_entry_start`): the
     /// committed stock can prove a sweep clear only above its floor plus its
     /// path error, and `ramp_moves` requires that proof. With omitted empty
@@ -2043,6 +2090,109 @@ impl PocketPlan {
             next += 1;
         }
         Ok((chain, length))
+    }
+    /// A ramp entry into a rest pass (#219): the moves from the current
+    /// position to the start of the leftover piece `s` at depth `z`, and the
+    /// ramp's slope (None when the whole descent is proven air).
+    ///
+    /// What a rest pass cuts is known only from the stock, so this ramp is
+    /// planned when the piece is about to be cut, not before any motion. It
+    /// follows `s` alone, the run of leftover pieces about to be cut (a
+    /// cutter-centre guide proven inside the region): the guide beyond it
+    /// may already be clear, and a ramp over it would run through air. It
+    /// starts at the lowest height at which the committed stock proves the
+    /// whole tool clear along `s` (the committed sweeps,
+    /// `cleared_path_start`, or the whole-cell bounds, `cell_path_height`):
+    /// the straight descent to it is through air, every move below it is a
+    /// ramp, and the ramp starts no higher than the highest material under
+    /// it. Where nothing is
+    /// proven that height is the pocket top, which no stock the cutter can
+    /// reach is above (as `ramp_top`).
+    fn rest_ramp_moves(
+        &self,
+        s: Stroke,
+        z: f64,
+        stock: Option<&Stock>,
+        cancel: &impl CancelSignal,
+    ) -> Result<(Vec<PendingMove>, Option<f64>), String> {
+        let o = &self.operation;
+        let ramp = o
+            .entry
+            .as_ref()
+            .and_then(|e| e.ramp())
+            .ok_or("missing ramp entry")?;
+        let stock = stock.ok_or_else(|| {
+            format!(
+                "pocket {}: a ramp entry reads the committed stock; drive it with next_motion_with_stock",
+                o.id
+            )
+        })?;
+        let feed = Some(ramp.feed_mm_min.unwrap_or(o.plunge_mm_min));
+        let refuse = |why: String| self.ramp_refusal(s, z, &why);
+        let chain = [s];
+        // The path as straight pieces, each within `pad` of it (arcs as
+        // chords).
+        let pad = 0.005_f64.max(8. * o.tolerance_mm);
+        let mut path = vec![];
+        for &stroke in &chain {
+            if !self.guide_tube_fits(stroke, self.radius) {
+                return Err(refuse(
+                    "the cutting path there does not keep the cutter inside the region".into(),
+                ));
+            }
+            let pieces = match stroke.arc {
+                None => 1,
+                Some((c, sweep)) => {
+                    let rho = norm(stroke.a, c);
+                    let step = 2. * (1. - (pad / rho).min(1.)).acos();
+                    (sweep.abs() / step).ceil().clamp(1., 4096.) as usize
+                }
+            };
+            for i in 0..pieces {
+                path.push((
+                    crate::profiles::stroke_point(&stroke, i as f64 / pieces as f64),
+                    crate::profiles::stroke_point(&stroke, (i + 1) as f64 / pieces as f64),
+                ));
+            }
+        }
+        let from = self
+            .cleared_path_start(&chain, z, stock, cancel)?
+            .min(self.cell_path_height(stock, &path, pad))
+            .clamp(z, o.top_z_mm);
+        let skin = 0.01_f64.max(64. * o.tolerance_mm);
+        let (curves, slope) = if from - z <= skin {
+            // The whole path is proven air down to the depth (within the
+            // skin every straight entry is allowed): no ramp to make.
+            (vec![], None)
+        } else {
+            let curves = ramp.zigzag(&chain, from, z).map_err(refuse)?;
+            let travel: f64 = curves
+                .iter()
+                .map(|c| Ok(c.prepare(o.tolerance_mm)?.length_mm()))
+                .collect::<Result<Vec<f64>, String>>()?
+                .iter()
+                .sum();
+            let drop = from - z;
+            let slope = drop / (travel * travel - drop * drop).max(0.).sqrt();
+            (curves, Some(slope))
+        };
+        let first = curves
+            .first()
+            .map_or([s.a[0], s.a[1], z], |curve| curve.start());
+        let mut result = vec![];
+        let feed_z = o.feed_z().max(self.position[2]);
+        let retract_z = o.retract_z().max(feed_z);
+        let safe = [self.position[0], self.position[1], feed_z];
+        let up = [self.position[0], self.position[1], retract_z];
+        let over = [first[0], first[1], retract_z];
+        let above = [first[0], first[1], o.feed_z().max(first[2])];
+        entry_line(&mut result, self.position, safe, MoveKind::Retract, None);
+        entry_line(&mut result, safe, up, MoveKind::Rapid, None);
+        entry_line(&mut result, up, over, MoveKind::Rapid, None);
+        entry_line(&mut result, over, above, MoveKind::Rapid, None);
+        entry_line(&mut result, above, first, MoveKind::Plunge, feed);
+        result.extend(curves.into_iter().map(|c| (c, MoveKind::Plunge, feed)));
+        Ok((result, slope))
     }
     fn ramp_refusal(&self, s: Stroke, z: f64, why: &str) -> String {
         format!(
@@ -3097,15 +3247,22 @@ impl PocketPlan {
                     .as_ref()
                     .is_some_and(|e| e.ramp().is_some())
                 {
-                    let (moves, slope) =
-                        self.ramp_moves(s, following, self.pass, z, stock, cancel)?;
-                    self.report.ramp_entries += 1;
-                    let angle = slope.atan().to_degrees();
-                    self.report.max_ramp_angle_deg = Some(
-                        self.report
-                            .max_ramp_angle_deg
-                            .map_or(angle, |a| a.max(angle)),
-                    );
+                    let (moves, slope) = if self.operation.rest_tolerance_mm.is_some() {
+                        self.rest_ramp_moves(s, z, stock, cancel)?
+                    } else {
+                        let (moves, slope) =
+                            self.ramp_moves(s, following, self.pass, z, stock, cancel)?;
+                        (moves, Some(slope))
+                    };
+                    if let Some(slope) = slope {
+                        self.report.ramp_entries += 1;
+                        let angle = slope.atan().to_degrees();
+                        self.report.max_ramp_angle_deg = Some(
+                            self.report
+                                .max_ramp_angle_deg
+                                .map_or(angle, |a| a.max(angle)),
+                        );
+                    }
                     self.pending.extend(moves);
                 } else {
                     self.queue_relink(start);
