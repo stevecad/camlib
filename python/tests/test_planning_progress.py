@@ -206,20 +206,22 @@ class PlanningProgressTest(unittest.TestCase):
         # The adaptive roughing fixture plans for seconds before it moves.
         # The interval is far below the planning time on any machine, so the
         # test does not depend on how fast this one is.
-        interval = 0.05
+        interval = 0.002
         gaps, planned = self.gaps("roughing-adaptive", interval, until_first_move=True)
-        self.assertGreater(planned, 10 * interval, "planning no longer spans several intervals: use a slower plan")
-        self.assertGreaterEqual(len(gaps), planned / interval / 2)
+        self.assertGreater(planned, 20 * interval, "planning no longer spans several intervals: use a slower plan")
+        self.assertGreaterEqual(len(gaps), planned / interval / 4)
         self.assertLess(max(gaps), 2 * interval + 0.5, gaps)
 
     def test_a_plan_reports_at_its_interval_between_moves(self):
-        # On a fine grid the engagement front spends over a second choosing
-        # a pass between two moves (its scan of cached start candidates):
-        # the timer sends progress through it.
-        interval = 0.05
+        # Between two moves the planner chooses its next pass; the timer
+        # sends progress through that too. The interval is a few
+        # milliseconds, far below any plan's time, so the test does not
+        # depend on how fast the planner or the machine is (the scan this
+        # once relied on being slow was made fast, #192).
+        interval = 0.002
         gaps, planned = self.gaps("roughing-open-block", interval, cell_size_mm=0.15)
-        self.assertGreater(planned, 10 * interval, "planning no longer spans several intervals: use a slower plan")
-        self.assertGreaterEqual(len(gaps), planned / interval / 2)
+        self.assertGreater(planned, 20 * interval, "planning no longer spans several intervals: use a slower plan")
+        self.assertGreaterEqual(len(gaps), planned / interval / 4)
         self.assertLess(max(gaps), 2 * interval + 0.5, gaps)
 
     def test_updates_between_a_move_and_its_check_leave_the_checked_run_unchanged(self):
