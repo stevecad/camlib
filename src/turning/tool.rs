@@ -153,8 +153,13 @@ pub struct ToolShape {
     pub holder: Vec<[f64; 2]>,
     pub bar: Option<Vec<[f64; 2]>>,
     /// The insert's straight sides, exact (its outline is these and its
-    /// arcs): what sweeps the material besides the nose.
+    /// arcs): what sweeps the material besides the nose. With a size
+    /// tolerance, what every insert of the tolerance sweeps it with: the
+    /// two edges at the nose, as far as the least insert's reach.
     pub edges: Vec<[[f64; 2]; 2]>,
+    /// With a size tolerance: the straight sides of the largest insert,
+    /// which may sweep material the least insert's do not.
+    pub possible: Vec<[[f64; 2]; 2]>,
     /// Parts of the insert that must not meet the stock when they lead,
     /// each with its outward normals: an outline insert's non-cutting
     /// segments (with a size tolerance, where they can lie), a grooving
@@ -688,7 +693,7 @@ impl Insert {
     /// `corners` (counterclockwise from the cutting corner), each rounded
     /// with `nose_radius_mm`, its cutting corner at the nose and its major
     /// edge at `approach_angle_deg` from the feed (toward -z).
-    fn polygon_insert(
+    pub(super) fn polygon_insert(
         corners: &[f64],
         side_mm: f64,
         rn: f64,
@@ -1035,6 +1040,7 @@ impl Holder {
 struct InsertShape {
     insert: Vec<[f64; 2]>,
     nominal: Option<Vec<[f64; 2]>>,
+    possible: Vec<[[f64; 2]; 2]>,
     edges: Vec<[[f64; 2]; 2]>,
     back: Option<Vec<BackSide>>,
     programming_point: Option<[f64; 2]>,
@@ -1099,16 +1105,26 @@ fn insert_shape(
             // With a size tolerance (#113): everything the tolerance lets
             // the insert be, relative to its measured nose. The nose and
             // the edges at it (what cuts) stay as they are.
-            let (insert, nominal, back) = match tolerance.filter(|t| !t.exact()) {
+            // What certainly sweeps material is then what every insert of
+            // the tolerance has: the edges at the nose as far as the least
+            // insert's reach; the largest insert's sides may sweep it.
+            let (insert, nominal, back, edges, possible) = match tolerance.filter(|t| !t.exact()) {
                 Some(t) => {
                     let envelope = super::size::envelope(&local, *corner, cutting, t)?;
-                    (envelope.largest, Some(polygon.points), envelope.back)
+                    (
+                        envelope.largest,
+                        Some(polygon.points),
+                        envelope.back,
+                        envelope.certain,
+                        envelope.sides,
+                    )
                 }
-                None => (polygon.points, None, back),
+                None => (polygon.points, None, back, edges, vec![]),
             };
             InsertShape {
                 insert,
                 nominal,
+                possible,
                 edges,
                 back: Some(back),
                 programming_point: Some([
@@ -1143,6 +1159,7 @@ fn insert_shape(
                     .then(|| vec![(top, vec![[1., 0.]])]),
                 insert,
                 nominal: None,
+                possible: vec![],
                 programming_point: None,
                 nose: [0., 0.],
             }
@@ -1161,6 +1178,7 @@ fn insert_shape(
             InsertShape {
                 insert,
                 nominal: None,
+                possible: vec![],
                 edges: vec![],
                 back: None,
                 programming_point: None,
@@ -1185,6 +1203,7 @@ fn insert_shape(
                     [0., *flute_length_mm],
                 ],
                 nominal: None,
+                possible: vec![],
                 edges: vec![],
                 back: None,
                 programming_point: None,
@@ -1390,6 +1409,7 @@ impl TurningTool {
         Ok(ToolShape {
             insert: s.insert,
             nominal: s.nominal,
+            possible: s.possible,
             holder,
             bar,
             edges: s.edges,

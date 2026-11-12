@@ -578,8 +578,12 @@ pub(crate) struct ToolGeom {
     /// cutting edges. With them, the stock removal is the whole region the
     /// insert sweeps.
     back: Option<Vec<super::tool::BackSide>>,
-    /// The insert's exact straight sides (relative to the nose center).
+    /// The insert's exact straight sides (relative to the nose center):
+    /// what certainly sweeps material. With a size tolerance, the edges at
+    /// the nose as far as the least insert's reach, and in `possible` the
+    /// largest insert's sides, which may sweep material.
     edges: Vec<[[f64; 2]; 2]>,
+    possible: Vec<[[f64; 2]; 2]>,
     /// A solid boring bar (#114): its catalogue minimum bore diameter and
     /// maximum bore depth, premises every move is held to.
     solid_bar: Option<[f64; 2]>,
@@ -753,10 +757,16 @@ pub(crate) fn tool_geometry(
         .iter()
         .map(|e| [map(&e[0]), map(&e[1])])
         .collect();
+    let possible = shape
+        .possible
+        .iter()
+        .map(|e| [map(&e[0]), map(&e[1])])
+        .collect();
     Ok(ToolGeom {
         id: t.id.clone(),
         back,
         edges,
+        possible,
         insert: super::tool::convex_pieces(&mapped(&shape.insert)),
         insert_body,
         holder_body,
@@ -1192,6 +1202,15 @@ impl Planner<'_> {
                             self.job.tolerance_mm,
                             step.slack,
                         )?;
+                        after.apply(&changes)?;
+                    }
+                    // With a size tolerance (#113): material may be gone
+                    // wherever the largest insert's sides sweep (nothing
+                    // certain); it is certainly gone only where every
+                    // insert's edges do (`edges`: the least insert's).
+                    for e in &tool.possible {
+                        let changes =
+                            after.preview_polygon(&carried(e, points), side, f64::INFINITY);
                         after.apply(&changes)?;
                     }
                     for e in &tool.edges {
@@ -5016,6 +5035,19 @@ test_tool("groove_in".into(), Insert::Groove { width_mm: 3.,
                 "{code}"
             );
             assert!(large.nominal_body.is_some() && small.nominal_body.is_none());
+            // What certainly cuts: every straight side of the nominal
+            // insert; with the tolerance, the two edges at the nose only,
+            // each shorter (to where the least insert's edge ends), while
+            // the largest insert's sides may cut.
+            let length = |e: &[[f64; 2]; 2]| (e[1][0] - e[0][0]).hypot(e[1][1] - e[0][1]);
+            let longest = small.edges.iter().map(length).fold(0., f64::max);
+            assert!(small.possible.is_empty() && small.edges.len() >= 3);
+            assert_eq!(large.edges.len(), 2, "{code}");
+            assert!(
+                large.edges.iter().all(|e| length(e) < longest - 0.04),
+                "{code}"
+            );
+            assert_eq!(large.possible.len(), small.edges.len(), "{code}");
         }
     }
 
@@ -5086,6 +5118,71 @@ test_tool("groove_in".into(), Insert::Groove { width_mm: 3.,
         assert!(
             err.contains("at its nominal size the insert clears")
                 && err.contains("inscribed circle ±0.05 mm, corner dimension m ±0.08 mm"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn the_largest_insert_of_a_size_tolerance_is_checked_against_the_part() {
+        // #113, outside turning: a neck behind a flange (the flange's back
+        // wall at z -5, to r 30), already open; a CNMG lowered into it
+        // beside the wall. The side of the insert away from the nose
+        // (toward +z) clears the wall at its nominal size; the largest
+        // insert of class M (that side up to 0.247 mm farther from the
+        // nose) does not, and is refused naming the tolerance.
+        let code = "CNMG120408";
+        let (insert, rn) = Insert::iso_code(code, 95.).unwrap();
+        let mut j = shaft_with(insert, rn);
+        j.stock.outer_radius_mm = 32.;
+        j.part.points = vec![
+            [0., 0., 0.],
+            [30., 0., 0.],
+            [30., -5., 0.],
+            [10., -5., 0.],
+            [10., -40., 0.],
+        ];
+        // The holder well above the flange.
+        rebuild_holder(&mut j.tools[0].tool, 20., 100., 12.);
+        let nominal = j.tools[0].tool.clone();
+        let sized = with_size_tolerance(nominal.clone(), code);
+        // How far toward +z of its nose centre each body reaches.
+        let reach = |t: &TurningTool| {
+            tool_geometry(t, ControlledPoint::Tip)
+                .unwrap()
+                .insert_body
+                .iter()
+                .flatten()
+                .map(|p| p[0])
+                .fold(f64::NEG_INFINITY, f64::max)
+        };
+        let (small, large) = (reach(&nominal), reach(&sized));
+        // (Its far side 0.247 mm, its far corner, cut off square, more.)
+        assert!(
+            large - small > 0.24 && large - small < 0.35,
+            "{small} {large}"
+        );
+        // The nose centre so that the wall lies between the two.
+        let z = -5. - (small + large) / 2.;
+        let lower = |tool: TurningTool| {
+            let mut j = j.clone();
+            j.tools[0].tool = tool;
+            // The neck open from r 10.5 out, from z -35 to the wall.
+            let mut stock = TurnStock::new(j.stock.clone()).unwrap();
+            let slot = [[-35., 10.5], [-5., 10.5], [-5., 33.], [-35., 33.]];
+            let changes = stock.preview_polygon(&slot, TurnSide::Outer, 0.);
+            stock.apply(&changes).unwrap();
+            let mut replay = TurnReplay::new(j.clone())
+                .unwrap()
+                .with_stock(stock)
+                .unwrap();
+            replay.motion(&nose_move(&j, "cnmg", MoveKind::Rapid, [z, 45.], [z, 12.]))
+        };
+        lower(nominal).unwrap();
+        let err = lower(sized).unwrap_err();
+        assert!(err.contains("into the part"), "{err}");
+        assert!(
+            err.contains("at its nominal size the insert clears")
+                && err.contains("inscribed circle ±0.08 mm, corner dimension m ±0.13 mm"),
             "{err}"
         );
     }

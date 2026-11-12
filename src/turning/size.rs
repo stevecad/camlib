@@ -16,6 +16,11 @@
 //!   M and N of shapes D and V), and figures 1 and 2, which define m. The
 //!   preview of ISO 1832:1991 (4.3, tables 3 to 5) gives the same values
 //!   (its table 5 has shape D only).
+//! - ISO 883:1985 (indexable hardmetal inserts with rounded corners,
+//!   without fixing hole: triangular and square), annex B "Method of
+//!   measurement of m dimension" (an integral part of that standard), as
+//!   shown in its public preview (standards.iteh.ai sample of ISO
+//!   883:1985), with its figures 2 and 3.
 //! - Mitsubishi Materials, technical information "3. Symbol for Tolerance
 //!   Class" (turning insert identification): the same class table and, for
 //!   class M, the same d and m by inscribed circle and shape (triangular,
@@ -32,9 +37,37 @@
 //!   bisector from the inscribed circle (its tangent on the corner's side)
 //!   to the corner's tip.
 //!
+//! How m is measured (ISO 883:1985 annex B):
+//! - B.1, triangular inserts: "Dimension m is related to the side opposite
+//!   the corner that is to be measured. The insert is placed on a surface
+//!   plate" and a dial gauge, zeroed on a gauge block of m, reads the
+//!   corner's tip (figure 2).
+//! - B.2, square inserts: "Dimension m is checked by reference to the
+//!   diameter d of a precision roller, where d corresponds to the nominal
+//!   diameter of the inscribed circle of the insert. The insert is mounted
+//!   on a 90 degree vee-block" (figure 3: resting on the two sides of the
+//!   corner opposite the one measured), and the dial gauge, zeroed to m on
+//!   the roller lying in the same vee, reads the corner's tip.
+//!
+//! The figures of ISO 1832 draw an insert of perfect form, whose inscribed
+//! circle touches every side; on a real insert "the inscribed circle" of
+//! figure 2 can be read as the insert's own largest circle or, as ISO 883
+//! measures it, as a roller of the nominal d against the two opposite
+//! sides. ISO 883 settles the method for the triangle and the square, the
+//! shapes it covers. For rhombic and hexagonal inserts no annex was read
+//! (the public previews of ISO 3364 name its annex B but do not show it):
+//! the vee-block reading is applied to them by analogy (a vee of the
+//! opposite corner's angle). Because the envelope must not be smaller than the real
+//! insert under any of these readings, it is the union of all of them, for
+//! every shape; it can be tightened only with a source that settles the
+//! measurement for the shape in question.
+//!
 //! The class does not tolerance the corner radius or the corner angles. The
 //! nose radius is the tool's declared value (what the program compensates),
-//! and the sides keep their directions.
+//! and the sides keep their directions. (A side that tilts is not bounded by
+//! d and m at all where one of its ends is a corner m does not check, the
+//! obtuse corners of a rhombic insert: that needs the angle's tolerance from
+//! the insert's dimensional standard, which the designation does not carry.)
 //!
 //! The frame. The tool is measured at its nose (presetting, touch-off): the
 //! planner's controlled point is the nose's imaginary tip or its centre, and
@@ -44,54 +77,89 @@
 //! the nose arc and the two edge lines are fixed, and the tolerance moves
 //! the rest of the insert: its far sides and far corners.
 //!
-//! The model. An insert of the code's form has straight sides in the form's
-//! directions, each tangent to the inscribed circle (centre C on the nose's
-//! bisector, u the unit vector from the nose into the insert along it), and
-//! corners rounded with the code's radius. Two things vary:
+//! The readings. With u the unit vector from the nose into the insert along
+//! its bisector, ε the nose's corner angle, a = n·u for a far side of
+//! outward normal n, and c = b·u for a far corner of outward bisector b:
 //!
 //! (A) Size. A true-to-form insert of inscribed circle d' in [d - Δd,
 //!     d + Δd], its nose on the fixed lines, is the nominal one scaled about
-//!     the point P where the two edge lines meet, by d'/d. A far side whose
-//!     outward normal n makes a = n·u lies (d/2)(a / sin(ε/2) + 1) from P (ε
-//!     the nose's corner angle), so it moves out by Δd (a / sin(ε/2) + 1)/2:
-//!     Δd for the far sides of a rhombic or square insert, 1.5 Δd for a
-//!     triangle's. The scaled inserts are nested (a convex set scaled about
-//!     one of its points grows; rounding every corner with one radius keeps
-//!     the order), so their union is the largest.
-//! (B) Corner position. m locates a corner's tip against its datum: the
-//!     inscribed circle (even) or the opposite side (odd). The nose is such
-//!     a corner, and it is where the tool is measured: a nose standing Δm
-//!     farther from its datum puts the datum, and the insert's body with
-//!     it, Δm farther back along the nose's bisector.
-//!     - Even: the tip is t = m' + d'/2 from C, so C = u (m₀' + d'/2 - rε)
-//!       from the nose centre, and a far side (tangent to the circle) has
-//!       its support n·C + d'/2 = a (m₀' - rε) + (1 + a) d'/2: at most
-//!       |a| Δm + (1 + a) Δd/2 beyond nominal. A far corner like the nose
-//!       (same angle; bisector b, c = b·u) has its tip at b·C + m' + d'/2:
-//!       at most (|c| + 1) Δm + (1 + c) Δd/2 beyond nominal.
-//!     - Odd (triangle): the far side is the nose's own datum: at most Δm
-//!       beyond nominal. Each far corner's datum is the edge line opposite
-//!       it, which is fixed: its tip at most Δm beyond nominal.
+//!     the point P where the two edge lines meet, by d'/d. A far side lies
+//!     (d/2)(a / sin(ε/2) + 1) from P, so it moves out by
+//!     Δd (a / sin(ε/2) + 1)/2: Δd for the far sides of a rhombic or square
+//!     insert (the distance between parallel sides is d), 1.5 Δd for a
+//!     triangle's. A far corner's rounded tip moves Δd (c + 1)/(2 sin(ε/2)).
+//!     The scaled inserts are nested (a convex set scaled about one of its
+//!     points grows; rounding every corner with one radius keeps the
+//!     order), so their union is the largest.
+//! (B) m from the insert's own inscribed circle (figure 2 read literally;
+//!     for the triangle, figure 1 and ISO 883 B.1 exactly). m locates a
+//!     corner's tip against its datum. The nose is such a corner, and it is
+//!     where the tool is measured: a nose standing Δm farther from its
+//!     datum puts the datum, and the insert's body with it, Δm farther
+//!     back along the nose's bisector.
+//!     - Even: the tip is t = m' + d'/2 from the circle's centre C, so
+//!       C = u (m₀' + d'/2 - rε) from the nose centre, and a far side
+//!       (tangent to the circle) has its support n·C + d'/2 =
+//!       a (m₀' - rε) + (1 + a) d'/2: at most |a| Δm + (1 + a) Δd/2 beyond
+//!       nominal. A far corner like the nose has its tip at
+//!       b·C + m' + d'/2: at most (|c| + 1) Δm + (1 + c) Δd/2 beyond
+//!       (and never beyond the sharp corner of its two sides, which is
+//!       rε (1/sin(ε/2) - 1) + |c| Δm + c Δd/2 + Δd/(2 sin(ε/2)) beyond).
+//!     - Triangle: the far side is the nose's own datum: at most Δm beyond
+//!       nominal. Each far corner's datum is the edge line opposite it,
+//!       which is fixed: its tip at most Δm beyond nominal.
+//! (C) m by the vee-block and roller (ISO 883 B.2), even numbers of sides.
+//!     The far sides keep their directions but each has its own
+//!     displacement e (the widths of a rhombic insert need not be equal;
+//!     this is also the reading in which d moves a far side and m, at the
+//!     corners at its ends, moves it further). The corners carry their
+//!     radius. Then:
+//!     - the inscribed circle is at least d - Δd: the circle between the
+//!       two edge lines at the nose and far side k alone must be that
+//!       large, so e_k >= -Δd (a_k / sin(ε/2) + 1)/2 (for a rhombic
+//!       insert: each width at least d - Δd);
+//!     - at every corner j like the nose (the nose included), the dial
+//!       reads within ±Δm of m. The reading is the corner's tip less the
+//!       roller's top, along the corner's bisector. The tip moves with the
+//!       meeting point of the corner's two sides; the roller, of the
+//!       nominal d, with the meeting point of the two sides it rests on,
+//!       those of the corner opposite. Both are linear in e.
+//!     The largest displacement of each far side and of each checked far
+//!     corner's tip under these linear conditions is found exactly (at a
+//!     vertex of the region they bound). For a rhombic or square insert the
+//!     nose's reading gives e₁ + e₂ <= 2 Δm sin(ε/2), so one far side can
+//!     be 2 Δm sin(ε/2) + Δd out while the other is Δd in; the far corner's
+//!     tip is at most Δm out.
 //!
-//! d and m are independent tolerances, and (A) and (B) are both possible, so
-//! each far side is bounded by the larger of its two displacements, E. The
-//! envelope is then: the two edge lines at the nose and the nose arc as they
-//! are; every far side moved out by its E; a far corner unlike the nose
-//! (m does not check it) rounded with its radius between its (moved) sides;
-//! and a far corner like the nose as the sharp corner of its (moved) sides
-//! cut off square at its farthest tip: m locates that corner's tip, not its
-//! form, so where the tip may stand farther than the rounding the corner
-//! may be any sharper form within its sides. Every insert of the model lies
-//! inside the envelope (its sides lie within the moved sides, its corner
-//! tips within their limits), and each face of it is reached by an insert
-//! of the model (the tests sample the model and compare).
+//! The envelope is the union: each far side is moved out by the largest of
+//! its displacements under (A), (B) and (C), E; the two edge lines at the
+//! nose and the nose arc stay as they are; a far corner unlike the nose (m
+//! does not check it) is rounded with its radius between its (moved) sides;
+//! and a far corner like the nose is the sharp corner of its (moved) sides
+//! cut off square at the farthest its tip can be under any reading: m
+//! locates that corner's tip, not its form, so where the tip may stand
+//! farther than the rounding the corner may be any sharper form within its
+//! sides. Every insert of every reading lies inside the envelope (its sides
+//! lie within the moved sides, its corner tips within their limits), and
+//! each face of it is reached by an insert of one of them (the tests sample
+//! the three readings and compare). For a CNMG1204 of class M (d ±0.08,
+//! m ±0.13): far sides (A) 0.08, (B) 0.149, (C) 0.247 mm; the far corner's
+//! tip (A) 0.124, (B) 0.34, (C) 0.13 mm.
+//!
+//! The least insert. An insert at the small end has its far corners nearer
+//! the nose: a far side at most max((A), (B)) in ((C)'s least is (A)'s).
+//! The zones the far sides and corners can lie in, between the least and
+//! the largest, must be clear of the stock where they lead; and what the
+//! planner counts as certainly cut is what every insert cuts with: the
+//! nose and the two edges at it, each only as far as the least insert's
+//! reaches.
 //!
 //! Not covered: round inserts (R), whose d is the nose diameter itself: its
 //! tolerance is a nose radius error, which changes the cut, not the far side
-//! of the body; inserts with an odd number of sides other than the
-//! triangle; and outlines that are not of this form (a side not tangent to
-//! the inscribed circle: parallelograms, rectangles, wiper edges). They are
-//! refused by name when a size tolerance is declared for them.
+//! of the body; inserts with five, eight or more sides; and outlines that
+//! are not of this form (a side not tangent to the inscribed circle:
+//! parallelograms, rectangles, wiper edges). They are refused by name when
+//! a size tolerance is declared for them.
 use super::tool::{Outline, Segment, circumscribed};
 use serde::{Deserialize, Serialize};
 
@@ -297,6 +365,8 @@ struct Form {
     dirs: Vec<[f64; 2]>,
     normals: Vec<[f64; 2]>,
     supports: Vec<f64>,
+    /// Each side's two ends, in its direction.
+    ends: Vec<[[f64; 2]; 2]>,
     centers: Vec<[f64; 2]>,
     radii: Vec<f64>,
     /// The outline's segment of each side and of each corner.
@@ -324,7 +394,7 @@ fn form(outline: &Outline, corner: usize) -> Result<Form, String> {
     let ends = outline.ends();
     let ccw = outline.signed_area2() > 0.;
     let (mut dirs, mut normals, mut supports) = (vec![], vec![], vec![]);
-    let (mut centers, mut radii) = (vec![], vec![]);
+    let (mut centers, mut radii, mut side_ends) = (vec![], vec![], vec![]);
     let (mut side_segment, mut corner_segment) = (vec![], vec![]);
     for j in 0..n {
         // Counterclockwise from the nose: with the outline, or against it.
@@ -358,6 +428,7 @@ fn form(outline: &Outline, corner: usize) -> Result<Form, String> {
         }
         let d = [(b[0] - a[0]) / length, (b[1] - a[1]) / length];
         let normal = [d[1], -d[0]];
+        side_ends.push([a, b]);
         dirs.push(d);
         normals.push(normal);
         supports.push(dot(normal, a));
@@ -432,6 +503,7 @@ fn form(outline: &Outline, corner: usize) -> Result<Form, String> {
         dirs,
         normals,
         supports,
+        ends: side_ends,
         centers,
         radii,
         side_segment,
@@ -458,6 +530,80 @@ pub(crate) struct Envelope {
     /// each far side moves through between the least and the largest
     /// insert, and each corner's zone.
     pub back: Vec<BackZone>,
+    /// The straight cutting edges every insert of the tolerance has: the
+    /// two edges at the nose, each as far as the least insert's reaches
+    /// (where its far corner's rounding, or blunter tip, can begin).
+    pub certain: Vec<[[f64; 2]; 2]>,
+    /// The straight sides of the largest outline: what may sweep material.
+    pub sides: Vec<[[f64; 2]; 2]>,
+}
+
+/// The largest value of each of `objectives` over the points x of `k`
+/// coordinates with row·x <= bound for every (row, bound) of `rows` (a
+/// bounded region): at one of its vertices, each where `k` rows hold with
+/// equality.
+fn maxima(rows: &[(Vec<f64>, f64)], objectives: &[Vec<f64>], k: usize) -> Vec<f64> {
+    let mut best = vec![f64::NEG_INFINITY; objectives.len()];
+    let mut chosen: Vec<usize> = (0..k).collect();
+    if rows.len() < k || k == 0 {
+        return best;
+    }
+    loop {
+        // Solve the chosen rows as equalities (Gaussian elimination with
+        // partial pivoting).
+        let mut m: Vec<Vec<f64>> = chosen
+            .iter()
+            .map(|r| {
+                let mut row = rows[*r].0.clone();
+                row.push(rows[*r].1);
+                row
+            })
+            .collect();
+        let mut regular = true;
+        for c in 0..k {
+            let pivot = (c..k)
+                .max_by(|a, b| m[*a][c].abs().total_cmp(&m[*b][c].abs()))
+                .unwrap();
+            if m[pivot][c].abs() < 1e-12 {
+                regular = false;
+                break;
+            }
+            m.swap(c, pivot);
+            let pivot_row = m[c].clone();
+            for (r, row) in m.iter_mut().enumerate() {
+                if r != c {
+                    let factor = row[c] / pivot_row[c];
+                    for (value, p) in row.iter_mut().zip(&pivot_row).skip(c) {
+                        *value -= factor * p;
+                    }
+                }
+            }
+        }
+        if regular {
+            let x: Vec<f64> = (0..k).map(|c| m[c][k] / m[c][c]).collect();
+            let value = |row: &[f64]| row.iter().zip(&x).map(|(a, b)| a * b).sum::<f64>();
+            if rows.iter().all(|(row, bound)| value(row) <= bound + 1e-9) {
+                for (b, objective) in best.iter_mut().zip(objectives) {
+                    *b = b.max(value(objective));
+                }
+            }
+        }
+        // The next choice of k rows.
+        let mut i = k;
+        loop {
+            if i == 0 {
+                return best;
+            }
+            i -= 1;
+            if chosen[i] < rows.len() - (k - i) {
+                chosen[i] += 1;
+                for q in i + 1..k {
+                    chosen[q] = chosen[q - 1] + 1;
+                }
+                break;
+            }
+        }
+    }
 }
 
 /// The envelope of `outline` (an ISO form, its nose the arc segment
@@ -471,9 +617,9 @@ pub(crate) fn envelope(
 ) -> Result<Envelope, String> {
     let f = form(outline, corner)?;
     let n = f.n;
-    if n != 3 && !n.is_multiple_of(2) {
+    if !matches!(n, 3 | 4 | 6) {
         return Err(format!(
-            "a size tolerance is not worked out for an insert with {n} sides (ISO 1832 figure 1 measures m to the opposite side; camlib covers the triangle); state the largest outline the insert can have and give no size tolerance"
+            "a size tolerance is not worked out for an insert with {n} sides (camlib covers three, four and six: the triangle, the square and rhombic inserts, and the hexagons); state the largest outline the insert can have and give no size tolerance"
         ));
     }
     // Only the nose and the two edges on its fixed lines may cut: a far
@@ -491,46 +637,152 @@ pub(crate) fn envelope(
     }
     let (dd, dm) = (tolerance.d_mm, tolerance.m_mm);
     let odd = n == 3;
-    // Each far side's largest displacement: the larger of (A) the scaled
-    // insert's and (B) the body's when the nose stands off its datum.
-    let moved: Vec<f64> = (0..n)
-        .map(|i| {
-            if i == 0 || i == n - 1 {
-                return 0.;
-            }
-            let a = dot(f.normals[i], f.u);
-            let size = dd * (a / f.sin_half + 1.) / 2.;
-            let position = if odd {
-                dm
-            } else {
-                a.abs() * dm + (1. + a) * dd / 2.
-            };
-            size.max(position).max(0.)
-        })
-        .collect();
-    // The corner angles; a far corner like the nose is checked by m.
+    // The corner angles; a corner like the nose is checked by m.
     let angle = |j: usize| {
         let (p, q) = (f.dirs[(j + n - 1) % n], f.dirs[j]);
         std::f64::consts::PI - (p[0] * q[1] - p[1] * q[0]).atan2(dot(p, q))
     };
+    let checked = |j: usize| (angle(j) - angle(0)).abs() <= 1e-6;
     let bisector = |j: usize| {
         let v = sub(f.centers[j], f.circle);
         let l = v[0].hypot(v[1]);
         [v[0] / l, v[1] / l]
     };
+    // (A) and (B): each far side's displacement for the scaled insert,
+    // and for the nose standing off the inscribed circle (even) or the
+    // opposite side (triangle).
+    let scaled = |i: usize| (dd * (dot(f.normals[i], f.u) / f.sin_half + 1.) / 2.).max(0.);
+    let floating = |i: usize| {
+        let a = dot(f.normals[i], f.u);
+        if odd {
+            dm
+        } else {
+            a.abs() * dm + (1. + a) * dd / 2.
+        }
+    };
+    // (C), even: the vee-block reading (ISO 883:1985 annex B.2). The far
+    // sides' displacements e are free but for: e_k >= -scaled_k (the
+    // inscribed circle no smaller than d - Δd: the circle between the two
+    // edge lines at the nose and side k); and at every checked corner j,
+    // |reading_j(e)| <= Δm, the reading being the corner's tip less the
+    // roller's, both along the corner's bisector: the tip moves with the
+    // corner's two sides, the roller with the two sides of the corner
+    // opposite, in which it lies. Linear in e: the largest displacement of
+    // each side, and of each checked far corner's tip, is at a vertex.
+    let far = n - 2;
+    // How the meeting point of sides p and q moves, along `b`, with their
+    // displacements: a row over the far sides (side i is coordinate i - 1).
+    let carried = |j: usize, b: [f64; 2]| -> Vec<f64> {
+        let (p, q) = ((j + n - 1) % n, j);
+        let mut row = vec![0.; far];
+        for (side, shift) in [
+            (p, meet(f.normals[p], 1., f.normals[q], 0.)),
+            (q, meet(f.normals[p], 0., f.normals[q], 1.)),
+        ] {
+            if side != 0 && side != n - 1 {
+                row[side - 1] += dot(b, shift);
+            }
+        }
+        row
+    };
+    const UNBOUNDED: f64 = 10.;
+    let (mut gauged, mut gauged_tip, mut gauged_short) = (vec![0.; n], vec![0.; n], vec![0.; n]);
+    if !odd {
+        let mut rows: Vec<(Vec<f64>, f64)> = vec![];
+        for i in 1..=far {
+            let mut unit = vec![0.; far];
+            unit[i - 1] = 1.;
+            rows.push((unit.iter().map(|v| -v).collect(), scaled(i)));
+            rows.push((unit, UNBOUNDED));
+        }
+        for j in (0..n).filter(|j| checked(*j)) {
+            let b = bisector(j);
+            let (tip, roller) = (carried(j, b), carried((j + n / 2) % n, b));
+            let reading: Vec<f64> = tip.iter().zip(&roller).map(|(t, r)| t - r).collect();
+            rows.push((reading.iter().map(|v| -v).collect(), dm));
+            rows.push((reading, dm));
+        }
+        let mut objectives: Vec<Vec<f64>> = (1..=far)
+            .map(|i| {
+                let mut unit = vec![0.; far];
+                unit[i - 1] = 1.;
+                unit
+            })
+            .collect();
+        let tips: Vec<usize> = (1..n).filter(|j| checked(*j)).collect();
+        objectives.extend(tips.iter().map(|j| carried(*j, bisector(*j))));
+        // ... and how far short of nominal each tip can be.
+        objectives.extend(tips.iter().map(|j| {
+            carried(*j, bisector(*j))
+                .iter()
+                .map(|v| -v)
+                .collect::<Vec<_>>()
+        }));
+        let best = maxima(&rows, &objectives, far);
+        if best[..far]
+            .iter()
+            .any(|v| !v.is_finite() || *v >= UNBOUNDED / 2.)
+        {
+            return Err(
+                "the insert's d and m tolerances do not bound one of its sides (ISO 883 annex B's vee-block reading leaves it free): state the largest outline the insert can have and give no size tolerance"
+                    .into(),
+            );
+        }
+        gauged[1..=far].copy_from_slice(&best[..far]);
+        for (k, j) in tips.iter().enumerate() {
+            gauged_tip[*j] = best[far + k];
+            gauged_short[*j] = best[far + tips.len() + k];
+        }
+    }
+    // Each far side's largest displacement: the largest over the readings.
+    let moved: Vec<f64> = (0..n)
+        .map(|i| {
+            if i == 0 || i == n - 1 {
+                0.
+            } else {
+                scaled(i).max(floating(i)).max(gauged[i])
+            }
+        })
+        .collect();
+    // Each far side's largest displacement inward (the least insert): (A)
+    // and (B) are symmetric; the vee-block reading's is (A)'s.
+    let inward: Vec<f64> = (0..n)
+        .map(|i| {
+            if i == 0 || i == n - 1 {
+                0.
+            } else {
+                scaled(i).max(floating(i))
+            }
+        })
+        .collect();
     // The farthest (and nearest) a far corner's tip can be along its
-    // bisector, where m checks it.
+    // bisector, where m checks it: the largest over the readings of (A)
+    // the scaled insert's rounded tip, (B) the tip at its farthest m from
+    // the inscribed circle at its farthest (even) or from the fixed edge
+    // line opposite it (triangle), and (C) the vee-block reading's.
     let tip = |j: usize| -> Option<(f64, f64)> {
-        ((angle(j) - angle(0)).abs() <= 1e-6).then(|| {
+        checked(j).then(|| {
             let b = bisector(j);
             let nominal = dot(b, f.centers[j]) + f.radii[j];
             let c = dot(b, f.u);
-            let reach = if odd {
-                dm
+            let scaled = dd * (c + 1.) / f.sin_half / 2.;
+            // (B): the tip at its farthest (or nearest) m; but no farther
+            // than the sharp corner of its sides (tangent to the same
+            // circle).
+            let (out, back) = if odd {
+                (dm, dm)
             } else {
-                (c.abs() + 1.) * dm + (1. + c) * dd / 2.
+                let by_m = (c.abs() + 1.) * dm + (1. + c) * dd / 2.;
+                let sharp = f.radii[j] * (1. / f.sin_half - 1.);
+                (
+                    by_m.min(sharp + c.abs() * dm + c * dd / 2. + dd / f.sin_half / 2.),
+                    by_m,
+                )
             };
-            (nominal - reach, nominal + reach)
+            (
+                nominal - scaled.max(back).max(gauged_short[j]),
+                nominal + scaled.max(out).max(gauged_tip[j]),
+            )
         })
     };
     // Corner j's centre with its two sides displaced by `e`.
@@ -566,19 +818,18 @@ pub(crate) fn envelope(
         let before = j - 1;
         let c = center(j, [moved[before], moved[j]]);
         let b = bisector(j);
-        let rounded = dot(b, c) + f.radii[j];
         let points = match tip(j) {
             Some((_, farthest)) => {
                 // m locates this corner's tip, not its form: the sharp
                 // corner of the moved sides, cut off square at the farthest
-                // tip (or at its rounding's, if that is farther).
+                // tip.
                 let apex = meet(
                     f.normals[before],
                     f.supports[before] + moved[before],
                     f.normals[j],
                     f.supports[j] + moved[j],
                 );
-                let beyond = dot(b, apex) - farthest.max(rounded);
+                let beyond = dot(b, apex) - farthest;
                 if beyond <= 1e-12 {
                     vec![apex]
                 } else {
@@ -621,7 +872,7 @@ pub(crate) fn envelope(
     // along its bisector, over every position of its two sides.
     let mut back: Vec<BackZone> = vec![];
     for i in 1..n - 1 {
-        let band = clip(&largest, f.normals[i], f.supports[i] - moved[i]);
+        let band = clip(&largest, f.normals[i], f.supports[i] - inward[i]);
         if band.len() >= 3 {
             back.push((band, vec![f.normals[i]]));
         } else {
@@ -634,12 +885,13 @@ pub(crate) fn envelope(
             ));
         }
     }
+    let mut begins = vec![f64::INFINITY; n];
     for j in 1..n {
         let before = j - 1;
         let b = bisector(j);
         let mut least = f64::INFINITY;
-        for e0 in [-moved[before], moved[before]] {
-            for e1 in [-moved[j], moved[j]] {
+        for e0 in [-inward[before], moved[before]] {
+            for e1 in [-inward[j], moved[j]] {
                 let c = center(j, [e0, e1]);
                 for normal in [f.normals[before], f.normals[j]] {
                     least = least.min(dot(b, along(c, normal, f.radii[j])));
@@ -649,12 +901,46 @@ pub(crate) fn envelope(
         if let Some((nearest, _)) = tip(j) {
             least = least.min(nearest);
         }
+        begins[j] = least;
         let zone = clip(&largest, b, least);
         if zone.len() >= 3 {
             back.push((zone, vec![f.normals[before], f.normals[j]]));
         }
     }
-    Ok(Envelope { largest, back })
+    // What every insert of the tolerance certainly cuts with: the nose, and
+    // each edge at it from the nose to where the corner at its far end can
+    // begin (the corner's zone above). Beyond that point a smaller insert
+    // has its corner, not its edge.
+    let mut certain = vec![];
+    for (side, corner_at_end, nose_end) in [(0, 1, 0), (n - 1, n - 1, 1)] {
+        let from = f.ends[side][nose_end];
+        // Away from the nose along the side.
+        let away = if nose_end == 0 {
+            f.dirs[side]
+        } else {
+            [-f.dirs[side][0], -f.dirs[side][1]]
+        };
+        let b = bisector(corner_at_end);
+        let full = dot(sub(f.ends[side][1 - nose_end], from), away);
+        let length = ((begins[corner_at_end] - dot(b, from)) / dot(b, away)).min(full);
+        if length > 1e-9 {
+            certain.push([from, along(from, away, length)]);
+        }
+    }
+    let sides = (0..n)
+        .map(|j| {
+            [
+                *corners[j].last().unwrap(),
+                *corners[(j + 1) % n].first().unwrap(),
+            ]
+        })
+        .collect();
+    Ok(Envelope {
+        largest,
+        back,
+        certain,
+        sides,
+    })
 }
 
 #[cfg(test)]
@@ -765,7 +1051,7 @@ mod tests {
             let center = meet(p.0, p.1 - r, q.0, q.1 - r);
             if let Some(t) = tips[j] {
                 cuts.push((b, t));
-                if t > dot(b, center) + r {
+                if t > dot(b, center) + r + 1e-9 {
                     points.push(meet(p.0, p.1, q.0, q.1));
                     continue;
                 }
@@ -874,6 +1160,79 @@ mod tests {
                 }
             }
         }
+        // (C) The vee-block reading (ISO 883:1985 annex B.2, figure 3), for
+        // an even number of sides: the far sides anywhere (their directions
+        // kept, corners rounded with r), such that at every corner like the
+        // nose the dial reads within the m tolerance: the insert rests in
+        // a vee on the two sides of the corner opposite, the dial on the
+        // corner's tip along its bisector, zeroed on a roller of the
+        // nominal d lying in the same vee. And the inscribed circle no
+        // smaller than d - dd: the circle between the edge lines at the
+        // nose and far side k alone must be that large.
+        if !odd {
+            let base = sides(along(apex, u, d / 2. / half), d / 2.);
+            let reading = |s: &[([f64; 2], f64)], j: usize| {
+                let (p, q) = ((j + n - 1) % n, j);
+                let o = (j + n / 2) % n;
+                let (po, qo) = ((o + n - 1) % n, o);
+                let b = bisector(j);
+                let tip = dot(b, meet(s[p].0, s[p].1 - r, s[q].0, s[q].1 - r)) + r;
+                let roller = dot(
+                    b,
+                    meet(s[po].0, s[po].1 - d / 2., s[qo].0, s[qo].1 - d / 2.),
+                ) + d / 2.;
+                tip - roller
+            };
+            // On the nominal insert the dial reads figure 2's m.
+            let m = (d / 2. - r) / half + r - d / 2.;
+            let corners_checked: Vec<usize> = std::iter::once(0).chain(checked.clone()).collect();
+            for j in &corners_checked {
+                assert!((reading(&base, *j) - m).abs() < 1e-9, "{j}");
+            }
+            let least: Vec<f64> = (1..n - 1)
+                .map(|k| dd * (dot(normal(k), u) / half + 1.) / 2.)
+                .collect();
+            let far = n - 2;
+            let grid = if far == 2 { 40 } else { 8 };
+            let top = 3. * (dm + dd);
+            let mut candidates: Vec<Vec<f64>> = vec![];
+            let mut index = vec![0usize; far];
+            'grid: loop {
+                candidates.push(
+                    (0..far)
+                        .map(|k| -least[k] + (top + least[k]) * index[k] as f64 / grid as f64)
+                        .collect(),
+                );
+                for step in index.iter_mut() {
+                    *step += 1;
+                    if *step <= grid {
+                        continue 'grid;
+                    }
+                    *step = 0;
+                }
+                break;
+            }
+            if far == 2 {
+                // A rhombic or square insert: one far side at its least,
+                // the other as far as the readings at the nose and at the
+                // corner opposite let it go.
+                let most = 2. * dm * half;
+                candidates.push(vec![most + least[1], -least[1]]);
+                candidates.push(vec![-least[0], most + least[0]]);
+            }
+            for e in candidates {
+                let mut moved = base.clone();
+                for k in 0..far {
+                    moved[k + 1].1 += e[k];
+                }
+                if corners_checked
+                    .iter()
+                    .all(|j| (reading(&moved, *j) - m).abs() <= dm + 1e-9)
+                {
+                    inserts.push(member(&moved, r, &vec![None; n]));
+                }
+            }
+        }
         let mut directions: Vec<[f64; 2]> = (1..n - 1).map(normal).collect();
         directions.extend(checked.iter().map(|j| bisector(*j)));
         (inserts, directions)
@@ -881,7 +1240,10 @@ mod tests {
 
     #[test]
     fn the_envelope_contains_every_insert_of_the_model_and_no_more() {
-        let cases: [(&str, &[f64], f64); 8] = [
+        // ISO codes, and a regular hexagon drawn by hand (shape H: an
+        // outline of the form with a declared tolerance, table 4's for a
+        // 12.7 mm class M insert).
+        let cases: [(&str, &[f64], f64); 9] = [
             ("CNMG120408", &[80., 100., 80., 100.], 12.7),
             ("CNUG120402", &[80., 100., 80., 100.], 12.7),
             ("CCGT09T304", &[80., 100., 80., 100.], 9.525),
@@ -890,13 +1252,27 @@ mod tests {
             ("SNMG120408", &[90., 90., 90., 90.], 12.7),
             ("TNMG160408", &[60., 60., 60.], 9.525),
             ("WNMG080408", &[80., 160., 80., 160., 80., 160.], 12.7),
+            ("hexagon", &[120.; 6], 12.7),
         ];
         for (code, corners, d) in cases {
-            for k in [95., 93., 75., 62.5] {
+            for k in [95., 93., 75., 62.5, 50.] {
                 if k + corners[0] >= 180. {
                     continue;
                 }
-                let (insert, r) = Insert::iso_code(code, k).unwrap();
+                let (insert, r, tolerance) = if code == "hexagon" {
+                    let side = d / 3f64.sqrt();
+                    (
+                        Insert::polygon_insert(corners, side, 0.8, k).unwrap(),
+                        0.8,
+                        SizeTolerance {
+                            d_mm: 0.08,
+                            m_mm: 0.13,
+                        },
+                    )
+                } else {
+                    let (insert, r) = Insert::iso_code(code, k).unwrap();
+                    (insert, r, iso_size_tolerance(code).unwrap().unwrap())
+                };
                 let Insert::Outline {
                     outline,
                     corner,
@@ -906,7 +1282,6 @@ mod tests {
                 else {
                     unreachable!()
                 };
-                let tolerance = iso_size_tolerance(code).unwrap().unwrap();
                 let env = envelope(outline, *corner, cutting, &tolerance).unwrap();
                 let (inserts, directions) = model(corners, d, r, k, tolerance.d_mm, tolerance.m_mm);
                 // Every insert of the model lies inside the envelope.
@@ -926,9 +1301,61 @@ mod tests {
                         .map(|insert| support(insert, n))
                         .fold(f64::NEG_INFINITY, f64::max);
                     let bound = support(&env.largest, n);
+                    // (A hexagon's vee-block readings are sampled on a
+                    // coarse grid of its four far sides: it is reached to
+                    // within the grid there.)
+                    let slack = if corners.len() == 6 { 0.12 } else { 1e-9 };
                     assert!(
-                        (bound - reached).abs() <= 1e-9,
+                        bound >= reached - 1e-9 && bound <= reached + slack,
                         "{code} {k}: the envelope reaches {bound}, the model {reached} along {n:?}"
+                    );
+                }
+                // What certainly cuts is on every insert of the model: the
+                // two edges at the nose, each ending where the least
+                // insert's does.
+                assert_eq!(env.certain.len(), 2, "{code} {k}");
+                for edge in &env.certain {
+                    let length = (edge[1][0] - edge[0][0]).hypot(edge[1][1] - edge[0][1]);
+                    assert!(length > r, "{code} {k}: {length}");
+                    for p in edge {
+                        for insert in &inserts {
+                            let off = outside(insert, *p);
+                            assert!(off.abs() <= 1e-9, "{code} {k}: {p:?} {off}");
+                        }
+                    }
+                }
+                let reach = |points: &mut dyn Iterator<Item = [f64; 2]>, n: [f64; 2]| {
+                    points.map(|p| dot(n, p)).fold(f64::NEG_INFINITY, f64::max)
+                };
+                // ... and no shorter than that: some insert of the model
+                // has its edge end within a hair of each certain edge's.
+                for edge in &env.certain {
+                    let far = edge
+                        .iter()
+                        .copied()
+                        .max_by(|a, b| a[0].hypot(a[1]).total_cmp(&b[0].hypot(b[1])))
+                        .unwrap();
+                    let near = edge.iter().copied().find(|p| *p != far).unwrap();
+                    let l = (far[0] - near[0]).hypot(far[1] - near[1]);
+                    let d = [(far[0] - near[0]) / l, (far[1] - near[1]) / l];
+                    let normal = [d[1], -d[0]];
+                    // Points of a model insert on this edge's line.
+                    let shortest = inserts
+                        .iter()
+                        .map(|insert| {
+                            let side = dot(normal, far);
+                            let on_line = insert
+                                .iter()
+                                .copied()
+                                .filter(|p| (dot(normal, *p) - side).abs() <= 1e-9);
+                            reach(&mut on_line.into_iter(), d)
+                        })
+                        .fold(f64::INFINITY, f64::min);
+                    let slack = if corners.len() == 6 { 0.2 } else { 1e-6 };
+                    assert!(
+                        shortest >= dot(d, far) - 1e-9 && shortest <= dot(d, far) + slack,
+                        "{code} {k}: the certain edge ends at {}, the shortest of the model at {shortest}",
+                        dot(d, far)
                     );
                 }
                 // The nominal outline is inside it, and the nose and the
@@ -976,7 +1403,11 @@ mod tests {
         let env = envelope(outline, *corner, cutting, &tolerance).unwrap();
         let nominal = outline.polygon_points();
         let s = 40f64.to_radians().sin();
-        let side = (0.13 * s + 0.08 * (1. + s) / 2.).max(0.08);
+        // (C), the vee-block reading: one far side at -0.08, the other up
+        // to 2 x 0.13 sin 40 + 0.08 = 0.247: the largest of the three.
+        assert!(0.13 * s + 0.08 * (1. + s) / 2. > 0.08);
+        let side = 2. * 0.13 * s + 0.08;
+        assert!(side > 0.13 * s + 0.08 * (1. + s) / 2. && (side - 0.2471).abs() < 1e-4);
         // The far sides face 95 - 90 + 80 + 90 = 175 and 95 - 180 = -85
         // degrees... as outward normals: the major edge's far parallel
         // faces +z (5 degrees toward +x of it), the minor edge's +x.
@@ -1014,6 +1445,24 @@ mod tests {
             .err()
             .unwrap();
         assert!(e.contains("ISO 1832 form"), "{e}");
+        // A pentagon and an octagon: not worked out.
+        for (corners, k) in [(&[108.; 5][..], 60.), (&[135.; 8][..], 40.)] {
+            let sides = corners.len();
+            let side = 12.7 * (std::f64::consts::PI / sides as f64).tan();
+            let Insert::Outline {
+                outline,
+                corner,
+                cutting,
+                ..
+            } = Insert::polygon_insert(corners, side, 0.8, k).unwrap()
+            else {
+                unreachable!()
+            };
+            let e = envelope(&outline, corner, &cutting, &tolerance)
+                .err()
+                .unwrap();
+            assert!(e.contains(&format!("with {sides} sides")), "{e}");
+        }
         // A round insert.
         let (round, _) = Insert::iso_code("RCMT10T3M0", 95.).unwrap();
         let Insert::Outline {

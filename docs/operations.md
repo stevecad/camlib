@@ -1804,35 +1804,70 @@ roughing setup its allowance.
       material they remove, the posted program) is the same as without the
       tolerance; a finishing pass with the edge along the profile is
       accepted as before.
+    - How m is measured, and what that leaves open. ISO 1832's figures
+      draw an insert of perfect form, whose inscribed circle touches every
+      side. ISO 883:1985 annex B (triangular and square inserts) gives the
+      method: a triangular insert lies on a surface plate on the side
+      opposite the corner, and a dial gauge reads the corner's tip (B.1);
+      a square insert rests in a 90 degree vee-block on the two sides of
+      the corner opposite, and the dial gauge, zeroed on a precision roller
+      of the nominal d lying in the same vee, reads the corner's tip
+      (B.2). For rhombic and hexagonal inserts no such annex was read. On
+      a real insert, then, figure 2's circle can be the insert's own
+      largest circle or a nominal roller against the two opposite sides,
+      and the two give different bounds. The envelope must never be
+      smaller than the real insert, so it is the **union of every
+      reading**, for every shape; it may be tightened only with a source
+      that settles the measurement for the shape in question.
     - The envelope (derivation and tests in `src/turning/size.rs`). With u
-      the nose's bisector into the insert, ε its corner angle, and a = n·u
-      for a far side of outward normal n:
-      - Size: a true-to-form insert of inscribed circle d ± Δd is the
+      the nose's bisector into the insert, ε its corner angle, a = n·u for
+      a far side of outward normal n and c = b·u for a far corner of
+      bisector b, three readings are taken:
+      - (A) Size: a true-to-form insert of inscribed circle d ± Δd is the
         nominal one scaled about the point where the edge lines meet, so
         the side moves out Δd (a / sin(ε/2) + 1)/2 (Δd for a rhombic or
-        square insert's far sides, 1.5 Δd for a triangle's). The scaled
-        inserts are nested: their union is the largest.
-      - Corner position: m locates a corner's tip against its datum. The
-        nose is such a corner and is where the tool is measured, so a nose
-        standing Δm farther from its datum puts the insert's body Δm
-        farther back. Even number of sides (datum: the inscribed circle,
-        to which the far sides are tangent): the side moves out up to
-        |a| Δm + (1 + a) Δd/2, and a far corner like the nose (bisector b,
-        c = b·u) has its tip up to (|c| + 1) Δm + (1 + c) Δd/2 beyond
-        nominal. Triangle (datum: the opposite side): the far side moves
-        out up to Δm, and each far corner's tip, measured from the fixed
-        edge line opposite it, up to Δm.
-      - d and m are independent, and both cases are possible: each far
-        side is moved out by the larger of its two displacements; far
-        corners unlike the nose keep their rounding between the moved
+        square insert's far sides, whose distance from the edge lines is
+        d; 1.5 Δd for a triangle's). The scaled inserts are nested: their
+        union is the largest.
+      - (B) m from the insert's own inscribed circle (for the triangle:
+        from the opposite side, exactly ISO 883 B.1). The nose is a corner
+        m checks and is where the tool is measured, so a nose standing Δm
+        farther from its datum puts the insert's body Δm farther back.
+        Even number of sides (the far sides tangent to the circle): the
+        side moves out up to |a| Δm + (1 + a) Δd/2, and a far corner like
+        the nose has its tip up to (|c| + 1) Δm + (1 + c) Δd/2 beyond
+        nominal (never beyond the sharp corner of its sides). Triangle:
+        the far side moves out up to Δm, and each far corner's tip,
+        measured from the fixed edge line opposite it, up to Δm.
+      - (C) m by vee-block and roller (ISO 883 B.2; applied to rhombic and
+        hexagonal inserts by analogy, a vee of the opposite corner's
+        angle). Each far side has its own displacement (a rhombic insert's
+        two widths need not be equal: d moves a far side, and m at the
+        corners moves it further). The inscribed circle is at least
+        d - Δd, and at every corner like the nose the dial reads within
+        ±Δm: the corner's tip less the roller's top, each moving with the
+        two sides it touches. These conditions are linear in the
+        displacements, and the largest displacement of each side and tip
+        is found exactly. For a rhombic or square insert: one far side up
+        to 2 Δm sin(ε/2) + Δd out (the other Δd in), the far corner's tip
+        up to Δm.
+      - The union: each far side is moved out by the largest of the three;
+        far corners unlike the nose keep their rounding between the moved
         sides; a far corner like the nose is the sharp corner of its moved
-        sides cut off square at its farthest tip (m locates the tip, not
-        the corner's form). For a CNMG1204 of class M (d ±0.08, m ±0.13)
-        the far sides move out 0.149 mm and the far 80 degree corner's tip
-        0.34 mm. The tests sample the model's inserts, built from the
-        shape's angles and the definitions of d and m alone, and compare:
-        every one lies inside the envelope, and each far side and checked
-        corner of the envelope is reached by one.
+        sides cut off square at the farthest its tip can be under any
+        reading (m locates the tip, not the corner's form). For a CNMG1204
+        of class M (d ±0.08, m ±0.13): far sides (A) 0.08, (B) 0.149, (C)
+        0.247 mm, so 0.247; the far 80 degree corner's tip (A) 0.124, (B)
+        0.34, (C) 0.13 mm, so 0.34. The tests sample inserts admissible
+        under each reading, built from the shape's angles and the
+        definitions above alone, and compare: every one lies inside the
+        envelope, and each far side and checked corner of the envelope is
+        reached by one.
+      - Not bounded by d and m, and so assumed: the sides keep their
+        directions (the class does not tolerance the corner angles; a side
+        that tilts about an obtuse corner of a rhombic insert, which m
+        does not check, has no bound from the designation), and the
+        corner radius is the code's.
     - What uses it. The insert's body (its taper, thickness and seat as
       above) is built on the envelope and checked against the part, the
       bore, the chuck and the stock; a refusal that the nominal insert
@@ -1841,26 +1876,32 @@ roughing setup its allowance.
       the bands the far sides and corners can lie in, between the least
       and the largest insert, must be clear of the stock where they lead
       (the depth of cut must end short of where the least insert's cutting
-      edge ends).
+      edge ends). The stock model follows: material is certainly cut only
+      by what every insert of the tolerance has (the nose, and the two
+      edges at it as far as the least insert's reach), and may be cut
+      wherever the largest insert's sides sweep.
     - Covered: outlines of the ISO form (straight sides each tangent to
-      the inscribed circle, rounded corners) with a triangle's three sides
-      or an even number of sides: C, D, V, S, T and W from `iso_code`, and
-      a drawn `InsertOutline` of that form (the 75 and 86 degree
-      rhombic E and M, say) with a declared tolerance. Not covered, and refused by name when a tolerance is
-      declared for them: the pentagon (P), outlines with a side that is
-      not tangent to the inscribed circle (parallelograms A, B, K,
-      rectangles L, wiper edges, `TurningInsert.iso`'s wedge), and round
-      inserts (R): a round insert's d is its nose diameter, so its
-      tolerance is a nose radius error, which changes the cut itself and
-      is not a matter of the far side of the body; `iso_code` gives a
-      round insert no size tolerance. A drawn outline, a grooving, face
-      grooving or threading blade and a drill have no class: they are
-      checked as declared, so state the largest outline (width, diameter)
-      the tool can have.
+      the inscribed circle, rounded corners) with three, four or six
+      sides: C, D, V, S, T and W from `iso_code`, and a drawn
+      `InsertOutline` of that form (the 75 and 86 degree rhombic E and M,
+      the hexagon H) with a declared tolerance. Not covered, and refused
+      by name when a tolerance is declared for them: the pentagon (P) and
+      the octagon (O), outlines with a side that is not tangent to the
+      inscribed circle (parallelograms A, B, K, rectangles L, wiper edges,
+      `TurningInsert.iso`'s wedge), and round inserts (R): a round
+      insert's d is its nose diameter, so its tolerance is a nose radius
+      error, which changes the cut itself and is not a matter of the far
+      side of the body; `iso_code` gives a round insert no size tolerance.
+      A drawn outline, a grooving, face grooving or threading blade and a
+      drill have no class: they are checked as declared, so state the
+      largest outline (width, diameter) the tool can have.
     - Sources: the tolerance tables and the figures defining m, ISO
       1832:2017 5.3 as shown in the standard's public preview
       (standards.iteh.ai, "ISO 1832:2017" sample; the ISO 1832:1991
-      preview, 4.3, gives the same values, without shape V); the same
+      preview, 4.3, gives the same values, without shape V); the method
+      of measuring m, ISO 883:1985 annex B with its figures 2 and 3, as
+      shown in that standard's public preview (standards.iteh.ai, "ISO
+      883:1985" sample); the same
       class table and class M values by shape and inscribed circle in
       Mitsubishi Materials' technical information "3. Symbol for
       Tolerance Class" (turning insert identification); the same class

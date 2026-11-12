@@ -152,10 +152,11 @@ class PlanTest(unittest.TestCase):
         # Each fits every bore larger than its smallest.
         for steps in fits.values():
             self.assertEqual(steps, list(range(steps[0], 30)), fits)
-        # The class insert needs a larger bore: its far side may stand
-        # 0.08 sin 40 + 0.05 (1 + sin 40)/2 = 0.09 mm, its far corner
-        # 2 x 0.08 + 0.05 mm, farther from its nose, and the wall it nears
-        # is as much farther from the nose as the bore's diameter grows.
+        # The class insert needs a larger bore: its far side may stand up
+        # to 2 x 0.08 sin 40 + 0.05 = 0.15 mm, its far corner 2 x 0.08 +
+        # 0.05 mm, farther from its nose (the union of the readings of m),
+        # and the wall it nears is as much farther from the nose as the
+        # bore's diameter grows.
         steps = fits["class"][0] - fits["exact"][0]
         self.assertTrue(2 <= steps <= 6, fits)
         self.assertTrue(refusals)
