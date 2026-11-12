@@ -141,12 +141,19 @@ def _engagement_limits(config):
     declared engagement limit (stock-following adaptive clearing)."""
     from engagement import declared_limit_deg
 
-    tools = {t.id: t for t in config.get("tools", ())}
+    # Workloads declare tools as tool objects, lathe tool settings or plain
+    # mappings; only tool objects with a cutter can be measured here.
+    tools = {t.id: t for t in config.get("tools", ()) if hasattr(t, "cutter")}
     limits = {}
     for op in config.get("operations", ()):
-        tool = tools.get(getattr(getattr(op, "tool", None), "id", getattr(op, "tool", None)))
+        reference = getattr(op, "tool", None)
+        tool = reference if hasattr(reference, "cutter") else tools.get(reference)
         cutter = getattr(tool, "cutter", None)
-        if cutter is None or dict(cutter.shape).get("kind") != "flat":
+        if cutter is None:
+            if type(op).__name__ == "AdaptivePocket":
+                raise ValueError(f"benchmark cannot find the cutter of operation {op.id!r}")
+            continue
+        if dict(cutter.shape).get("kind") != "flat":
             continue
         radius = cutter.diameter_mm / 2
         limit = declared_limit_deg(op, radius)
