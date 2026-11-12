@@ -54,6 +54,7 @@ and writes G-code through a postprocessor you can read and change.
 | Thread milling, tapping | Internal and external thread milling; rigid right- and left-hand tapping (G33.1, or G84/G74 where declared) |
 | Trace / engrave | Open or closed line/arc paths at depth, no radius offset; or the cutter beside an open path (left/right side offset) |
 | Undercut | T-slot, keyseat, lollipop and dovetail cutters under material, on tri-dexel stock (3D stock that holds undercuts) |
+| Supplied toolpath | Moves planned elsewhere, run unchanged as one operation of the job: same stock simulation, checks, export gate and posting; malformed moves refused by index |
 | Flat-area finishing | Horizontal faces at their exact heights, flat end mills |
 | Parallel, spiral, radial, project, pencil, scallop, waterline, ramp, steep-and-shallow, morph, flow finishing | Triangle-mesh surfaces: ball (certified error), flat and bull-nose end mills; slope limits; rest finishing from the stock |
 | Machining limits | Avoid areas (clamps) and containment regions for every operation, rapids and links |

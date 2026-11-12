@@ -1220,6 +1220,111 @@ in parallel. `contour_method="quad_tree"` (default) scales to dense meshes;
 On a 51,200-triangle dome, contours agreed with OpenCamLib's waterline and kept
 0.003 to 0.010 mm normal clearance to the true surface.
 
+## Supplied toolpath: `SuppliedToolpath`
+
+A toolpath planned somewhere else (another CAM system, a fork of camlib, your
+own planner) run **exactly as given**, as one more operation of the job.
+Exchanging a toolpath as cutter-location data, apart from the system that
+planned it, is standard practice: CLDATA (ISO 4343) and APT CL files carry a
+toolpath to the system that checks, simulates and posts it. Here the data is
+camlib's own typed motion instead of a text format.
+
+```python
+from camlib import SuppliedToolpath, ToolpathMove
+from camlib.motion import Arc, Helix, Line
+
+moves = (
+    ToolpathMove("rapid", Line((6, 6, 8), (6, 6, 5.5))),
+    ToolpathMove("plunge", Line((6, 6, 5.5), (6, 6, 4)), feed_mm_min=150),
+    ToolpathMove("cut", Line((6, 6, 4), (12, 6, 4)), feed_mm_min=600),
+    ToolpathMove("cut", Arc((12, 6, 4), (12, 10, 4), center=(12, 8, 4), sweep_rad=math.pi), feed_mm_min=500),
+    ToolpathMove("retract", Line((12, 10, 4), (12, 10, 8)), feed_mm_min=300),
+)
+op = SuppliedToolpath("outside", tool, moves, clearance_z_mm=8,
+                      spindle_rpm=12000, coolant="flood", tool_number=7, length_register=9)
+```
+
+Required: `id`, `tool`, `motions`, `clearance_z_mm`, `spindle_rpm`, `coolant`,
+`tool_number`, `length_register`; `tolerance_mm` (0.00001) and `work_offset`
+(1) as for every operation. There is no operation feed: each move states its
+own.
+
+A `ToolpathMove(kind, curve, feed_mm_min=None)` is the tool tip's move in the
+setup's work frame: `kind` is `"rapid"`, `"cut"`, `"plunge"`, `"lead"`,
+`"link"` or `"retract"`, and `curve` a `camlib.motion.Line`, `Arc` or `Helix`
+(mm; `sweep_rad` in radians, positive counter-clockwise about the plane's
+normal). `ToolpathMove.from_motion(m)` takes the move of a
+`camlib.motion.Motion` or of a streamed motion dictionary (`Update.motion`),
+leaving its id, operation and tool behind.
+
+**The same run.** The moves go through the stream every planned operation
+uses, so everything after it is the same code: they are swept through the
+stock the operations before left, and the next operation plans from what they
+leave; each gets the per-move checks (holder, shank, fixtures, machine limits,
+rapids and links in stock); the material check compares the stock with the
+target and proves each move against it; export is refused while a finding is
+not accepted; and the posted program is decoded back and compared with them.
+A helix or arc the machine cannot take is refused by the post, as for a
+planned move.
+
+**Nothing is changed.** No re-linking, no smoothing, no feed substitution; a
+fed retract stays fed whatever `Setup(rapid_retracts=...)` says. The moves
+leave the stream with the same kind, feed and coordinates, bit for bit.
+
+**What camlib adds:** only the travel to the first supplied point, as planned
+operations travel to theirs. The operation starts where the one before ended
+(or at the tool-change pose), at or above `clearance_z_mm`; from there one
+vertical rapid goes to the first point's height and one horizontal rapid to
+the point. Either is left out when it has no length. They are ordinary moves
+of the operation and are checked like the rest. The report gives
+`approach_moves` and `first_supplied_motion_id`: supplied move `i` is the
+motion with that id plus `i`, which is how a finding's motion maps back to
+your list.
+
+**Refused, with the move's index** (0-based; the message reads
+`supplied toolpath <id>: move <i> of <n>: ...`), before any motion:
+
+| Rule | Why |
+| --- | --- |
+| The kind is one of the six above | Tapping, oriented shifts, threading and probing moves belong to cycles whose events only their own operations write |
+| A rapid is a line | A controller's rapid has no arc form |
+| Every move but a rapid states a positive, finite `feed_mm_min` | camlib supplies no feed. A rapid may state one (a fed traverse) or none |
+| The curve is valid within `tolerance_mm`: finite coordinates within 1e6 mm, a line at least 1e-9 mm long, a circle centre in the start's plane, an arc that stays at its plane height and a helix that leaves it, a radius of at least 1e-6 mm, and an end within `tolerance_mm` of where the centre and sweep arrive | The rule for every motion in a run (the run's `SweepOptions.tolerance_mm` applies to each move as well) |
+| Each move starts **exactly** where the one before ends (the same coordinates) | The stream's continuity rule. camlib does not bridge or snap a gap, however small: supply the connecting move |
+| The first move starts and the last move ends at or above `clearance_z_mm`, which is above the stock top | Operations start and end at clearance; the toolpath brings its own approach and retract |
+| With [machining limits](#machining-limits-avoid-areas-and-containment): every move stays out of the avoid areas below their tops, and every cutting move inside the containment | Limits apply to every operation |
+
+Also refused: a plasma/laser beam or a probe as the tool (a beam needs its
+pierce, lead and beam events, which only `ThermalCut` plans), a supplied
+toolpath in a lathe setup (turning moves are checked by the turning planner
+as it makes them), and a number that is not finite (in Python, before the job
+is built).
+
+**Guard rails a planner would have provided:**
+
+- The setup must check stock contact
+  (`StreamChecks(stock_contact=StockContactOptions())`), or the run is
+  refused: no planner proof stands behind a supplied rapid, link, shank or
+  holder.
+- A cutter that is not center cutting descends only through air: a fed move
+  that goes down is refused, with its index, unless the stock proves nothing
+  remains above its lowest point under the whole move. camlib has no
+  ramp-angle data for such cutters.
+- Spindle speed, coolant, work offset, tool number and length register are
+  declared on the operation and written like any other operation's.
+
+camlib does not judge the strategy: chip load, engagement, cutting direction
+and whether a cutter suits a move are the supplier's. Configure a scene
+(fixtures, machine limits) and a material check against the part to have
+those checked; what is not configured is listed as unchecked at export.
+
+**Size.** There is no cap on the number of moves ([decision 12](DECISIONS.md)):
+they are limited by memory (checked as the operation is built) and by the
+run manifest, which holds them and is at most 4 GiB (about 150 bytes a line
+move). They are streamed one at a time. The moves are part of the job's
+identity: the operation's input digest and regeneration cache key cover every
+coordinate, computed in one pass.
+
 ## Plasma and laser cutting: `ThermalCut`
 
 Required: `parts` (a `PlanarRegion`: each component is a part to keep, with its
@@ -1710,7 +1815,8 @@ gives the `effective_diameter_mm` it used. camlib does not pick cutting data.
 
 ## Not supported
 
-4/5-axis motion. Surface finishing needs surfaces reachable from above (a
+4/5-axis motion. Supplied toolpaths for turning and for plasma/laser cutting
+(`SuppliedToolpath` is three-axis milling). Surface finishing needs surfaces reachable from above (a
 part seen as a height map). Undercuts are cut with `Undercut` on tri-dexel
 stock only; lollipop finishing along an undercut edge (a surface strategy)
 is not supported yet.

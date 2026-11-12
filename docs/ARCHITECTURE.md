@@ -32,6 +32,10 @@ while the Rust side does the planning and the checking.
      each operation with `OperationPlan::prepare_with_stock`, pulls moves with
      `next_motion_with_stock`, sweeps each move through the stock and sends it
      with its stock change. Operations can be served from a regeneration cache.
+     A `SuppliedToolpath` (`src/supplied.rs`, #157) is one more
+     `OperationPlan`: it hands out the caller's moves unchanged, after the
+     standard rapid travel to the first, so nothing downstream tells them
+     from planned moves. Such a run must configure the stock contact check.
    - Lathe: `regeneration::run_turning` plans each operation with
      `turning::ops::TurnSession` when the run reaches it. Every move carries its
      exact `TurnDelta`.

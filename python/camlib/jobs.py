@@ -334,6 +334,11 @@ class Job:
                 limits = None if lathe else merged(setup.contain, setup.avoid, node.limits)
                 if lathe and node.limits is not None:
                     raise ValueError("turning operations take no milling limits")
+                if lathe and definition.get('kind') == 'supplied_toolpath':
+                    raise ValueError(
+                        f"supplied toolpath {id}: a supplied toolpath is three-axis milling; a lathe setup "
+                        "runs only its Turn* operations, whose moves the turning planner checks as it makes them"
+                    )
                 if limits is not None:
                     if 'limits' in definition:
                         raise ValueError(

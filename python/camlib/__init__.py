@@ -92,6 +92,8 @@ _EXPORTS = {
             "ProbeWeb",
             "ToolSetLength",
             "ToolSetDiameter",
+            "SuppliedToolpath",
+            "ToolpathMove",
         ),
         "operations",
     ),

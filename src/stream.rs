@@ -533,6 +533,22 @@ impl StreamManifest {
         if let Some(config) = &self.verification {
             config.validate(&self.operations)?;
         }
+        // No planner proof stands behind a supplied toolpath's rapids, links,
+        // shank or holder (#157): the run must check them against the stock.
+        if let Some(op) = self
+            .operations
+            .iter()
+            .find(|op| matches!(op, Operation::SuppliedToolpath(_)))
+            && !self
+                .verification
+                .as_ref()
+                .is_some_and(|v| v.stock_contact.is_some())
+        {
+            return Err(format!(
+                "supplied toolpath {}: its moves are the caller's, with no planner guarantee behind them, so the run must check them against the stock; configure the stock contact check (verification.stock_contact, StreamChecks(stock_contact=StockContactOptions()))",
+                op.id()
+            ));
+        }
         self.canonical_bytes()?;
         Ok(())
     }

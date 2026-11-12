@@ -107,6 +107,7 @@ pub mod stock_contact;
 pub mod stock_mesh;
 pub mod stream;
 pub mod stream_verification;
+pub mod supplied;
 pub mod surface;
 pub mod thermal;
 pub mod tool;

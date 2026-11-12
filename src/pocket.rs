@@ -53,6 +53,8 @@ pub enum Operation<G = crate::surface::SurfaceMesh> {
     VCarve(crate::vcarve::VCarveOperation),
     ThermalCut(crate::thermal::ThermalCutOperation),
     Probe(crate::probe::ProbeOperation),
+    /// The caller's own moves, run unchanged (#157).
+    SuppliedToolpath(crate::supplied::SuppliedToolpathOperation),
 }
 impl<G> Operation<G> {
     /// Hole operations whose retract feed is a declared process parameter
@@ -66,6 +68,8 @@ impl<G> Operation<G> {
                 | Self::Reaming(_)
                 | Self::Tapping(_)
                 | Self::Probe(_)
+                // A supplied retract is the caller's move: it is never changed.
+                | Self::SuppliedToolpath(_)
         )
     }
     pub(crate) fn map_geometry<H, E>(
@@ -94,6 +98,7 @@ impl<G> Operation<G> {
             Self::VCarve(op) => Operation::VCarve(op),
             Self::ThermalCut(op) => Operation::ThermalCut(op),
             Self::Probe(op) => Operation::Probe(op),
+            Self::SuppliedToolpath(op) => Operation::SuppliedToolpath(op),
         })
     }
 }
@@ -122,6 +127,7 @@ impl Operation {
             Self::VCarve(p) => &p.id,
             Self::ThermalCut(p) => &p.id,
             Self::Probe(p) => &p.id,
+            Self::SuppliedToolpath(p) => &p.id,
         }
     }
     pub fn tool(&self) -> &str {
@@ -147,6 +153,7 @@ impl Operation {
             Self::VCarve(p) => &p.tool,
             Self::ThermalCut(p) => &p.tool,
             Self::Probe(p) => &p.tool,
+            Self::SuppliedToolpath(p) => &p.tool,
         }
     }
     /// The operation's machining limits, if any.
@@ -173,6 +180,7 @@ impl Operation {
             Self::VCarve(p) => p.limits.as_ref(),
             Self::ThermalCut(p) => p.limits.as_ref(),
             Self::Probe(p) => p.limits.as_ref(),
+            Self::SuppliedToolpath(p) => p.limits.as_ref(),
         }
         .filter(|l| !l.is_empty())
     }
@@ -199,6 +207,7 @@ impl Operation {
             Self::VCarve(p) => p.work_offset,
             Self::ThermalCut(p) => p.work_offset,
             Self::Probe(p) => p.work_offset,
+            Self::SuppliedToolpath(p) => p.work_offset,
         }
     }
 }

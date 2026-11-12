@@ -48,6 +48,7 @@ pub enum OperationReport<'a> {
     VCarve(&'a crate::vcarve::VCarveReport),
     ThermalCut(&'a crate::thermal::ThermalCutReport),
     Probe(&'a crate::probe::ProbeReport),
+    SuppliedToolpath(&'a crate::supplied::SuppliedToolpathReport),
 }
 pub enum OperationPlan {
     Roughing(Box<RoughingPlan>),
@@ -73,6 +74,8 @@ pub enum OperationPlan {
     VCarve(Box<crate::vcarve::VCarvePlan>),
     ThermalCut(Box<crate::thermal::ThermalCutPlan>),
     Probe(Box<crate::probe::ProbePlan>),
+    /// The caller's own moves, run unchanged (#157).
+    SuppliedToolpath(Box<crate::supplied::SuppliedToolpathPlan>),
 }
 /// Facing with limits clears the stock rectangle (grown so the tool still runs
 /// past the edges) as a raster pocket restricted by the limits, entering from
@@ -295,6 +298,11 @@ impl OperationPlan {
             Operation::Probe(p) => Ok(Self::Probe(Box::new(crate::probe::ProbePlan::prepare(
                 p, tool, stock, initial, first_id, cancel,
             )?))),
+            Operation::SuppliedToolpath(p) => Ok(Self::SuppliedToolpath(Box::new(
+                crate::supplied::SuppliedToolpathPlan::prepare(
+                    p, tool, stock, initial, first_id, cancel,
+                )?,
+            ))),
             Operation::Roughing(p) => Ok(Self::Roughing(Box::new(RoughingPlan::prepare(
                 p, tool, stock, initial, first_id, cancel,
             )?))),
@@ -390,6 +398,7 @@ impl OperationPlan {
             Self::VCarve(p) => OperationReport::VCarve(p.report()),
             Self::ThermalCut(p) => OperationReport::ThermalCut(p.report()),
             Self::Probe(p) => OperationReport::Probe(p.report()),
+            Self::SuppliedToolpath(p) => OperationReport::SuppliedToolpath(p.report()),
         }
     }
     pub fn prefix_events(&self) -> Vec<Event> {
@@ -416,6 +425,7 @@ impl OperationPlan {
             Self::VCarve(p) => p.prefix_events(),
             Self::ThermalCut(p) => p.prefix_events(),
             Self::Probe(p) => p.prefix_events(),
+            Self::SuppliedToolpath(p) => p.prefix_events(),
         }
     }
     pub fn suffix_events(&self) -> Vec<Event> {
@@ -442,6 +452,7 @@ impl OperationPlan {
             Self::VCarve(p) => p.suffix_events(),
             Self::ThermalCut(p) => p.suffix_events(),
             Self::Probe(p) => p.suffix_events(),
+            Self::SuppliedToolpath(p) => p.suffix_events(),
         }
     }
     pub fn next_motion_with_stock(
@@ -472,6 +483,7 @@ impl OperationPlan {
             Self::VCarve(p) => p.next_motion_with_stock(stock, cancel),
             Self::ThermalCut(p) => p.next_motion_with_stock(stock, cancel),
             Self::Probe(p) => p.next_motion_with_stock(stock, cancel),
+            Self::SuppliedToolpath(p) => p.next_motion_with_stock(stock, cancel),
         }
     }
     /// Events due after the motion just handed out (e.g. a dwell at the
@@ -513,6 +525,7 @@ impl OperationPlan {
             Self::VCarve(p) => p.finish_report(cancel),
             Self::ThermalCut(p) => p.finish_report(cancel),
             Self::Probe(p) => p.finish_report(cancel),
+            Self::SuppliedToolpath(p) => p.finish_report(cancel),
         }
     }
 }

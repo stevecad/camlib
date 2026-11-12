@@ -2326,3 +2326,144 @@ class ToolSetDiameter(_ToolSetting):
             },
             "tool_radius",
         )
+
+
+_TOOLPATH_CURVE_FIELDS = {
+    "line": ("start", "end"),
+    "arc": ("start", "end", "center"),
+    "helix": ("start", "end", "center"),
+}
+
+
+@dataclass(frozen=True)
+class ToolpathMove:
+    """One move of a :class:`SuppliedToolpath`: its role, its path and its feed.
+
+    ``kind`` is "rapid", "cut", "plunge", "lead", "link" or "retract";
+    ``curve`` a ``camlib.motion.Line``, ``Arc`` or ``Helix`` in the setup's
+    work frame (mm, radians). Every move but a rapid states its
+    ``feed_mm_min``; a rapid may state one (a fed traverse) or none. Nothing
+    here has a default that stands in for cutting data.
+    """
+
+    kind: str
+    curve: object
+    feed_mm_min: float | None = None
+
+    @classmethod
+    def from_motion(cls, motion):
+        """The move of a ``camlib.motion.Motion`` or of a streamed motion
+        dictionary (``Update.motion``). Its id, operation and tool are left
+        behind: the supplied toolpath's own operation assigns them."""
+        if isinstance(motion, dict):
+            from .motion import Arc, Helix, Line
+
+            motion = motion.get("motion", motion)
+            curve = dict(motion["curve"])
+            kind = curve.pop("kind")
+            if kind not in _TOOLPATH_CURVE_FIELDS:
+                raise ValueError(f"unknown curve kind {kind!r}")
+            curve = {"line": Line, "arc": Arc, "helix": Helix}[kind](**curve)
+            return cls(motion["kind"], curve, motion["feed_mm_min"])
+        return cls(motion.kind, motion.curve, motion.feed_mm_min)
+
+    def to_dict(self):
+        curve = self.curve.to_dict() if hasattr(self.curve, "to_dict") else dict(self.curve)
+        return {"kind": self.kind, "curve": curve, "feed_mm_min": self.feed_mm_min}
+
+
+def _toolpath_move(id, index, move):
+    """The move's manifest dictionary. Only what JSON cannot carry is checked
+    here (a number that is not finite), so that the refusal names the move;
+    every machining rule is the engine's."""
+    if not isinstance(move, ToolpathMove):
+        if not (hasattr(move, "curve") and hasattr(move, "kind") and hasattr(move, "feed_mm_min")):
+            raise TypeError(
+                f"supplied toolpath {id}: move {index}: expected a ToolpathMove or camlib.motion.Motion, "
+                f"not {type(move).__name__}"
+            )
+        move = ToolpathMove.from_motion(move)
+    try:
+        data = move.to_dict()
+        curve = data["curve"]
+        fields = _TOOLPATH_CURVE_FIELDS.get(curve.get("kind"))
+    except (TypeError, ValueError, AttributeError):
+        fields = None
+    if fields is None:
+        raise ValueError(f"supplied toolpath {id}: move {index}: the curve must be a Line, Arc or Helix")
+    values = [data["feed_mm_min"], curve.get("sweep_rad")]
+    for name in fields:
+        point = tuple(curve[name])
+        if len(point) != 3:
+            raise ValueError(f"supplied toolpath {id}: move {index}: {name} must be (x, y, z)")
+        curve[name] = point
+        values.extend(point)
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(
+                f"supplied toolpath {id}: move {index}: {value!r} is not a finite number "
+                "(coordinates, sweep and feed must be finite)"
+            )
+    return data
+
+
+@dataclass(frozen=True)
+class SuppliedToolpath:
+    """A toolpath planned elsewhere, run exactly as given.
+
+    ``motions`` (``ToolpathMove`` or ``camlib.motion.Motion``) are the tool
+    tip's moves in the setup's work frame. camlib changes nothing in them and
+    treats them as its own: they are simulated against the stock the
+    operations before left, checked move by move, compared with the target,
+    refused at export on unaccepted findings, posted and decoded back. A move
+    that cannot be run exactly is refused with its index.
+
+    The toolpath starts and ends at or above ``clearance_z_mm`` (above the
+    stock top), where the operation itself starts; camlib adds only the rapid
+    travel to its first point. Each move starts exactly where the one before
+    ends. Spindle speed, coolant, tool number and length register are
+    declared as for any operation. The setup must check stock contact
+    (``StreamChecks(stock_contact=StockContactOptions())``): no planner
+    guarantee stands behind these moves. Three-axis milling only.
+    """
+
+    id: str
+    tool: object
+    motions: tuple
+    clearance_z_mm: float
+    spindle_rpm: float = field(kw_only=True)
+    tool_number: int = field(kw_only=True)
+    length_register: int = field(kw_only=True)
+    coolant: str = field(kw_only=True)
+    tolerance_mm: float = 1e-5
+    work_offset: int = 1
+
+    def __post_init__(self):
+        if not isinstance(self.motions, (list, tuple)):
+            raise TypeError("supplied toolpath motions must be a list or tuple (a finite collection)")
+        # Roughly 1 kB a move, as Python objects and again as its manifest
+        # dictionary: refused before it outgrows memory, never truncated.
+        moves = bounded_tuple(self.motions, 1000, "supplied toolpath motions")
+        object.__setattr__(self, "motions", moves)
+        object.__setattr__(
+            self,
+            "_motion_dicts",
+            bounded_tuple(
+                (_toolpath_move(self.id, i, move) for i, move in enumerate(moves)),
+                1000,
+                "supplied toolpath motions",
+            ),
+        )
+
+    def to_dict(self):
+        result = {field: getattr(self, field) for field in self.__dataclass_fields__}
+        # Built once (the operation is immutable); a job serialises it for
+        # its manifest and its input digest, both in one pass over the moves.
+        result.update(
+            kind="supplied_toolpath",
+            tool=getattr(self.tool, "id", self.tool),
+            motions=self._motion_dicts,
+        )
+        return result
