@@ -524,6 +524,9 @@ class SweepOptions:
     max_cell_visits: int = 100_000_000
 
 
+_LIVE_KINDS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+
+
 @dataclass(frozen=True)
 class Frame:
     raw: bytes
@@ -534,11 +537,11 @@ class Frame:
         return memoryview(self.raw)[20:]
 
     @classmethod
-    def parse(cls, raw, limit=FRAME_LIMIT):
+    def parse(cls, raw, limit=FRAME_LIMIT, *, _kinds=(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)):
         if len(raw) < 20:
             raise ProtocolError("truncated frame header")
         magic, version, kind, length, checksum = _HEADER.unpack_from(raw)
-        if magic != b"CAMLSTRM" or version != 1 or kind not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11):
+        if magic != b"CAMLSTRM" or version != 1 or kind not in _kinds:
             raise ProtocolError("unsupported stream magic/version/kind")
         if not 20 <= limit <= CHECKPOINT_LIMIT or length > limit - 20:
             raise ProtocolError("frame exceeds explicit byte budget")
@@ -747,6 +750,62 @@ class OperationUpdate:
     events: tuple
     report: dict | None
     frame: Frame
+
+
+@dataclass(frozen=True)
+class ProgressUpdate:
+    """Planning progress of the operation being planned (asked for with
+    ``run_operations(progress_interval_s=...)``): which operation, and how
+    far along where the planner can count it.
+
+    ``basis`` says what ``fraction`` counts: ``"layers"`` (depth levels
+    ``done`` of ``total`` planned), ``"passes"`` (finishing passes ``done`` of
+    ``total``) or ``"area"`` (adaptive clearing: levels ``done`` of ``total``,
+    and within the current level the reachable material area cleared,
+    ``area_left_mm2`` of ``area_start_mm2``, as of the planner's last
+    refresh). ``fraction`` is in 0..1, never decreases within an operation
+    and is 1 in the operation's last update. An operation with nothing to
+    count has ``basis`` and ``fraction`` ``None``: planning is running, and
+    no figure is guessed.
+
+    The update is not part of the run: it has no frame, is never recorded,
+    and changes no motion, stock or posted output.
+    """
+
+    operation: str
+    index: int
+    operations: int
+    basis: str | None
+    done: int | None
+    total: int | None
+    fraction: float | None
+    area_left_mm2: float | None = None
+    area_start_mm2: float | None = None
+
+
+_PROGRESS_FIELDS = (
+    "operation",
+    "index",
+    "operations",
+    "basis",
+    "done",
+    "total",
+    "fraction",
+    "area_left_mm2",
+    "area_start_mm2",
+)
+
+
+def _progress_command(interval_s):
+    """The stream command's ``progress_ms`` for an interval in seconds (0:
+    whenever the planner's counts change)."""
+    if isinstance(interval_s, bool) or not isinstance(interval_s, (int, float)) or not math.isfinite(interval_s):
+        raise ValueError("progress_interval_s must be a number of seconds")
+    if interval_s != 0 and not 0.001 <= interval_s <= 1:
+        raise ValueError(
+            "progress_interval_s must be 0 (an update whenever the planner's counts change) or 0.001 to 1 second"
+        )
+    return round(interval_s * 1000)
 
 
 @dataclass(frozen=True)
@@ -1788,7 +1847,9 @@ class Simulation:
                 raise ProtocolError("truncated simulation stream")
             raise _stream_error(self._diagnostic())
         magic, version, kind, length, _ = _HEADER.unpack_from(self._buffer, self._at)
-        if magic != b"CAMLSTRM" or version != 1 or kind not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11):
+        # Kind 12 (planning progress) exists only on the live stream: stored
+        # frames (Frame.parse, Frame.read) never include it.
+        if magic != b"CAMLSTRM" or version != 1 or kind not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12):
             raise ProtocolError("unsupported stream header")
         if length > FRAME_LIMIT - 20:
             raise ProtocolError("frame exceeds explicit byte budget")
@@ -1796,7 +1857,7 @@ class Simulation:
             raise ProtocolError("truncated simulation stream")
         raw = self._buffer[self._at : self._at + 20 + length]
         self._at += 20 + length
-        return Frame.parse(raw)
+        return Frame.parse(raw, _kinds=_LIVE_KINDS)
 
     def _next_motions(self, expect=None, limit=4096, checks=False):
         """Updates (a generator; see StockState.accept_many) for the
@@ -1985,11 +2046,19 @@ class Simulation:
             self._pending -= 1
             yield update
 
-    def run_operations(self):
+    def run_operations(self, *, progress_interval_s=None):
         """Yield native operation controls and committed stock/motion updates.
 
         Definitions are immutable manifest inputs. The native process generates
         the complete ordered job and applies pipe backpressure between motions.
+
+        With ``progress_interval_s`` (0.001 to 1 second) the run also yields a
+        ``ProgressUpdate`` when each operation's planning starts, at that
+        interval while it is planned (also before its first move) and when it
+        ends; 0 yields one whenever the planner's counts change instead.
+        Without it no ``ProgressUpdate`` is yielded, so a loop that knows
+        only the other update types is unaffected. Either way the motions,
+        stock and checks are the same.
         """
         self._ready()
         manifest = self.state.manifest
@@ -1997,6 +2066,9 @@ class Simulation:
         if not definitions or self.state.completed:
             raise SimulationError("native operations require a new manifest-bound operation run")
         command = {"command": "operations"}
+        if progress_interval_s is not None:
+            command["progress_ms"] = _progress_command(progress_interval_s)
+        progress_fraction = (None, None)
         if self._regeneration is not None:
             command["cache"] = (
                 self._regeneration.to_dict() if hasattr(self._regeneration, "to_dict") else self._regeneration
@@ -2099,6 +2171,37 @@ class Simulation:
                 yield OperationUpdate(
                     data["operation"], data["completed"], data["stage"], tuple(data["events"]), data["report"], frame
                 )
+            elif frame.kind == 12:
+                if progress_interval_s is None:
+                    raise ProtocolError("planning progress arrived without being asked for")
+                decoder = _Decoder(frame.payload)
+                self.state._identity(decoder)
+                try:
+                    data = json.loads(decoder.take(len(decoder.data) - decoder.offset).tobytes())
+                except (ValueError, TypeError) as error:
+                    raise ProtocolError("invalid planning progress JSON") from error
+                if not isinstance(data, dict) or tuple(data) != _PROGRESS_FIELDS:
+                    raise ProtocolError("planning progress schema mismatch")
+                update = ProgressUpdate(**data)
+                # The operation being planned: the active one, or the next
+                # (its progress starts before its begin control).
+                expected = completed_operations
+                fraction = update.fraction
+                if (
+                    expected >= len(definitions)
+                    or update.operation != definitions[expected]["id"]
+                    or (update.index, update.operations) != (expected, len(definitions))
+                    or update.basis not in (None, "layers", "area", "passes")
+                    or (update.basis is None) != (fraction is None)
+                    or (fraction is not None and not 0 <= fraction <= 1)
+                ):
+                    raise ProtocolError("planning progress operation/fraction mismatch")
+                # Independent of the producer's clamp: never backwards.
+                last = progress_fraction[1] if progress_fraction[0] == expected else None
+                if last is not None and (fraction is None or fraction < last):
+                    raise ProtocolError("planning progress went backwards")
+                progress_fraction = (expected, fraction)
+                yield update
             elif frame.kind in (1, 10):
                 raise ProtocolError("motion arrived outside an operation")
             elif frame.kind == 8:

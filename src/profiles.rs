@@ -618,6 +618,14 @@ impl ProfileSettings {
     }
 }
 impl ProfileMotion {
+    /// Planning progress (#198): depth passes done of those planned (every
+    /// loop is cut at one depth before the next).
+    pub fn progress(&self) -> crate::progress::Planned {
+        crate::progress::Planned::Layers {
+            done: self.pass,
+            total: self.passes,
+        }
+    }
     pub fn next(
         &mut self,
         stock: &crate::stock::Stock,

@@ -2174,6 +2174,13 @@ impl PocketPlan {
     pub fn report(&self) -> &PocketReport {
         &self.report
     }
+    /// Planning progress (#198): depth passes done of those planned.
+    pub fn progress(&self) -> crate::progress::Planned {
+        crate::progress::Planned::Layers {
+            done: self.pass,
+            total: self.report.depth_passes,
+        }
+    }
     pub(crate) fn outside_stock_disk(&self, center: Point, radius: f64) -> bool {
         let distance = (0..2)
             .map(|i| {

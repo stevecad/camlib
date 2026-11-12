@@ -233,6 +233,15 @@ impl PocketFrontPlan {
     pub fn report(&self) -> &PocketFrontReport {
         &self.report
     }
+    /// Planning progress (#198): depth levels done of those planned and the
+    /// active level's reachable material area.
+    pub fn progress(&self) -> crate::progress::Planned {
+        crate::progress::Planned::Area {
+            layers_done: self.report.completed_layers,
+            layers: self.report.layers.len(),
+            area_mm2: self.plans.front().and_then(|front| front.area_mm2()),
+        }
+    }
     pub fn prefix_events(&self) -> Vec<Event> {
         self.prefix.clone()
     }

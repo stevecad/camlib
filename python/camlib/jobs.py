@@ -240,7 +240,13 @@ class CompiledSetup:
         if 'initial_stock' in options and _plain(options['initial_stock']) != config.get('initial_stock'):
             raise ValueError('posted initial stock differs from the compiled setup')
         simulation = Simulation(**self.simulation_options(cache), executable=options.get('executable'))
-        source = OperationEvents(simulation, reuse_active_tool=True, on_operation=options.pop('on_operation', None))
+        source = OperationEvents(
+            simulation,
+            reuse_active_tool=True,
+            on_operation=options.pop('on_operation', None),
+            on_progress=options.pop('on_progress', None),
+            progress_interval_s=options.pop('progress_interval_s', 0.25),
+        )
         try:
             options.setdefault('verification', config.get('verification'))
             options.setdefault('sweep', config['sweep'])
@@ -438,15 +444,28 @@ class Job:
             )
         return CompiledJob(self.id, revision, tuple(result))
 
-    def regenerate(self, cache=None, *, executable=None):
-        return JobRun(self.compile(), cache, executable=executable)
+    def regenerate(self, cache=None, *, executable=None, progress_interval_s=None):
+        """Plan and simulate every setup, yielding ``JobUpdate``s. With
+        ``progress_interval_s`` the updates include planning progress
+        (``simulation.ProgressUpdate``; see ``Simulation.run_operations``)."""
+        return JobRun(self.compile(), cache, executable=executable, progress_interval_s=progress_interval_s)
 
     def record(self, setup_id, cache=None, **options):
         setup = self.compile().setup(setup_id)
         return RecordedRun(**setup.simulation_options(cache), **options)
 
     def post_nc(
-        self, setup_id, *, machine, path=None, accept=(), cache=None, executable=None, on_operation=None, **options
+        self,
+        setup_id,
+        *,
+        machine,
+        path=None,
+        accept=(),
+        cache=None,
+        executable=None,
+        on_operation=None,
+        on_progress=None,
+        **options,
     ):
         """Release actual decoded NC after posted-stock and machine checks.
 
@@ -454,10 +473,14 @@ class Job:
         ``unchecked_machine`` permits formatter-only output. ``path`` is
         replaced atomically after every configured check has passed or its
         findings were explicitly accepted. Options go to ``Job.post``.
+        ``on_progress`` is called with each planning ``ProgressUpdate``
+        (every ``progress_interval_s``, 0.25 s unless given).
         """
         from .export import accepted
 
         accepted(accept)
+        if on_progress is not None:
+            options['on_progress'] = on_progress
         with self.post(
             setup_id, machine=machine, cache=cache, executable=executable, on_operation=on_operation, **options
         ) as run:
@@ -510,10 +533,11 @@ class JobRun:
     are bounded by16 authored setups; use RecordedRun for retained history.
     """
 
-    def __init__(self, job, cache, *, executable=None):
+    def __init__(self, job, cache, *, executable=None, progress_interval_s=None):
         self.job = job
         self.cache = cache
         self.executable = executable
+        self.progress_interval_s = progress_interval_s
         self.states = {}
         self.statistics = {}
         self.finished = False
@@ -533,7 +557,7 @@ class JobRun:
                     self._simulation = sim
                     if self._cancel.is_set():
                         sim.cancel()
-                    for update in sim.run_operations():
+                    for update in sim.run_operations(progress_interval_s=self.progress_interval_s):
                         if isinstance(update, OperationUpdate) and update.stage == 'end':
                             self.statistics[(setup.id, update.operation)] = dict(update.report.get('regeneration', {}))
                         yield JobUpdate(setup.id, update)

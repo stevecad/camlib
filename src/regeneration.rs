@@ -4,6 +4,7 @@ use crate::{
     motion::{Event, Motion, Vec3},
     operation::OperationPlan,
     pocket::Operation,
+    progress::{Cadence, Meter},
     stock::{CancelSignal, StockDelta},
     stream::{DEFAULT_FRAME_LIMIT, OperationControl, StreamProducer, encode_operation_control},
 };
@@ -676,6 +677,35 @@ pub fn run_uncached(
     cancel: &impl CancelSignal,
     mut send: impl FnMut(&[u8]) -> Result<(), String>,
 ) -> Result<(), String> {
+    uncached(producer, cancel, None, &mut send)
+}
+/// Plan and stream a run as `run`, `run_uncached` or `run_turning` do (a
+/// lathe run by its turning setup, otherwise with the cache when one is
+/// given), with planning progress frames (#198, `crate::progress`) between
+/// the run's own. Without those frames the output is the run's.
+pub fn run_with_progress(
+    producer: &mut StreamProducer,
+    cache: Option<CacheOptions>,
+    cancel: &impl CancelSignal,
+    progress: Cadence,
+    mut send: impl FnMut(&[u8]) -> Result<(), String>,
+) -> Result<(), String> {
+    if producer.manifest().turning.is_some() {
+        return turning(producer, cancel, Some(progress), &mut send);
+    }
+    match cache {
+        Some(cache) => cached(producer, cache, cancel, Some(progress), &mut send),
+        None => uncached(producer, cancel, Some(progress), &mut send),
+    }
+}
+/// One body per signal type, whatever the caller's output closure.
+type Output<'a> = &'a mut dyn FnMut(&[u8]) -> Result<(), String>;
+fn uncached<C: CancelSignal>(
+    producer: &mut StreamProducer,
+    cancel: &C,
+    progress: Option<Cadence>,
+    send: Output<'_>,
+) -> Result<(), String> {
     producer.writable()?;
     if producer.completed() != 0
         || producer.manifest().operations.is_empty()
@@ -686,8 +716,13 @@ pub fn run_uncached(
         );
     }
     let manifest = producer.manifest().clone();
+    // The planners poll `meter` for cancellation: a progress frame that is
+    // due goes out from those polls, also before an operation's first move.
+    let meter = Meter::new(cancel, &manifest, manifest.operations.len(), progress, send)?;
+    let send = |bytes: &[u8]| meter.send(bytes);
     let mut active: Option<&str> = None;
-    for operation in &manifest.operations {
+    for (index, operation) in manifest.operations.iter().enumerate() {
+        meter.begin(operation.id(), index)?;
         let changed = active != Some(operation.tool());
         if changed {
             producer.change_tool(operation.tool())?;
@@ -698,24 +733,26 @@ pub fn run_uncached(
             .iter()
             .find(|t| t.id == operation.tool())
             .ok_or("operation tool missing")?;
-        let mut plan = OperationPlan::prepare_with_stock(
-            operation.clone(),
-            tool,
-            producer.stock().unwrap(),
-            producer.position(),
-            producer
-                .completed()
-                .checked_add(1)
-                .ok_or("motion ID overflow")?,
-            cancel,
-        )
-        .map_err(|e| {
-            if changed {
-                producer.explain_tool_change(e)
-            } else {
-                e
-            }
-        })?;
+        let mut plan = meter
+            .result(OperationPlan::prepare_with_stock(
+                operation.clone(),
+                tool,
+                producer.stock().unwrap(),
+                producer.position(),
+                producer
+                    .completed()
+                    .checked_add(1)
+                    .ok_or("motion ID overflow")?,
+                &meter,
+            ))
+            .map_err(|e| {
+                if changed {
+                    producer.explain_tool_change(e)
+                } else {
+                    e
+                }
+            })?;
+        meter.report(plan.progress())?;
         send(&encode_operation_control(
             &manifest,
             &OperationControl {
@@ -744,7 +781,9 @@ pub fn run_uncached(
         }
         let guard =
             crate::limits::LinkGuard::new(operation.limits(), tool, manifest.sweep.tolerance_mm)?;
-        while let Some(motion) = plan.next_motion_with_stock(producer.stock().unwrap(), cancel)? {
+        while let Some(motion) =
+            meter.result(plan.next_motion_with_stock(producer.stock().unwrap(), &meter))?
+        {
             let motion = manifest.retract_policy(
                 motion,
                 producer.stock().unwrap(),
@@ -773,8 +812,10 @@ pub fn run_uncached(
                     DEFAULT_FRAME_LIMIT,
                 )?)?;
             }
+            meter.report(plan.progress())?;
         }
-        plan.finish_report(cancel)?;
+        meter.result(plan.finish_report(&meter))?;
+        meter.end()?;
         send(&encode_operation_control(
             &manifest,
             &OperationControl {
@@ -807,9 +848,18 @@ pub fn run(
     cancel: &impl CancelSignal,
     mut send: impl FnMut(&[u8]) -> Result<(), String>,
 ) -> Result<(), String> {
+    cached(producer, options, cancel, None, &mut send)
+}
+fn cached<C: CancelSignal>(
+    producer: &mut StreamProducer,
+    options: CacheOptions,
+    cancel: &C,
+    progress: Option<Cadence>,
+    send: Output<'_>,
+) -> Result<(), String> {
     producer.writable()?;
     if producer.manifest().turning.is_some() {
-        return run_turning(producer, cancel, send);
+        return turning(producer, cancel, progress, send);
     }
     if producer.manifest().stock.dexel().is_some() {
         return Err("tri-dexel runs have no regeneration cache (it holds height-field stock changes); plan the run without a cache".into());
@@ -834,11 +884,20 @@ pub fn run(
     // It cannot authorize replay; present hints still use full kernel identity.
     let mut first_operation = true;
     let operations = producer.manifest().operations.clone();
+    let meter = Meter::new(
+        cancel,
+        producer.manifest(),
+        operations.len(),
+        progress,
+        send,
+    )?;
+    let mut send = |bytes: &[u8]| meter.send(bytes);
     let mut active: Option<String> = None;
-    for op in operations {
+    for (index, op) in operations.into_iter().enumerate() {
         if cancel.is_cancelled() {
             return Err("job regeneration cancelled".into());
         }
+        meter.begin(op.id(), index)?;
         // Before the cache key: the operation starts from the tool-change pose.
         let changed = active.as_deref() != Some(op.tool());
         if changed {
@@ -879,7 +938,9 @@ pub fn run(
                 send_events(producer, &op, entry.header.start_events.clone(), &mut send)?;
             }
             for record in entry.records() {
-                if cancel.is_cancelled() {
+                // A reused operation is replayed, not planned: its progress
+                // updates carry no fraction.
+                if meter.result(Ok(meter.is_cancelled()))? {
                     return Err("job regeneration cancelled".into());
                 }
                 let id = producer
@@ -933,22 +994,24 @@ pub fn run(
             let mut plan = {
                 #[cfg(feature = "profile-planning")]
                 let _profile = crate::planning_profile::span("regeneration.plan.prepare");
-                OperationPlan::prepare_with_stock(
-                    op.clone(),
-                    &tool,
-                    producer.stock()?,
-                    producer.position(),
-                    base.checked_add(1).ok_or("motion ID overflow")?,
-                    cancel,
-                )
-                .map_err(|e| {
-                    if changed {
-                        producer.explain_tool_change(e)
-                    } else {
-                        e
-                    }
-                })?
+                meter
+                    .result(OperationPlan::prepare_with_stock(
+                        op.clone(),
+                        &tool,
+                        producer.stock()?,
+                        producer.position(),
+                        base.checked_add(1).ok_or("motion ID overflow")?,
+                        &meter,
+                    ))
+                    .map_err(|e| {
+                        if changed {
+                            producer.explain_tool_change(e)
+                        } else {
+                            e
+                        }
+                    })?
             };
+            meter.report(plan.progress())?;
             let begin = serde_json::to_value(plan.report()).map_err(|e| e.to_string())?;
             let header = Header {
                 version: 1,
@@ -990,7 +1053,7 @@ pub fn run(
             while let Some(motion) = {
                 #[cfg(feature = "profile-planning")]
                 let _profile = crate::planning_profile::span("regeneration.plan.next");
-                plan.next_motion_with_stock(producer.stock()?, cancel)?
+                meter.result(plan.next_motion_with_stock(producer.stock()?, &meter))?
             } {
                 let motion = producer.manifest().retract_policy(
                     motion,
@@ -1035,8 +1098,10 @@ pub fn run(
                     }
                 }
                 count += 1;
+                meter.report(plan.progress())?;
             }
-            plan.finish_report(cancel)?;
+            meter.result(plan.finish_report(&meter))?;
+            meter.end()?;
             let report = serde_json::to_value(plan.report()).map_err(|e| e.to_string())?;
             let footer = Footer {
                 motions: count,
@@ -1081,6 +1146,14 @@ pub fn run_turning(
     cancel: &impl CancelSignal,
     mut send: impl FnMut(&[u8]) -> Result<(), String>,
 ) -> Result<(), String> {
+    turning(producer, cancel, None, &mut send)
+}
+fn turning<C: CancelSignal>(
+    producer: &mut StreamProducer,
+    cancel: &C,
+    progress: Option<Cadence>,
+    send: Output<'_>,
+) -> Result<(), String> {
     if producer.completed() != 0 {
         return Err("a lathe run starts unstarted".into());
     }
@@ -1095,16 +1168,21 @@ pub fn run_turning(
         .ok_or("lathe run needs turning stock")?;
     let start = manifest.initial_position_mm;
     let job = turning.job(&manifest.run.id, spec, [start[0], start[2]]);
-    let signal = || cancel.is_cancelled();
-    let mut session = crate::turning::ops::TurnSession::new(&job, &signal)?;
     let count = job.operations.len();
+    // A turning operation is planned whole before its first move, with
+    // nothing to count: its progress updates carry no fraction.
+    let meter = Meter::new(cancel, &manifest, count, progress, send)?;
+    let mut send = |bytes: &[u8]| meter.send(bytes);
+    let signal = || meter.is_cancelled();
+    let mut session = meter.result(crate::turning::ops::TurnSession::new(&job, &signal))?;
     for (index, op) in job.operations.iter().enumerate() {
         if cancel.is_cancelled() {
             return Err("lathe run cancelled".into());
         }
-        session.operation(op, job.operations.get(index + 1).map(|o| o.tool()))?;
+        meter.begin(op.id(), index)?;
+        meter.result(session.operation(op, job.operations.get(index + 1).map(|o| o.tool())))?;
         if index + 1 == count {
-            session.finish()?;
+            meter.result(session.finish())?;
         }
         let events = session.take_events();
         let mut deltas = session.take_deltas().into_iter();

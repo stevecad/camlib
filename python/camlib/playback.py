@@ -27,6 +27,7 @@ from .simulation import (
     PrefixSession,
     stock_state,
     OperationUpdate,
+    ProgressUpdate,
     VerificationUpdate,
     VerificationStream,
     _Decoder,
@@ -117,6 +118,9 @@ class RecordedRun:
         rapid_retracts=True,
         turning=None,
         initial_stock=None,
+        # How often an operation run reports its planning progress
+        # (planning_progress()); None: not at all. Never recorded.
+        progress_interval_s=0.25,
     ):
         if not 1 <= batch_size <= 4096 or checkpoint_every <= 0 or checkpoint_changed_cells <= 0:
             raise ValueError("invalid bounded batching/checkpoint policy")
@@ -142,6 +146,7 @@ class RecordedRun:
         self._available, self._checkpoint_count, self._bytes = 0, 0, 0
         self._control_bytes = 0
         self._operation_progress = None
+        self._progress_interval_s, self._planning_progress = progress_interval_s, None
         self._verification_count = 0
         self._verification_reader = None
         self._verification_coverage, self._verification_identity = None, None
@@ -383,13 +388,20 @@ class RecordedRun:
 
                     self._publish = publish
                     updates = (
-                        simulation.run_operations()
+                        simulation.run_operations(progress_interval_s=self._progress_interval_s)
                         if self._operations
                         else simulation.run(self._guarded_source(), batch_size=self.batch_size)
                     )
                     for update in updates:
                         if self._cancel.is_set():
                             return
+                        if isinstance(update, ProgressUpdate):
+                            # Transient: kept in memory for planning_progress()
+                            # and written nowhere, so the journal (and a saved
+                            # run) is the same with or without it.
+                            with self._condition:
+                                self._planning_progress = update
+                            continue
                         if not hasattr(update, "motion"):
                             publish()
                         if isinstance(update, OperationUpdate):
@@ -498,6 +510,18 @@ class RecordedRun:
             with self._condition:
                 self._simulation, self._source = None, None
                 self._condition.notify_all()
+
+    def planning_progress(self):
+        """The latest planning ``ProgressUpdate`` of an operation run (which
+        operation is being planned and how far along, see
+        ``simulation.ProgressUpdate``), or None: before the first, without
+        ``progress_interval_s``, or for a run that plans nothing (given
+        motions, a posted program, a saved run). While the run is producing
+        it is at most ``progress_interval_s`` old; it is not part of
+        ``status()`` and is never saved.
+        """
+        # One attribute read; a reopened saved run never has one.
+        return self.__dict__.get("_planning_progress")
 
     def status(self):
         with self._condition:

@@ -51,6 +51,7 @@ modules! {
     post_rounding,
     preparation,
     probe,
+    progress,
     protocol,
     ramp_entry,
     recessed_finishing,

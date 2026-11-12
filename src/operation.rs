@@ -401,6 +401,22 @@ impl OperationPlan {
             Self::SuppliedToolpath(p) => OperationReport::SuppliedToolpath(p.report()),
         }
     }
+    /// Planning progress (#198): where the planner stands in its own
+    /// counts, after `prepare` or after any motion. `None` for an operation
+    /// with nothing honest to count (never an estimate).
+    pub fn progress(&self) -> Option<crate::progress::Planned> {
+        match self {
+            Self::Roughing(p) => Some(p.progress()),
+            Self::Adaptive(p) => Some(p.progress()),
+            Self::AdaptiveFront(p) => Some(p.progress()),
+            Self::Pocket(p) => Some(p.progress()),
+            Self::Contour(p) => Some(p.progress()),
+            Self::Chamfer(p) => Some(p.progress()),
+            Self::Parallel(p) => Some(p.progress()),
+            Self::Waterline(p) => Some(p.progress()),
+            _ => None,
+        }
+    }
     pub fn prefix_events(&self) -> Vec<Event> {
         match self {
             Self::Roughing(p) => p.prefix_events(),

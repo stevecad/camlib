@@ -96,6 +96,7 @@ mod post_scheduling;
 pub mod preparation;
 pub mod probe;
 mod profiles;
+pub mod progress;
 pub mod reach;
 pub mod regeneration;
 pub mod requests;

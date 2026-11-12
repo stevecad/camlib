@@ -1096,6 +1096,13 @@ impl WaterlinePlan {
     pub fn report(&self) -> &WaterlineReport {
         &self.report
     }
+    /// Planning progress (#198): Z levels done of those planned.
+    pub fn progress(&self) -> crate::progress::Planned {
+        crate::progress::Planned::Layers {
+            done: self.report.levels_completed,
+            total: self.report.levels,
+        }
+    }
     pub fn prefix_events(&self) -> Vec<crate::motion::Event> {
         self.op.settings().prefix_events(self.initial)
     }

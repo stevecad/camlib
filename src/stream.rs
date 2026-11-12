@@ -53,6 +53,9 @@ const CONTROL: u16 = 9;
 const TURN_CHUNK: u16 = 10;
 /// A committed tri-dexel move: its motion and the rays it changed.
 const DEXEL_CHUNK: u16 = 11;
+/// Planning progress (#198, `crate::progress`): transient, sent only when a
+/// run is asked for it, and never part of a recorded run.
+const PROGRESS: u16 = 12;
 const CONTROL_JSON_LIMIT: usize = 4096;
 const DEXEL_CACHE: &str = "tri-dexel runs have no regeneration cache (it holds height-field stock changes); plan the run without a cache";
 
@@ -2666,6 +2669,29 @@ pub fn decode_operation_control(
     serde_json::from_slice(body.take(body.left())?).map_err(|e| e.to_string())
 }
 
+pub(crate) fn encode_progress_prepared(
+    identity: &[u8],
+    progress: &crate::progress::Progress,
+) -> Result<Vec<u8>, String> {
+    let mut body = identity.to_vec();
+    serde_json::to_writer(&mut body, progress).map_err(|e| e.to_string())?;
+    frame(PROGRESS, body, DEFAULT_FRAME_LIMIT)
+}
+/// A planning progress frame (kind 12) of this run.
+pub fn decode_progress(
+    manifest: &StreamManifest,
+    bytes: &[u8],
+) -> Result<crate::progress::Progress, String> {
+    let mut body = payload(bytes, PROGRESS, DEFAULT_FRAME_LIMIT)?;
+    read_identity(&mut body, manifest)?;
+    serde_json::from_slice(body.take(body.left())?).map_err(|e| e.to_string())
+}
+/// Whether a complete frame is a planning progress frame: not part of the
+/// run, so a reader that keeps or replays a run drops it.
+pub fn is_progress(bytes: &[u8]) -> bool {
+    check_header(bytes, MAX_FRAME_BYTES).is_ok_and(|(kind, _)| kind == PROGRESS)
+}
+
 pub(crate) fn encode_verification(
     identity: &[u8],
     record: &crate::stream_verification::Record,
@@ -2780,6 +2806,7 @@ fn check_header(header: &[u8], limit: usize) -> Result<(u16, usize), String> {
         CONTROL,
         TURN_CHUNK,
         DEXEL_CHUNK,
+        PROGRESS,
     ]
     .contains(&kind)
     {

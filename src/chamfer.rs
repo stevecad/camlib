@@ -568,6 +568,10 @@ impl ChamferPlan {
     pub fn report(&self) -> &ChamferReport {
         &self.report
     }
+    /// Planning progress (#198): depth passes done of those planned.
+    pub fn progress(&self) -> crate::progress::Planned {
+        self.motion.progress()
+    }
     pub fn prefix_events(&self) -> Vec<Event> {
         self.motion.prefix_events()
     }

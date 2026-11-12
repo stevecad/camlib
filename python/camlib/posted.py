@@ -15,7 +15,15 @@ import uuid
 
 from .playback import RecordedRun, NotReady
 from .post import Cancellation, GCodePost, Machine, NativeGCodeDecoder, PostEngine
-from .simulation import MaterialStage, OperationUpdate, VerificationUpdate, ProtocolError, SimulationError, _Decoder
+from .simulation import (
+    MaterialStage,
+    OperationUpdate,
+    ProgressUpdate,
+    VerificationUpdate,
+    ProtocolError,
+    SimulationError,
+    _Decoder,
+)
 
 
 _LIMIT = 512 * 1024
@@ -212,9 +220,23 @@ class OperationEvents:
     merge across a segment boundary.
     """
 
-    def __init__(self, simulation, *, reuse_active_tool=False, on_operation=None, on_verification=None):
+    def __init__(
+        self,
+        simulation,
+        *,
+        reuse_active_tool=False,
+        on_operation=None,
+        on_verification=None,
+        on_progress=None,
+        progress_interval_s=0.25,
+    ):
         self.simulation = simulation
-        self._updates = iter(simulation.run_operations())
+        # Planning progress is asked for only when someone listens. It is
+        # handed to the callback and never becomes an event.
+        self._on_progress = on_progress
+        self._updates = iter(
+            simulation.run_operations(progress_interval_s=None if on_progress is None else progress_interval_s)
+        )
         self._controls = collections.deque()
         self._on_verification = on_verification
         self._reuse_active_tool = reuse_active_tool
@@ -284,6 +306,9 @@ class OperationEvents:
                     raise
                 held, self._held = self._held, None
                 self._controls = collections.deque(held)
+                continue
+            if isinstance(update, ProgressUpdate):
+                self._on_progress(update)
                 continue
             if isinstance(update, OperationUpdate):
                 if self._on_operation is not None:

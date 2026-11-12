@@ -1191,6 +1191,14 @@ impl ParallelPlan {
     pub fn report(&self) -> &ParallelReport {
         &self.report
     }
+    /// Planning progress (#198): finishing passes (raster rows, or the
+    /// pattern's passes) done of those planned.
+    pub fn progress(&self) -> crate::progress::Planned {
+        crate::progress::Planned::Passes {
+            done: self.report.rows_completed,
+            total: self.report.rows,
+        }
+    }
     pub fn prefix_events(&self) -> Vec<Event> {
         vec![
             Event::WorkOffset {

@@ -1704,6 +1704,19 @@ impl RoughingPlan {
             report
         })
     }
+    /// Planning progress (#198): depth levels done of those planned, and for
+    /// engagement-front clearing the active level's reachable material area.
+    pub fn progress(&self) -> crate::progress::Planned {
+        let (done, total) = (self.report.completed_layers, self.report.layers.len());
+        match self.plans.front() {
+            Some(LayerPlan::Engagement(front)) => crate::progress::Planned::Area {
+                layers_done: done,
+                layers: total,
+                area_mm2: front.area_mm2(),
+            },
+            _ => crate::progress::Planned::Layers { done, total },
+        }
+    }
     pub fn prefix_events(&self) -> Vec<Event> {
         self.prefix.clone()
     }

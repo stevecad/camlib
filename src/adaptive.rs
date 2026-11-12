@@ -715,6 +715,13 @@ impl AdaptivePlan {
     pub fn report(&self) -> &AdaptiveReport {
         &self.report
     }
+    /// Planning progress (#198): depth passes done of those planned.
+    pub fn progress(&self) -> crate::progress::Planned {
+        crate::progress::Planned::Layers {
+            done: self.pass,
+            total: self.report.depth_passes,
+        }
+    }
     pub fn prefix_events(&self) -> Vec<Event> {
         self.guides.prefix_events()
     }

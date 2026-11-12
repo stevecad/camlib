@@ -15,7 +15,7 @@ level `Setup` is the job setup (`camlib.jobs.Setup`).
 | `camlib.tools` | `EndMill`, `BallEndMill`, `BullEndMill`, `Drill`, `ChamferMill`, `ThreadMill`, `TSlotCutter`, `KeyseatCutter`, `LollipopCutter`, `DovetailCutter`, `Tap`, `BoringBar`, `Torch`, `LaserHead`, `Neck`, `ToolAssembly`, `HolderSection` |
 | `camlib.planar` | `PlanarRegion` (`components`, reported `boundary_error_mm`), `Component`, `Boundary` (line/arc regions) |
 | `camlib.surface` | `SurfaceMesh` (triangle surfaces with a finite stated `surface_error_mm` in the inclusive range 0–0.1 mm; checked at construction) |
-| `camlib.simulation` | `StockSpec(min, max, cell_size, max_cells=, mesh=)` and `StockSpec.from_mesh(mesh, cell_size)`, `InitialStock` (declared whole-cell blank bounds, [preparation](preparation.md)), `StockMesh` (closed stock solid: `from_triangles`, `transformed`; `StockState.stock_mesh()` returns the finished stock), `DexelStockSpec(min, max, cell_size, max_rays=, max_intervals=)` (tri-dexel stock: undercuts), `SweepOptions` (chord error, tip step and work budgets of the stock sweep), `Simulation`, `ToolChangePosition`, `ToolChangeTable`, `SimulationError`, `ReachRefused` and its typed `ReachRefusal` ([reach refusals](operations.md#pocket-pocket-restpocket)), `CamWarning`, low-level streaming |
+| `camlib.simulation` | `StockSpec(min, max, cell_size, max_cells=, mesh=)` and `StockSpec.from_mesh(mesh, cell_size)`, `InitialStock` (declared whole-cell blank bounds, [preparation](preparation.md)), `StockMesh` (closed stock solid: `from_triangles`, `transformed`; `StockState.stock_mesh()` returns the finished stock), `DexelStockSpec(min, max, cell_size, max_rays=, max_intervals=)` (tri-dexel stock: undercuts), `SweepOptions` (chord error, tip step and work budgets of the stock sweep), `Simulation`, `ToolChangePosition`, `ToolChangeTable`, `ProgressUpdate` ([planning progress](#planning-progress)), `SimulationError`, `ReachRefused` and its typed `ReachRefusal` ([reach refusals](operations.md#pocket-pocket-restpocket)), `CamWarning`, low-level streaming |
 | `camlib.verification` | `StreamChecks(scene=, options=, material=, stock_contact=)`, `StockContactOptions` (resolution, work and finding limits), `Scene(id, revision, bodies, machine, work_to_machine)`, `Prism` (fixture or protected part; `z_error_mm`, `representation`), `MachineLimits` (travel of one tip or of the gauge line, feed, acceleration, axis feeds), `MaterialCheck(target, after_operation=)` |
 | `camlib.playback` | `Player`, `Cursor` (operation, motion and `fraction` along it), `RecordedRun` (replay, seek, save) |
 | `camlib.dexel_state` | `DexelStockState` (a tri-dexel run's committed stock: `volume()`, `heights` (the height view), `ray(axis, index)`, `rays(axis)`, `grid`, `preview(frame, fraction)`, `compare_solid(mesh, tolerance_mm)` (leftover material and over-cut against a closed mesh of the part, undercuts included), checkpoints), `heights_at` |
@@ -63,9 +63,74 @@ operation's input digest and cache key. See
 [Operations](operations.md#supplied-toolpath-suppliedtoolpath) for the rules.
 
 `job.regenerate(cache)` yields motion, stock and operation updates as they are
-computed. A `RegenerationCache` reuses operations whose inputs did not change
+computed (and planning progress when asked, see [Planning progress](#planning-progress)). A `RegenerationCache` reuses operations whose inputs did not change
 and recomputes the rest. `examples/cadquery_job.py` shows the same job built
 from a CadQuery solid (pocket floor selected from the CAD face).
+
+## Planning progress
+
+Planning one operation can take seconds to minutes. A run tells an application
+which operation it is planning and how far along it is with
+`camlib.simulation.ProgressUpdate`:
+
+| Field | Meaning |
+| --- | --- |
+| `operation`, `index`, `operations` | The operation being planned: its id, and its index among the setup's `operations` operations |
+| `basis` | What `fraction` counts: `"layers"`, `"area"`, `"passes"`, or `None` |
+| `done`, `total` | Depth levels (`"layers"`, `"area"`) or finishing passes (`"passes"`) done and planned, to show "layer 3 of 8" |
+| `fraction` | Completed fraction, 0 to 1; `None` when `basis` is `None` |
+| `area_left_mm2`, `area_start_mm2` | `"area"` only: the reachable material area left in the current level and at the level's start |
+
+The fraction is only what the planner counts, never an estimate of time:
+
+- `"layers"`: depth levels done of levels planned (`Roughing`, `Pocket`,
+  `AdaptivePocket`, `Waterline`, `Contour`, `Chamfer`), unless the operation
+  clears with the engagement front.
+- `"area"`: adaptive clearing with the engagement front
+  (`path_strategy="engagement_front"` of `AdaptiveClearing` in `Roughing`, or
+  of `AdaptivePocket`).
+  Levels done plus, in the current level, the share of its reachable material
+  area already cleared, over the levels planned:
+  `(done + 1 - area_left_mm2 / area_start_mm2) / total`. The area is measured
+  when the planner refreshes its candidate starts, so it moves in steps.
+- `"passes"`: surface finishing (`Parallel` and its patterns): passes done of
+  passes planned.
+- `None`: every other operation (drilling, facing, turning, ...) and an
+  operation reused from a `RegenerationCache`. The update still says which
+  operation is running.
+
+Within an operation the fraction never decreases (if a refresh finds more
+reachable material, the fraction holds while `area_left_mm2` shows the new
+figure) and it is 1 in the operation's last update. An operation's first
+update has no fraction and arrives before its `OperationUpdate` `begin`:
+preparing the plan is part of planning.
+
+Progress is asked for, so code that handles only the other update types keeps
+working unchanged:
+
+```python
+for update in simulation.run_operations(progress_interval_s=0.25):
+    if isinstance(update, ProgressUpdate):
+        show(update.operation, update.index, update.operations, update.fraction)
+    ...
+```
+
+| Where | How |
+| --- | --- |
+| `Simulation.run_operations(progress_interval_s=...)` | Yields `ProgressUpdate` between the other updates; none without the argument |
+| `job.regenerate(cache, progress_interval_s=...)` | The same, as `JobUpdate(setup, ProgressUpdate)` |
+| `job.record(...)` (`RecordedRun`) | `run.planning_progress()` returns the latest update (asked every 0.25 s; `progress_interval_s=None` turns it off) |
+| `job.post(...)`, `job.post_nc(...)` | `on_progress=callback` is called with each update, on the thread that produces the run (`progress_interval_s`, 0.25 s unless given) |
+
+`progress_interval_s` is 0.001 to 1 second: an update goes out when an
+operation's planning starts and ends and at that interval between, also while
+the planner is busy before the operation's first move. `0` sends one whenever
+the planner's counts change instead (after a move), which is deterministic.
+
+A progress update is not part of the run. It carries no frame, is never
+written to a recorded or saved run or a regeneration cache, and is not in
+`status()`. The motions, stock, checks, checkpoints and posted program are
+the same with or without it.
 
 ## Accuracy and work budgets
 

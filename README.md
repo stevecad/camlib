@@ -65,7 +65,9 @@ and writes G-code through a postprocessor you can read and change.
 
 Every setup (milling, plasma/laser and lathe) runs as one stream: each move
 arrives with the stock it removes, and playback can pause, seek (also
-partway through a move), cancel, and save and reopen a run. Every move can be
+partway through a move), cancel, and save and reopen a run. While it plans, a
+run can report which operation it is on and how far along
+([planning progress](docs/python.md#planning-progress)). Every move can be
 checked continuously against the evolving stock, fixtures, protected parts,
 the tool holder and machine limits (lathe moves always are, against the part,
 bore, chuck and stock), and the stock against the target part; posted G-code

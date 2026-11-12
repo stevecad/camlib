@@ -606,6 +606,10 @@ impl ContourPlan {
     pub fn report(&self) -> &ContourReport {
         &self.report
     }
+    /// Planning progress (#198): depth passes done of those planned.
+    pub fn progress(&self) -> crate::progress::Planned {
+        self.motion.progress()
+    }
     pub fn take_events(&mut self) -> Vec<Event> {
         self.motion.take_events()
     }
