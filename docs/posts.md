@@ -60,6 +60,9 @@ step. Words are rounded to `decimals`, so a planned position on a limit is
 written exactly only when the work offset and the limit are multiples of the
 output step; otherwise it can round beyond the limit and the post refuses,
 naming the axis, the decoded position and the limit.
+An arc whose rounded words leave its end off the circle drawn from the start
+about the centre (an endpoint gap) must be inside the limit by that gap: an
+arc tangent to a travel limit posts only when its words are exact.
 
 Key settings:
 

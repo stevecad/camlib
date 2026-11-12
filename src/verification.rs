@@ -1192,8 +1192,9 @@ fn check_body<C: CancelSignal>(
 /// one travel rule (`crate::travel`, #246), which the posted-output check
 /// applies to the decoded moves too: the travel box is closed, a declared end
 /// is exact (only the binary64 evaluation of the work-to-machine transform is
-/// allowed for) and a point of an arc's nominal circle keeps the arc's own
-/// endpoint gap. The motion tolerance is not a travel allowance.
+/// allowed for) and a point of a planned arc's nominal circle keeps the arc's
+/// own endpoint gap (none when the declared end is on the circle). The motion
+/// tolerance is not a travel allowance.
 ///
 /// Every point tested is a point of the move, so one outside is a violation
 /// with that point as the witness (the earliest along the move), and a move
@@ -1204,7 +1205,12 @@ fn check_travel(
     limits: &TipTravel<'_>,
     path: &PreparedCurve,
 ) -> Result<Option<Finding>, String> {
-    let found = crate::travel::curve_outside(&scene.work_to_machine, &limits.travel, path)?;
+    let found = crate::travel::curve_outside(
+        &scene.work_to_machine,
+        &limits.travel,
+        path,
+        crate::travel::ArcGap::Planned,
+    )?;
     Ok(found.map(|found| Finding {
         status: Status::Violation,
         kind: FindingKind::MachineTravel,

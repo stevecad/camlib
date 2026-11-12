@@ -217,7 +217,7 @@ fn an_arc_is_held_to_its_own_representation() {
     // travel allowance.
     let refusal = both(&frame, &arc(1e-6)).unwrap_err();
     assert!(
-        refusal.contains("machine Y") && refusal.contains("above"),
+        refusal.contains("machine Y") && refusal.contains("maximum"),
         "{refusal}"
     );
     // The same in a frame turned a quarter about Z: the work -Y side is the
@@ -238,9 +238,58 @@ fn an_arc_is_held_to_its_own_representation() {
     both(&quarter, &arc(0.)).unwrap();
     let refusal = both(&quarter, &arc(1e-6)).unwrap_err();
     assert!(
-        refusal.contains("machine X") && refusal.contains("above"),
+        refusal.contains("machine X") && refusal.contains("maximum"),
         "{refusal}"
     );
+}
+
+#[test]
+fn a_decoded_arc_is_inside_only_by_its_endpoint_gap() {
+    // The plan: an exact half turn whose middle is `inside` below the machine
+    // Y maximum (200). Its words: the same arc with the end `gap` off the
+    // circle drawn from the start about the centre, as rounded words leave
+    // it. The controller's path is only known within that gap of the nominal
+    // circle, so the gap shrinks what the posted check admits.
+    let frame = turned(0., [100., 50., -200.]);
+    let arc = |inside: f64, gap: f64| Curve::Arc {
+        start: [45., 140. - inside, 5.],
+        end: [65., 140. - inside + gap, 5.],
+        center: [55., 140. - inside, 5.],
+        plane: Plane::Xy,
+        sweep_rad: -PI,
+    };
+    // Tangent, and the words are exact: both checks hold it inside.
+    both(&frame, &arc(0., 0.)).unwrap();
+    // Tangent with a gap of 0.0004 mm: the plan is clear, the posted form
+    // is refused, naming the axis, the nominal extreme, the gap, the limit
+    // and the remedies.
+    assert!(!planned(&frame, &arc(0., 0.)));
+    let refusal = posted(&frame, &arc(0., 0.), &arc(0., 4e-4)).unwrap_err();
+    for part in [
+        "decoded arc of tool t1",
+        "machine travel on machine Y",
+        "nominal extreme at 200.000000 mm",
+        "maximum 200.000000 mm",
+        "endpoint gap of 4.000e-4 mm",
+        "more decimals",
+        "gap inside the limit",
+        "lower it to lines",
+    ] {
+        assert!(refusal.contains(part), "{part}: {refusal}");
+    }
+    // Inside the limit by less than the gap: still not shown inside.
+    let refusal = posted(&frame, &arc(3e-4, 0.), &arc(3e-4, 4e-4)).unwrap_err();
+    assert!(refusal.contains("3.000e-4 mm inside"), "{refusal}");
+    // Inside by more than the gap: it posts.
+    posted(&frame, &arc(5e-4, 0.), &arc(5e-4, 4e-4)).unwrap();
+    // The plan check keeps a planned arc's own gap the other way (its arc is
+    // camlib's representation of one curve): a planned gap of 4e-6 mm, the
+    // nominal middle 1e-6 mm beyond, is not shown outside; with no gap it is.
+    assert!(!planned(&frame, &arc(-1e-6, 4e-6)));
+    assert!(planned(&frame, &arc(-1e-6, 0.)));
+    // Those words are never admitted by the posted check.
+    let refusal = posted(&frame, &arc(-1e-6, 0.), &arc(-1e-6, 4e-6)).unwrap_err();
+    assert!(refusal.contains("mm beyond"), "{refusal}");
 }
 
 #[test]

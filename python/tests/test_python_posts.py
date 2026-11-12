@@ -786,6 +786,71 @@ class PythonPosts(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'machine travel on machine X'):
             run(turned, a, out)
 
+    def test_a_decoded_arc_is_inside_travel_only_by_its_endpoint_gap(self):
+        # 246: a decoded arc whose words leave an endpoint gap is not one
+        # curve (controllers reconcile the two radii differently), so the
+        # posted check admits it only when its nominal circle is inside the
+        # limit by the gap. Travel Y 0..200 (machine), work Y 150 at the limit.
+        from camlib.verification import Scene, Verifier
+
+        travel = ((0, 0, -300), (300, 200, -150))
+        start = (5, 0, 3)
+
+        def program(machine, top, to_deg):
+            # Radius 10 about (55, top - 10), clockwise from 180 degrees over the top to `to_deg`.
+            p, m = machine
+            cy, a = top - 10, math.radians(to_deg)
+            begin, end = (45, cy, 3), (55 + 10 * math.cos(a), cy + 10 * math.sin(a), 3)
+            arc = Motion(2, 'pocket', 't1', Arc(begin, end, (55, cy, 3), a - math.pi), 1200)
+            return replace(p, events=(*p.events[:4], Motion(1, 'pocket', 't1', Line(start, begin), 1200), arc)), m, arc
+
+        def planned(m, arc):
+            scene = Scene('mill', '1', machine=m.verification_limits(), work_to_machine=m.work_to_machine)
+            with Verifier(scene) as verifier:
+                return verifier.check(fixture()[0].tools[0], arc)['status']
+
+        def decoded_reach(p, m):
+            # Independent of the checker: the highest work Y the decoded arc's
+            # nominal circle reaches (it passes over the top), plus its gap.
+            (arc,) = [x.curve for c in post_program(p, m) for x in c.motions if isinstance(x.curve, Arc)]
+            radius = math.hypot(arc.start[0] - arc.center[0], arc.start[1] - arc.center[1])
+            angle = math.atan2(arc.start[1] - arc.center[1], arc.start[0] - arc.center[0]) + arc.sweep_rad
+            nominal = (arc.center[0] + radius * math.cos(angle), arc.center[1] + radius * math.sin(angle))
+            gap = math.hypot(nominal[0] - arc.end[0], nominal[1] - arc.end[1])
+            return arc.center[1] + radius + gap, gap
+
+        for decimals in (3, 6):
+            machine = self.machine(tip_travel_mm=travel, work_to_machine=WorkFrame((100, 50, -200)), decimals=decimals)
+            # A half turn tangent to the limit: every word is exact, no gap, it posts.
+            p, m, arc = program(machine, 150, 0)
+            self.assertEqual(planned(m, arc), 'clear')
+            self.assertRegex(''.join(c.text for c in post_program(p, m)), r'G0?2 .*I10')
+            self.assertEqual(decoded_reach(p, m), (150, 0))
+            # Tangent, ending at 60 degrees: the end is not on the output
+            # grid. The plan is clear. Whatever words the post writes, the
+            # program is released only if the decoded arc is inside by its gap:
+            # at three decimals the post's closing words put the arc a few
+            # micrometres inside; at six they leave a gap at the limit.
+            p, m, arc = program(machine, 150, 60)
+            self.assertEqual(planned(m, arc), 'clear')
+            try:
+                reach, gap = decoded_reach(p, m)
+            except ValueError as refused:
+                self.assertRegex(
+                    str(refused),
+                    'decoded arc of tool t1 is not inside configured machine travel on machine Y: its nominal '
+                    'extreme at 200.000000 mm .* maximum 200.000000 mm.* endpoint gap of .*more decimals.*lower it to lines',
+                )
+                self.assertEqual(decimals, 6)
+            else:
+                self.assertLessEqual(reach, 150)
+                self.assertEqual(decimals, 3)
+            # Well inside the limit (by far more than a rounding gap): it posts, inside by its gap.
+            p, m, arc = program(machine, 149.9, 60)
+            reach, gap = decoded_reach(p, m)
+            self.assertLess(gap, 10**-decimals)
+            self.assertLessEqual(reach, 150)
+
     def test_gauge_line_travel_checks_each_decoded_tool_at_its_own_length(self):
         # 176: the gauge line travels Z -400..0 (machine); the work origin is
         # at machine Z -300. The 60 mm tool's tip reaches work Z 240, the

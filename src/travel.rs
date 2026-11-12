@@ -31,12 +31,23 @@
 //!   coordinate is stationary, and the nominal end) is not a declared
 //!   position. The circle is drawn from the start about the centre, and the
 //!   declared end may be off it by the move's endpoint gap, which the motion
-//!   tolerance bounds (`Curve::prepare` refuses a larger one). The executed
-//!   path between the two is not known closer than that gap, so a nominal
-//!   point is outside only beyond `gap + E`, where `gap` is the distance
-//!   between the nominal and the declared end of this move (not the
+//!   tolerance bounds (`Curve::prepare` refuses a larger one). `gap` is the
+//!   distance between the nominal and the declared end of this move (not the
 //!   tolerance), and `E` bounds the evaluation of a circle point (below).
-//!   The declared ends of the arc stay exact.
+//!   The declared ends of the arc stay exact. What the gap means depends on
+//!   whose arc it is (`ArcGap`):
+//!   - **A planned arc** is camlib's own representation: the nominal circle
+//!     and the declared end describe one intended curve to within the gap,
+//!     so a nominal point is outside only beyond `gap + E`. With no gap a
+//!     nominal point is held to `E` alone, as exactly as a line.
+//!   - **A decoded arc** is what a controller will execute, and controllers
+//!     differ in how they reconcile a start radius and an end radius that
+//!     disagree (one averages them, one spirals between them, one keeps the
+//!     centre and corrects at the end). The executed path is only known to
+//!     lie within the gap of the nominal circle, so the move is inside only
+//!     when every nominal point is inside by the gap: it is refused when it
+//!     is beyond `E - gap`. The gap shrinks what is admissible; it is never
+//!     an allowance. A gap below `E` is not distinguishable from none.
 //!
 //! A machine coordinate of a move is extreme at an end or where it is
 //! stationary, so a move is inside exactly when those points are: a line has
@@ -104,19 +115,34 @@ pub(crate) struct Outside {
     pub limit_mm: f64,
     /// How far beyond the limit the position is evaluated to be.
     pub beyond_mm: f64,
-    /// The evaluation bound that distance exceeds.
+    /// The bound that distance exceeds (for a decoded arc's nominal point
+    /// it is negative by the arc's gap: the point must be that far inside).
     pub guard_mm: f64,
+    /// For a point of an arc's nominal circle: the arc's endpoint gap.
+    pub nominal_gap_mm: Option<f64>,
 }
 
-/// `point` (work coordinates) against the travel. `slack` is zero for a
-/// declared position and the nominal-circle allowance for a point of an arc.
+/// Whose arc a nominal circle belongs to: see the module documentation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ArcGap {
+    /// camlib's planned move: outside only beyond the gap.
+    Planned,
+    /// A move decoded from posted words: inside only by the gap.
+    Executed,
+}
+
+/// `point` (work coordinates) against the travel. `nominal` is `None` for a
+/// declared position; for a point of an arc's nominal circle it is the arc's
+/// gap and the allowance beyond a declared position (which is negative when
+/// the point must be inside by the gap).
 fn outside(
     frame: &WorkFrame,
     travel: &Travel,
     fraction: f64,
     point: Vec3,
-    slack: f64,
+    nominal: Option<(f64, f64)>,
 ) -> Option<Outside> {
+    let slack = nominal.map_or(0., |(_, slack)| slack);
     let machine = frame.to_design(point);
     let mut worst: Option<Outside> = None;
     for axis in 0..3 {
@@ -127,7 +153,7 @@ fn outside(
         let magnitude =
             frame.origin_mm[axis].abs() + (0..3).map(|j| (point[j] * row[j]).abs()).sum::<f64>();
         let transform = 5. * U * magnitude + f64::MIN_POSITIVE;
-        let nominal = slack * row[0].hypot(row[1]).hypot(row[2]);
+        let allowance = slack * row[0].hypot(row[1]).hypot(row[2]);
         for (low, limit) in [(true, travel.min[axis]), (false, travel.max[axis])] {
             // The difference of two numbers within a factor of two of each
             // other is exact (Sterbenz), and farther apart it exceeds any
@@ -142,7 +168,7 @@ fn outside(
             } else {
                 0.
             };
-            let guard = transform + derived + nominal;
+            let guard = transform + derived + allowance;
             if beyond > guard && worst.is_none_or(|w| beyond > w.beyond_mm) {
                 worst = Some(Outside {
                     fraction,
@@ -153,6 +179,7 @@ fn outside(
                     limit_mm: limit,
                     beyond_mm: beyond,
                     guard_mm: guard,
+                    nominal_gap_mm: nominal.map(|(gap, _)| gap),
                 });
             }
         }
@@ -162,12 +189,12 @@ fn outside(
 
 /// A declared position (exact) against the travel.
 pub(crate) fn point_outside(frame: &WorkFrame, travel: &Travel, point: Vec3) -> Option<Outside> {
-    outside(frame, travel, 0., point, 0.)
+    outside(frame, travel, 0., point, None)
 }
 
-/// What a point of the nominal circle of an arc or helix is allowed beyond a
-/// declared position: the move's endpoint gap, plus the bound `E` on the
-/// evaluation of the point by `PreparedCurve::position`/`nominal_end`.
+/// For a point of the nominal circle of an arc or helix: the move's endpoint
+/// gap, and the bound `E` on the evaluation of the point by
+/// `PreparedCurve::position`/`nominal_end`.
 ///
 /// With radius `r`, in-plane centre `c`, start angle `a` and sweep `s`, an
 /// in-plane coordinate is `c + r cos(a + t s)`, evaluated with:
@@ -182,9 +209,9 @@ pub(crate) fn point_outside(frame: &WorkFrame, travel: &Travel, point: Vec3) -> 
 /// start)`). The library functions are taken at the 1 ULP glibc documents
 /// for them (glibc manual, "Known Maximum Errors in Math Functions"), which
 /// is not a guarantee of the language, so twice the sum is used.
-fn nominal_slack(path: &PreparedCurve) -> f64 {
+fn nominal_gap_and_evaluation(path: &PreparedCurve) -> (f64, f64) {
     match *path.curve() {
-        Curve::Line { .. } => 0.,
+        Curve::Line { .. } => (0., 0.),
         Curve::Arc {
             start,
             end,
@@ -209,24 +236,33 @@ fn nominal_slack(path: &PreparedCurve) -> f64 {
                     + center[u].abs()
                     + center[v].abs()
                     + 3. * (start[w].abs() + end[w].abs()));
-            gap + evaluation
+            (gap, evaluation)
         }
     }
 }
 
 /// A whole move against the travel: the earliest point of it that is
-/// outside, or `None` when the move is inside (limits included).
+/// outside (or, for a decoded arc, not inside by its gap), or `None` when the
+/// move is inside (limits included).
 pub(crate) fn curve_outside(
     frame: &WorkFrame,
     travel: &Travel,
     path: &PreparedCurve,
+    arcs: ArcGap,
 ) -> Result<Option<Outside>, String> {
     let curve = path.curve();
-    if let Some(found) = outside(frame, travel, 0., curve.start(), 0.) {
+    if let Some(found) = outside(frame, travel, 0., curve.start(), None) {
         return Ok(Some(found));
     }
     if !matches!(curve, Curve::Line { .. }) {
-        let slack = nominal_slack(path);
+        let (gap, evaluation) = nominal_gap_and_evaluation(path);
+        let nominal = Some((
+            gap,
+            match arcs {
+                ArcGap::Planned => evaluation + gap,
+                ArcGap::Executed => evaluation - gap,
+            },
+        ));
         let mut fractions = Vec::new();
         for axis in 0..3 {
             fractions.extend(path.stationary_fractions([
@@ -238,20 +274,17 @@ pub(crate) fn curve_outside(
         fractions.sort_by(f64::total_cmp);
         for fraction in fractions {
             // At fraction 0 or 1 `position` returns the declared end.
-            let slack = if fraction > 0. && fraction < 1. {
-                slack
-            } else {
-                0.
-            };
-            if let Some(found) = outside(frame, travel, fraction, path.position(fraction)?, slack) {
+            let nominal = nominal.filter(|_| fraction > 0. && fraction < 1.);
+            if let Some(found) = outside(frame, travel, fraction, path.position(fraction)?, nominal)
+            {
                 return Ok(Some(found));
             }
         }
-        if let Some(found) = outside(frame, travel, 1., path.nominal_end(), slack) {
+        if let Some(found) = outside(frame, travel, 1., path.nominal_end(), nominal) {
             return Ok(Some(found));
         }
     }
-    Ok(outside(frame, travel, 1., curve.end(), 0.))
+    Ok(outside(frame, travel, 1., curve.end(), None))
 }
 
 #[cfg(test)]
@@ -358,8 +391,10 @@ mod tests {
         };
         let travel = Travel::tip([-10., -10., -10.], [10., 15., 10.]);
         let frame = WorkFrame::identity();
-        let check =
-            |curve: Curve| curve_outside(&frame, &travel, &curve.prepare(1e-5).unwrap()).unwrap();
+        let decide = |curve: Curve, arcs: ArcGap| {
+            curve_outside(&frame, &travel, &curve.prepare(1e-5).unwrap(), arcs).unwrap()
+        };
+        let check = |curve: Curve| decide(curve, ArcGap::Planned);
         // Tangent: on the limit, inside.
         assert!(check(arc(10., 0.)).is_none());
         // An exact arc 1e-6 mm beyond is outside at its middle: the motion
@@ -375,10 +410,29 @@ mod tests {
         assert!((found.guard_mm - 4e-6).abs() < 1e-9, "{found:?}");
         // The declared ends stay exact whatever the gap: an end 1e-6 mm
         // beyond a limit is outside.
-        let ends = Travel::tip([-5., -10., -10.], [5. - 1e-6, 15., 10.]);
+        let ends = Travel::tip([-5., -10., -10.], [5. - 1e-6, 16., 10.]);
         let prepared = arc(10., 4e-6).prepare(1e-5).unwrap();
-        let found = curve_outside(&frame, &ends, &prepared).unwrap().unwrap();
-        assert_eq!((found.axis, found.low, found.fraction), (0, false, 1.));
-        assert!(found.guard_mm < 1e-12);
+        for arcs in [ArcGap::Planned, ArcGap::Executed] {
+            let found = curve_outside(&frame, &ends, &prepared, arcs)
+                .unwrap()
+                .unwrap();
+            assert_eq!((found.axis, found.low, found.fraction), (0, false, 1.));
+            assert!(found.guard_mm.abs() < 1e-12);
+            assert!(found.nominal_gap_mm.is_none());
+        }
+        // A decoded arc: the controller's path is only known within the gap
+        // of the nominal circle, so the gap shrinks what is admissible.
+        let executed = |curve: Curve| decide(curve, ArcGap::Executed);
+        // No gap: tangent is inside, 1e-6 mm beyond is outside.
+        assert!(executed(arc(10., 0.)).is_none());
+        assert!(executed(arc(10. + 1e-6, 0.)).is_some());
+        // A 4e-6 mm gap: tangent is not shown inside, nor is 3e-6 mm inside
+        // the limit; 5e-6 mm inside is.
+        let found = executed(arc(10., 4e-6)).unwrap();
+        assert_eq!((found.axis, found.low), (1, false));
+        assert!((found.nominal_gap_mm.unwrap() - 4e-6).abs() < 1e-9);
+        assert!((found.guard_mm + 4e-6).abs() < 1e-9, "{found:?}");
+        assert!(executed(arc(10. - 3e-6, 4e-6)).is_some());
+        assert!(executed(arc(10. - 5e-6, 4e-6)).is_none());
     }
 }

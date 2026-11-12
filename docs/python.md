@@ -180,15 +180,29 @@ disagree about a position on a limit:
   on machine Z with gauge-line travel. A line end 1e-6 mm beyond a limit is a
   violation. `Options.tolerance_mm` and the post's `tolerance_mm` are not
   travel allowances.
-- **An arc or helix keeps what its representation needs.** Besides its two
+- **An arc or helix is tested on its nominal circle too.** Besides its two
   declared ends (exact), it is tested where each machine coordinate of its
   nominal circle is extreme, and at the nominal end. The nominal circle is
   drawn from the start about the centre, and the declared end may be off it by
-  the move's own endpoint gap, which the motion tolerance bounds. Those
-  nominal points are outside only beyond that gap (the gap of this move, not
-  the tolerance) plus the evaluation bound of a circle point (about 1e-13 mm
-  for a 10 mm radius). An arc whose end lies on its circle is held as exactly
-  as a line.
+  the move's own endpoint gap (the gap of this move, not the tolerance, which
+  only bounds it). What the gap means depends on whose arc it is:
+  - *A planned arc* is camlib's own representation of one curve, known to
+    within its gap: a nominal point is a violation only beyond the gap plus
+    the evaluation bound of a circle point (about 1e-13 mm for a 10 mm
+    radius). A planned arc whose end lies on its circle is held as exactly as
+    a line.
+  - *A decoded arc* is what the controller will execute, and controllers
+    reconcile a start radius and an end radius that disagree in different
+    ways (averaging them, spiralling between them, keeping the centre). The
+    executed path is only known to lie within the gap of the nominal circle,
+    so the posted check admits the arc only when every nominal extreme is
+    inside the limit by the gap. The gap shrinks what is admissible; it is
+    never an allowance. So an arc exactly tangent to a limit is clear in the
+    plan check and posts when its words are exact (no gap), and is refused
+    when rounding leaves any gap. The refusal names the axis, the nominal
+    extreme, the gap and the limit; the remedies are more decimals, keeping
+    the arc the gap inside the limit, or a
+    machine without arcs, whose arcs are lowered to lines.
 - **The posted program is held to its decoded words.** The controller
   executes the words, rounded to the machine's `decimals`, and stops on its
   travel limit (LinuxCNC `MIN_LIMIT`/`MAX_LIMIT`; FANUC stored stroke check 1,

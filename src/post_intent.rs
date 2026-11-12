@@ -394,6 +394,20 @@ impl IntentChecker {
     fn travel_refusal(&self, found: &crate::travel::Outside, tool: Option<&str>) -> String {
         let axis = ["X", "Y", "Z"][found.axis];
         let k = found.axis;
+        if let Some(gap) = found.nominal_gap_mm {
+            // A point of a decoded arc's nominal circle, not a decoded end.
+            let side = if found.low { "minimum" } else { "maximum" };
+            let (at, limit) = (found.machine_mm[k], found.limit_mm);
+            let tool = tool.unwrap_or("?");
+            let state = if found.beyond_mm > 0. {
+                format!("{:.3e} mm beyond", found.beyond_mm)
+            } else {
+                format!("{:.3e} mm inside", found.beyond_mm.abs())
+            };
+            return format!(
+                "decoded arc of tool {tool} is not inside configured machine travel on machine {axis}: its nominal extreme at {at:.6} mm is {state} the tip's travel {side} {limit:.6} mm, and its words leave an endpoint gap of {gap:.3e} mm (the end is that far off the circle drawn from the start about the centre). Controllers reconcile the two radii differently, so the executed path is only known within the gap of the nominal circle and must be inside the limit by the gap. Write the arc with more decimals, keep it the gap inside the limit, or lower it to lines (a machine with arcs=False, posted with lowering)"
+            );
+        }
         let subject = match (self.settings.gauge_travel_mm, tool) {
             (Some([min, max]), Some(tool)) => {
                 let length = self.gauge_lengths.get(tool).copied().unwrap_or(0.);
@@ -437,7 +451,15 @@ impl IntentChecker {
             return Ok(());
         };
         let path = curve.prepare(self.settings.tolerance_mm)?;
-        match crate::travel::curve_outside(&self.settings.work_to_machine, &travel, &path)? {
+        // A decoded arc is inside only by its endpoint gap: the controller's
+        // path between a start and an end radius that disagree is not known
+        // closer than that (`travel::ArcGap::Executed`).
+        match crate::travel::curve_outside(
+            &self.settings.work_to_machine,
+            &travel,
+            &path,
+            crate::travel::ArcGap::Executed,
+        )? {
             Some(found) => Err(self.travel_refusal(&found, Some(tool))),
             None => Ok(()),
         }
