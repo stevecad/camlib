@@ -69,8 +69,12 @@ envelope. Camlib does not infer it from sampled rotary positions. The declared
 route must finish at the independently decoded tool-change tip/gauge pose.
 
 Milling tool/holder outer enclosures come from the existing `ToolAssembly`;
-`body_solids` must be empty. Native turning geometry shares the planner's hand,
-seat, bore and controlled-point transforms. For curved face-grooving tools,
+`body_solids` must be empty (a holder given as a model reaches the assembly as
+its swept envelope: `camlib.tools.holder_sections_from_mesh`). Native turning
+geometry shares the planner's hand,
+seat, bore and controlled-point transforms; a turning holder given as a model
+([Tool bodies from a model](operations.md#tool-bodies-from-a-model)) is
+enclosed by the box of each of its slices. For curved face-grooving tools,
 whose axisymmetric stock envelope does not locate the physical blade in 3D,
 supply a complete tip-relative convex `body_solids` enclosure. Such custom
 bodies are checked against stock conservatively too: their overlap cannot be

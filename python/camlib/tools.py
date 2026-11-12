@@ -358,6 +358,40 @@ class HolderSection:
     radius_max_mm: float
 
 
+def holder_sections_from_mesh(mesh, *, tip_mm, axis, stickout_mm, gauge_length_mm, axial_resolution_mm):
+    """A milling holder's envelope from its model (#110): the
+    ``HolderSection`` cylinders of a ``ToolAssembly`` from ``stickout_mm``
+    up to ``gauge_length_mm``.
+
+    A holder turns with the spindle, so what is checked is the solid its
+    model sweeps about the tool axis. ``mesh``: a ``SurfaceMesh`` of the
+    holder (a closed surface in the model's own coordinates; e.g.
+    ``camlib.cadquery.step_mesh``). Its placement is declared: ``tip_mm``,
+    the model point of the tool tip on the axis, and ``axis``, the model's
+    unit direction from the tip toward the spindle. Each slice of
+    ``axial_resolution_mm`` along the axis becomes a cylinder of the largest
+    radius the model reaches in it, the mesh's ``surface_error_mm`` added
+    (along the axis too), so the envelope contains the turning holder and
+    over-estimates it along the axis by less than one slice.
+
+    Refused: a model that starts below ``stickout_mm`` (the declared
+    stickout is then wrong), one that does not span the range, an open
+    mesh. The model above the gauge plane (the taper in the spindle) is not
+    part of the assembly."""
+    import json
+
+    from ._buffers import native
+
+    rows = native.holder_envelope_from_mesh(
+        json.dumps(mesh.to_dict()),
+        [float(v) for v in tip_mm],
+        [float(v) for v in axis],
+        [float(stickout_mm), float(gauge_length_mm)],
+        float(axial_resolution_mm),
+    )
+    return tuple(HolderSection(z0, z1, radius, radius) for z0, z1, radius in rows)
+
+
 @dataclass(frozen=True)
 class ToolAssembly:
     id: str

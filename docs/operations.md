@@ -1640,6 +1640,8 @@ roughing setup its allowance.
     outside, a shank behind the insert's reach; boring, an axial bar
     `width_mm` across, its top `offset_mm` under the nose center,
     `length_mm` out of the bore.
+  - Holders from the maker's model (#110): `TurningHolder.from_model(model)`
+    with a `TurningToolModel`; see [Tool bodies from a model](#tool-bodies-from-a-model).
   - The body off the centre plane (#103), required for every tool: a
     point of the tool at x out and y across the plane lies at radius
     √(x² + y²), so in a bore a thick insert's heel reaches past its
@@ -1812,6 +1814,133 @@ roughing setup its allowance.
   move then carries the per-revolution feed times the highest spindle speed
   along it (the move's least radius), which the program validator
   recomputes. Threading and drilling run at a fixed rpm.
+
+#### Tool bodies from a model
+
+A grooving blade's carrier, a modified boring bar, a holder with a clamp or
+a coolant block that sticks out: no outline or code describes them, and
+their maker's 3D model is the body to check. `TurningToolModel` is that
+body; the tool takes it as its holder (`TurningHolder.from_model(model)`),
+and every check that used the holder outline's body (against the part, its
+bore, the chuck and the stock left after each cut) uses the model's.
+
+```python
+import camlib
+from camlib.cadquery import step_solids, tool_body_from_step
+
+# Which solids of the file are the insert? (order of step_solids(path))
+model = tool_body_from_step(
+    "holder.step",
+    max_error_mm=0.005,
+    placement=camlib.TurningModelPlacement(
+        nose_center_mm=(100, 50, 20),   # the model point of the nose centre
+        x_axis=(0, -1, 0),              # the lathe's +X in the model
+        z_axis=(1, 0, 0),               # the lathe's +Z in the model
+    ),
+    axial_resolution_mm=0.25,
+    insert_solids=(2,),
+    corner_region_mm=1.0,
+    position_tolerance_mm=0.02,
+    nose_radius_tolerance_mm=0.02,
+    edge_angle_tolerance_deg=0.25,
+)
+tool = camlib.TurningTool("groove2", insert=camlib.GrooveInsert(2, 22), nose_radius_mm=0.2,
+                          side="outer", hand="right",
+                          holder=camlib.TurningHolder.from_model(model),
+                          seat=camlib.TurningSeat(0, 0), insert_thickness_mm=3,
+                          insert_clearance_deg=7)
+tool.validate()   # the meshes, the placement and the insert cross-check
+```
+
+- **The engine takes a mesh, never STEP.** `TurningToolModel(body=,
+  placement=, axial_resolution_mm=, insert_check=)`: `body` is a
+  `SurfaceMesh` (the input type of parts) in the model's own coordinates.
+  `camlib.cadquery.tool_body_from_step` (and `tool_body_from_shape` for
+  CadQuery solids) reads the file with CadQuery/OpenCascade and tessellates
+  each solid within `max_error_mm`; a mesh from any other kernel works the
+  same way.
+- **What the model is.** `body` is the tool away from the cut: holder, bar,
+  shim, clamp, coolant block, without the insert. The insert stays the
+  declared one (ISO code, outline or blade, with its thickness, clearance
+  and seat): its exact outline is what cuts, and a mesh known only to its
+  error cannot certify a contact at the cutting edge more closely than that
+  error. Insert material left in `body` meets the stock at the edge and is
+  refused there ("the holder would hit the stock"): name the insert's
+  solids in `insert_solids`. An insert fused with its holder in one solid
+  cannot be told apart; split the solid in CAD.
+- **Placing a model.** A maker's model has its origin and axes anywhere, so
+  the placement is declared and nothing is assumed or fitted:
+  `TurningModelPlacement(nose_center_mm=, x_axis=, z_axis=)` gives the
+  model point that is the nose centre on the cutting face (a drill: its tip
+  on the axis) and the model's unit directions of the lathe's +X (radial,
+  away from the spindle axis on the tool's side) and +Z, as the tool is
+  mounted. Y completes the right-handed frame (Y = Z x X): the cutting face
+  looks toward +Y. A frame given at the theoretical tip (the sharp corner
+  the offsets are touched off with) is one nose radius from the nose centre
+  along X and along Z. A left-hand or boring tool is placed as it really
+  sits: no mirroring is applied to a model.
+- **The cross-check.** A model placed wrongly is checked in the wrong
+  place. Where the model has the insert (`insert_solids`, or
+  `TurningModelInsertCheck(insert=mesh, ...)`), its cutting corner must
+  agree with the declared insert's body, both measured the same way within
+  `corner_region_mm` of the nose centre along X and Z (at least two nose
+  radii; small enough that only the insert is in it), on the declared
+  insert's cutting face as its seat tilts it (so the model must be drawn
+  on its seat, and the comparison does not depend on the insert's thickness
+  or clearance below the face):
+  - the nose radius, from three supports across the nose arc, within
+    `nose_radius_tolerance_mm`;
+  - the direction of each straight edge at the corner, from the model's
+    reach across the edge at two stations along it, within
+    `edge_angle_tolerance_deg`;
+  - the position of the corner, from its reach in every direction in which
+    the declared corner is outermost, along the cutting face and raised 45
+    degrees from it (the centre height), within `position_tolerance_mm`.
+
+  A model outside one is refused before any move, with what was measured
+  ("its model's cutting corner is 0.5000 mm beyond the declared insert's
+  toward (X ..., Y ..., Z ...)"): it is misplaced or a different insert,
+  and camlib does not align it. The tolerances have no defaults and must
+  cover the insert mesh's own error. A model without its insert cannot be
+  compared: `without_insert_reason=` (`TurningModelWithoutInsert(reason=)`)
+  states where its placement comes from, and the check is then the
+  caller's.
+- **The errors a model adds**, all on the safe side (the checked body
+  contains the real one; a tight fit may be refused, never passed):
+  - `surface_error_mm`: every point of the real surface lies within it of
+    the mesh. The body is grown by a cube of that half-size, so it reaches
+    up to that much farther along X, Y and Z (up to √3 times it at a
+    corner).
+  - `axial_resolution_mm`: the body is checked in slices across Z of this
+    width. In a bore each slice is as large across as the body gets
+    anywhere in it (its convex section, which loses nothing: only the
+    largest radius can meet a bore wall); outside, each slice is the convex
+    hull of its projection on XZ. The body is over-estimated along Z by
+    less than one slice (inside), or by the hollows of its underside within
+    one slice (outside). A neck, a relief behind the head or a block far
+    along the bar stay as they are: the model is not replaced by its hull.
+  - The mesh must be a closed surface. Faces tessellated separately need
+    not share vertices: an edge with no face on its other side within
+    twice the mesh's error is refused as open; camlib does not repair it.
+  - The stated error is the caller's: `export_surface_mesh` bounds it for
+    planar and analytic faces and refuses surfaces it cannot bound.
+- The checks run on the slices, not the triangles. A model is reduced once
+  (and kept: a run asks for a tool's body at every operation); consecutive
+  slices of one section are one prism, so a straight bar is a single piece
+  however many triangles run along it. A move's work then grows with the
+  prisms' vertices: the facets round each distinct section. A coarser
+  `axial_resolution_mm` or tessellation gives fewer.
+
+Milling holders have the same need. A holder turns with the spindle, so the
+body to check is what its model sweeps about the tool axis:
+`camlib.tools.holder_sections_from_mesh(mesh, tip_mm=, axis=, stickout_mm=,
+gauge_length_mm=, axial_resolution_mm=)` returns the `HolderSection`
+cylinders of a `ToolAssembly` (per slice along the axis, the largest radius
+the model reaches, the mesh's error added), from a mesh such as
+`camlib.cadquery.step_mesh(path, max_error_mm=)` with its declared
+placement (the model point of the tool tip and the unit direction of the
+axis toward the spindle). A model that starts below the declared stickout,
+does not span the range, or is open is refused.
 
 A lathe setup posts (`job.post_nc`, `job.post`) with any `Machine` whose `planes` include `"xz"`: arcs
 are written in G18. `GCodeDialect(x_diameter=True)` writes X as a diameter

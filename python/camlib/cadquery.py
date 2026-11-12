@@ -1352,6 +1352,159 @@ def flow_paths(face, *, stepover_mm, along="u", sample_mm=0.5, zigzag=True):
     return tuple(paths)
 
 
+def _solids_mesh(solids, max_error_mm, source, cancel):
+    """One ``SurfaceMesh`` of several solids, each exported with its checked
+    error (``export_surface_mesh``); the mesh's error is the largest."""
+    from .surface import SurfaceMesh
+
+    triangles, error = [], 0.0
+    for solid in solids:
+        mesh = export_surface_mesh(solid, max_error_mm=max_error_mm, cancel=cancel)
+        triangles.extend(mesh.triangles)
+        error = max(error, mesh.surface_error_mm)
+    return SurfaceMesh(triangles, error, dict(source, solids=len(solids), triangle_count=len(triangles)))
+
+
+def _model_solids(shape):
+    import cadquery as cq
+
+    if isinstance(shape, cq.Workplane):
+        shapes = shape.vals()
+    elif isinstance(shape, cq.Shape):
+        shapes = [shape]
+    else:
+        shapes = list(shape)
+    solids = [solid for item in shapes if isinstance(item, cq.Shape) for solid in item.Solids()]
+    if not solids or any(not solid.isValid() for solid in solids):
+        raise ValueError(
+            "a tool model needs valid solids: a surface or wireframe model has no body to check "
+            "(camlib does not close or repair it)"
+        )
+    return solids
+
+
+def step_solids(path):
+    """The solids of a STEP file, in the file's order and coordinates (mm),
+    read by CadQuery/OpenCascade. camlib's engine reads no CAD file: this
+    adapter does."""
+    import cadquery as cq
+
+    return tuple(_model_solids(cq.importers.importStep(str(path))))
+
+
+def step_mesh(path, *, max_error_mm, solids=None, cancel=None):
+    """A STEP file's solids (all, or those at the indices ``solids``) as one
+    ``SurfaceMesh`` in the file's coordinates, tessellated within
+    ``max_error_mm`` (the mesh carries the error actually bounded): e.g. a
+    milling holder for ``camlib.tools.holder_sections_from_mesh``."""
+    found = step_solids(path)
+    chosen = found if solids is None else [found[i] for i in _solid_indices(solids, len(found), "solids")]
+    return _solids_mesh(chosen, max_error_mm, dict(adapter="step_solids_v1", file=Path(path).name), cancel)
+
+
+def _solid_indices(indices, count, what):
+    indices = tuple(indices)
+    if any(type(i) is not int or not 0 <= i < count for i in indices) or len(set(indices)) != len(indices):
+        raise ValueError(f"{what} must be distinct indices of the model's {count} solid(s) (0..{count - 1})")
+    return indices
+
+
+def tool_body_from_shape(
+    shape,
+    *,
+    max_error_mm,
+    placement,
+    axial_resolution_mm,
+    insert_solids,
+    corner_region_mm=None,
+    position_tolerance_mm=None,
+    nose_radius_tolerance_mm=None,
+    edge_angle_tolerance_deg=None,
+    without_insert_reason=None,
+    source=None,
+    cancel=None,
+):
+    """A turning tool's body (``camlib.TurningToolModel``) from CadQuery
+    solids: a shape, a Workplane or a sequence of them, in the model's own
+    coordinates.
+
+    ``max_error_mm``: every solid is tessellated within it (the meshes carry
+    the error actually bounded, which the checks grow onto the body).
+    ``placement``: a ``camlib.TurningModelPlacement`` (where the nose centre
+    is and how the model is turned on the lathe; nothing is assumed or
+    fitted). ``axial_resolution_mm``: the width of the slices across Z the
+    body is checked in. ``insert_solids``: the indices of the solids that
+    are the insert, in the order ``shape.Solids()`` gives them (``()`` for a
+    model without its insert). The other solids are the body.
+
+    With an insert, its cutting corner is cross-checked against the tool's
+    declared insert, and ``corner_region_mm``, ``position_tolerance_mm``,
+    ``nose_radius_tolerance_mm`` and ``edge_angle_tolerance_deg`` are all
+    required (``camlib.TurningModelInsertCheck``). Without one,
+    ``without_insert_reason`` states where the placement comes from. An
+    insert fused with its holder in one solid cannot be told apart: split
+    the solid in CAD."""
+    from .turning import ModelInsertCheck, ModelPlacement, ModelWithoutInsert, ToolModel
+
+    if not isinstance(placement, ModelPlacement):
+        raise TypeError("placement must be a camlib.TurningModelPlacement: camlib assumes no placement")
+    solids = _model_solids(shape)
+    chosen = _solid_indices(insert_solids, len(solids), "insert_solids")
+    body = [solid for i, solid in enumerate(solids) if i not in chosen]
+    if not body:
+        raise ValueError("every solid is the insert: a tool model needs the body away from the cut (its holder)")
+    source = dict(source or {}, adapter="tool_model_solids_v1")
+    tolerances = dict(
+        corner_region_mm=corner_region_mm,
+        position_tolerance_mm=position_tolerance_mm,
+        nose_radius_tolerance_mm=nose_radius_tolerance_mm,
+        edge_angle_tolerance_deg=edge_angle_tolerance_deg,
+    )
+    if chosen:
+        missing = [name for name, value in tolerances.items() if value is None]
+        if missing or without_insert_reason is not None:
+            raise TypeError(
+                "a model with its insert is cross-checked against the declared insert: give "
+                + ", ".join(missing or tolerances)
+                + " (camlib has no default tolerance) and no without_insert_reason"
+            )
+        check = ModelInsertCheck(
+            insert=_solids_mesh([solids[i] for i in chosen], max_error_mm, dict(source, part="insert"), cancel),
+            **tolerances,
+        )
+    else:
+        if without_insert_reason is None or any(value is not None for value in tolerances.values()):
+            raise TypeError(
+                "a model without its insert (insert_solids=()) cannot be cross-checked: give "
+                "without_insert_reason (where its placement comes from) and no insert tolerances, "
+                "or name the insert's solids"
+            )
+        check = ModelWithoutInsert(reason=without_insert_reason)
+    return ToolModel(
+        body=_solids_mesh(body, max_error_mm, dict(source, part="body"), cancel),
+        placement=placement,
+        axial_resolution_mm=axial_resolution_mm,
+        insert_check=check,
+    )
+
+
+def tool_body_from_step(path, *, max_error_mm, placement, axial_resolution_mm, insert_solids, **check):
+    """A turning tool's body (``camlib.TurningToolModel``) from its maker's
+    STEP file: CadQuery/OpenCascade reads it and tessellates each solid
+    within ``max_error_mm``; see ``tool_body_from_shape`` for every value
+    (``insert_solids`` indexes ``step_solids(path)``). Use it with
+    ``camlib.TurningHolder.from_model(model)``."""
+    check.setdefault("source", dict(file=Path(path).name))
+    return tool_body_from_shape(
+        step_solids(path),
+        max_error_mm=max_error_mm,
+        placement=placement,
+        axial_resolution_mm=axial_resolution_mm,
+        insert_solids=insert_solids,
+        **check,
+    )
+
+
 @dataclass(frozen=True)
 class TurnSection:
     """A turned part's half-section for a lathe setup (``camlib.TurningSetup.from_section``): ``profile``

@@ -634,6 +634,18 @@ fn outside(bore: &Envelope, polygon: &[[f64; 2]], tol: f64) -> f64 {
         .max(bore.excess(&mirrored(polygon), tol))
 }
 
+/// Check a turning tool on its own: its declared values, and with a
+/// supplied model (#110) its meshes, placement and insert cross-check (the
+/// checks every plan runs before the tool's first move).
+pub fn validate_tool(tool: &TurningTool) -> Result<(), String> {
+    tool.validate()?;
+    if tool.body.as_ref().is_some_and(|b| b.model.is_some()) {
+        // The cross-check does not depend on the controlled point.
+        tool_geometry(tool, ControlledPoint::NoseCenter)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn tool_geometry(
     t: &TurningTool,
     controlled_point: ControlledPoint,
@@ -670,7 +682,15 @@ pub(crate) fn tool_geometry(
             })
             .collect::<Vec<_>>()
     };
-    let (insert_body, holder_body) = (mapped3(insert_body), mapped3(holder_body));
+    let (insert_body, mut holder_body) = (mapped3(insert_body), mapped3(holder_body));
+    // A supplied model (#110) is the body away from the cut: placed as the
+    // tool is mounted (no mirroring), cross-checked against the declared
+    // insert, and checked in place of the holder outline's body.
+    if let Some(model) = t.body.as_ref().and_then(|b| b.model.as_ref()) {
+        let drill = matches!(t.insert, super::tool::Insert::Drill { .. });
+        model.check_insert(&t.id, &insert_body, t.nose_radius_mm, drill)?;
+        holder_body = model.pieces(&t.id, boring || drill)?;
+    }
     let flanks = body
         .flanks
         .into_iter()
@@ -919,8 +939,19 @@ impl Planner<'_> {
             let face = swept(&tool.insert);
             let insert_proj = image(&tool.insert_body, false);
             let insert_rad = image(&tool.insert_body, true);
-            let holder_proj = image(&tool.holder_body, false);
-            let holder_rad = image(&tool.holder_body, true);
+            // The holder's image the checks use: radial for a tool in a
+            // bore, the projection for every other (only an insert's checks
+            // read both).
+            let holder_proj = if tool.inner {
+                vec![]
+            } else {
+                image(&tool.holder_body, false)
+            };
+            let holder_rad = if tool.inner {
+                image(&tool.holder_body, true)
+            } else {
+                holder_proj.clone()
+            };
             // Drills and boring tools work in a bore: material lies beyond
             // them.
             let (insert, holder) = if tool.inner {
@@ -3688,6 +3719,7 @@ mod tests {
             holder_y_mm: if inner { [-1.5, 1.] } else { [-10., 2.] },
             bar_axis_y_mm: 0.,
             solid_bar: None,
+            model: None,
         }
     }
     fn rebuild_holder(tool: &mut TurningTool, width: f64, length: f64, offset: f64) {
@@ -5690,5 +5722,354 @@ test_tool("groove_in".into(), Insert::Groove { width_mm: 3.,
             }
         }
         plan(&deep).unwrap();
+    }
+
+    /// Tool bodies from supplied models (#110).
+    mod model_bodies {
+        use super::*;
+        use crate::turning::model::{InsertCheck, ModelBody, testing::*};
+
+        type V3 = [f64; 3];
+
+        fn bounds(pieces: &[Vec<V3>]) -> (V3, V3) {
+            pieces.iter().flatten().fold(
+                ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]),
+                |(lo, hi), p| {
+                    (
+                        std::array::from_fn(|k| lo[k].min(p[k])),
+                        std::array::from_fn(|k| hi[k].max(p[k])),
+                    )
+                },
+            )
+        }
+        fn geometry(tool: &TurningTool) -> ToolGeom {
+            tool_geometry(tool, ControlledPoint::Tip).unwrap()
+        }
+        fn with_model(job: &TurningJob, index: usize, model: ModelBody) -> TurningJob {
+            let mut j = job.clone();
+            j.tools[index].tool.body.as_mut().unwrap().model = Some(model);
+            j
+        }
+        /// The declared insert as a model would draw it: its outline on the
+        /// cutting face, straight down by its thickness, moved by `shift`
+        /// (u, v, y) and turned by `turn_deg` about y through the nose
+        /// centre.
+        fn insert_model(tool: &TurningTool, shift: V3, turn_deg: f64) -> Vec<[V3; 3]> {
+            let face = &geometry(tool).insert;
+            assert_eq!(face.len(), 1, "a convex insert");
+            let s = tool
+                .body
+                .as_ref()
+                .unwrap()
+                .insert
+                .as_ref()
+                .unwrap()
+                .insert_thickness_mm;
+            let (sin, cos) = turn_deg.to_radians().sin_cos();
+            prism(&face[0], -s, 0.)
+                .into_iter()
+                .map(|t| {
+                    t.map(|p| {
+                        [
+                            p[0] * cos - p[1] * sin + shift[0],
+                            p[0] * sin + p[1] * cos + shift[1],
+                            p[2] + shift[2],
+                        ]
+                    })
+                })
+                .collect()
+        }
+        fn checked(body: Vec<[V3; 3]>, insert: Vec<[V3; 3]>) -> ModelBody {
+            ModelBody {
+                insert_check: InsertCheck::Model {
+                    insert: surface(insert, 0.),
+                    corner_region_mm: 2.,
+                    position_tolerance_mm: 0.02,
+                    nose_radius_tolerance_mm: 0.02,
+                    edge_angle_tolerance_deg: 0.25,
+                },
+                ..model(body, 0., 0.5)
+            }
+        }
+
+        #[test]
+        fn a_model_equal_to_the_holder_gives_the_same_checks() {
+            // Inside a bore and outside: the built-in holder's own box as a
+            // mesh, with the insert's model for the cross-check.
+            for (job, index) in [(bore_job(), 1), (job(), 0)] {
+                let tool = &job.tools[index].tool;
+                let (lo, hi) = bounds(&geometry(tool).holder_body);
+                let modelled = with_model(
+                    &job,
+                    index,
+                    checked(box_mesh(lo, hi), insert_model(tool, [0.; 3], 0.)),
+                );
+                let (a, b) = (plan(&job).unwrap(), plan(&modelled).unwrap());
+                assert_eq!(a.events.len(), b.events.len());
+                for (r, s) in a.reports.iter().zip(&b.reports) {
+                    assert!(
+                        (r.min_holder_clearance_mm - s.min_holder_clearance_mm).abs() < 1e-9
+                            && r.min_part_clearance_mm == s.min_part_clearance_mm,
+                        "{}: {} {}",
+                        r.id,
+                        r.min_holder_clearance_mm,
+                        s.min_holder_clearance_mm
+                    );
+                }
+                assert_eq!(
+                    serde_json::to_value(a.stock.cells()).unwrap(),
+                    serde_json::to_value(b.stock.cells()).unwrap()
+                );
+                // The tool survives its JSON form.
+                let tool = &modelled.tools[index].tool;
+                let back: TurningTool =
+                    serde_json::from_value(serde_json::to_value(tool).unwrap()).unwrap();
+                assert!(back == *tool);
+            }
+        }
+
+        #[test]
+        fn a_misplaced_or_different_model_is_refused_before_any_move() {
+            let job = bore_job();
+            let tool = &job.tools[1].tool;
+            let (lo, hi) = bounds(&geometry(tool).holder_body);
+            let refused = |shift: V3, turn: f64| {
+                let j = with_model(
+                    &job,
+                    1,
+                    checked(box_mesh(lo, hi), insert_model(tool, shift, turn)),
+                );
+                plan(&j).err().unwrap_or_default()
+            };
+            assert_eq!(refused([0.; 3], 0.), "");
+            // Within the declared tolerance.
+            assert_eq!(refused([0.005, -0.005, 0.005], 0.1), "");
+            // Half a millimetre off the declared nose, along each axis.
+            for shift in [[0.5, 0., 0.], [0., 0.5, 0.], [0., 0., 0.5], [0., -0.5, 0.]] {
+                let err = refused(shift, 0.);
+                assert!(
+                    err.contains("cutting corner is") && err.contains("misplaced"),
+                    "{shift:?}: {err}"
+                );
+            }
+            // Turned about the nose: its edges run off the declared ones.
+            let err = refused([0.; 3], 2.);
+            assert!(
+                err.contains("degrees off the declared insert's edge"),
+                "{err}"
+            );
+            // Another insert: a 0.8 mm nose where 0.4 is declared, about the
+            // same centre.
+            let mut other = tool.clone();
+            other.insert = Insert::iso_turning(55., 95., 6., 0.8).unwrap();
+            other.nose_radius_mm = 0.8;
+            let j = with_model(
+                &job,
+                1,
+                checked(box_mesh(lo, hi), insert_model(&other, [0.; 3], 0.)),
+            );
+            let err = plan_err(&j);
+            assert!(err.contains("nose radius measures 0.8"), "{err}");
+            // The body's mesh must be closed; the insert's too.
+            let mut open = box_mesh(lo, hi);
+            open.truncate(10);
+            let j = with_model(&job, 1, checked(open, insert_model(tool, [0.; 3], 0.)));
+            assert!(plan_err(&j).contains("not a closed surface"));
+            // A model of nothing near the nose.
+            let err = refused([40., 0., 0.], 0.);
+            assert!(err.contains("has nothing within corner_region_mm"), "{err}");
+        }
+
+        #[test]
+        fn a_tilted_seat_is_part_of_the_cross_check() {
+            // A negative insert on a seat of -6 degrees rake and
+            // inclination: the declared body is tilted about its nose, and
+            // the model must be the tilted insert, not the flat one.
+            let mut job = job();
+            {
+                let body = job.tools[0].tool.body.as_mut().unwrap();
+                let insert = body.insert.as_mut().unwrap();
+                insert.insert_clearance_deg = 0.;
+                insert.rake_deg = -6.;
+                insert.inclination_deg = -6.;
+            }
+            let tool = &job.tools[0].tool;
+            let (lo, hi) = bounds(&geometry(tool).holder_body);
+            let flat = insert_model(tool, [0.; 3], 0.);
+            // The seat, written out here independently (ISO 3002-1): the
+            // rake about the major edge (5 degrees from +x toward +z in the
+            // tool frame, x radial), then the inclination about the
+            // in-plane direction across it, both about the nose centre.
+            // The checks' frame is (u, v) = (z, x).
+            let e = [5f64.to_radians().cos(), 5f64.to_radians().sin()];
+            let face = &geometry(tool).insert[0];
+            let middle = face
+                .iter()
+                .fold([0., 0.], |m, p| [m[0] + p[1], m[1] + p[0]]);
+            let mut q = [-e[1], e[0]];
+            if q[0] * middle[0] + q[1] * middle[1] < 0. {
+                q = [-q[0], -q[1]];
+            }
+            let lambda = (-6f64).to_radians();
+            let gamma = ((-6f64).to_radians().tan() * lambda.cos()).atan();
+            let seat = |p: V3| {
+                let (x, z, y) = (p[1], p[0], p[2]);
+                let (a, b) = (x * e[0] + z * e[1], x * q[0] + z * q[1]);
+                let (b, c) = (
+                    b * (-gamma).cos() - y * (-gamma).sin(),
+                    b * (-gamma).sin() + y * (-gamma).cos(),
+                );
+                let (a, c) = (
+                    a * lambda.cos() - c * lambda.sin(),
+                    a * lambda.sin() + c * lambda.cos(),
+                );
+                [a * e[1] + b * q[1], a * e[0] + b * q[0], c]
+            };
+            let tilted: Vec<[V3; 3]> = flat.iter().map(|t| t.map(seat)).collect();
+            let with = |insert: Vec<[V3; 3]>| {
+                let j = with_model(&job, 0, checked(box_mesh(lo, hi), insert));
+                validate_tool(&j.tools[0].tool)
+            };
+            assert_eq!(with(tilted), Ok(()));
+            let err = with(flat).unwrap_err();
+            assert!(
+                err.contains("camlib does not fit a model to its insert"),
+                "{err}"
+            );
+        }
+
+        #[test]
+        fn a_block_on_the_bar_clears_where_its_hull_fouls() {
+            // The bar with a coolant block 45 mm behind the nose: the bore
+            // is 34 mm deep, so the block stays in front of the face.
+            let job = bore_job();
+            let tool = &job.tools[1].tool;
+            let (lo, hi) = bounds(&geometry(tool).holder_body);
+            let bar = [lo[1], hi[1], lo[2], hi[2]];
+            let block = [lo[1] - 6., hi[1] + 9., lo[2] - 8., hi[2] + 8.];
+            let mut real = box_mesh(lo, hi);
+            real.extend(loft(45., block, 60., block));
+            let plan_of = |body: Vec<[V3; 3]>| plan(&with_model(&job, 1, model(body, 0., 0.5)));
+            let clear = plan_of(real).unwrap();
+            let plain = plan(&job).unwrap();
+            for (r, s) in clear.reports.iter().zip(&plain.reports) {
+                assert!((r.min_holder_clearance_mm - s.min_holder_clearance_mm).abs() < 1e-9);
+            }
+            // The hull of the bar's tip and the block (a part of the whole
+            // body's hull) reaches the bore's wall.
+            let mut hull = loft(lo[0], bar, 45., block);
+            hull.extend(loft(45., block, 60., block));
+            let err = plan_of(hull).err().unwrap();
+            assert!(err.contains("the holder would hit"), "{err}");
+            // The block within reach of the face is caught as the real body.
+            let mut near = box_mesh(lo, hi);
+            near.extend(loft(20., block, 35., block));
+            let err = plan_of(near).err().unwrap();
+            assert!(err.contains("the holder would hit"), "{err}");
+        }
+
+        #[test]
+        fn a_clamp_ahead_of_the_insert_is_caught_outside() {
+            // Roughing a shaft: the holder's box, and a clamp reaching
+            // 1.5 mm ahead of the nose 2 mm above it (as `head_ahead`).
+            let mut job = job();
+            job.stock.z_max_mm = 0.;
+            job.stock.z_min_mm = -45.;
+            job.operations
+                .retain(|o| matches!(o, TurnOperation::Rough { .. }));
+            let tool = &job.tools[0].tool;
+            let (lo, hi) = bounds(&geometry(tool).holder_body);
+            let plan_of = |body: Vec<[V3; 3]>| plan(&with_model(&job, 0, model(body, 0., 0.5)));
+            plan_of(box_mesh(lo, hi)).unwrap();
+            let mut clamp = box_mesh(lo, hi);
+            clamp.extend(box_mesh([-1.5, 2., 0.], [5., 12., 4.]));
+            let err = plan_of(clamp).err().unwrap();
+            assert!(err.contains("the holder would hit the part"), "{err}");
+            // 6 mm above the nose it clears the shoulder.
+            let mut high = box_mesh(lo, hi);
+            high.extend(box_mesh([-1.5, 6., 0.], [5., 12., 4.]));
+            plan_of(high).unwrap();
+            // The mesh's error is part of the body: the same holder known
+            // only to 0.05 mm is at least that much nearer the stock.
+            let clearance = |error: f64| {
+                plan(&with_model(&job, 0, model(box_mesh(lo, hi), error, 0.5)))
+                    .unwrap()
+                    .reports[0]
+                    .min_holder_clearance_mm
+            };
+            let (exact, grown) = (clearance(0.), clearance(0.05));
+            assert!(grown <= exact - 0.05 + 1e-9, "{exact} {grown}");
+        }
+
+        /// The cost of a dense model (run with --ignored --nocapture).
+        #[test]
+        #[ignore = "measurement"]
+        fn dense_model_cost() {
+            let job = bore_job();
+            let tool = &job.tools[1].tool;
+            let (lo, hi) = bounds(&geometry(tool).holder_body);
+            // A round bar in the built-in bar's box, 100 rings along, with a
+            // tapered neck (no two slices alike): 512 facets round, and the
+            // 72 a tessellation to 0.005 mm gives a bar of this size.
+            for around in [512, 72] {
+                dense(&job, lo, hi, around);
+            }
+        }
+        fn dense(job: &TurningJob, lo: V3, hi: V3, around: usize) {
+            let axis = [(lo[1] + hi[1]) / 2., 0.];
+            let r = (hi[1] - lo[1]) / 2.;
+            let mut rings: Vec<[f64; 2]> = (0..=40)
+                .map(|k| [0.5 + 0.25 * k as f64, r * (0.8 + 0.005 * k as f64)])
+                .collect();
+            rings.extend((1..=100).map(|k| [10.5 + 0.69 * k as f64, r]));
+            let body = revolved(axis, &rings, around, around);
+            let triangles = body.len();
+            let error = r * (1. - (std::f64::consts::PI / around as f64).cos());
+            let model = model(body, error, 0.25);
+            let started = std::time::Instant::now();
+            let pieces = model.pieces("bar", true).unwrap();
+            let reduce = started.elapsed();
+            let vertices: usize = pieces.iter().map(Vec::len).sum();
+            let modelled = with_model(job, 1, model);
+            let run = |j: &TurningJob| {
+                let started = std::time::Instant::now();
+                let p = plan(j).unwrap();
+                (
+                    started.elapsed(),
+                    p.reports.iter().map(|r| r.moves).sum::<usize>(),
+                )
+            };
+            let started = std::time::Instant::now();
+            geometry(&modelled.tools[1].tool);
+            let again = started.elapsed();
+            // One move's images of the body (as `travel` builds them): each
+            // piece at the move's two ends, projected and radial.
+            let started = std::time::Instant::now();
+            let mut kept = 0;
+            for k in 0..20 {
+                let ends = [[-10., 9. + 0.01 * k as f64], [-12., 9.5]];
+                for radial in [false, true] {
+                    for piece in &pieces {
+                        let image = piece.iter().flat_map(|p| {
+                            ends.iter().map(move |c| {
+                                let v = c[1] + p[1];
+                                [c[0] + p[0], if radial { v.hypot(p[2]) } else { v }]
+                            })
+                        });
+                        kept += hull(image.collect()).len();
+                    }
+                }
+            }
+            let images = started.elapsed() / 20;
+            assert!(kept > 0);
+            let (plain, moves) = run(job);
+            let (dense, same) = run(&modelled);
+            assert_eq!(moves, same);
+            println!(
+                "model ({around} facets round, error {error:.5} mm): {triangles} triangles -> {} pieces, {vertices} vertices in {reduce:?} (the tool's geometry again, from the kept pieces: {again:?}; one move's images of the body: {images:?}); plan of {moves} moves: {plain:?} built-in holder, {dense:?} with the model ({:?} per move more)",
+                pieces.len(),
+                dense.saturating_sub(plain) / moves as u32
+            );
+        }
     }
 }

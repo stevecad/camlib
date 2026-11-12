@@ -301,12 +301,29 @@ class Holder:
     # The outline's extent across the centre plane, (low, high) mm: the
     # cutting face at 0, the insert body toward negative (#103). Required.
     y_mm: tuple | None = None
+    # The body away from the cut from a supplied model (#110): checked in
+    # place of the outline's body (``Holder.from_model``).
+    model: "ToolModel | None" = None
 
     def to_dict(self):
         data = dict(outline=self.outline.to_dict())
         if self.bar is not None:
             data["bar"] = self.bar.to_dict()
         return data
+
+    @classmethod
+    def from_model(cls, model):
+        """The holder as its maker's model (a ``ToolModel``: a mesh with its
+        error, its declared placement and its insert cross-check): every
+        check uses the model's body in place of an outline's. The
+        ``outline`` and ``y_mm`` kept here are only the model's enclosing
+        rectangle about the nose centre in the lathe's X and Z and its
+        extent in Y (the tool format requires them); no check reads them."""
+        if not isinstance(model, ToolModel):
+            raise TypeError("Holder.from_model takes a ToolModel (camlib.TurningToolModel)")
+        (x0, x1), (y0, y1), (z0, z1) = model.bounds_mm()
+        outline = Outline((x0, z0), (Line((x1, z0)), Line((x1, z1)), Line((x0, z1)), Line((x0, z0))))
+        return cls(outline, y_mm=(y0, y1), model=model)
 
     @classmethod
     def rectangle(cls, *, insert, nose_radius_mm, side, width_mm, length_mm, offset_mm, y_mm):
@@ -332,10 +349,152 @@ class Holder:
         return cls(Outline.from_dict(data["outline"]), y_mm=tuple(float(v) for v in _pair(y_mm, "y_mm")))
 
 
+# Tool bodies from supplied models (#110).
+
+
+def _triple(value, what):
+    triple = tuple(float(v) for v in value)
+    if len(triple) != 3:
+        raise ValueError(f"{what} must be three coordinates (x, y, z)")
+    return triple
+
+
+@dataclass(frozen=True, kw_only=True)
+class ModelPlacement:
+    """Where a tool model sits on the lathe, as the tool is mounted (camlib
+    assumes nothing and fits nothing): ``nose_center_mm``, the model point
+    that is the insert's nose centre on its cutting face (the theoretical
+    tip a maker's frame may give is one nose radius from it along X and
+    along Z; a drill: its tip on the axis); ``x_axis`` and ``z_axis``, the
+    model directions of the lathe's +X (radial, away from the spindle axis
+    on the tool's side) and +Z, unit and perpendicular. Y completes the
+    right-handed frame (Y = Z x X): the cutting face toward +Y."""
+
+    nose_center_mm: tuple
+    x_axis: tuple
+    z_axis: tuple
+
+    def to_dict(self):
+        return dict(
+            nose_center_mm=list(_triple(self.nose_center_mm, "ModelPlacement.nose_center_mm")),
+            x_axis=list(_triple(self.x_axis, "ModelPlacement.x_axis")),
+            z_axis=list(_triple(self.z_axis, "ModelPlacement.z_axis")),
+        )
+
+    def place(self, point):
+        """A model point in the lathe's (X, Y, Z) from the nose centre."""
+        o, x, z = (_triple(v, "ModelPlacement") for v in (self.nose_center_mm, self.x_axis, self.z_axis))
+        y = (z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0])
+        d = tuple(float(point[k]) - o[k] for k in range(3))
+        return tuple(sum(d[k] * axis[k] for k in range(3)) for axis in (x, y, z))
+
+
+@dataclass(frozen=True, kw_only=True)
+class ModelInsertCheck:
+    """The model's insert (``insert``: a ``SurfaceMesh`` in the model's
+    coordinates, placed like its body) and how closely its cutting corner
+    must agree with the declared insert, compared within
+    ``corner_region_mm`` of the nose centre along X and Z (at least two nose
+    radii; inside the holder's reach, so only the insert is in it):
+    ``position_tolerance_mm`` (the corner, along the cutting face and in
+    height), ``nose_radius_tolerance_mm`` and ``edge_angle_tolerance_deg``
+    (each straight edge at the corner). They must cover the insert mesh's
+    own error. A model outside one is refused before any move, as misplaced
+    or as a different insert; it is never fitted. No value has a default."""
+
+    insert: object
+    corner_region_mm: float
+    position_tolerance_mm: float
+    nose_radius_tolerance_mm: float
+    edge_angle_tolerance_deg: float
+
+    def to_dict(self):
+        return dict(
+            kind="model",
+            insert=self.insert.to_dict(),
+            corner_region_mm=float(self.corner_region_mm),
+            position_tolerance_mm=float(self.position_tolerance_mm),
+            nose_radius_tolerance_mm=float(self.nose_radius_tolerance_mm),
+            edge_angle_tolerance_deg=float(self.edge_angle_tolerance_deg),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class ModelWithoutInsert:
+    """A model that has no insert: its placement cannot be compared with
+    the declared insert and rests on ``reason``, the caller's statement of
+    where the placement comes from (e.g. the maker's cutting-point frame)."""
+
+    reason: str
+
+    def to_dict(self):
+        return dict(kind="not_modelled", reason=str(self.reason))
+
+
+@dataclass(frozen=True, kw_only=True)
+class ToolModel:
+    """A turning tool's body from its maker's model (#110).
+
+    ``body``: a ``SurfaceMesh`` of the tool away from the cut (holder, bar,
+    shim, clamp, coolant block), without the insert, in the model's own
+    coordinates: a closed surface, every point of the real one within its
+    ``surface_error_mm``, which is grown onto the body.
+    ``camlib.cadquery.tool_body_from_step`` builds one from a STEP file.
+    ``placement``: a ``ModelPlacement``. ``axial_resolution_mm``: the width
+    of the slices across Z the body is checked in (it is over-estimated
+    along Z by less than one slice). ``insert_check``: a
+    ``ModelInsertCheck`` (the model's insert, cross-checked against the
+    declared one) or a ``ModelWithoutInsert``.
+
+    The insert stays the declared one (ISO code or outline, thickness,
+    clearance, seat): it is what cuts. Use it as a tool's holder with
+    ``Holder.from_model(model)``."""
+
+    body: object
+    placement: ModelPlacement
+    axial_resolution_mm: float
+    insert_check: object
+
+    def __post_init__(self):
+        if not isinstance(self.placement, ModelPlacement):
+            raise TypeError("ToolModel.placement must be a ModelPlacement: camlib assumes no placement")
+        if not isinstance(self.insert_check, (ModelInsertCheck, ModelWithoutInsert)):
+            raise TypeError(
+                "ToolModel.insert_check must be a ModelInsertCheck (the model's insert and its tolerances) "
+                "or a ModelWithoutInsert (the reason the placement is right)"
+            )
+
+    def to_dict(self):
+        return dict(
+            body=self.body.to_dict(),
+            placement=self.placement.to_dict(),
+            axial_resolution_mm=float(self.axial_resolution_mm),
+            insert_check=self.insert_check.to_dict(),
+        )
+
+    def bounds_mm(self):
+        """The placed body's extent along the lathe's X, Y and Z from the
+        nose centre (its mesh error included), as ((x0, x1), (y0, y1),
+        (z0, z1))."""
+        low, high = [float("inf")] * 3, [float("-inf")] * 3
+        for triangle in self.body.triangles:
+            for point in triangle:
+                placed = self.placement.place(point)
+                for k in range(3):
+                    low[k] = min(low[k], placed[k])
+                    high[k] = max(high[k], placed[k])
+        error = float(self.body.surface_error_mm)
+        return tuple((low[k] - error, high[k] + error) for k in range(3))
+
+
 # Top-level names (camlib.TurningHolder, camlib.TurningBar; camlib.BoringBar
 # is the milling boring bar).
 TurningHolder = Holder
 TurningBar = Bar
+TurningToolModel = ToolModel
+TurningModelPlacement = ModelPlacement
+TurningModelInsertCheck = ModelInsertCheck
+TurningModelWithoutInsert = ModelWithoutInsert
 
 _REMOVED = ("holder_width_mm", "holder_length_mm", "holder_offset_mm")
 
@@ -448,7 +607,8 @@ class TurningTool:
     - ``curved_for_diameter_mm``: a face grooving blade curved to follow
       the groove, its maker's (min, max) diameter range; without it the
       blade is checked as straight.
-    - the holder's ``y_mm`` (and a ``Bar``'s ``axis_y_mm``).
+    - the holder's ``y_mm`` (and a ``Bar``'s ``axis_y_mm``), or the holder
+      as its maker's model: ``Holder.from_model(ToolModel(...))`` (#110).
 
     A solid (one-piece) boring bar (#114) has no insert and no seat: give
     ``solid_bar=SolidBarHead(...)`` instead of the seat and insert values,
@@ -646,6 +806,8 @@ class TurningTool:
             holder_y_mm=[float(v) for v in self.holder.y_mm],
             bar_axis_y_mm=float(self.holder.bar.axis_y_mm) if self.holder.bar is not None else 0.0,
         )
+        if getattr(self.holder, "model", None) is not None:
+            body["model"] = self.holder.model.to_dict()
         if self.seat is not None:
             insert = dict(
                 insert_thickness_mm=float(self.insert_thickness_mm),

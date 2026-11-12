@@ -83,6 +83,12 @@ pub struct ToolBody {
     /// insert body: the tool has no insert and no seat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub solid_bar: Option<SolidBarHead>,
+    /// The body away from the cut from a supplied model (#110): it replaces
+    /// the holder outline's body (and bar) in every check (the planner's
+    /// tool geometry takes `ModelBody::pieces`; `body` below still gives
+    /// the outline's pieces). None: the outline's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<super::model::ModelBody>,
 }
 
 /// The insert's body below its cutting face and the seat that tilts it.
@@ -169,6 +175,9 @@ impl ToolBody {
             return Err(format!(
                 "turning tool {id:?}: its body needs the holder's extent across the centre plane from low to high and a finite bar axis offset"
             ));
+        }
+        if let Some(model) = &self.model {
+            model.validate(id)?;
         }
         if let Some(head) = &self.solid_bar {
             // A solid boring bar (#114): the head is the body.
@@ -1456,6 +1465,7 @@ pub(crate) fn test_solid_bar(side_clearance_deg: f64, min_bore_diameter_mm: f64)
                 min_bore_diameter_mm,
                 max_bore_depth_mm: 6.,
             }),
+            model: None,
         }),
     }
 }
@@ -1537,6 +1547,7 @@ mod tests {
             holder_y_mm: [-10., 0.],
             bar_axis_y_mm: 0.,
             solid_bar: None,
+            model: None,
         }
     }
 

@@ -1499,6 +1499,7 @@ mod tests {
                 holder_y_mm: [-10., 2.],
                 bar_axis_y_mm: 0.,
                 solid_bar: None,
+                model: None,
             }),
         }
     }
