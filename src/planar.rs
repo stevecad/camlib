@@ -1025,9 +1025,7 @@ impl PreparedRegion {
     /// Generated linear primitives may touch at intermediate stages of a
     /// pairwise union even when their complete union has unambiguous topology.
     /// Execute that complete union before the existing final topology checks.
-    pub(crate) fn union_linear(regions: &[Self]) -> Result<Construction, String> {
-        Self::union_linear_filling(regions, 0.).map(|(construction, _)| construction)
-    }
+    ///
     /// The complete linear union with every hole smaller than
     /// `fill_holes_below_mm2` filled (left out of the result), so the result
     /// covers more than the exact union, never less. Only for callers whose

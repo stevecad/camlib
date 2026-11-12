@@ -6,6 +6,7 @@ use crate::{
     motion::{Coolant, Motion, MoveKind, Vec3},
     pocket::{ResidualStatus, Stroke},
     profiles::{ProfileDepths, ProfileMotion, ProfileSettings},
+    roughing::PreparedRoughingTarget,
     stock::{CancelSignal, Stock, StockSpec},
     surface::{PreparedSurface, SurfaceMesh, SurfaceWork},
     tool::{CutterShape, ToolAssembly, valid_id},
@@ -684,11 +685,17 @@ pub struct WaterlineReport {
     /// otherwise: every level is then within the flutes).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reach_proof: Option<&'static str>,
+    /// Flat and bull-nose end mills: the largest stated error
+    /// (`boundary_error_mm`) of the part shadows the levels so far were
+    /// offset from. Each level is offset by what this adds to the mesh's
+    /// declared error, on top of the cutter radius, stock to leave and margin.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shadow_error_mm: Option<f64>,
 }
 pub struct WaterlinePlan {
     /// Flat or bull-nose end mill: its levels are offsets of the part's
     /// shadow; the corner radius (grown by the offset) of a bull nose.
-    flat_mesh: Option<crate::surface::SurfaceMesh>,
+    flat_target: Option<PreparedRoughingTarget>,
     flat_corner: f64,
     op: WaterlineOperation,
     spec: StockSpec,
@@ -953,8 +960,9 @@ impl WaterlinePlan {
         )?;
         let levels = ((op.top_z_mm - op.bottom_z_mm) / op.stepdown_mm).ceil() as usize + 1;
         let surface = op.surface.prepare(op.floor_z_mm, op.tolerance_mm, cancel)?;
-        let flat_mesh = matches!(cutter.shape, CutterShape::Flat | CutterShape::Bull { .. })
-            .then(|| op.surface.clone());
+        let flat_target = matches!(cutter.shape, CutterShape::Flat | CutterShape::Bull { .. })
+            .then(|| PreparedRoughingTarget::prepare(op.surface.clone(), op.tolerance_mm, cancel))
+            .transpose()?;
         let flat_corner = match cutter.shape {
             CutterShape::Bull { corner_radius_mm } => {
                 corner_radius_mm
@@ -997,6 +1005,7 @@ impl WaterlinePlan {
             },
             surface_completion: "not_certified; waterline bands do not clear shallow/unreachable regions; independent remaining-stock checks required",
             reach_proof: None,
+            shadow_error_mm: None,
         };
         Ok(Self {
             op,
@@ -1019,7 +1028,7 @@ impl WaterlinePlan {
             prefetched: std::collections::VecDeque::new(),
             limits,
             region_limits,
-            flat_mesh,
+            flat_target,
             flat_corner,
         })
     }
@@ -1143,17 +1152,19 @@ impl WaterlinePlan {
                 self.drained = true;
                 return Ok(None);
             }
-            if let Some(mesh) = &self.flat_mesh {
+            if let Some(target) = &self.flat_target {
                 let (z, _) = self.level_options(self.level);
-                let mut loops = flat_level_loops(
-                    mesh,
+                let (mut loops, error) = flat_level_loops(
+                    target,
                     z,
                     self.inflated,
                     self.flat_corner,
-                    self.inflated - self.radius,
+                    self.op.stock_to_leave_mm + self.op.safety_margin_mm,
                     self.op.tolerance_mm,
                     cancel,
                 )?;
+                self.report.shadow_error_mm =
+                    Some(self.report.shadow_error_mm.unwrap_or(0.).max(error));
                 // Region boundaries run counter-clockwise outside and
                 // clockwise around holes: climb milling runs against them.
                 if !self.op.reverse {
@@ -1311,31 +1322,59 @@ impl WaterlinePlan {
     }
 }
 
-/// Tool-center loops of a flat or bull-nose end mill at tip height `z`.
-/// Flat: the boundary of the part's shadow above `z - lift` grown by
-/// `radius` (exact planar construction). Bull nose (corner `corner`): a part
-/// point u above the tip is reached within R - rc + sqrt(rc^2 - (rc - u)^2);
-/// the corner's height is split into bands, each band's shadow grown by the
+/// Tool-center loops of a flat or bull-nose end mill at tip height `z`, and
+/// the largest stated error of the shadows they were offset from.
+///
+/// Flat: the boundary of the part's shadow at or above `z - allowance`
+/// (`allowance`: stock to leave plus safety margin, the vertical clearance
+/// under the tip) grown by `radius` (the cutter radius plus the same clearance
+/// and the mesh's declared error). Bull nose (corner `corner`): a part point u
+/// above the tip is reached within R - rc + sqrt(rc^2 - (rc - u)^2); the
+/// corner's height is split into bands, each band's shadow grown by the
 /// largest reach in it, and the regions joined: conservative (never closer
 /// than allowed) by at most a few hundredths of the corner radius.
+///
+/// The shadow is the one 3D roughing protects its layers with
+/// (`PreparedRoughingTarget::shadow_for_cutter`, also `silhouette_region`):
+/// its level is lowered by the mesh's declared error and a numerical reserve,
+/// facets seen edge-on are enclosed, never dropped, and a facet the planar
+/// kernel cannot take is a refusal. Each shadow is grown by what its
+/// `boundary_error_mm` states beyond the mesh's declared error (already in
+/// `radius`) as well, as `Contour` adds a region's error to its clearance.
+/// Holes of a shadow too small for a disk of half its reach are filled: its
+/// growth by the whole reach closes them anyway.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn flat_level_loops(
-    mesh: &crate::surface::SurfaceMesh,
+    target: &PreparedRoughingTarget,
     z: f64,
     radius: f64,
     corner: f64,
-    lift: f64,
+    allowance: f64,
     tolerance_mm: f64,
     cancel: &impl CancelSignal,
-) -> Result<Vec<Vec<Stroke>>, String> {
-    use crate::planar::Boolean;
-    let level = z - lift;
+) -> Result<(Vec<Vec<Stroke>>, f64), String> {
+    use crate::planar::{Boolean, ConstructionOptions};
+    let options = ConstructionOptions { tolerance_mm };
+    let source_error = target.mesh().surface_error_mm;
     let mut region: Option<crate::planar::PreparedRegion> = None;
-    let mut add = |shadow_level: f64, reach: f64| -> Result<(), String> {
-        let Some(shadow) = shadow_region(mesh, shadow_level, tolerance_mm, cancel)? else {
+    let mut error = 0f64;
+    let mut add = |tip: f64, reach: f64| -> Result<(), String> {
+        cancelled(cancel)?;
+        let shadow = target
+            .shadow_for_cutter(tip, allowance, reach, &mut 0, cancel)
+            .map_err(|e| format!("waterline flat-cutter shadow at Z{tip}: {e}"))?
+            .region;
+        if shadow.components.is_empty() {
             return Ok(());
-        };
-        let grown = shadow.offset_prepared(-reach)?.into_parts().1;
+        }
+        error = error.max(shadow.boundary_error_mm);
+        let reach = reach + (shadow.boundary_error_mm - source_error).max(0.);
+        let grown = shadow
+            .prepare(options)
+            .map_err(|e| format!("waterline flat-cutter shadow at Z{tip}: {e}"))?
+            .offset_prepared(-reach)?
+            .into_parts()
+            .1;
         region = Some(match region.take() {
             None => grown,
             Some(r) => r.boolean_prepared(&grown, Boolean::Union)?.into_parts().1,
@@ -1343,7 +1382,7 @@ pub(crate) fn flat_level_loops(
         Ok(())
     };
     if corner <= 0. {
-        add(level, radius)?;
+        add(z, radius)?;
     } else {
         // Bands thin near the tip (where the reach changes fastest).
         const BANDS: usize = 24;
@@ -1352,12 +1391,12 @@ pub(crate) fn flat_level_loops(
         for k in 0..BANDS {
             let u0 = corner * (k as f64 / BANDS as f64).powi(3);
             let u1 = corner * ((k + 1) as f64 / BANDS as f64).powi(3);
-            add(level + u0, reach(u1))?;
+            add(z + u0, reach(u1))?;
         }
-        add(level + corner, radius)?;
+        add(z + corner, radius)?;
     }
     let Some(region) = region else {
-        return Ok(vec![]);
+        return Ok((vec![], error));
     };
     let mut loops = vec![];
     for c in &region.definition().components {
@@ -1365,75 +1404,5 @@ pub(crate) fn flat_level_loops(
             loops.push(Stroke::from_boundary(b));
         }
     }
-    Ok(loops)
-}
-
-/// The part's shadow above `level`: its top surface above it, projected.
-fn shadow_region(
-    mesh: &crate::surface::SurfaceMesh,
-    level: f64,
-    tolerance_mm: f64,
-    cancel: &impl CancelSignal,
-) -> Result<Option<crate::planar::PreparedRegion>, String> {
-    use crate::planar::{Boundary, Component, ConstructionOptions, PlanarRegion, PreparedRegion};
-    let options = ConstructionOptions { tolerance_mm };
-    let mut pieces: Vec<PreparedRegion> = vec![];
-    for (i, t) in mesh.triangles.iter().enumerate() {
-        if i % 4096 == 0 {
-            cancelled(cancel)?;
-        }
-        if t.iter().all(|p| p[2] <= level) {
-            continue;
-        }
-        // The part of the triangle above the level (Sutherland-Hodgman).
-        let mut poly: Vec<[f64; 2]> = vec![];
-        for k in 0..3 {
-            let (a, b) = (t[k], t[(k + 1) % 3]);
-            if a[2] > level {
-                poly.push([a[0], a[1]]);
-            }
-            if (a[2] > level) != (b[2] > level) {
-                let s = (level - a[2]) / (b[2] - a[2]);
-                poly.push([a[0] + s * (b[0] - a[0]), a[1] + s * (b[1] - a[1])]);
-            }
-        }
-        let area: f64 = poly
-            .iter()
-            .zip(poly.iter().cycle().skip(1))
-            .map(|(a, b)| a[0] * b[1] - b[0] * a[1])
-            .sum::<f64>()
-            / 2.;
-        // A wall seen edge-on covers no area; its neighbours do.
-        if area.abs() <= tolerance_mm * tolerance_mm * 16. {
-            continue;
-        }
-        if area < 0. {
-            poly.reverse();
-        }
-        let region = PlanarRegion {
-            version: 1,
-            units: "mm".into(),
-            name: "shadow".into(),
-            boundary_error_mm: 0.,
-            source: serde_json::Value::Null,
-            components: vec![Component {
-                outer: Boundary {
-                    vertices: poly.iter().map(|p| [p[0], p[1], 0.]).collect(),
-                },
-                holes: vec![],
-            }],
-        };
-        if let Ok(prepared) = region.prepare(options) {
-            pieces.push(prepared);
-        }
-    }
-    if pieces.is_empty() {
-        return Ok(None);
-    }
-    crate::resources::check_memory(pieces.len() as u128 * 512, "flat waterline shadow")?;
-    Ok(Some(
-        PreparedRegion::union_linear(&pieces)?
-            .region
-            .prepare(options)?,
-    ))
+    Ok((loops, error))
 }

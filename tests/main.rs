@@ -73,6 +73,7 @@ modules! {
     undercut,
     verification,
     waterline,
+    waterline_flat_shadow,
     waterline_reach,
     waterline_support,
 }

@@ -112,7 +112,15 @@ fn hull(mut points: Vec<Point>) -> Vec<Point> {
     a.extend(b);
     a
 }
-fn clipped(triangle: [Vec3; 3], z: f64) -> Vec<Point> {
+/// The part of a facet at or above `z`, projected. A crossing of the level
+/// within `snap` of an end of its edge (in plan) is that end itself: the
+/// planar kernel takes no shorter edge, and the facets around a vertex that
+/// is on the level or a hair off it must agree on where they end there.
+/// Collapsing such an edge in each facet separately (the kernel's cleanup of
+/// generated boundaries) moves them apart and leaves a slit between
+/// neighbours. Snapping to the lower end grows the piece; to the upper end it
+/// shrinks it by at most `snap`, which the shadow's numerical reserve covers.
+fn clipped(triangle: [Vec3; 3], z: f64, snap: f64) -> Vec<Point> {
     let mut points = Vec::with_capacity(4);
     for i in 0..3 {
         let a = triangle[i];
@@ -122,7 +130,14 @@ fn clipped(triangle: [Vec3; 3], z: f64) -> Vec<Point> {
         }
         if (a[2] >= z) != (b[2] >= z) {
             let t = ((z - a[2]) / (b[2] - a[2])).clamp(0., 1.);
-            points.push([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
+            let length = (b[0] - a[0]).hypot(b[1] - a[1]);
+            points.push(if t * length <= snap {
+                [a[0], a[1]]
+            } else if (1. - t) * length <= snap {
+                [b[0], b[1]]
+            } else {
+                [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]
+            });
         }
     }
     hull(points)
@@ -416,6 +431,9 @@ impl PreparedRoughingTarget {
         let options = ConstructionOptions {
             tolerance_mm: self.tolerance,
         };
+        // The planar kernel's shortest edge (`planar::constructed::normalize`),
+        // within the numerical reserve for every admitted tolerance.
+        let snap = 1e-6_f64.max(self.tolerance / 4.) * 1.001;
         let mut regions: Vec<PreparedRegion> = vec![];
         let mut vertices = 0;
         let mut projected = 0;
@@ -425,7 +443,7 @@ impl PreparedRoughingTarget {
             *work = work
                 .checked_add(1)
                 .ok_or("roughing clipping work overflow")?;
-            let mut points = clipped(triangle, level);
+            let points = clipped(triangle, level, snap);
             if points.is_empty() {
                 continue;
             }
@@ -436,43 +454,61 @@ impl PreparedRoughingTarget {
             } else {
                 0.
             };
-            if area <= (64. * self.tolerance).powi(2) {
-                // A small Minkowski box preserves even vertical walls/points.
-                // This is explicit overprotection, not a mesh or point sample.
-                let pad = 32. * self.tolerance;
-                points = hull(
-                    points
-                        .iter()
-                        .flat_map(|p| {
-                            [-pad, pad].into_iter().flat_map(move |x| {
-                                [-pad, pad].into_iter().map(move |y| [p[0] + x, p[1] + y])
+            // A small Minkowski box preserves even vertical walls/points.
+            // This is explicit overprotection, not a mesh or point sample.
+            let pad = 32. * self.tolerance;
+            let piece = |points: &[Point], enclosed: bool| {
+                let points = if enclosed {
+                    hull(
+                        points
+                            .iter()
+                            .flat_map(|p| {
+                                [-pad, pad].into_iter().flat_map(move |x| {
+                                    [-pad, pad].into_iter().map(move |y| [p[0] + x, p[1] + y])
+                                })
                             })
-                        })
-                        .collect(),
-                );
+                            .collect(),
+                    )
+                } else {
+                    points.to_vec()
+                };
+                let count = points.len();
+                PlanarRegion {
+                    version: 1,
+                    units: "mm".into(),
+                    name: "retained-column-shadow".into(),
+                    components: vec![Component {
+                        outer: Boundary {
+                            vertices: points.into_iter().map(|p| [p[0], p[1], 0.]).collect(),
+                        },
+                        holes: vec![],
+                    }],
+                    boundary_error_mm: self.mesh.surface_error_mm
+                        + self.numerical
+                        + if enclosed { pad * 2f64.sqrt() } else { 0. },
+                    source: serde_json::Value::Null,
+                }
+                .prepare_generated(options)
+                .map(|region| (region, count))
+            };
+            let (region, count) = if area <= (64. * self.tolerance).powi(2) {
                 degenerate += 1;
-            }
-            vertices += points.len();
-            let region = PlanarRegion {
-                version: 1,
-                units: "mm".into(),
-                name: "retained-column-shadow".into(),
-                components: vec![Component {
-                    outer: Boundary {
-                        vertices: points.into_iter().map(|p| [p[0], p[1], 0.]).collect(),
-                    },
-                    holes: vec![],
-                }],
-                boundary_error_mm: self.mesh.surface_error_mm
-                    + self.numerical
-                    + if area <= (64. * self.tolerance).powi(2) {
-                        32. * self.tolerance * 2f64.sqrt()
-                    } else {
-                        0.
-                    },
-                source: serde_json::Value::Null,
-            }
-            .prepare_generated(options)?;
+                piece(&points, true)?
+            } else {
+                match piece(&points, false) {
+                    Ok(piece) => piece,
+                    // A needle: its area is real, but the planar kernel
+                    // cannot take it as a polygon (an edge below its
+                    // resolution that cannot be collapsed). Enclosed like an
+                    // edge-on facet, never dropped; a facet the kernel cannot
+                    // take even enclosed is a refusal.
+                    Err(_) => {
+                        degenerate += 1;
+                        piece(&points, true)?
+                    }
+                }
+            };
+            vertices += count;
             regions.push(region);
             projected += 1;
         }

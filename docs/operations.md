@@ -1193,6 +1193,18 @@ offset of the part's outline above each level; a bull nose's are built the
 same way in thin bands over its corner height, never closer than allowed and
 at most a few hundredths of the corner radius farther out.
 
+That outline is the part's shadow at or above the level, the same conservative
+region 3D roughing protects its layers with and
+[`silhouette_region`](#a-mesh-parts-outline-enginesilhouette_region) returns: facets are
+taken from the level less `surface_error_mm` and a numerical reserve
+(33 × `tolerance_mm`), facets seen edge-on (vertical walls) are enclosed in a
+box of 32 × `tolerance_mm` rather than dropped, and a mesh whose facets the
+planar kernel cannot join is refused. The contour is offset from it by the
+cutter radius, `stock_to_leave_mm`, `safety_margin_mm` and the shadow's stated
+error (its `boundary_error_mm`: the mesh's `surface_error_mm` plus at most
+about 80 × `tolerance_mm`, under 0.001 mm at the default tolerance); the
+report's `shadow_error_mm` is the largest such error over the levels cut.
+
 `simplify` (default on) removes contour points that are not needed within
 `contour_error_mm`; `reverse` cuts the contours the other way;
 `safety_margin_mm` and `stock_to_leave_mm` work as for `Parallel`.
