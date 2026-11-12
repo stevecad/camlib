@@ -14,6 +14,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import time
 import unittest
 
 from camlib.simulation import OperationUpdate, ProgressUpdate, ProtocolError, Simulation, Update
@@ -179,6 +180,46 @@ class PlanningProgressTest(unittest.TestCase):
                     pass
             self.assertFalse(sim.state.finished)
 
+    def gaps(self, name, interval, *, until_first_move=False, **stock):
+        """Wall-clock seconds between consecutive progress updates of a run
+        (from its start, and up to its end or first move), and how long it
+        ran."""
+        options = fixture(name)
+        options["stock"].update(stock)
+        gaps = []
+        with Simulation(**options) as sim:
+            updates = sim.run_operations(progress_interval_s=interval)
+            started = last = time.perf_counter()
+            for update in updates:
+                now = time.perf_counter()
+                if isinstance(update, ProgressUpdate):
+                    gaps.append(now - last)
+                    last = now
+                elif until_first_move and isinstance(update, Update):
+                    break
+            gaps.append(time.perf_counter() - last)
+            if until_first_move:
+                sim.cancel()
+        return gaps, time.perf_counter() - started
+
+    def test_a_slow_plan_reports_at_least_every_second_before_its_first_move(self):
+        # The adaptive roughing fixture plans for seconds before it moves.
+        interval = 0.5
+        gaps, planned = self.gaps("roughing-adaptive", interval, until_first_move=True)
+        self.assertGreater(planned, 2, "no longer a slow planning call: use a slower one here")
+        self.assertGreaterEqual(len(gaps), planned / interval / 2)
+        self.assertLess(max(gaps), 2 * interval + 0.5, gaps)
+
+    def test_a_slow_plan_reports_at_least_every_second_between_moves(self):
+        # On a fine grid the engagement front spends over a second choosing
+        # a pass between two moves (its scan of cached start candidates):
+        # that stretch polls for cancellation, so progress keeps coming.
+        interval = 0.25
+        gaps, planned = self.gaps("roughing-open-block", interval, cell_size_mm=0.15)
+        self.assertGreater(planned, 2, "no longer a slow planning call: use a slower one here")
+        self.assertGreaterEqual(len(gaps), planned / interval / 2)
+        self.assertLess(max(gaps), 2 * interval + 0.5, gaps)
+
     def test_the_interval_is_checked(self):
         for interval in (-1, 0.0001, 1.5, float("nan"), True, "1"):
             with Simulation(**fixture("holes")) as sim:
@@ -197,31 +238,65 @@ class PlanningProgressTest(unittest.TestCase):
             Frame.parse(raw)
 
     def test_a_recorded_run_reports_progress_and_stores_none(self):
-        from camlib.playback import Cursor, Player
+        """The journal and the saved run are the same bytes whether the run
+        reported progress (as ``job.record`` does unless told not to), on
+        every change, or not at all."""
+        from tempfile import TemporaryDirectory
+
+        from camlib.playback import Cursor, Player, RecordedRun
+
+        def contents(directory):
+            files = {}
+            for path in sorted(Path(directory).iterdir()):
+                data = path.read_bytes()
+                if path.suffix == ".gz":
+                    # A gzip member carries a timestamp: compare its content.
+                    data = gzip.decompress(data)
+                elif path.name == "run.json":
+                    # What differs between any two runs of the same job: the
+                    # one wall-clock figure a saved run keeps, and the digests
+                    # over it and over the gzip files.
+                    saved = json.loads(data)
+                    self.assertIsInstance(saved["status"].pop("first_stock_seconds"), float)
+                    for digest in ("integrity", "metadata_sha256"):
+                        self.assertIn(digest, saved)
+                        del saved[digest]
+                    data = json.dumps(saved, sort_keys=True).encode()
+                files[path.name] = hashlib.sha256(data).hexdigest()
+            return files
 
         job = job_example().build_job()
-        digests = {}
-        for interval in (None, 0, 0.25):
-            with job.record("top", rapid_mm_min=6000, run_id="progress", progress_interval_s=interval) as recording:
-                self.assertTrue(recording.wait()["finished"])
-                latest = recording.planning_progress()
-                if interval is None:
-                    self.assertIsNone(latest)
-                else:
-                    # The last operation, complete.
-                    self.assertEqual((latest.operation, latest.index, latest.operations), ("pocket", 1, 2))
-                    self.assertEqual((latest.basis, latest.fraction), ("layers", 1))
-                self.assertNotIn("progress", recording.status())
-                files = {}
-                for path in sorted(recording.directory.iterdir()):
-                    # A gzip member carries a timestamp: compare its content.
-                    data = gzip.decompress(path.read_bytes()) if path.suffix == ".gz" else path.read_bytes()
-                    files[path.name] = hashlib.sha256(data).hexdigest()
-                player = Player(recording)
-                player.seek(Cursor(recording.status()["available"]))
-                digests[interval] = (files, hashlib.sha256(player.state.heights).hexdigest())
-        self.assertEqual(digests[0], digests[None])
-        self.assertEqual(digests[0.25], digests[None])
+        results = {}
+        # "default" passes nothing: RecordedRun's own 0.25 s.
+        for case, options in (
+            ("off", dict(progress_interval_s=None)),
+            ("changes", dict(progress_interval_s=0)),
+            ("default", {}),
+        ):
+            with TemporaryDirectory() as directory:
+                with job.record("top", rapid_mm_min=6000, run_id="progress", **options) as recording:
+                    self.assertTrue(recording.wait()["finished"])
+                    latest = recording.planning_progress()
+                    if case == "off":
+                        self.assertIsNone(latest)
+                    else:
+                        # The last operation, complete.
+                        self.assertEqual((latest.operation, latest.index, latest.operations), ("pocket", 1, 2))
+                        self.assertEqual((latest.basis, latest.fraction), ("layers", 1))
+                    self.assertNotIn("progress", recording.status())
+                    journal = contents(recording.directory)
+                    player = Player(recording)
+                    player.seek(Cursor(recording.status()["available"]))
+                    stock = hashlib.sha256(player.state.heights).hexdigest()
+                    saved = recording.save(Path(directory) / "saved")
+                with RecordedRun.open(saved) as reopened:
+                    self.assertIsNone(reopened.planning_progress())
+                    status = reopened.status()
+                    status.pop("first_stock_seconds")
+                results[case] = (journal, stock, contents(saved), status)
+        self.assertIn("run.json", results["off"][2])
+        self.assertEqual(results["changes"], results["off"])
+        self.assertEqual(results["default"], results["off"])
 
     def test_posting_reports_progress_and_posts_the_same_program(self):
         example = job_example()

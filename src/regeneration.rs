@@ -698,11 +698,13 @@ pub fn run_with_progress(
         None => uncached(producer, cancel, Some(progress), &mut send),
     }
 }
-/// One body per signal type, whatever the caller's output closure.
+/// The run bodies are not generic: they, and the engine below them for their
+/// one signal type (`Meter`), are compiled once in this crate, whatever the
+/// caller's signal and output closure are (#194).
 type Output<'a> = &'a mut dyn FnMut(&[u8]) -> Result<(), String>;
-fn uncached<C: CancelSignal>(
+fn uncached(
     producer: &mut StreamProducer,
-    cancel: &C,
+    cancel: &dyn CancelSignal,
     progress: Option<Cadence>,
     send: Output<'_>,
 ) -> Result<(), String> {
@@ -793,7 +795,7 @@ fn uncached<C: CancelSignal>(
                 g.check(&motion)?;
             }
             let (chunk, check) =
-                producer.push_checked_motion(motion, DEFAULT_FRAME_LIMIT, cancel)?;
+                meter.result(producer.push_checked_motion(motion, DEFAULT_FRAME_LIMIT, &meter))?;
             send(&chunk)?;
             if let Some(check) = check {
                 send(&check)?;
@@ -829,13 +831,13 @@ fn uncached<C: CancelSignal>(
         )?)?;
         while let Some(start) = producer.start_material_verification(Some(operation.id()))? {
             send(&start)?;
-            send(&producer.finish_material_verification(cancel)?)?;
+            send(&producer.finish_material_verification(&meter)?)?;
         }
     }
 
     while let Some(start) = producer.start_material_verification(None)? {
         send(&start)?;
-        send(&producer.finish_material_verification(cancel)?)?;
+        send(&producer.finish_material_verification(&meter)?)?;
     }
     send(&producer.finish(DEFAULT_FRAME_LIMIT)?)?;
     Ok(())
@@ -850,10 +852,10 @@ pub fn run(
 ) -> Result<(), String> {
     cached(producer, options, cancel, None, &mut send)
 }
-fn cached<C: CancelSignal>(
+fn cached(
     producer: &mut StreamProducer,
     options: CacheOptions,
-    cancel: &C,
+    cancel: &dyn CancelSignal,
     progress: Option<Cadence>,
     send: Output<'_>,
 ) -> Result<(), String> {
@@ -950,8 +952,9 @@ fn cached<C: CancelSignal>(
                 let mut record = record?;
                 let events = std::mem::take(&mut record.events);
                 let record = entry.verified_motion(record, &op, id)?;
-                let (frame, check, validated) =
-                    producer.push_verified_cache_motion(record, DEFAULT_FRAME_LIMIT, cancel)?;
+                let (frame, check, validated) = meter.result(
+                    producer.push_verified_cache_motion(record, DEFAULT_FRAME_LIMIT, &meter),
+                )?;
                 stats["validated_cached_columns"] =
                     (stats["validated_cached_columns"].as_u64().unwrap() + validated.columns)
                         .into();
@@ -972,6 +975,7 @@ fn cached<C: CancelSignal>(
             {
                 return Err("cached operation final stock/position mismatch".into());
             }
+            meter.end()?;
             let mut report = entry.footer.report.clone();
             report_sources(&mut report, &op, entry.header.base_generation, base)?;
             control(
@@ -1069,7 +1073,7 @@ fn cached<C: CancelSignal>(
                         motion.clone(),
                         None,
                         DEFAULT_FRAME_LIMIT,
-                        cancel,
+                        &meter,
                     )?;
                     let overflow = recording.append(&Record {
                         motion,
@@ -1087,8 +1091,11 @@ fn cached<C: CancelSignal>(
                     // optional cache identity/file work on an empty-cache run.
                     recording.after_publish(overflow)?;
                 } else {
-                    let (frame, check) =
-                        producer.push_checked_motion(motion, DEFAULT_FRAME_LIMIT, cancel)?;
+                    let (frame, check) = meter.result(producer.push_checked_motion(
+                        motion,
+                        DEFAULT_FRAME_LIMIT,
+                        &meter,
+                    ))?;
                     send(&frame)?;
                     if let Some(check) = check {
                         send(&check)?;
@@ -1127,12 +1134,12 @@ fn cached<C: CancelSignal>(
         }
         while let Some(start) = producer.start_material_verification(Some(op.id()))? {
             send(&start)?;
-            send(&producer.finish_material_verification(cancel)?)?;
+            send(&producer.finish_material_verification(&meter)?)?;
         }
     }
     while let Some(start) = producer.start_material_verification(None)? {
         send(&start)?;
-        send(&producer.finish_material_verification(cancel)?)?;
+        send(&producer.finish_material_verification(&meter)?)?;
     }
     send(&producer.finish(DEFAULT_FRAME_LIMIT)?)?;
     Ok(())
@@ -1148,9 +1155,9 @@ pub fn run_turning(
 ) -> Result<(), String> {
     turning(producer, cancel, None, &mut send)
 }
-fn turning<C: CancelSignal>(
+fn turning(
     producer: &mut StreamProducer,
-    cancel: &C,
+    cancel: &dyn CancelSignal,
     progress: Option<Cadence>,
     send: Output<'_>,
 ) -> Result<(), String> {
@@ -1228,7 +1235,12 @@ fn turning<C: CancelSignal>(
             let delta = deltas
                 .next()
                 .ok_or("turning move without its stock change")?;
-            send(&producer.push_turn_motion(motion, delta, DEFAULT_FRAME_LIMIT, cancel)?)?;
+            send(&meter.result(producer.push_turn_motion(
+                motion,
+                delta,
+                DEFAULT_FRAME_LIMIT,
+                &meter,
+            ))?)?;
         }
         if deltas.next().is_some() {
             return Err("turning stock change without its move".into());
@@ -1244,6 +1256,7 @@ fn turning<C: CancelSignal>(
                 &mut send,
             )?;
         }
+        meter.end()?;
         // The stock after this operation against the part.
         report["material"] = crate::turning::ops::material_report(&job, session.stock())?;
         control_turn(producer, op.id(), "end", pending, report, &stats, &mut send)?;

@@ -1771,6 +1771,11 @@ impl EngagementFrontPlan {
             // Nearest valid start among the cached candidates.
             let mut found = None;
             loop {
+                // Each turn scans every cached candidate, and a stale one is
+                // dropped and the scan repeated: seconds on a fine grid.
+                if cancel.is_cancelled() {
+                    return Err("engagement_front planning cancelled".into());
+                }
                 let layer = self.layer.as_ref().unwrap();
                 let best = layer
                     .candidates

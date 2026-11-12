@@ -206,19 +206,28 @@ struct State<'a> {
 /// progress update when one is due, from the planner's own cancellation
 /// polls. The planners therefore need no further parameter, and cancellation
 /// latency bounds how late an update can be.
-pub(crate) struct Meter<'a, C: CancelSignal> {
-    cancel: &'a C,
+///
+/// It is one concrete type whatever the caller's signal and output closure
+/// are, and it is the signal of everything a run calls (planning, stock
+/// sweeps, checks). So the engine's code that is generic over its cancel
+/// signal is compiled for a run exactly once, in this crate, and not again
+/// in each crate that starts a run (#194).
+pub(crate) struct Meter<'a> {
+    cancel: &'a dyn CancelSignal,
     identity: Vec<u8>,
     operations: usize,
     cadence: Option<Cadence>,
     due: Arc<AtomicBool>,
+    /// An operation is being planned (between `begin` and `end`): only then
+    /// does a due update go out, so none follows the operation's end.
+    planning: Cell<bool>,
     failed: Cell<bool>,
     state: RefCell<State<'a>>,
     _ticker: Option<Ticker>,
 }
-impl<'a, C: CancelSignal> Meter<'a, C> {
+impl<'a> Meter<'a> {
     pub(crate) fn new(
-        cancel: &'a C,
+        cancel: &'a dyn CancelSignal,
         manifest: &crate::stream::StreamManifest,
         operations: usize,
         cadence: Option<Cadence>,
@@ -242,6 +251,7 @@ impl<'a, C: CancelSignal> Meter<'a, C> {
             operations,
             cadence,
             due,
+            planning: Cell::new(false),
             failed: Cell::new(false),
             state: RefCell::new(State {
                 send,
@@ -270,6 +280,7 @@ impl<'a, C: CancelSignal> Meter<'a, C> {
             state.fraction = None;
             state.sent = None;
         }
+        self.planning.set(true);
         self.emit();
         self.result(Ok(()))
     }
@@ -301,8 +312,9 @@ impl<'a, C: CancelSignal> Meter<'a, C> {
         self.result(Ok(()))
     }
     /// The operation is planned: the last update, complete, when the planner
-    /// stated a basis.
+    /// stated a basis. No update of this operation follows.
     pub(crate) fn end(&self) -> Result<(), String> {
+        self.planning.set(false);
         {
             let mut state = self.state.borrow_mut();
             let Some(planned) = state.planned else {
@@ -365,10 +377,10 @@ impl<'a, C: CancelSignal> Meter<'a, C> {
         }
     }
 }
-impl<C: CancelSignal> CancelSignal for Meter<'_, C> {
+impl CancelSignal for Meter<'_> {
     fn is_cancelled(&self) -> bool {
         // One relaxed load more than the caller's own signal.
-        if self.due.load(Ordering::Relaxed) {
+        if self.due.load(Ordering::Relaxed) && self.planning.get() {
             self.due.store(false, Ordering::Relaxed);
             self.emit();
         }
@@ -488,36 +500,43 @@ mod tests {
     #[test]
     fn a_busy_planner_sends_an_update_at_each_interval_from_its_cancel_polls() {
         let manifest = manifest();
-        let mut frames = vec![];
+        let frames = RefCell::new(vec![]);
         let mut send = |bytes: &[u8]| {
-            frames.push(bytes.to_vec());
+            frames.borrow_mut().push(bytes.to_vec());
             Ok(())
         };
         let cancel = AtomicBool::new(false);
         let interval = Duration::from_millis(20);
-        {
-            let meter = Meter::new(
-                &cancel,
-                &manifest,
-                1,
-                Some(Cadence::Interval(interval)),
-                &mut send,
-            )
-            .unwrap();
-            meter.begin("slow", 0).unwrap();
-            // A planner that only polls for cancellation, sending no move.
+        let meter = Meter::new(
+            &cancel,
+            &manifest,
+            1,
+            Some(Cadence::Interval(interval)),
+            &mut send,
+        )
+        .unwrap();
+        // Something that only polls for cancellation, sending no move.
+        let poll = |meter: &Meter| {
             let started = std::time::Instant::now();
             while started.elapsed() < Duration::from_millis(400) {
                 assert!(!meter.is_cancelled());
                 std::thread::sleep(Duration::from_millis(1));
             }
-        }
+        };
+        meter.begin("slow", 0).unwrap();
+        poll(&meter);
         // 400 ms at 20 ms: about twenty; a loaded machine still gives several.
-        assert!(frames.len() >= 5, "{} updates", frames.len());
-        for frame in &frames {
+        let planned = frames.borrow().len();
+        assert!(planned >= 5, "{planned} updates");
+        for frame in frames.borrow().iter() {
             let update = decode_progress(&manifest, frame).unwrap();
             assert_eq!((update.operation.as_str(), update.fraction), ("slow", None));
         }
+        // After the operation's end (its checks, the next tool change) the
+        // same polls send nothing: no update of an operation follows its end.
+        meter.end().unwrap();
+        poll(&meter);
+        assert_eq!(frames.borrow().len(), planned);
     }
 
     #[test]
