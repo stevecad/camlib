@@ -869,6 +869,79 @@ fn display_overlay_patch<'py>(
     .map_err(PyValueError::new_err)?;
     Ok(PyBytes::new(py, &patch))
 }
+/// Derivative bounds of a B-spline or Bezier surface, from its Bezier
+/// patches: what the CadQuery adapter proves a spline face's facets with
+/// (#240). See `camlib::surface::spline_bounds`.
+#[pyclass]
+struct SplineSurfaceBounds {
+    inner: camlib::surface::spline_bounds::SplineBounds,
+}
+#[pymethods]
+impl SplineSurfaceBounds {
+    /// `patches`: per Bezier patch, row-major in u between consecutive
+    /// knots, `(rows, columns, poles, weights)` with the poles row-major.
+    #[new]
+    #[pyo3(signature = (uknots, vknots, patches, kinks_u, kinks_v, period_u=None, period_v=None))]
+    #[allow(clippy::type_complexity)]
+    fn new(
+        uknots: Vec<f64>,
+        vknots: Vec<f64>,
+        patches: Vec<(usize, usize, Vec<[f64; 3]>, Vec<f64>)>,
+        kinks_u: Vec<f64>,
+        kinks_v: Vec<f64>,
+        period_u: Option<f64>,
+        period_v: Option<f64>,
+    ) -> PyResult<Self> {
+        use camlib::surface::spline_bounds::{BezierPatch, SplineBounds};
+        let patches = patches
+            .iter()
+            .map(|(rows, columns, poles, weights)| {
+                BezierPatch::new(*rows, *columns, poles, weights)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(PyValueError::new_err)?;
+        SplineBounds::new(
+            uknots,
+            vknots,
+            patches,
+            [kinks_u, kinks_v],
+            [period_u, period_v],
+        )
+        .map(|inner| Self { inner })
+        .map_err(PyValueError::new_err)
+    }
+    /// `(|Fu|, |Fv|, |Fuu|, |Fuv|, |Fvv|)` over the whole surface.
+    fn whole(&self) -> [f64; 5] {
+        self.inner.whole()
+    }
+    /// `(u0, u1, v0, v1)`.
+    fn domain(&self) -> [f64; 4] {
+        self.inner.domain()
+    }
+    fn clamp(&self, u: f64, v: f64) -> (f64, f64) {
+        let [u, v] = self.inner.clamp([u, v]);
+        (u, v)
+    }
+    /// The bounds over a UV box, and whether a C0 knot line crosses it;
+    /// with `limit`, from pieces only as fine as it takes to prove the
+    /// box's facet within it.
+    #[pyo3(signature = (u0, u1, v0, v1, limit=None))]
+    fn local(
+        &mut self,
+        u0: f64,
+        u1: f64,
+        v0: f64,
+        v1: f64,
+        limit: Option<f64>,
+    ) -> ([f64; 5], bool) {
+        self.inner
+            .local_within(u0, u1, v0, v1, limit.unwrap_or(f64::NEG_INFINITY))
+    }
+    fn pieces(&self) -> usize {
+        self.inner.pieces()
+    }
+}
+
 #[pyclass(frozen)]
 struct MaterialTarget {
     inner: camlib::material::PreparedMaterial,
@@ -2759,6 +2832,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(stock_mesh, module)?)?;
     module.add_function(wrap_pyfunction!(validate_delta, module)?)?;
     module.add_function(wrap_pyfunction!(display_overlay_patch, module)?)?;
+    module.add_class::<SplineSurfaceBounds>()?;
     module.add_class::<MaterialTarget>()?;
     module.add_class::<IntentSession>()?;
     module.add_class::<MotionDecoder>()?;

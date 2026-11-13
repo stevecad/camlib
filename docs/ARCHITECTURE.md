@@ -379,6 +379,19 @@ replay of the decoded program.
   so it contains the exact shadow), which bridges seams narrower than twice
   that error for meshes from anywhere. A mesh declaring an error of 0 is
   taken as exact and its seams are refused.
+- Loose derivative bounds are a cost, not a safety margin. The CadQuery
+  adapter proves each facet of a curved face from a bound on the surface's
+  second derivatives; a bound three times the real derivative gives three
+  times the facets, which every later operation pays for, and around a pole
+  (where the real derivative vanishes) it asks for facets down to the
+  numeric resolution. So spline faces are bounded in the engine
+  (`surface::spline_bounds`, #240): per piece of each Bezier patch, halved
+  only as far as the facet in question needs; a rational patch from the
+  exact numerators of its derivatives (the quotient rule term by term loses
+  what the terms cancel); trims from the control polygon of each chord's own
+  span. The kernel's triangulation is only a seed, coarser inside faces than
+  on edges for a solid with spline faces. `test_cad_splines` holds the facet
+  count against the kernel's own triangulation.
 - The Python extension targets CPython 3.12+ (abi3); the Rust MSRV is 1.88.
 - Some tests exercise large inputs on purpose: run suites with memory and time
   limits.

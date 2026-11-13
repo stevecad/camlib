@@ -89,8 +89,38 @@ combinations and impossible dimensions are rejected before any motion.
 
 The CadQuery adapter exports planar faces (lines, circles, and bounded
 approximations of ellipses/B-splines) and surfaces made of planes, cylinders,
-cones, spheres, tori and extrusions. General B-spline surface patches are not
-supported. Load STEP/BREP in CadQuery first; camlib does not parse STEP.
+cones, spheres, tori, extrusions, and B-spline and Bezier surfaces (polynomial
+or rational, periodic, with poles, trimmed). Load STEP/BREP in CadQuery first;
+camlib does not parse STEP.
+
+A solid's mesh (`export_surface_mesh`) is watertight and comes with a proven
+`surface_error_mm` no larger than the `max_error_mm` asked for. For a spline
+face the proof is a bound on its second derivatives from the control nets of
+its Bezier patches, taken over pieces of each patch no larger than the facet
+in question (Filip, Magedson and Markot, "Surface algorithms using bounds on
+derivatives", CAGD 3, 1986; the engine's `surface::spline_bounds`), and each
+trim chord is bounded by the control polygon of the trimming curve's own
+span. The mesh has about twice the facets of the kernel's own (unproven)
+triangulation at the same deflection. What the adapter does with a spline
+solid, and reports in the mesh's `source`:
+
+- A face that is only C0 along a knot line (a crease, or a quadric the CAD
+  system wrote as a NURBS with full-multiplicity knots), or the extrusion of
+  a curve with such a knot, is divided there by the kernel into C1 faces that
+  share the new edge (`faces_divided_at_c0`). The crease is then an edge of
+  the mesh.
+- The solid's own tolerances (`cad_topology_error_mm`, twice the largest) are
+  part of the error. A solid whose tolerances alone exceed `max_error_mm` is
+  refused; a loosely toleranced import needs a larger `max_error_mm`, or
+  healing in the CAD system.
+- If the kernel's triangulation does not match a face's trims, the whole
+  solid is triangulated again, finer, then with the tolerances of the
+  adapter's private copy tightened (`tolerances_tightened_for_meshing`; the
+  error still charges the original ones). A face is never meshed on its own:
+  its edges would not be shared with its neighbours.
+- Refusals name the face (`face 12 (BSPLINE, 48.300 mm2): ...`): a surface
+  with no bound (a surface of revolution of a spline, an offset surface), a
+  face no triangulation matches, or `max_facets` exceeded.
 
 ## Stock simulation and checks
 

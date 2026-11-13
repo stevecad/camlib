@@ -2545,7 +2545,7 @@ tool.validate()   # the meshes, the placement and the insert cross-check
     not share vertices: an edge with no face on its other side within
     twice the mesh's error is refused as open; camlib does not repair it.
   - The stated error is the caller's: `export_surface_mesh` bounds it for
-    planar and analytic faces and refuses surfaces it cannot bound.
+    planar, analytic and B-spline faces and refuses surfaces it cannot bound.
 - The checks run on the slices, not the triangles. A model is reduced once
   (and kept: a run asks for a tool's body at every operation); consecutive
   slices of one section are one prism, so a straight bar is a single piece

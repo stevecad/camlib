@@ -3,6 +3,17 @@
 The CAD kernel supplies valid trimmed-face topology. Requested mesher deflection
 is only a seed: surface Hessians and trimming-curve derivative bounds determine
 acceptance. No sampled distance is used as an error certificate.
+
+The interpolation bound is the classical one from bounds on derivatives: a
+triangle's linear interpolant of a surface differs from it by at most a
+second-derivative bound times the squared parameter extents. See D. Filip,
+R. Magedson and R. Markot, "Surface algorithms using bounds on derivatives",
+Computer Aided Geometric Design 3 (1986) 295-311. B-spline and Bezier faces
+get those derivative bounds from the control nets of their Bezier patches'
+hodographs (G. Farin, "Curves and Surfaces for CAGD", 5th ed., sections 5.3
+and 14.4: a Bezier curve or patch, and each of its derivatives, lies in the
+convex hull of its control net), and trimming curves are bounded against
+their chords by the same hull property.
 """
 
 from collections import Counter
@@ -78,8 +89,182 @@ def _curve_bounds(adaptor, dimension):
     raise ValueError(f'no derivative bound for CAD trimming/basis curve {kind}')
 
 
-def _surface_bounds(adaptor):
-    """Bounds for |Fu|, |Fv|, |Fuu|, |Fuv|, |Fvv| in world coordinates."""
+def _real_array(low, high):
+    try:
+        from OCP.TColStd import TColStd_Array1OfReal
+    except ImportError:  # OCP 8 moved collection aliases.
+        from OCP.collections import Array1_double as TColStd_Array1OfReal
+    return TColStd_Array1OfReal(low, high)
+
+
+class _SplineBounds:
+    """Derivative bounds of a B-spline or Bezier face, from the control nets
+    of its Bezier patches (the engine's `surface::spline_bounds`).
+
+    `whole` is `_surface_bounds`' tuple for the face; `local` gives it for a
+    UV box, from pieces of the patches no larger than the box, with
+    'lipschitz' appended where a C0 knot line crosses the box: there no
+    second-derivative bound exists and only the first two entries hold."""
+
+    def __init__(self, uknots, vknots, patches, c0_u, c0_v, periods=(None, None)):
+        """`patches`: per Bezier patch, row-major in u between consecutive
+        knots, (rows, columns, poles row-major in u, weights)."""
+        from ._buffers import native
+
+        rows = patches
+        self.native = native.SplineSurfaceBounds(
+            list(uknots), list(vknots), rows, list(c0_u), list(c0_v), periods[0], periods[1]
+        )
+        self.whole = tuple(self.native.whole())
+        self.domain = tuple(self.native.domain())
+        self.periods = periods
+
+    def local(self, u0, u1, v0, v1, limit=None):
+        """Bounds on the UV box; with `limit`, from pieces only as fine as it
+        takes to prove a facet spanning the box within it."""
+        found, kinked = self.native.local(u0, u1, v0, v1, limit)
+        return (*found, 'lipschitz') if kinked else tuple(found)
+
+    def clamp(self, uv):
+        """`uv` moved into the surface's domain (the surface, and so its
+        bounds, exist only there); a periodic axis is left as it is."""
+        return self.native.clamp(uv[0], uv[1])
+
+
+def _patch_row(patch):
+    nu, nv = patch.NbUPoles(), patch.NbVPoles()
+    return (
+        nu,
+        nv,
+        [patch.Pole(i, j).Coord() for i in range(1, nu + 1) for j in range(1, nv + 1)],
+        [patch.Weight(i, j) for i in range(1, nu + 1) for j in range(1, nv + 1)],
+    )
+
+
+def _spline_bounds(adaptor):
+    """`_SplineBounds` of a face on a B-spline or Bezier surface, or on the
+    extrusion of a B-spline or Bezier curve (which is such a surface, linear
+    along the extrusion); None for any other surface."""
+    from OCP.GeomAbs import GeomAbs_BezierSurface, GeomAbs_BSplineSurface, GeomAbs_SurfaceOfExtrusion
+    from OCP.GeomConvert import GeomConvert_BSplineSurfaceToBezierSurface
+
+    kind = adaptor.GetType()
+    if kind == GeomAbs_SurfaceOfExtrusion:
+        return _extrusion_bounds(adaptor)
+    if kind == GeomAbs_BezierSurface:
+        patch = adaptor.Bezier()
+        u0, u1, v0, v1 = patch.Bounds()
+        return _SplineBounds([u0, u1], [v0, v1], [_patch_row(patch)], [], [])
+    if kind != GeomAbs_BSplineSurface:
+        return None
+    spline = adaptor.BSpline()
+    periods = (
+        spline.UPeriod() if spline.IsUPeriodic() else None,
+        spline.VPeriod() if spline.IsVPeriodic() else None,
+    )
+    c0_u = [spline.UKnot(i) for i in range(2, spline.NbUKnots()) if spline.UMultiplicity(i) >= spline.UDegree()]
+    c0_v = [spline.VKnot(i) for i in range(2, spline.NbVKnots()) if spline.VMultiplicity(i) >= spline.VDegree()]
+    if periods != (None, None):
+        # The same geometry and parameters, written as one non-periodic
+        # period. A periodic spline's first knot is a knot like any other:
+        # only C0 there if its multiplicity says so.
+        from OCP.Geom import Geom_BSplineSurface
+
+        if periods[0] is not None and spline.UMultiplicity(1) >= spline.UDegree():
+            c0_u.append(spline.UKnot(1))
+        if periods[1] is not None and spline.VMultiplicity(1) >= spline.VDegree():
+            c0_v.append(spline.VKnot(1))
+        spline = spline.Copy()
+        if not isinstance(spline, Geom_BSplineSurface):
+            raise ValueError('CAD B-spline surface copy failed')
+        if periods[0] is not None:
+            spline.SetUNotPeriodic()
+        if periods[1] is not None:
+            spline.SetVNotPeriodic()
+    converter = GeomConvert_BSplineSurfaceToBezierSurface(spline)
+    nu, nv = converter.NbUPatches(), converter.NbVPatches()
+    if nu < 1 or nv < 1:
+        raise ValueError('CAD surface has no Bezier patches')
+    uk, vk = _real_array(1, nu + 1), _real_array(1, nv + 1)
+    converter.UKnots(uk)
+    converter.VKnots(vk)
+    return _SplineBounds(
+        [uk.Value(i) for i in range(1, nu + 2)],
+        [vk.Value(i) for i in range(1, nv + 2)],
+        [_patch_row(converter.Patch(i, j)) for i in range(1, nu + 1) for j in range(1, nv + 1)],
+        c0_u,
+        c0_v,
+        periods,
+    )
+
+
+def _extrusion_bounds(adaptor):
+    """`_SplineBounds` of the extrusion F(u, v) = C(u) + v D of a B-spline or
+    Bezier curve C: each Bezier arc of C with its poles at the two ends of
+    the face's v range is a Bezier patch of F, of degree 1 in v. None for
+    another curve, or a face unbounded in v.
+
+    The derivatives of the whole curve at once (`_surface_bounds`) put the
+    sharpest bend's facets on every span of it."""
+    from OCP.GeomAbs import GeomAbs_BezierCurve, GeomAbs_BSplineCurve
+    from OCP.GeomConvert import GeomConvert_BSplineCurveToBezierCurve
+
+    basis = adaptor.BasisCurve()
+    v0, v1 = adaptor.FirstVParameter(), adaptor.LastVParameter()
+    if not (math.isfinite(v0) and math.isfinite(v1) and v1 > v0):
+        return None
+    # Linear in v, so a wider v range changes no bound, and a node a trim
+    # puts a hair outside the face's own range is on the surface as it is.
+    v0, v1 = v0 - (v1 - v0), v1 + (v1 - v0)
+    direction = adaptor.Direction().Coord()
+
+    def row(arc):
+        poles = [arc.Pole(i).Coord() for i in range(1, arc.NbPoles() + 1)]
+        weights = [arc.Weight(i) for i in range(1, arc.NbPoles() + 1)]
+        return (
+            len(poles),
+            2,
+            [tuple(x + v * d for x, d in zip(pole, direction)) for pole in poles for v in (v0, v1)],
+            [weight for weight in weights for _ in (v0, v1)],
+        )
+
+    if basis.GetType() == GeomAbs_BezierCurve:
+        arc = basis.Bezier()
+        return _SplineBounds([arc.FirstParameter(), arc.LastParameter()], [v0, v1], [row(arc)], [], [])
+    if basis.GetType() != GeomAbs_BSplineCurve:
+        return None
+    spline = basis.BSpline()
+    period = spline.Period() if spline.IsPeriodic() else None
+    c0 = [spline.Knot(i) for i in range(2, spline.NbKnots()) if spline.Multiplicity(i) >= spline.Degree()]
+    if period is not None:
+        from OCP.Geom import Geom_BSplineCurve
+
+        if spline.Multiplicity(1) >= spline.Degree():
+            c0.append(spline.Knot(1))
+        spline = spline.Copy()
+        if not isinstance(spline, Geom_BSplineCurve):
+            raise ValueError('CAD B-spline curve copy failed')
+        spline.SetNotPeriodic()
+    converter = GeomConvert_BSplineCurveToBezierCurve(spline)
+    count = converter.NbArcs()
+    if count < 1:
+        raise ValueError('CAD curve has no Bezier spans')
+    knots = _real_array(1, count + 1)
+    converter.Knots(knots)
+    return _SplineBounds(
+        [knots.Value(i) for i in range(1, count + 2)],
+        [v0, v1],
+        [row(converter.Arc(i)) for i in range(1, count + 1)],
+        c0,
+        [],
+        (period, None),
+    )
+
+
+def _surface_bounds(adaptor, spline=None):
+    """Bounds for |Fu|, |Fv|, |Fuu|, |Fuv|, |Fvv| in world coordinates.
+
+    `spline` is the face's `_SplineBounds` where the caller already has it."""
     from OCP.GeomAbs import (
         GeomAbs_Plane,
         GeomAbs_Cylinder,
@@ -87,9 +272,13 @@ def _surface_bounds(adaptor):
         GeomAbs_Sphere,
         GeomAbs_Torus,
         GeomAbs_SurfaceOfExtrusion,
+        GeomAbs_BSplineSurface,
+        GeomAbs_BezierSurface,
     )
 
     kind = adaptor.GetType()
+    if kind in (GeomAbs_BSplineSurface, GeomAbs_BezierSurface):
+        return (spline or _spline_bounds(adaptor)).whole
     if kind == GeomAbs_Plane:
         return 1.0, 1.0, 0.0, 0.0, 0.0
     if kind == GeomAbs_Cylinder:
@@ -164,9 +353,86 @@ def _interpolation_error(uv, bounds):
     # first derivative. Variance <= span^2/4; |covariance| <= du*dv/4.
     du = max(p[0] for p in uv) - min(p[0] for p in uv)
     dv = max(p[1] for p in uv) - min(p[1] for p in uv)
+    if len(bounds) > 5 and bounds[5] == 'lipschitz':
+        # A triangle across a C0 line of a spline surface. F(p) differs from
+        # each corner's F by at most |Fu| |du| + |Fv| |dv|, and the mean
+        # absolute deviation of barycentric weights over a span is half it.
+        return (bounds[0] * du + bounds[1] * dv) / 2
     if len(bounds) > 5 and bounds[5]:
         return bounds[0] * du / 2  # C0 spline: first-derivative Lipschitz bound.
     return (bounds[2] * du * du + 2 * bounds[3] * du * dv + bounds[4] * dv * dv) / 8
+
+
+def _segment_distance(p, a, b):
+    """Distance in the UV plane from p to the segment a-b."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    length2 = dx * dx + dy * dy
+    along = 0.0 if length2 <= 0 else min(1.0, max(0.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / length2))
+    return math.hypot(p[0] - a[0] - along * dx, p[1] - a[1] - along * dy)
+
+
+def _trim_reach(curve):
+    """`reach(t0, t1, a, b, shift)`: a bound on the distance, either way,
+    between a trim's pcurve over [t0, t1] (moved by `shift`) and the chord
+    a-b that stands for it in the UV mesh.
+
+    A B-spline or Bezier pcurve is bounded by its own control polygon over
+    just that span: the span is a chain of Bezier arcs, each inside the
+    convex hull of its poles (weights are positive), and the distance to a
+    segment is a convex function, so no point of the span is farther from the
+    chord than its farthest pole. That converges quadratically to the span's
+    real sag as the span shortens; a derivative bound of the whole curve does
+    not (it was 50 to 400 times the real sag on imported spline trims, and
+    the mesh was refined to match). The chord in turn is within that
+    distance, plus the gap between its ends and the span's, of the span: the
+    span is connected and joins the two ends, so every normal of the chord
+    between the ends' feet meets it.
+
+    Lines, circles and ellipses keep their closed-form sag."""
+    from OCP.GeomAbs import GeomAbs_BSplineCurve, GeomAbs_BezierCurve
+
+    speed, accel = _curve_bounds(curve, 2)
+    kind = curve.GetType()
+    poles = None
+    if kind == GeomAbs_BSplineCurve:
+        from OCP.Geom2dConvert import Geom2dConvert_BSplineCurveToBezierCurve
+
+        spline = curve.BSpline()
+
+        def poles(t0, t1):
+            converter = Geom2dConvert_BSplineCurveToBezierCurve(spline, t0, t1, 1e-12)
+            found = []
+            for n in range(1, converter.NbArcs() + 1):
+                arc = converter.Arc(n)
+                found.extend(arc.Pole(i).Coord() for i in range(1, arc.NbPoles() + 1))
+            return found
+
+    elif kind == GeomAbs_BezierCurve:
+        bezier = curve.Bezier()
+        low, high = bezier.FirstParameter(), bezier.LastParameter()
+
+        def poles(t0, t1):
+            arc = bezier.Copy()
+            arc.Segment((t0 - low) / (high - low), (t1 - low) / (high - low))
+            return [arc.Pole(i).Coord() for i in range(1, arc.NbPoles() + 1)]
+
+    def reach(t0, t1, a, b, shift):
+        gap = max(
+            math.dist(node, tuple(v + delta for v, delta in zip(curve.Value(t).Coord(), shift)))
+            for node, t in ((a, t0), (b, t1))
+        )
+        if t1 <= t0:
+            return gap
+        if poles is not None:
+            try:
+                found = poles(t0, t1)
+            except Exception:  # a span below the kernel's parametric resolution
+                found = None
+            if found:
+                return gap + max(_segment_distance((u + shift[0], v + shift[1]), a, b) for u, v in found)
+        return gap + (speed * (t1 - t0) / 2 if accel is None else accel * (t1 - t0) ** 2 / 8)
+
+    return reach
 
 
 def _check_cancel(cancel):
@@ -184,9 +450,10 @@ class _FaceMesh:
     CAD edge: (edge id, parameter at a, parameter at b, pcurve, UV shift).
     """
 
-    def __init__(self, adaptor, bounds, uv, indices, remaining, reserve):
+    def __init__(self, adaptor, bounds, uv, indices, remaining, reserve, spline=None):
         self.adaptor = adaptor
         self.bounds = bounds
+        self.spline = spline
         self.local = _local_bounds(adaptor)
         self.uv = list(uv)
         self.gid = [None] * len(uv)
@@ -199,9 +466,15 @@ class _FaceMesh:
         self.remaining = remaining
         self.reserve = reserve
         self.weld = 0.0
+        self.clamped = 0.0
+        self.kept = {}
 
     def limits(self, triangle):
         """Derivative bounds that hold on a triangle."""
+        if self.spline is not None:
+            u = [self.uv[i][0] for i in triangle]
+            v = [self.uv[i][1] for i in triangle]
+            return self.spline.local(min(u), max(u), min(v), max(v), self.remaining)
         if self.local is None:
             return self.bounds
         v = [self.uv[i][1] for i in triangle]
@@ -210,13 +483,22 @@ class _FaceMesh:
     def cost(self, a, b, bounds):
         a, b = self.uv[a], self.uv[b]
         du, dv = abs(a[0] - b[0]), abs(a[1] - b[1])
+        if len(bounds) > 5 and bounds[5] == 'lipschitz':
+            return bounds[0] * du + bounds[1] * dv
         if len(bounds) > 5 and bounds[5]:
             return bounds[0] * du
         return bounds[2] * du * du + 2 * bounds[3] * du * dv + bounds[4] * dv * dv
 
-    def error(self, k):
+    def limits_of(self, k):
+        """`limits` of facet k, kept until the facet is bisected."""
         triangle = self.triangles[k]
-        return _interpolation_error([self.uv[i] for i in triangle], self.limits(triangle))
+        kept = self.kept.get(k)
+        if kept is None or kept[0] is not triangle:
+            kept = self.kept[k] = (triangle, self.limits(triangle))
+        return kept[1]
+
+    def error(self, k):
+        return _interpolation_error([self.uv[i] for i in self.triangles[k]], self.limits_of(k))
 
     def third(self, a, b):
         triangle = self.triangles[self.owner[(a, b)]]
@@ -224,6 +506,18 @@ class _FaceMesh:
 
     def area(self, a, b, c):
         return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+    def inside(self, uv):
+        """`uv` on the surface's domain. A spline surface exists only there:
+        a point a trim puts a hair outside it is moved onto it, which moves
+        the UV mesh's boundary by that much (charged at the surface's
+        first-derivative bound)."""
+        if self.spline is None:
+            return uv
+        inside = self.spline.clamp(uv)
+        if inside != uv:
+            self.clamped = max(self.clamped, math.hypot(*self.bounds[:2]) * math.dist(uv, inside))
+        return inside
 
     def node(self, uv, gid, point):
         """A new node at `uv` that is the solid's vertex `gid` at `point`.
@@ -253,7 +547,12 @@ class _FaceMesh:
         return k, other
 
 
-def _face_data(face, cancel):
+class _MesherMismatch(ValueError):
+    """The kernel's triangulation of a face does not match the face's trims
+    (or is missing): another triangulation of the solid may."""
+
+
+def _face_data(face, cancel, spline=None):
     """Check UV mesh orientation/incidence and every trim's parameter chain."""
     from OCP.BRep import BRep_Tool
     from OCP.BRepAdaptor import BRepAdaptor_Surface, BRepAdaptor_Curve2d
@@ -261,16 +560,39 @@ def _face_data(face, cancel):
     from OCP.TopLoc import TopLoc_Location
 
     adaptor = BRepAdaptor_Surface(face.wrapped)
-    bounds = _surface_bounds(adaptor)
-    if not all(math.isfinite(x) and x >= 0 for x in bounds):
+    if spline is None:
+        spline = _spline_bounds(adaptor)
+    bounds = _surface_bounds(adaptor, spline)
+    if not all(math.isfinite(x) and x >= 0 for x in bounds[:5]):
         raise ValueError('nonfinite CAD derivative bound')
+    local = _local_bounds(adaptor)
+    floor = (
+        0.0 if spline is None else max(spline.domain[1] - spline.domain[0], spline.domain[3] - spline.domain[2]) / 128
+    )
+
+    def speed(a, b, reach):
+        """|F'| over the UV box that holds a and b, grown by `reach`."""
+        if spline is not None:
+            # No finer than 1/64 of the surface: a first-derivative bound
+            # over a wider box holds, and a chord is no reason to resolve
+            # the control nets below it.
+            reach = max(reach, floor)
+            low = spline.clamp((min(a[0], b[0]) - reach, min(a[1], b[1]) - reach))
+            high = spline.clamp((max(a[0], b[0]) + reach, max(a[1], b[1]) + reach))
+            found = spline.local(low[0], high[0], low[1], high[1])
+        elif local is not None:
+            found = local(min(a[1], b[1]) - reach, max(a[1], b[1]) + reach)
+        else:
+            found = bounds
+        return math.hypot(found[0], found[1])
+
     location = TopLoc_Location()
     mesh = BRep_Tool.Triangulation_s(face.wrapped, location)
     if mesh is None or not mesh.HasUVNodes():
-        raise ValueError('CAD mesher omitted face UV nodes')
+        raise _MesherMismatch('CAD mesher omitted face UV nodes')
     uv = [None] + [tuple(mesh.UVNode(i).Coord()) for i in range(1, mesh.NbNodes() + 1)]
     if any(not all(math.isfinite(v) for v in p) for p in uv[1:]):
-        raise ValueError('nonfinite CAD UV mesh')
+        raise _MesherMismatch('nonfinite CAD UV mesh')
     indices = []
     edges = Counter()
     directions = Counter()
@@ -281,7 +603,7 @@ def _face_data(face, cancel):
         a, b, c = (uv[j] for j in triangle)
         area = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
         if area <= 0 or not math.isfinite(area):
-            raise ValueError('CAD UV mesh has reversed/degenerate triangles')
+            raise _MesherMismatch('CAD UV mesh has reversed/degenerate triangles')
         indices.append(triangle)
         for p, q in zip(triangle, (*triangle[1:], triangle[0])):
             edges[tuple(sorted((p, q)))] += 1
@@ -289,8 +611,31 @@ def _face_data(face, cancel):
     if any(n not in (1, 2) for n in edges.values()) or any(
         n == 2 and (directions[(p, q)] != 1 or directions[(q, p)] != 1) for (p, q), n in edges.items()
     ):
-        raise ValueError('CAD UV mesh has inconsistent edge incidence')
+        raise _MesherMismatch('CAD UV mesh has inconsistent edge incidence')
     boundary = {edge for edge, n in edges.items() if n == 1}
+    clamp_error = 0.0
+    if spline is not None:
+        # The mesher may put a node a hair outside a spline surface's domain
+        # (it follows the pcurves, which loose CAD tolerances let stray). The
+        # surface, and its control-net bounds, exist only on the domain, so
+        # the node is moved onto it: 1e-4 of the span on the boundary, 1e-6
+        # inside, more is refused. The move changes the UV mesh by that much,
+        # charged at the first-derivative bound there; where a boundary node
+        # then sits relative to its trim is measured below like any other.
+        on_boundary = {i for edge in boundary for i in edge}
+        low_u, high_u, low_v, high_v = spline.domain
+        span = max(high_u - low_u, high_v - low_v)
+        for i in range(1, len(uv)):
+            inside = spline.clamp(uv[i])
+            if inside != uv[i]:
+                moved = math.dist(uv[i], inside)
+                if moved > (1e-4 if i in on_boundary else 1e-6) * span:
+                    raise _MesherMismatch(
+                        f'CAD UV mesh node {uv[i]} is outside the spline surface domain '
+                        f'[{low_u:g}, {high_u:g}] x [{low_v:g}, {high_v:g}]'
+                    )
+                clamp_error = max(clamp_error, speed(inside, inside, moved) * moved)
+                uv[i] = inside
     represented = Counter()
     trims = []
     trim_error = 0.0
@@ -305,10 +650,10 @@ def _face_data(face, cancel):
             curve = BRepAdaptor_Curve2d(edge, face.wrapped)
             polygon = BRep_Tool.PolygonOnTriangulation_s(edge, mesh, location)
             if polygon is None or not polygon.HasParameters():
-                raise ValueError('CAD trim has no mesh parameter correspondence')
+                raise _MesherMismatch('CAD trim has no mesh parameter correspondence')
             count = polygon.NbNodes()
             if count < 2:
-                raise ValueError('invalid CAD trim node count')
+                raise _MesherMismatch('invalid CAD trim node count')
             first, last = curve.FirstParameter(), curve.LastParameter()
             params = [polygon.Parameter(i) for i in range(1, count + 1)]
             guard = 1e-10 * max(1.0, abs(first), abs(last))
@@ -317,8 +662,8 @@ def _face_data(face, cancel):
                 or abs(params[-1] - last) > guard
                 or any(b < a for a, b in zip(params, params[1:]))
             ):
-                raise ValueError('CAD trim parameter chain is incomplete')
-            speed, accel = _curve_bounds(curve, 2)
+                raise _MesherMismatch('CAD trim parameter chain is incomplete')
+            reach_of = _trim_reach(curve)
             ids = [polygon.Node(i) for i in range(1, count + 1)]
             first_uv = tuple(curve.Value(params[0]).Coord())
             shift = [0.0, 0.0]
@@ -329,21 +674,66 @@ def _face_data(face, cancel):
                 if periodic:
                     value = period()
                     shift[axis] = round((uv[ids[0]][axis] - first_uv[axis]) / value) * value
-            gap = max(
-                math.dist(uv[j], tuple(v + delta for v, delta in zip(curve.Value(t).Coord(), shift)))
-                for j, t in zip(ids, params)
-            )
-            gap += speed * (abs(params[0] - first) + abs(params[-1] - last))
+            # The chain's ends are within `guard` of the trim's: what the
+            # pcurve can travel in that is part of every chord's reach.
+            ends = _curve_bounds(curve, 2)[0] * (abs(params[0] - first) + abs(params[-1] - last))
             for p, q, t0, t1 in zip(ids, ids[1:], params, params[1:]):
                 represented[tuple(sorted((p, q)))] += 1
-                deviation = speed * (t1 - t0) / 2 if accel is None else accel * (t1 - t0) ** 2 / 8
-                trim_error = max(trim_error, math.hypot(bounds[0], bounds[1]) * (gap + deviation))
+                reach = ends + reach_of(t0, t1, uv[p], uv[q], shift)
+                trim_error = max(trim_error, speed(uv[p], uv[q], reach) * reach)
                 trim_segments += 1
             trims.append((edge, curve, tuple(shift), ids, params))
             explorer.Next()
     if set(represented) != boundary or any(n != 1 for n in represented.values()):
-        raise ValueError('CAD trim chains do not cover mesh boundary exactly once')
-    return adaptor, bounds, uv, indices, trim_error, trim_segments, trims
+        raise _MesherMismatch('CAD trim chains do not cover mesh boundary exactly once')
+    return adaptor, bounds, uv, indices, trim_error + clamp_error, trim_segments, trims
+
+
+def _divide_at_c0(shape):
+    """The solid with every face that is only C0 along a line divided there
+    into C1 faces, and how many faces that added: a B-spline face with a
+    knot of full multiplicity, or the extrusion of a B-spline curve with one.
+
+    A second-derivative bound needs a C1 surface; across a C0 line only the
+    first derivatives bound a facet, which takes facets as small as the error
+    itself, over the whole face where the surface is an extrusion. The
+    kernel's shape upgrade (ShapeUpgrade_ShapeDivideContinuity, the Open
+    CASCADE tool for handing C0 geometry to formats and algorithms that need
+    C1) splits such a face along the line into faces that share the new
+    edge, each on its own segment of the surface, so the pieces are meshed
+    like any other faces of the solid. It is not trusted: a C0 line it
+    leaves inside a face is still bounded from first derivatives
+    (`_SplineBounds.local`, `_surface_bounds`), and the result is meshed and
+    checked for closure like any input. Solids without such faces are
+    returned as they are."""
+    import cadquery as cq
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_BSplineCurve, GeomAbs_BSplineSurface, GeomAbs_C1, GeomAbs_SurfaceOfExtrusion
+    from OCP.ShapeUpgrade import ShapeUpgrade_ShapeDivideContinuity
+
+    def kinked(face):
+        adaptor = BRepAdaptor_Surface(face.wrapped)
+        if adaptor.GetType() == GeomAbs_BSplineSurface:
+            spline = adaptor.BSpline()
+            return any(spline.UMultiplicity(i) >= spline.UDegree() for i in range(2, spline.NbUKnots())) or any(
+                spline.VMultiplicity(i) >= spline.VDegree() for i in range(2, spline.NbVKnots())
+            )
+        if adaptor.GetType() == GeomAbs_SurfaceOfExtrusion:
+            basis = adaptor.BasisCurve()
+            if basis.GetType() == GeomAbs_BSplineCurve:
+                spline = basis.BSpline()
+                return any(spline.Multiplicity(i) >= spline.Degree() for i in range(2, spline.NbKnots()))
+        return False
+
+    faces = shape.Faces()
+    if not any(kinked(face) for face in faces):
+        return shape, 0
+    divide = ShapeUpgrade_ShapeDivideContinuity(shape.wrapped)
+    divide.SetSurfaceCriterion(GeomAbs_C1)
+    if not divide.Perform():
+        return shape, 0
+    result = cq.Shape.cast(divide.Result())
+    return result, len(result.Faces()) - len(faces)
 
 
 def export_curved_solid(shape, *, max_error_mm, max_facets, source, cancel):
@@ -364,9 +754,10 @@ def export_curved_solid(shape, *, max_error_mm, max_facets, source, cancel):
         raise ValueError('max_facets must be None (no cap) or an integer >= 4')
     # Meshing mutates kernel caches: use an owned copy, never the caller's BRep.
     shape = cq.Shape.cast(BRepBuilderAPI_Copy(shape.wrapped, True, False).Shape())
-    faces = shape.Faces()
-    if not faces:
+    if not shape.Faces():
         raise ValueError('CAD surface has no faces')
+    shape, divided = _divide_at_c0(shape)
+    faces = shape.Faces()
     topology = max(
         [BRep_Tool.Tolerance_s(v.wrapped) for v in shape.Vertices()]
         + [BRep_Tool.Tolerance_s(e.wrapped) for e in shape.Edges()]
@@ -382,19 +773,88 @@ def export_curved_solid(shape, *, max_error_mm, max_facets, source, cancel):
     # Check supported surface definitions before invoking a potentially costly mesh.
     from OCP.BRepAdaptor import BRepAdaptor_Surface
 
-    for face in faces:
-        _surface_bounds(BRepAdaptor_Surface(face.wrapped))
-    seed_deflection = budget / 4
-    for attempt in range(5):
+    def name(index):
+        return f'face {index} ({faces[index].geomType()}, {faces[index].Area():.3f} mm2)'
+
+    splines = []
+    for index, face in enumerate(faces):
         _check_cancel(cancel)
+        adaptor = BRepAdaptor_Surface(face.wrapped)
+        try:
+            splines.append(_spline_bounds(adaptor))
+            _surface_bounds(adaptor, splines[-1])
+        except ValueError as error:
+            raise ValueError(f'{name(index)}: {error}') from None
+    # The kernel's triangulation is a seed that has to match every face's
+    # trims, with the trims within half the budget. Where it does not, the
+    # whole solid is triangulated again (never one face on its own: the faces
+    # of an edge must share its nodes), finer, and then with the tolerances of
+    # this private copy tightened: the kernel merges trim nodes closer than an
+    # edge's tolerance, which on loosely toleranced imports loses short trims.
+    # Tightening changes no geometry, and the error still charges the original
+    # tolerances (`topology` above).
+    #
+    # A solid with spline faces is seeded coarser, edges and interior apart
+    # (IMeshTools_Parameters): the trims' control-polygon bound needs no more
+    # than the kernel's own edge deflection, and facets the kernel adds inside
+    # a face at a fraction of the budget are facets the bound below never
+    # asked for (twice to four times as many, on every spline solid tried).
+    # Solids of planes and quadrics keep the seed they had.
+    coarse = any(spline is not None for spline in splines)
+    first_seed, step = (0.45 * budget, 2.0) if coarse else (budget / 4, 4.0)
+    seed_deflection = first_seed
+    problem = None
+    tightened = False
+    for attempt in range(8):
+        _check_cancel(cancel)
+        if attempt == 4:
+            from OCP.ShapeFix import ShapeFix_ShapeTolerance
+            from OCP.TopAbs import TopAbs_SHAPE
+
+            ShapeFix_ShapeTolerance().LimitTolerance(shape.wrapped, 1e-7, 1e-7, TopAbs_SHAPE)
+            tightened = True
+            seed_deflection = first_seed
         BRepTools.Clean_s(shape.wrapped)
-        BRepMesh_IncrementalMesh(shape.wrapped, seed_deflection, False, 0.5, True)
-        data = [_face_data(f, cancel) for f in faces]
-        if max(row[4] for row in data) <= budget / 2:
+        if coarse:
+            from OCP.IMeshTools import IMeshTools_Parameters
+
+            parameters = IMeshTools_Parameters()
+            parameters.Deflection = seed_deflection
+            parameters.DeflectionInterior = 2 * budget
+            parameters.Angle = 0.5
+            parameters.AngleInterior = 1.0
+            parameters.Relative = False
+            parameters.InParallel = True
+            BRepMesh_IncrementalMesh(shape.wrapped, parameters)
+        else:
+            BRepMesh_IncrementalMesh(shape.wrapped, seed_deflection, False, 0.5, True)
+        data = []
+        problem = None
+        for index, face in enumerate(faces):
+            try:
+                row = _face_data(face, cancel, splines[index])
+            except _MesherMismatch as error:
+                problem = f'the CAD mesher cannot triangulate {name(index)} consistently with its trims: {error}'
+                break
+            except ValueError as error:
+                if 'cancelled' in str(error):
+                    raise
+                raise ValueError(f'{name(index)}: {error}') from None
+            if row[4] > budget / 2:
+                problem = (
+                    f'the trim approximation of {name(index)} is {row[4]:.3g} mm, more than half the '
+                    f'{budget:.3g} mm that max_error_mm leaves after the CAD tolerances ({2 * topology:.3g} mm)'
+                )
+                break
+            data.append(row)
+        if problem is None:
             break
-        seed_deflection /= 4
+        seed_deflection /= step
     else:
-        raise ValueError('CAD trim approximation exceeds requested bound')
+        raise ValueError(
+            f'{problem}, at every triangulation tried (down to a deflection of {seed_deflection * step:.3g} mm, '
+            'also with tightened tolerances); request a larger max_error_mm or repair the face'
+        )
     # Conforming refinement of the whole solid (issue #241). The kernel's UV
     # mesh of a face is conforming, and the kernel discretises a CAD edge once
     # for all its faces. Bisecting each facet on its own, and evaluating a
@@ -478,8 +938,11 @@ def export_curved_solid(shape, *, max_error_mm, max_facets, source, cancel):
     shared = {}
     for index, (face, (adaptor, bounds, uv, indices, trim_error, trim_segments, trims)) in enumerate(zip(faces, data)):
         _check_cancel(cancel)
-        reserve = min(1e-4, (budget - trim_error) / 4)
-        mesh = _FaceMesh(adaptor, bounds, uv, indices, budget - trim_error - reserve, reserve)
+        # What the edge curves may lie from this face: 0.1 um, or the CAD
+        # tolerance where the solid declares more, within a quarter of what
+        # is left. The distance is measured at every node on an edge.
+        reserve = min(max(1e-4, topology), (budget - trim_error) / 4)
+        mesh = _FaceMesh(adaptor, bounds, uv, indices, budget - trim_error - reserve, reserve, splines[index])
         meshes.append(mesh)
         for edge, curve, shift, ids, params in trims:
             eid, record = edge_record(edge)
@@ -526,7 +989,11 @@ def export_curved_solid(shape, *, max_error_mm, max_facets, source, cancel):
     steps = 0
     while pending:
         if max_facets is not None and count > max_facets:
-            raise ValueError('CAD surface exceeds max_facets at requested error')
+            worst = max(range(len(meshes)), key=lambda n: len(meshes[n].triangles))
+            raise ValueError(
+                f'CAD surface exceeds max_facets {max_facets} at requested error; '
+                f'{name(worst)} has the most, {len(meshes[worst].triangles)} facets so far'
+            )
         steps += 1
         if steps % 1024 == 0:
             _check_cancel(cancel)
@@ -534,9 +1001,9 @@ def export_curved_solid(shape, *, max_error_mm, max_facets, source, cancel):
         if mesh.error(k) <= mesh.remaining:
             continue
         if mesh.depth[k] >= 24:
-            raise ValueError('CAD surface interpolation exceeds refinement depth')
+            raise ValueError(f'{name(meshes.index(mesh))}: CAD surface interpolation exceeds refinement depth')
         triangle = mesh.triangles[k]
-        limits = mesh.limits(triangle)
+        limits = mesh.limits_of(k)
         a, b = max(((triangle[i], triangle[(i + 1) % 3]) for i in range(3)), key=lambda edge: mesh.cost(*edge, limits))
         if (a, b) not in mesh.trim:
             if (b, a) not in mesh.owner:
@@ -567,7 +1034,7 @@ def export_curved_solid(shape, *, max_error_mm, max_facets, source, cancel):
             # (always, unless the facet is thinner than the trim's own sag);
             # else on the chord. Either way the vertex is the edge's point and
             # its distance to F there is measured.
-            middle = tuple(v + delta for v, delta in zip(curve.Value(tm).Coord(), shift))
+            middle = holder.inside(tuple(v + delta for v, delta in zip(curve.Value(tm).Coord(), shift)))
             if holder.area(ua, middle, uc) <= 0 or holder.area(middle, ub, uc) <= 0:
                 middle = tuple((x + y) / 2 for x, y in zip(ua, ub))
             m = holder.node(middle, gid, points[gid])
@@ -701,12 +1168,12 @@ def export_curved_solid(shape, *, max_error_mm, max_facets, source, cancel):
     max_error = 0.0
     for index, (face, mesh, row, (collapsed, max_interior)) in enumerate(zip(faces, meshes, data, face_rows)):
         trim_error, trim_segments = row[4], row[5]
-        if mesh.weld + collinear > mesh.reserve:
+        if mesh.weld + mesh.clamped + collinear > mesh.reserve:
             raise ValueError(
                 f'face {index}: facets in line at a pole move the mesh by {collinear:g} mm, more than the '
                 'requested error leaves for it; request a larger max_error_mm'
             )
-        max_error = max(max_error, max_interior + trim_error + mesh.weld + collinear + fixed_error)
+        max_error = max(max_error, max_interior + trim_error + mesh.weld + mesh.clamped + collinear + fixed_error)
         face_reports.append(
             dict(
                 kind=face.geomType(),
@@ -714,7 +1181,7 @@ def export_curved_solid(shape, *, max_error_mm, max_facets, source, cancel):
                 collapsed_pole_facets=collapsed,
                 trim_segments=trim_segments,
                 interpolation_error_mm=max_interior,
-                trim_error_mm=trim_error,
+                trim_error_mm=trim_error + mesh.clamped,
                 edge_weld_mm=mesh.weld,
             )
         )
@@ -730,7 +1197,9 @@ def export_curved_solid(shape, *, max_error_mm, max_facets, source, cancel):
             requested_error_mm=max_error_mm,
             error_basis=(
                 'CAD-kernel valid trim topology; matched UV boundary chains; '
-                'analytic/Bezier derivative bounds for trim and barycentric surface interpolation; '
+                'analytic/Bezier derivative bounds for barycentric surface interpolation (B-spline surfaces '
+                'per piece of each Bezier patch, divided into C1 faces at C0 knot lines); trims bounded by '
+                'their closed-form sag or the control polygon of the span of each chord; '
                 'one vertex per mesh node of the solid (edge-curve points on CAD edges, their distance '
                 'to each face measured), every edge bisected in all its facets'
             ),
@@ -741,6 +1210,8 @@ def export_curved_solid(shape, *, max_error_mm, max_facets, source, cancel):
             triangle_count=len(result),
             surface_evaluations=evaluations,
             seed_deflection_mm=seed_deflection,
+            tolerances_tightened_for_meshing=tightened,
+            faces_divided_at_c0=divided,
             extraction_ms=(time.perf_counter() - started) * 1000,
         ),
     )

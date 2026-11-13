@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 mod contact_bounds;
 mod convex;
 mod material;
+pub mod spline_bounds;
 pub(crate) use contact_bounds::ContactEnclosure;
 
 #[derive(Clone, Debug)]
