@@ -70,6 +70,8 @@ Entry, tab and path options shops expect, then the larger additions.
 - #16 Plasma/laser: automatic part nesting
 - #17 Plasma/laser: common-line cutting (needs #16 for automatic placements)
 - #18 Plasma/laser: marking and etching
+- #296 Plasma/laser: what sheet cutting still needs (tip-up avoidance, cut order, DXF in, part labels, remnants,
+  nesting options, fewer pierces, laser fly cutting): one PR per item, in the issue's order
 
 ## Phase 5: Multi-axis
 
