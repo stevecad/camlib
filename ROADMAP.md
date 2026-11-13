@@ -55,6 +55,7 @@ Entry, tab and path options shops expect, then the larger additions.
 - #175 Parallel: rows all cut one way
 - #173 Contour following the part's outline at each depth (silhouette)
 - #157 Milling: an operation that runs a caller-supplied toolpath through the same simulation, checks and posting
+- #288 Milling tools: face mills and high-feed mills (real cutter profiles, depth-of-cut and entry limits)
 
 ## Phase 3: Complete turning
 
