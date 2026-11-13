@@ -102,8 +102,13 @@ pub struct InsertBody {
     pub insert_clearance_deg: f64,
     /// The seat's orthogonal rake and inclination (degrees, ISO 3002-1),
     /// about `edge_deg`: negative rake tilts the face up away from the edge
-    /// (the flank below the edge backs off); positive inclination raises the
-    /// edge away from the nose.
+    /// (the flank below the edge backs off); negative inclination raises the
+    /// edge away from the nose, so the nose is the lowest point of the major
+    /// edge (the flank below the nose backs off along the edge), and positive
+    /// inclination makes it the highest. Those are the signs of holder
+    /// catalogues: a negative P-clamp holder is -6/-6. (Mitsubishi Materials,
+    /// "Function of tool features for turning": with a negative inclination
+    /// the corner is lowest and the chip flows toward the workpiece.)
     pub rake_deg: f64,
     pub inclination_deg: f64,
     /// The major cutting edge's direction in the tool frame (degrees from +x
@@ -793,7 +798,9 @@ fn insert_pieces(
     let lambda = body.inclination_deg.to_radians();
     // ISO 3002-1: tan(normal rake) = tan(orthogonal rake) cos(inclination).
     let gamma_n = (body.rake_deg.to_radians().tan() * lambda.cos()).atan();
-    let (theta1, theta2) = (-gamma_n, lambda);
+    // Positive angles of this rotation raise the edge away from the nose:
+    // that is a negative inclination.
+    let (theta1, theta2) = (-gamma_n, -lambda);
     let seat = |v: &mut [f64; 3]| {
         let (a, b, c) = (v[0] * e[0] + v[1] * e[1], v[0] * q[0] + v[1] * q[1], v[2]);
         let (b, c) = (
@@ -1633,7 +1640,9 @@ mod tests {
         if q[0] * c[0] + q[1] * c[1] < 0. {
             q = [-q[0], -q[1]];
         }
-        let l = b.inclination_deg.to_radians();
+        // The rotation that raises the edge away from the nose is by the
+        // inclination's negative.
+        let l = -b.inclination_deg.to_radians();
         let g = (b.rake_deg.to_radians().tan() * l.cos()).atan();
         let mut out = vec![];
         for i in 0..=60 {
@@ -1648,7 +1657,7 @@ mod tests {
                         continue;
                     }
                     let (a0, b0) = (p[0] * e[0] + p[1] * e[1], p[0] * q[0] + p[1] * q[1]);
-                    // Rotate: rake (-g) about e, then inclination l about q.
+                    // Rotate: rake (-g) about e, then by l about q.
                     let (b1, c1) = (
                         b0 * (-g).cos() - y * (-g).sin(),
                         b0 * (-g).sin() + y * (-g).cos(),
@@ -1687,6 +1696,50 @@ mod tests {
                 .map(|v| v[1])
                 .fold(f64::INFINITY, f64::min);
             assert!(front > -rn + 0.25, "rn {rn}: {front}");
+        }
+    }
+
+    #[test]
+    fn negative_inclination_makes_the_nose_the_lowest_point_of_the_edge() {
+        // ISO 3002-1's tool cutting edge inclination, with the sign every
+        // holder catalogue prints: negative, and the corner is the lowest
+        // point of the major edge. The same wedge on its 95 degree holder
+        // (major edge 5 degrees from +x, leaving the nose), no rake: at -6
+        // degrees the edge's far end, 12 mm from the nose, stands
+        // 12·sin 6° = 1.25 mm above the centre plane, and the bottom of the
+        // insert under the nose, 3 mm below, stands 3·sin 6° = 0.31 mm back
+        // from the nose along the edge (x = -rn at the nose): the flank
+        // below the nose backs off. At +6 degrees it is the other way:
+        // nothing of the face is above the plane's nose side, and the
+        // bottom reaches past the nose.
+        for rn in [0.1, 0.4, 0.8, 1.6] {
+            let insert = Insert::iso_turning(80., 95., 12., rn).unwrap();
+            let measure = |inclination: f64| {
+                let t = tool(
+                    insert.clone(),
+                    rn,
+                    TurnSide::Outer,
+                    body(3., 0., 0., inclination, 5.),
+                );
+                let (pieces, _) = body_pieces(&t).unwrap();
+                let vertices: Vec<[f64; 3]> = pieces.into_iter().flatten().collect();
+                let highest = vertices
+                    .iter()
+                    .map(|v| v[2])
+                    .fold(f64::NEG_INFINITY, f64::max);
+                let under_nose = vertices
+                    .iter()
+                    .filter(|v| v[2] < -2.5)
+                    .map(|v| v[0])
+                    .fold(f64::INFINITY, f64::min);
+                (highest, under_nose)
+            };
+            let (highest, under_nose) = measure(-6.);
+            assert!((1.0..1.5).contains(&highest), "rn {rn}: {highest}");
+            assert!(under_nose > -rn + 0.25, "rn {rn}: {under_nose}");
+            let (highest, under_nose) = measure(6.);
+            assert!(highest < 0.2, "rn {rn}: {highest}");
+            assert!(under_nose < -rn - 0.25, "rn {rn}: {under_nose}");
         }
     }
 

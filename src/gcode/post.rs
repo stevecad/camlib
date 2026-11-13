@@ -1335,6 +1335,22 @@ impl DefaultPost {
             "linear"
         };
         let mut axes: Vec<usize> = vec![0, 1, 2];
+        if d.x_diameter
+            || d.tool_change == "lathe_t"
+            || d.declares("lathe_diameter_mode")
+            || d.declares("lathe_radius_mode")
+        {
+            // A lathe has no Y axis: its program has no Y words (LinuxCNC's
+            // lathe programs, like FANUC's and Centroid's, are written in X
+            // and Z).
+            if c.start()[1] != 0. || c.end()[1] != 0. {
+                return Err("a lathe has no Y axis: every move stays at y = 0".into());
+            }
+            if circular.is_some_and(|(plane, _, _)| plane != crate::motion::Plane::Xz) {
+                return Err("a lathe has no Y axis: its arcs are in the XZ plane (G18)".into());
+            }
+            axes = vec![0, 2];
+        }
         if let Some((plane, _, helix)) = circular
             && !helix
         {

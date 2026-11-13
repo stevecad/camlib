@@ -536,8 +536,10 @@ class Seat:
     are the holder maker's data: ISO 5608 designations do not carry them,
     and ISO 5610 gives only recommended values. ``Seat(0, 0)``: a flat seat.
     Negative rake tilts the face up away from the edge (the flank below the
-    edge backs off); positive inclination raises the edge away from the
-    nose."""
+    edge backs off); negative inclination makes the nose the lowest point of
+    the major edge (the flank below the nose backs off), positive the
+    highest. These are the signs of holder catalogues: a negative P-clamp
+    holder is ``Seat(-6, -6)``."""
 
     rake_deg: float
     inclination_deg: float

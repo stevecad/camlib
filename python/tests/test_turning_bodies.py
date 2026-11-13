@@ -65,12 +65,18 @@ class BoringBodyTest(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "insert"):
             boring(insert_thickness_mm=4.76, insert_clearance_deg=0).plan()
 
-    def test_negative_seat_inclination_swings_the_heel_out(self):
+    def test_a_seat_inclination_that_raises_the_nose_swings_the_heel_out(self):
         self.assertTrue(boring(insert_thickness_mm=3, insert_clearance_deg=11, seat=camlib.TurningSeat(0, 0)).plan())
-        # The inclined heel reaches r 11.69 at the 11 mm wall: refused where
-        # it first meets material (here the approach rapid, at the stock).
+        # A positive inclination makes the nose the highest point of the
+        # edge, so the insert's bottom swings toward the nose: the heel
+        # reaches r 11.69 at the 11 mm wall, refused where it first meets
+        # material (here the approach rapid, at the stock). (This test had
+        # -20 while the engine applied the inclination with its sign
+        # reversed; with the catalogue sign it is +20 that does this.)
         with self.assertRaisesRegex(Exception, "insert|a rapid would touch the stock"):
-            boring(insert_thickness_mm=3, insert_clearance_deg=11, seat=camlib.TurningSeat(0, -20)).plan()
+            boring(insert_thickness_mm=3, insert_clearance_deg=11, seat=camlib.TurningSeat(0, 20)).plan()
+        # The negative one backs the heel off.
+        self.assertTrue(boring(insert_thickness_mm=3, insert_clearance_deg=11, seat=camlib.TurningSeat(0, -20)).plan())
 
 
 class DeclaredBodyTest(unittest.TestCase):

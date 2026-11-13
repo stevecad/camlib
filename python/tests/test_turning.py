@@ -313,11 +313,150 @@ class TurningTest(unittest.TestCase):
         self.assertEqual(written["material"]["gouge"]["assessment"], "within_tolerance")
         self.assertEqual(written["material"]["residual"]["definite_cells"], len(corner))
 
+    def test_a_negative_insert_on_its_catalogue_seat_faces_roughs_and_finishes(self):
+        # The example of docs/operations.md, "Turning": a CNMG insert (no
+        # clearance of its own) on a PCLNR holder, whose seat tilts it -6
+        # degrees in rake and in inclination, the values a holder catalogue
+        # prints. The tilt is what backs both flanks off the work. With the
+        # inclination applied the wrong way round the body below the nose
+        # reached toward the axis and every cut was refused as a rub
+        # ("the insert's body below its cutting face would rub the stock").
+        insert = camlib.TurningInsert.iso_code("CNMG120408", holder="PCLNR2525M12")
+        holder = camlib.TurningHolder.rectangle(
+            insert=insert,
+            nose_radius_mm=insert.nose_radius_mm,
+            side="outer",
+            width_mm=25,
+            length_mm=150,
+            offset_mm=0,
+            y_mm=(-25, 3),
+        )
+
+        def plan(seat):
+            cutter = camlib.TurningTool("cnmg", insert=insert, side="outer", hand="right", holder=holder, seat=seat)
+            return job(
+                tools=(camlib.TurnToolSetting(cutter, 1, 1),),
+                operations=(
+                    camlib.TurnFace("face", "cnmg", 0, feed_mm_rev=0.15, rpm=1000),
+                    camlib.TurnRough("rough", "cnmg", depth_of_cut_mm=2, allowance_mm=0.3, feed_mm_rev=0.25, rpm=1000),
+                    camlib.TurnFinish("finish", "cnmg", feed_mm_rev=0.1, rpm=1200),
+                ),
+            ).plan()
+
+        done = plan(camlib.TurningSeat(rake_deg=-6, inclination_deg=-6))
+        self.assertEqual([r["id"] for r in done.reports], ["face", "rough", "finish"])
+        # The same insert tilted nose-up has no clearance below the nose:
+        # that is the rub, and it is still refused.
+        with self.assertRaisesRegex(Exception, "body below its cutting face would rub the stock"):
+            plan(camlib.TurningSeat(rake_deg=-6, inclination_deg=6))
+
+    def test_a_posted_arc_outside_the_setups_tolerance_is_refused_by_name(self):
+        # A chamfered, relieved shaft finished with a 0.4 mm nose, posted
+        # for a FANUC lathe at three decimals. The machine's posting
+        # tolerance (0.01 mm by default) lets an arc be written a few
+        # microns from the planned one; the setup allows 0.001 mm against
+        # the part. The read-back program is refused, and the refusal says
+        # which two tolerances disagree (it used to say "check the insert's
+        # angles against the profile", which is not what is wrong).
+        import math
+
+        from test_drill_cycles import example
+
+        post = example("fanuc_lathe_post")
+        relief_z = -16 - 1.8 / math.tan(math.radians(30))
+        profile = (
+            (0, 0, 0),
+            (8.5, 0, 0),
+            (10, -1.5, 0),
+            (10, -16, 0),
+            (8.2, relief_z, 0),
+            (8.2, -21.5, -math.tan(math.pi / 8)),
+            (9.7, -23, 0),
+            (15, -23, 0),
+            (15, -40, 0),
+        )
+
+        def cutter(id, code, holder_code, width, length, y):
+            insert = camlib.TurningInsert.iso_code(code, holder=holder_code)
+            holder = camlib.TurningHolder.rectangle(
+                insert=insert,
+                nose_radius_mm=insert.nose_radius_mm,
+                side="outer",
+                width_mm=width,
+                length_mm=length,
+                offset_mm=0,
+                y_mm=y,
+            )
+            return camlib.TurningTool(
+                id, insert=insert, side="outer", hand="right", holder=holder, seat=camlib.TurningSeat(0, 0)
+            )
+
+        def posted(tolerance):
+            plan = job(
+                profile=profile,
+                tolerance_mm=tolerance,
+                tools=(
+                    camlib.TurnToolSetting(cutter("rougher", "CCMT120408", "SCLCR2525M12", 25, 150, (-25, 3)), 1, 1),
+                    camlib.TurnToolSetting(cutter("finisher", "VCMT160404", "SVJCR2020K16", 20, 125, (-20, 3)), 2, 2),
+                ),
+                operations=(
+                    camlib.TurnFace("face", "rougher", 0, stepdown_mm=1, feed_mm_rev=0.15, rpm=1200),
+                    camlib.TurnRough(
+                        "rough", "rougher", depth_of_cut_mm=2, allowance_mm=0.3, feed_mm_rev=0.25, rpm=1200
+                    ),
+                    camlib.TurnFinish("finish", "finisher", feed_mm_rev=0.1, rpm=1500),
+                ),
+                initial_position_mm=(40, 30),
+            ).plan()
+            tools = tuple(
+                ToolSetting.for_tool(t, number=i, length_register=i, position_after_mm=plan.program.initial_position_mm)
+                for i, t in enumerate(plan.program.tools, 1)
+            )
+            machine = post.define_machine(
+                "lathe",
+                tools,
+                max_spindle_rpm=4000,
+                program_number=1001,
+                output_units="mm",
+                decimals=3,
+                max_feed_mm_min=10000,
+                arcs=True,
+                helices=False,
+                max_sweep_rad=math.tau,
+                max_tool_number=8,
+                max_length_register=8,
+                tool_changes=True,
+                flood=True,
+                mist=False,
+                rapid_mm_min=8000,
+            )
+            return plan.job.post_nc(
+                "lathe",
+                machine=machine,
+                post=post.FanucLathePost,
+                decoder=post.FanucLatheDecoder,
+                accept={"unchecked_machine"},
+                lowering=camlib.LoweringOptions(native_arcs=True),
+            )
+
+        with self.assertRaises(Exception) as refused:
+            posted(1e-3)
+        message = str(refused.exception)
+        self.assertIn("into the part", message)
+        self.assertIn("in the program as it was read back", message)
+        self.assertIn("machine's tolerance_mm", message)
+        self.assertIn("setup's tolerance_mm (0.001)", message)
+        self.assertNotIn("insert's angles", message)
+        # With a setup tolerance the posting fits in, the same program is released.
+        self.assertTrue(posted(2e-3).text)
+
     def test_linuxcnc_radius_mode_post(self):
         plan = job().plan()
         nc = text(plan, lathe(plan))
         self.assertIn("G8", nc)
         self.assertIn("G18", nc)
+        # A lathe has no Y axis: no block carries a Y word.
+        self.assertEqual([line for line in nc if any(w.startswith("Y") for w in line.split())], [])
         # The finished front diameter: X10 (radius) along Z.
         self.assertTrue(any(line.startswith("G1 X10.8 Z-") or " X10.8 " in line for line in nc), nc[:40])
 

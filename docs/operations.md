@@ -1994,6 +1994,23 @@ with job.record("lathe", rapid_mm_min=6000) as run:   # playback: Player(run)
 program = job.post_nc("lathe", machine=machine)        # checked NC text
 ```
 
+The seat's angles are the holder catalogue's, with its signs: a negative
+P-clamp holder is `TurningSeat(-6, -6)`. Negative rake tilts the face up away
+from the edge and negative inclination makes the nose the lowest point of the
+major edge; together they back both flanks of a negative insert off the work.
+The other sign of either puts a flank into the stock, and the cut is refused
+as a rub.
+
+A lathe setup's `tolerance_mm` is what every move may be into the part, the
+posted program's moves included: `Job.post` reads the program back and checks
+it with the same tolerance. A post writes within its machine's own
+`tolerance_mm` (0.01 mm unless declared) and decimals: an arc whose words
+cannot be exact at three decimals is written slightly off, or as chords. So
+a setup tolerance tighter than the posting can hold is refused when the
+program is read back, naming both tolerances: declare a machine
+`tolerance_mm` no larger than the setup's (with decimals to match), or a
+setup tolerance the posting fits in. A lathe program has no Y words.
+
 Playback seeks to any point, within a move too: the stock shown partway
 through a move is the planner's move kernel on that first part of the move,
 from the stock at its start (as milling and thermal runs sweep the cutter to

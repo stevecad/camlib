@@ -3401,7 +3401,27 @@ impl TurnReplay {
         self.stock = Some(planner.stock);
         self.last_cut = planner.last_cut;
         self.last_thread = planner.last_thread;
-        result?;
+        if let Err(error) = result {
+            // The planner's hint is about the plan (an insert that does not
+            // fit the profile). A move read back from a posted program was
+            // planned clear: what differs is the posting, which rounds to
+            // the control's resolution and may write an arc, or its chords,
+            // anywhere within the machine's tolerance of the plan. Say so,
+            // and what to change.
+            return Err(
+                match error.split_once("; check the insert's angles against the profile") {
+                    Some((what, rest)) => format!(
+                        "{what}, in the program as it was read back: a posted move is rounded to the control's \
+                         resolution, and an arc (or the chords it is written as) lies within the machine's \
+                         tolerance_mm of the planned one, which the setup's tolerance_mm ({}) does not allow \
+                         here. Post with a machine tolerance_mm no larger than the setup's (it needs decimals \
+                         to match), or raise the setup's tolerance_mm{rest}",
+                        self.job.tolerance_mm
+                    ),
+                    None => error,
+                },
+            );
+        }
         Ok(delta.unwrap_or(TurnDelta {
             motion_id: motion.id,
             changes: vec![],
@@ -3796,7 +3816,16 @@ mod tests {
                         start[0] -= deeper;
                         end[0] -= deeper;
                     }
-                    assert!(replay.motion(&deep).unwrap_err().contains("into the part"));
+                    let error = replay.motion(&deep).unwrap_err();
+                    assert!(error.contains("into the part"), "{error}");
+                    // A read-back move's refusal names the posting and the
+                    // two tolerances, not the insert's angles.
+                    assert!(
+                        error.contains("in the program as it was read back")
+                            && error.contains("machine's tolerance_mm")
+                            && !error.contains("insert's angles"),
+                        "{error}"
+                    );
                     return;
                 }
                 replay.motion(motion).unwrap();
@@ -7025,9 +7054,11 @@ test_tool("groove_in".into(), Insert::Groove { width_mm: 3.,
                     b * (-gamma).cos() - y * (-gamma).sin(),
                     b * (-gamma).sin() + y * (-gamma).cos(),
                 );
+                // A negative inclination raises the edge away from the
+                // nose: a rotation by its negative.
                 let (a, c) = (
-                    a * lambda.cos() - c * lambda.sin(),
-                    a * lambda.sin() + c * lambda.cos(),
+                    a * lambda.cos() + c * lambda.sin(),
+                    -a * lambda.sin() + c * lambda.cos(),
                 );
                 [a * e[1] + b * q[1], a * e[0] + b * q[0], c]
             };

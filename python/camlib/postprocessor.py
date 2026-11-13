@@ -1133,6 +1133,17 @@ class GCodePost(PostProcessor):
 
     version = '2'
 
+    def _lathe(self):
+        """Whether the machine is a lathe: its dialect writes X as a diameter,
+        changes tools with lathe T words, or declares a lathe X mode (LinuxCNC
+        G7/G8)."""
+        d = self.machine.dialect
+        return bool(
+            d.x_diameter
+            or d.tool_change == 'lathe_t'
+            or any(c.effect in ('lathe_diameter_mode', 'lathe_radius_mode') for c in d.commands)
+        )
+
     def on_begin(self, program):
         self.geometry_tolerance_mm = program.tolerance_mm
         d = self.machine.dialect
@@ -1650,6 +1661,15 @@ class GCodePost(PostProcessor):
         else:
             effect = 'rapid' if motion.kind in ('rapid', 'shift') and motion.feed_mm_min is None else 'linear'
         axes = (0, 1, 2)
+        if self._lathe():
+            # A lathe has no Y axis: its program has no Y words (rule 5 of
+            # AGENTS.md: only what the controller needs; LinuxCNC's lathe
+            # programs, like FANUC's and Centroid's, are written in X and Z).
+            if c.start[1] != 0 or c.end[1] != 0:
+                raise ValueError('a lathe has no Y axis: every move stays at y = 0')
+            if isinstance(c, Arc) and c.plane != 'xz':
+                raise ValueError('a lathe has no Y axis: its arcs are in the XZ plane (G18)')
+            axes = (0, 2)
         if isinstance(c, Arc):
             u, v, ax = {'xy': (0, 1, 2), 'xz': (2, 0, 1), 'yz': (1, 2, 0)}[c.plane]
             axes = (0, 1, 2) if isinstance(c, Helix) else tuple(i for i in axes if i != ax)
@@ -3164,6 +3184,8 @@ class PostEngine:
         if (
             self.machine.schedule_post_feeds
             or self.machine.traverse_feed_mm_min is not None
+            # A lathe's moves are written without Y words (`on_motion`).
+            or (isinstance(post, GCodePost) and post._lathe())
             or self.machine.dialect.x_diameter
             or any(
                 getattr(P, name) is not getattr(GCodePost, name)
