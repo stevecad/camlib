@@ -1106,6 +1106,14 @@ pub(crate) fn stroke_distance(a: Stroke, b: Stroke) -> f64 {
     }
     best
 }
+/// See `PocketPlan::refuse_no_cutter_position`.
+pub(crate) fn cutter_fits_nowhere(operation: &str, radius: f64, allowance: f64) -> String {
+    format!(
+        "{operation}: the cutter fits nowhere in the region, so the operation can cut nothing it was asked to: a tool centre needs {} mm to every wall (cutter radius {radius} mm + radial allowance {allowance} mm), and no part of the region is {} mm wide. Use a smaller cutter or a smaller radial allowance, or correct the region",
+        radius + allowance,
+        2. * (radius + allowance)
+    )
+}
 fn stroke_point(s: Stroke, fraction: f64) -> Point {
     if let Some((c, sweep)) = s.arc {
         let angle = (s.a[1] - c[1]).atan2(s.a[0] - c[0]) + fraction * sweep;
@@ -1854,6 +1862,28 @@ impl PocketPlan {
     pub(crate) fn operation_tolerance(&self) -> f64 {
         self.operation.tolerance_mm
     }
+    pub(crate) fn operation_id(&self) -> &str {
+        &self.operation.id
+    }
+    /// The refusal of a pocket operation whose cutter fits nowhere in its
+    /// region (#250), or `Ok` when it fits somewhere. `PocketPlan` itself
+    /// plans such a region as an empty plan whose report says so
+    /// (`center_components` 0, the diagnostic, the whole region residual):
+    /// that is right for a roughing layer, where the cutter legitimately
+    /// fits nowhere at some depths. A `Pocket` or `AdaptivePocket` can then
+    /// do nothing it was asked to, which is a refusal, not an empty plan
+    /// (a region only partly too narrow is cut where the cutter fits, and
+    /// the rest is its reported residual).
+    pub(crate) fn refuse_no_cutter_position(&self) -> Result<(), String> {
+        if self.report.center_components > 0 {
+            return Ok(());
+        }
+        Err(cutter_fits_nowhere(
+            &format!("pocket {}", self.operation.id),
+            self.radius,
+            self.operation.radial_allowance_mm,
+        ))
+    }
     pub(crate) fn construction_error_mm(&self) -> f64 {
         let boundary_error = self
             .report
@@ -2067,7 +2097,7 @@ impl PocketPlan {
             return o.top_z_mm;
         }
         let above = (o.top_z_mm - pass as f64 * o.stepdown_mm).max(self.report.target_z_mm);
-        (above + 0.01_f64.max(64. * o.tolerance_mm)).min(o.top_z_mm)
+        (above + crate::entry::skin(o.tolerance_mm)).min(o.top_z_mm)
     }
     /// The path a ramp `depth` deep to the start of `s` follows: `s` and the
     /// strokes that continue it without a gap (`chain_from` on), as far as
@@ -2165,7 +2195,7 @@ impl PocketPlan {
             .cleared_path_start(&chain, z, stock, cancel)?
             .min(self.cell_path_height(stock, &path, pad))
             .clamp(z, o.top_z_mm);
-        let skin = 0.01_f64.max(64. * o.tolerance_mm);
+        let skin = crate::entry::skin(o.tolerance_mm);
         let (curves, slope) = if from - z <= skin {
             // The whole path is proven air down to the depth (within the
             // skin every straight entry is allowed): no ramp to make.

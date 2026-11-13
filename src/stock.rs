@@ -2,6 +2,7 @@
 //! footprint; continuous sweeps produce transactional sparse before/after deltas.
 //! Engineering bounds, not interval-certified collision verification.
 use crate::{
+    Point,
     engagement::ClearedSweep,
     motion::{Curve, Motion, MoveKind, Plane, Vec3},
     tool::{CutterShape, PreparedAssembly, valid_id},
@@ -322,6 +323,11 @@ pub struct SweepStats {
     /// (an undercut such as a thread groove). Their top height is unchanged.
     #[serde(default, skip_serializing_if = "no_reach_visits")]
     pub undercut_cells: u64,
+    /// Cells this move only partly covers whose upper bound still dropped:
+    /// every sub-square proved inside this move or a committed cleared pass
+    /// at or below its height (`Stock::union_covered`).
+    #[serde(default, skip_serializing_if = "no_reach_visits")]
+    pub union_cells: u64,
 }
 fn no_reach_visits(n: &u64) -> bool {
     *n == 0
@@ -408,7 +414,25 @@ pub struct StockVolume {
     pub removed_upper_mm3: f64,
 }
 
-const MAX_COMMITTED_COLUMNS: usize = 262_144;
+pub(crate) const MAX_COMMITTED_COLUMNS: usize = 262_144;
+/// What the union rule reads besides the cells, as a producer checkpoint
+/// keeps it (`Stock::clearance_state`).
+#[derive(Clone, Debug)]
+pub(crate) struct ClearanceState {
+    pub unproven: bool,
+    pub operation: Option<String>,
+    pub union_from: usize,
+    /// Each column's tolerance and sweep, oldest first.
+    pub columns: Vec<(f64, ClearedSweep)>,
+}
+/// Quadtree depth for a partly covered cell (`Stock::union_covered`):
+/// 0.5 mm cells split down to 1/32, about 0.016 mm sub-squares.
+const UNION_DEPTH: u32 = 5;
+/// Index visits and sub-squares per partly covered cell before it is left
+/// unproven (its upper bound unchanged).
+const UNION_WORK: u64 = 4096;
+/// Most committed columns one partly covered cell is tested against.
+const UNION_CANDIDATES: usize = 64;
 
 #[derive(Clone, Debug)]
 pub(crate) struct CommittedColumn {
@@ -431,22 +455,57 @@ enum ColumnNode {
         size: usize,
         digest: OnceLock<[u8; 32]>,
         children: [Arc<ColumnNode>; 2],
-        /// Encloses every sweep's reach below, and the lowest height any
-        /// of them proves empty from: a search hint only.
-        reach: ([[f64; 2]; 2], f64),
+        /// Union of the descendants' query extents (a search index only:
+        /// never a clearance premise by itself).
+        reach: ColumnReach,
     },
 }
+/// What a subtree's sweeps can witness: their outer boxes, lowest floor,
+/// largest containable ball and finest tolerance. Pruning only.
+#[derive(Clone, Copy, Debug)]
+struct ColumnReach {
+    bounds: [Point; 2],
+    min_floor: f64,
+    /// The lowest height any sweep below proves its column empty from (its
+    /// floor plus its path error): what `history_clearance` prunes on.
+    min_clear_from: f64,
+    max_extent: f64,
+    min_tolerance: f64,
+}
+impl ColumnReach {
+    fn of(column: &CommittedColumn) -> Self {
+        Self {
+            bounds: column.sweep.bounds(),
+            min_floor: column.sweep.floor(),
+            min_clear_from: column.sweep.clear_from(),
+            max_extent: column.sweep.max_witness_extent(),
+            min_tolerance: column.tolerance_mm,
+        }
+    }
+    fn union(a: Self, b: Self) -> Self {
+        Self {
+            bounds: [
+                std::array::from_fn(|k| a.bounds[0][k].min(b.bounds[0][k])),
+                std::array::from_fn(|k| a.bounds[1][k].max(b.bounds[1][k])),
+            ],
+            min_floor: a.min_floor.min(b.min_floor),
+            min_clear_from: a.min_clear_from.min(b.min_clear_from),
+            max_extent: a.max_extent.max(b.max_extent),
+            min_tolerance: a.min_tolerance.min(b.min_tolerance),
+        }
+    }
+}
 impl ColumnNode {
+    fn reach(&self) -> ColumnReach {
+        match self {
+            Self::Leaf { column, .. } => ColumnReach::of(column),
+            Self::Branch { reach, .. } => *reach,
+        }
+    }
     fn size(&self) -> usize {
         match self {
             Self::Leaf { .. } => 1,
             Self::Branch { size, .. } => *size,
-        }
-    }
-    fn reach(&self) -> ([[f64; 2]; 2], f64) {
-        match self {
-            Self::Leaf { column, .. } => (column.sweep.reach_bounds(), column.sweep.clear_from()),
-            Self::Branch { reach, .. } => *reach,
         }
     }
     fn digest(&self) -> &[u8; 32] {
@@ -475,10 +534,31 @@ impl ColumnNode {
 struct CommittedColumns {
     roots: Vec<Arc<ColumnNode>>,
     count: usize,
+    /// The operation of the last committed native move, and the history
+    /// position where its columns start: the union rule (`union_covered`)
+    /// combines only one operation's own passes, so an operation's stock
+    /// changes depend on its starting cells and its own moves alone (as a
+    /// regeneration cache keyed by the starting cells assumes).
+    operation: Option<String>,
+    union_from: usize,
     /// The largest tolerance any column was committed with.
     tolerance_mm: f64,
 }
 impl CommittedColumns {
+    fn enter(&mut self, operation: &str) {
+        if self.operation.as_deref() != Some(operation) {
+            self.operation = Some(operation.to_string());
+            self.union_from = self.count;
+        }
+    }
+    /// Where `operation`'s own columns start (`count`: none yet).
+    fn own_from(&self, operation: &str) -> usize {
+        if self.operation.as_deref() == Some(operation) {
+            self.union_from
+        } else {
+            self.count
+        }
+    }
     fn append(&mut self, column: CommittedColumn) {
         if self.count == MAX_COMMITTED_COLUMNS {
             // Retaining an older valid prefix is conservative. Never evict a
@@ -496,17 +576,10 @@ impl CommittedColumns {
             .is_some_and(|old| old.size() == node.size())
         {
             let left = self.roots.pop().unwrap();
-            let ((a, floor_a), (b, floor_b)) = (left.reach(), node.reach());
             node = Arc::new(ColumnNode::Branch {
                 size: node.size() * 2,
                 digest: OnceLock::new(),
-                reach: (
-                    [
-                        std::array::from_fn(|k| a[0][k].min(b[0][k])),
-                        std::array::from_fn(|k| a[1][k].max(b[1][k])),
-                    ],
-                    floor_a.min(floor_b),
-                ),
+                reach: ColumnReach::union(left.reach(), node.reach()),
                 children: [left, node],
             });
         }
@@ -557,6 +630,58 @@ impl CommittedColumns {
         }
         cancelled(cancel)?;
         Ok(result)
+    }
+
+    /// Columns at history positions `first..` that may clear part of the XY
+    /// box `area` from height `z` up at `tolerance_mm` or finer (footprint
+    /// boxes meet it), into `out`. `false` when `work` (index visits) or the
+    /// candidate cap runs out: unproven, never clear.
+    fn overlapping<'a>(
+        &'a self,
+        first: usize,
+        area: [Point; 2],
+        z: f64,
+        tolerance_mm: f64,
+        work: &mut u64,
+        out: &mut Vec<&'a CommittedColumn>,
+    ) -> bool {
+        let mut stack = Vec::with_capacity(self.roots.len() + 64);
+        let mut start = 0;
+        for root in &self.roots {
+            stack.push((root.as_ref(), start));
+            start += root.size();
+        }
+        while let Some((node, start)) = stack.pop() {
+            if start + node.size() <= first {
+                continue;
+            }
+            if *work == 0 {
+                return false;
+            }
+            *work -= 1;
+            let reach = node.reach();
+            if reach.min_floor > z
+                || reach.min_tolerance > tolerance_mm
+                || (0..2)
+                    .any(|k| reach.bounds[1][k] < area[0][k] || reach.bounds[0][k] > area[1][k])
+            {
+                continue;
+            }
+            match node {
+                ColumnNode::Leaf { column, .. } => {
+                    if out.len() == UNION_CANDIDATES {
+                        return false;
+                    }
+                    out.push(column);
+                }
+                ColumnNode::Branch { children, .. } => {
+                    let half = children[0].size();
+                    stack.push((&children[0], start));
+                    stack.push((&children[1], start + half));
+                }
+            }
+        }
+        true
     }
 
     /// The leaf at history position `index`: O(log N).
@@ -769,6 +894,56 @@ impl Stock {
     ) -> Result<Vec<ClearedSweep>, String> {
         self.committed_columns.collect(tolerance_mm, cancel)
     }
+    /// The committed cleared columns, oldest first, with their tolerances,
+    /// and whether the stock may no longer be a height field: the state the
+    /// union rule (`union_covered`) reads, kept in producer checkpoints so a
+    /// resumed run lowers the same cells as one that never stopped.
+    pub(crate) fn clearance_state(&self) -> ClearanceState {
+        let mut out = Vec::with_capacity(self.committed_columns.count);
+        for i in 0..self.committed_columns.count {
+            if let Some(ColumnNode::Leaf { column, .. }) =
+                self.committed_columns.leaf(i).map(AsRef::as_ref)
+            {
+                out.push((column.tolerance_mm, column.sweep.clone()));
+            }
+        }
+        ClearanceState {
+            unproven: self.heightfield_unproven,
+            operation: self.committed_columns.operation.clone(),
+            union_from: self.committed_columns.union_from,
+            columns: out,
+        }
+    }
+    /// Restore `clearance_state` from a producer checkpoint bound to exactly
+    /// these cells (the caller checks the binding).
+    pub(crate) fn restore_clearance(&mut self, state: ClearanceState) -> Result<(), String> {
+        let ClearanceState {
+            unproven,
+            operation,
+            union_from,
+            columns,
+        } = state;
+        if columns.len() > MAX_COMMITTED_COLUMNS
+            || union_from > columns.len()
+            || operation.as_deref().is_some_and(|o| !valid_id(o))
+            || columns
+                .iter()
+                .any(|(t, _)| !t.is_finite() || !(1e-7..=0.1).contains(t))
+        {
+            return Err("invalid checkpoint cleared columns".into());
+        }
+        self.committed_columns = CommittedColumns::default();
+        for (tolerance_mm, sweep) in columns {
+            self.committed_columns.append(CommittedColumn {
+                sweep,
+                tolerance_mm,
+            });
+        }
+        self.committed_columns.operation = operation;
+        self.committed_columns.union_from = union_from;
+        self.heightfield_unproven = unproven;
+        Ok(())
+    }
     /// Whether the committed cutter sweeps prove a tool section clear along
     /// `motion`: everything within `radius` of its XY path, from `height`
     /// above its lowest tip up, is inside columns those sweeps emptied or
@@ -830,8 +1005,12 @@ impl Stock {
                 return Ok(false);
             }
             *work -= 1;
-            let (bounds, floor) = node.reach();
-            if floor > bottom
+            let ColumnReach {
+                bounds,
+                min_clear_from,
+                ..
+            } = node.reach();
+            if min_clear_from > bottom
                 || (0..2).any(|k| bounds[0][k] > hi[k] + pad || bounds[1][k] < lo[k] - pad)
             {
                 continue;
@@ -898,6 +1077,11 @@ impl Stock {
     /// motion left it: that pose is empty space (the swept cutter removed what
     /// it occupied), and in a height field everything above empty space is
     /// empty, so a vertical move up keeps the cutting part clear.
+    /// Whether the stock may no longer be a height field (an undercut, a
+    /// restored snapshot or a foreign transaction): no history-based proof.
+    pub(crate) fn heightfield_unproven(&self) -> bool {
+        self.heightfield_unproven
+    }
     pub fn departs_clear(&self, tool: &str, start: Vec3) -> bool {
         !self.heightfield_unproven
             && self
@@ -1581,6 +1765,21 @@ impl Stock {
                     }
                     if !under && distance + cell_radius + analytic_error <= radius {
                         h.upper_mm = h.upper_mm.min(upper);
+                    } else if !buried
+                        && h.upper_mm > upper
+                        && distance - cell_radius - analytic_error < radius
+                        && self.union_covered(
+                            &motion.operation,
+                            index,
+                            &axis,
+                            radius,
+                            analytic_error,
+                            z,
+                            options.tolerance_mm,
+                        )
+                    {
+                        stats.union_cells += 1;
+                        h.upper_mm = h.upper_mm.min(upper);
                     }
                     delta.record_change(index, before, h, options.max_changed_cells)?;
                 }
@@ -1724,6 +1923,106 @@ impl Stock {
         Ok(delta)
     }
 
+    /// Whether the whole footprint of cell `index` is cleared from height `z`
+    /// up by this flat constant-height move (`axis`, `radius`, `error`)
+    /// together with committed cleared passes of the same operation at or
+    /// below `z`.
+    ///
+    /// A cell that no single move covers (two passes that each clear part of
+    /// it) otherwise keeps its upper bound at the old height, which shows as
+    /// thin "needles" of stock that is not there. The cell is split into
+    /// sub-squares (a quadtree, down to [`UNION_DEPTH`] levels); each must lie
+    /// entirely, with its half-diagonal and every path error, inside this
+    /// move's swept disk or inside one committed column's cleared footprint
+    /// (the same certificate as the engagement scene's `clear_box`). Any
+    /// sub-square left over at the depth or work limit keeps the old bound:
+    /// the result is never lower than what the swept disks prove.
+    #[allow(clippy::too_many_arguments)]
+    fn union_covered(
+        &self,
+        operation: &str,
+        index: usize,
+        axis: &crate::verification::AxisSpan,
+        radius: f64,
+        error: f64,
+        z: f64,
+        tolerance_mm: f64,
+    ) -> bool {
+        let first = self.committed_columns.own_from(operation);
+        if self.heightfield_unproven || first == self.committed_columns.count {
+            return false;
+        }
+        let Some(c) = self.cell_center(index) else {
+            return false;
+        };
+        let half = [self.step[0] / 2., self.step[1] / 2.];
+        let (lo, hi) = (
+            [c[0] - half[0], c[1] - half[1]],
+            [c[0] + half[0], c[1] + half[1]],
+        );
+        // Candidate witnesses: this operation's columns at or below `z`
+        // whose footprint boxes meet the cell (one index walk per cell).
+        let mut work = UNION_WORK;
+        let mut candidates = Vec::new();
+        if !self.committed_columns.overlapping(
+            first,
+            [lo, hi],
+            z,
+            tolerance_mm,
+            &mut work,
+            &mut candidates,
+        ) || candidates.is_empty()
+        {
+            return false;
+        }
+        let inside = |p: Point, extent: f64| {
+            axis.distance(p) + extent + error <= radius
+                || candidates
+                    .iter()
+                    .any(|w| w.sweep.contains_ball(p, extent, z))
+        };
+        // Quick refusal: a corner or the centre outside every footprint
+        // cannot be proven, whatever the split (a point is a zero ball).
+        if [lo, hi, [lo[0], hi[1]], [hi[0], lo[1]], c]
+            .into_iter()
+            .any(|p| !inside(p, 0.))
+        {
+            return false;
+        }
+        // Depth-first quadtree: at most 3 pending siblings per level.
+        let mut boxes = [([0.; 2], [0.; 2], 0u32); 3 * UNION_DEPTH as usize + 1];
+        boxes[0] = (lo, hi, 0);
+        let mut pending = 1;
+        while pending > 0 {
+            pending -= 1;
+            let (lo, hi, depth) = boxes[pending];
+            if work == 0 {
+                return false;
+            }
+            work -= 1;
+            let p: Point = [(lo[0] + hi[0]) / 2., (lo[1] + hi[1]) / 2.];
+            let extent = (hi[0] - lo[0]).hypot(hi[1] - lo[1]) / 2.;
+            if inside(p, extent) {
+                continue;
+            }
+            // No single footprint holds this square: split it, so its parts
+            // may each lie in a different one, down to the depth limit.
+            if depth == UNION_DEPTH || !inside(p, 0.) {
+                return false;
+            }
+            for child in [
+                (lo, p),
+                ([p[0], lo[1]], [hi[0], p[1]]),
+                ([lo[0], p[1]], [p[0], hi[1]]),
+                (p, hi),
+            ] {
+                boxes[pending] = (child.0, child.1, depth + 1);
+                pending += 1;
+            }
+        }
+        true
+    }
+
     /// A height-view transaction for a tri-dexel run (`crate::dexel`): the
     /// cell changes are the projection of the dexel sweep's Z rays, and the
     /// native records are the ones this height field's own sweep would add
@@ -1854,6 +2153,7 @@ impl Stock {
         }
         // Validation is complete before the first mutation.
         if !reverse && delta.native_identity == Some(self.identity) {
+            self.committed_columns.enter(&delta.operation);
             if let Some(column) = &delta.cleared_column {
                 self.committed_columns.append(column.clone());
             }
@@ -2267,7 +2567,7 @@ mod undercut_diagnostic_tests {
 }
 
 #[cfg(test)]
-mod front_coverage_tests {
+pub(crate) mod front_coverage_tests {
     use super::*;
     use crate::engagement::EngagementScene;
 
@@ -2344,6 +2644,218 @@ mod front_coverage_tests {
             tool,
             motion,
         )
+    }
+
+    /// Apply flat cutting lines (x0, x1, y, z) of the fixture's 4 mm end mill
+    /// in order; returns the stock and the sum of `union_cells`.
+    pub(crate) fn passes(lines: &[(f64, f64, f64, f64)]) -> (Stock, u64) {
+        let (mut stock, tool, motion) = native_fixture();
+        let tool = tool.prepare().unwrap();
+        let mut union = 0;
+        for (n, &(x0, x1, y, z)) in lines.iter().enumerate() {
+            let mut m = motion.clone();
+            m.id = n as u64 + 1;
+            m.curve = Curve::Line {
+                start: [x0, y, z],
+                end: [x1, y, z],
+            };
+            let delta = stock
+                .preview_sweep(&tool, &m, 1., SweepOptions::default(), &|| false)
+                .unwrap();
+            union += delta.stats().union_cells;
+            stock.apply_delta(&delta).unwrap();
+        }
+        (stock, union)
+    }
+    #[test]
+    fn restored_columns_lower_the_same_cells_as_an_uninterrupted_run() {
+        // Two passes, the state kept and put back onto a stock rebuilt from
+        // the cells alone, then a third pass: the same cells as when the
+        // run never stopped. Without the columns the rebuilt stock proves
+        // nothing by union.
+        let lines = [(4., 22., 13., 5.), (4., 22., 16.8, 5.), (4., 22., 20.6, 5.)];
+        let (whole, lowered) = passes(&lines);
+        assert!(lowered > 0);
+        let (first, _) = passes(&lines[..2]);
+        let third = |mut stock: Stock| {
+            let (_, tool, motion) = native_fixture();
+            let tool = tool.prepare().unwrap();
+            let mut m = motion.clone();
+            let (x0, x1, y, z) = lines[2];
+            m.curve = Curve::Line {
+                start: [x0, y, z],
+                end: [x1, y, z],
+            };
+            let d = stock
+                .preview_sweep(&tool, &m, 1., SweepOptions::default(), &|| false)
+                .unwrap();
+            stock.apply_delta(&d).unwrap();
+            stock
+        };
+        let rebuilt = || {
+            Stock::from_snapshot(StockSnapshot {
+                spec: first.spec().clone(),
+                generation: first.generation(),
+                cells: first.cells().to_vec(),
+            })
+            .unwrap()
+        };
+        let mut resumed = rebuilt();
+        resumed.restore_clearance(first.clearance_state()).unwrap();
+        assert_eq!(third(resumed).cells(), whole.cells());
+        let bare = third(rebuilt());
+        assert_ne!(bare.cells(), whole.cells());
+        for (a, b) in bare.cells().iter().zip(whole.cells()) {
+            assert!(a.upper_mm >= b.upper_mm && a.lower_mm == b.lower_mm);
+        }
+        // A state that does not describe a history is refused.
+        let mut bad = first.clearance_state();
+        bad.union_from = bad.columns.len() + 1;
+        assert!(rebuilt().restore_clearance(bad).is_err());
+        let mut bad = first.clearance_state();
+        bad.columns[0].0 = 1.;
+        assert!(rebuilt().restore_clearance(bad).is_err());
+        let mut bad = first.clearance_state();
+        bad.operation = Some("not an id".into());
+        assert!(rebuilt().restore_clearance(bad).is_err());
+    }
+
+    fn upper_at(stock: &Stock, p: [f64; 2]) -> f64 {
+        let [nx, _] = stock.dimensions();
+        let [w, h] = stock.cell_widths_mm();
+        let index = (p[1] / h) as usize * nx + (p[0] / w) as usize;
+        stock.cells()[index].upper_mm
+    }
+
+    #[test]
+    fn overlapping_passes_lower_cells_no_single_pass_covers() {
+        // Two passes 3.8 mm apart with a 4 mm cutter overlap by 0.2 mm, less
+        // than a 0.4 mm cell. The cells across the seam (y 14.8..15) are each
+        // only partly cut by either pass: before the union rule they kept the
+        // stock top (10) and showed as needles.
+        let (stock, union) = passes(&[(4., 22., 13., 5.), (4., 22., 16.8, 5.)]);
+        assert!(union > 0, "seam cells must need the union rule");
+        let [nx, _] = stock.dimensions();
+        let r = 2.;
+        let mut dropped = 0;
+        for (i, c) in stock.cells().iter().enumerate() {
+            let p = stock.cell_center(i).unwrap();
+            if (8.0..=18.0).contains(&p[0]) && (13.0..=16.8).contains(&p[1]) {
+                assert!(c.upper_mm < 5.01, "cell {i} at {p:?} kept {}", c.upper_mm);
+            }
+            // Independent check: any cell at the cut height lies, sampled
+            // on a 0.01 mm grid, entirely inside one of the two swept disks.
+            if c.upper_mm < 5.01 {
+                dropped += 1;
+                let [w, h] = stock.cell_widths_mm();
+                let lo = [p[0] - w / 2., p[1] - h / 2.];
+                for a in 0..=40 {
+                    for b in 0..=40 {
+                        let q = [lo[0] + w * a as f64 / 40., lo[1] + h * b as f64 / 40.];
+                        let inside = [13., 16.8].iter().any(|&y| {
+                            let x = q[0].clamp(4., 22.);
+                            (q[0] - x).hypot(q[1] - y) <= r
+                        });
+                        assert!(inside, "cell {i} lowered but {q:?} is uncut");
+                    }
+                }
+            }
+        }
+        assert!(dropped > 0 && nx > 0);
+    }
+
+    #[test]
+    fn hairline_between_passes_keeps_its_stock() {
+        // 4.04 mm apart: a 0.04 mm wall of real material stands between the
+        // two swept disks. The cells holding it must keep the stock top.
+        let (stock, _) = passes(&[(4., 22., 13., 5.), (4., 22., 17.04, 5.)]);
+        for x in [9., 12.3, 15.7] {
+            assert_eq!(upper_at(&stock, [x, 15.02]), 10., "x {x}");
+        }
+        // Cells fully inside either pass still drop.
+        assert!(upper_at(&stock, [12., 13.]) < 5.01);
+        assert!(upper_at(&stock, [12., 17.]) < 5.01);
+    }
+
+    #[test]
+    fn union_uses_only_passes_at_or_below_the_new_height() {
+        // A higher pass (z 7) cannot prove a cell cleared down to 5.
+        let (stock, _) = passes(&[(4., 22., 13., 7.), (4., 22., 16.8, 5.)]);
+        let seam = upper_at(&stock, [12., 15.]);
+        assert!(seam > 5.01, "seam lowered to {seam} by a pass at z 7");
+        // A deeper pass proves the seam cleared down to the higher one (7).
+        let (stock, union) = passes(&[(4., 22., 13., 5.), (4., 22., 16.8, 7.)]);
+        assert!(union > 0);
+        let seam = upper_at(&stock, [12., 15.]);
+        assert!(seam > 6.99 && seam < 7.01, "seam {seam}");
+    }
+
+    #[test]
+    fn union_combines_only_the_same_operations_passes() {
+        // The same two passes, the second in another operation: its stock
+        // change must not depend on the first operation's history.
+        let (mut stock, tool, motion) = native_fixture();
+        let tool = tool.prepare().unwrap();
+        let options = SweepOptions::default();
+        let mut a = motion.clone();
+        a.curve = Curve::Line {
+            start: [4., 13., 5.],
+            end: [22., 13., 5.],
+        };
+        let first = stock
+            .preview_sweep(&tool, &a, 1., options, &|| false)
+            .unwrap();
+        stock.apply_delta(&first).unwrap();
+        let mut b = motion.clone();
+        b.id = 2;
+        b.operation = "next".into();
+        b.curve = Curve::Line {
+            start: [4., 16.8, 5.],
+            end: [22., 16.8, 5.],
+        };
+        let other = stock
+            .preview_sweep(&tool, &b, 1., options, &|| false)
+            .unwrap();
+        assert_eq!(other.stats().union_cells, 0);
+        b.operation = a.operation.clone();
+        let same = stock
+            .preview_sweep(&tool, &b, 1., options, &|| false)
+            .unwrap();
+        assert!(same.stats().union_cells > 0);
+    }
+
+    #[test]
+    fn union_needs_native_history() {
+        // Undo drops the committed passes: a later pass cannot use them.
+        let (mut stock, tool, motion) = native_fixture();
+        let tool = tool.prepare().unwrap();
+        let options = SweepOptions::default();
+        let mut a = motion.clone();
+        a.curve = Curve::Line {
+            start: [4., 13., 5.],
+            end: [22., 13., 5.],
+        };
+        let first = stock
+            .preview_sweep(&tool, &a, 1., options, &|| false)
+            .unwrap();
+        stock.apply_delta(&first).unwrap();
+        let mut probe = stock.clone();
+        probe.undo_delta(&first).unwrap();
+        probe.apply_delta(&first).unwrap();
+        let mut b = motion.clone();
+        b.id = 2;
+        b.curve = Curve::Line {
+            start: [4., 16.8, 5.],
+            end: [22., 16.8, 5.],
+        };
+        let native = stock
+            .preview_sweep(&tool, &b, 1., options, &|| false)
+            .unwrap();
+        assert!(native.stats().union_cells > 0);
+        let replayed = probe
+            .preview_sweep(&tool, &b, 1., options, &|| false)
+            .unwrap();
+        assert_eq!(replayed.stats().union_cells, 0);
     }
 
     fn known_box(stock: &Stock, bounds: [[f64; 2]; 2], floor: f64) -> bool {

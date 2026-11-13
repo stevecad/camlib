@@ -269,6 +269,12 @@ pub struct AdaptiveReport {
     pub entry_radii_mm: Vec<f64>,
     pub max_entry_turns_per_descent: usize,
     pub strategy: &'static str,
+    /// Areas the cutter fits in that no orbit does
+    /// (`crate::entry::UnenteredArea`): an `AdaptivePocket` is refused with
+    /// the first; a roughing layer lists them here. Their material is in
+    /// the residual region below.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unentered_areas: Vec<crate::entry::UnenteredArea>,
     pub geometric_residual_status: ResidualStatus,
     pub geometric_residual: Option<PlanarRegion>,
     pub geometric_residual_area_mm2: Option<f64>,
@@ -477,6 +483,9 @@ pub struct AdaptivePlan {
     next_id: u64,
     generation: Option<u64>,
     report: AdaptiveReport,
+    /// Whether the cutter fits anywhere in the region (its own centre
+    /// region, not the orbits').
+    cutter_fits: bool,
 }
 impl AdaptivePlan {
     pub fn prepare_with_stock(
@@ -699,7 +708,67 @@ impl AdaptivePlan {
         } else {
             targets
         };
+        // Areas the cutter fits in that no orbit does (#250): components of
+        // the cutter's own centre region (as `PocketPlan` constructs it)
+        // that hold no guide of any tour.
+        let options = ConstructionOptions {
+            tolerance_mm: op.pocket.tolerance_mm,
+        };
+        let cutter = guides
+            .source_region()
+            .cutter_region(r, op.pocket.radial_allowance_mm + guard)?
+            .region;
+        let cutter_fits = !cutter.components.is_empty();
+        let mut unentered_areas = vec![];
+        for component in &cutter.components {
+            if cancel.is_cancelled() {
+                return Err("adaptive pocket planning cancelled".into());
+            }
+            let mut one = cutter.clone();
+            one.components = vec![component.clone()];
+            let one = one.prepare(options)?;
+            let mut entered = false;
+            for tour in &graph.tours {
+                // A tour is connected: one of its points decides.
+                let Some(first) = tour.first() else { continue };
+                if one
+                    .query(first.stroke.a)?
+                    .signed_clearance_mm
+                    .is_some_and(|d| d >= 0.)
+                {
+                    entered = true;
+                    break;
+                }
+            }
+            if entered {
+                continue;
+            }
+            let Some(at) = component.outer.vertices.first() else {
+                continue;
+            };
+            let (mut low, mut high) = ([at[0], at[1]], [at[0], at[1]]);
+            for v in &component.outer.vertices {
+                low = [low[0].min(v[0]), low[1].min(v[1])];
+                high = [high[0].max(v[0]), high[1].max(v[1])];
+            }
+            unentered_areas.push(crate::entry::UnenteredArea {
+                reason: "no_orbit_fits",
+                at_mm: [at[0], at[1]],
+                min_mm: low,
+                max_mm: high,
+                level_z_mm: guides.report().target_z_mm,
+                cutter_radius_mm: r,
+                radii_tried_mm: if min_radius < radius {
+                    vec![radius, min_radius]
+                } else {
+                    vec![radius]
+                },
+                needed_mm: min_radius,
+                available_mm: None,
+            });
+        }
         let mut report=AdaptiveReport {
+            unentered_areas,
             stock_top:None,
             front:None,
             stock_edge_entries:0,helical_entries:0,entry_turns:0,entry_geometry_work:entry_work,entry_navigation_links:entry_links,
@@ -768,10 +837,46 @@ impl AdaptivePlan {
             next_id: first_id,
             generation: None,
             report,
+            cutter_fits,
         })
     }
     pub fn report(&self) -> &AdaptiveReport {
         &self.report
+    }
+    /// The rule of `crate::entry::UnenteredArea` for an `AdaptivePocket`
+    /// planned with orbits (#250): the orbit that opens each area is this
+    /// strategy's entry, so an area the cutter fits in and no orbit does
+    /// refuses the pocket, as does a region the cutter fits nowhere in.
+    /// (A roughing layer lists such areas in its report instead.) Parts of
+    /// an area an orbit does fit in that are too narrow for one are that
+    /// area's reported residual, as before.
+    pub(crate) fn refuse_unentered(&self) -> Result<(), String> {
+        let pocket = &self.op.pocket;
+        let name = format!("adaptive pocket {}", pocket.id);
+        if !self.cutter_fits {
+            return Err(crate::pocket::cutter_fits_nowhere(
+                &name,
+                self.r,
+                pocket.radial_allowance_mm,
+            ));
+        }
+        match self.report.unentered_areas.first() {
+            Some(area) => Err(area.message(&name)),
+            None => Ok(()),
+        }
+    }
+    /// For roughing: why this layer, having made no motion, left material
+    /// it was asked to cut (its first area no orbit fits in).
+    pub(crate) fn refusal(&self) -> Option<String> {
+        if self.report.motions > 0 {
+            return None;
+        }
+        Some(
+            self.report
+                .unentered_areas
+                .first()?
+                .message(&self.op.pocket.id),
+        )
     }
     /// Planning progress (#198): depth passes done of those planned.
     pub fn progress(&self) -> crate::progress::Planned {

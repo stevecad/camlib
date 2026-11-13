@@ -91,7 +91,7 @@
      "air_cut_mm": 0.0,
      "plunges": 48,
      "retracts": 48,
-     "removed_mm3": 8693.749,
+     "removed_mm3": 8697.589,
      "cycle_seconds_exact_stop": 508.314,
      "cycle_seconds_tangent": 508.274,
      "engine_seconds": 0.0247
@@ -104,13 +104,13 @@
     "posted_blocks": 375,
     "post_error": null,
     "removed_mm3": [
-     8693.749,
+     8697.589,
      9198.091
     ],
     "material": {
      "leftover_mm3": [
       3.8399999934493736,
-      541.4508681451769
+      537.6108729386283
      ],
      "overcut_mm3": [
       0.0,
@@ -118,7 +118,7 @@
      ],
      "leftover_cells": [
       12,
-      1680
+      1668
      ],
      "overcut_cells": [
       0,
@@ -240,7 +240,7 @@
      "moves": 522,
      "cut_mm": 1095.835,
      "rapid_mm": 89.83,
-     "air_cut_mm": 431.028,
+     "air_cut_mm": 492.507,
      "plunges": 8,
      "retracts": 8,
      "removed_mm3": 472.318,
@@ -300,31 +300,31 @@
      "toolpath": "Roughing",
      "issue": 27,
      "moves": 2169,
-     "cut_mm": 27414.475,
+     "cut_mm": 27414.455,
      "rapid_mm": 614.199,
-     "air_cut_mm": 21291.088,
+     "air_cut_mm": 21240.801,
      "plunges": 13,
      "retracts": 24,
-     "removed_mm3": 5765.95,
-     "cycle_seconds_exact_stop": 7932.344,
-     "cycle_seconds_tangent": 7931.579,
+     "removed_mm3": 5803.069,
+     "cycle_seconds_exact_stop": 7932.337,
+     "cycle_seconds_tangent": 7931.572,
      "engine_seconds": 0.0433
     }
    },
    "toolpath": {
     "moves": 2169,
-    "cycle_seconds_exact_stop": 7932.344,
-    "cycle_seconds_tangent": 7931.579,
+    "cycle_seconds_exact_stop": 7932.337,
+    "cycle_seconds_tangent": 7931.572,
     "posted_blocks": 2192,
     "post_error": null,
     "removed_mm3": [
-     5765.95,
+     5803.069,
      6025.159
     ],
     "material": {
      "leftover_mm3": [
-      930.8210736466043,
-      1505.4823377094317
+      930.821474006398,
+      1468.3624145064769
      ],
      "overcut_mm3": [
       0.0,
@@ -362,31 +362,31 @@
      "toolpath": "Roughing",
      "issue": 27,
      "moves": 924,
-     "cut_mm": 10665.255,
+     "cut_mm": 10665.257,
      "rapid_mm": 250.41,
-     "air_cut_mm": 6073.475,
+     "air_cut_mm": 6089.311,
      "plunges": 5,
      "retracts": 8,
-     "removed_mm3": 5765.95,
-     "cycle_seconds_exact_stop": 1439.816,
-     "cycle_seconds_tangent": 1436.823,
+     "removed_mm3": 5776.189,
+     "cycle_seconds_exact_stop": 1439.817,
+     "cycle_seconds_tangent": 1436.824,
      "engine_seconds": 0.0284
     }
    },
    "toolpath": {
     "moves": 924,
-    "cycle_seconds_exact_stop": 1439.816,
-    "cycle_seconds_tangent": 1436.823,
+    "cycle_seconds_exact_stop": 1439.817,
+    "cycle_seconds_tangent": 1436.824,
     "posted_blocks": 947,
     "post_error": null,
     "removed_mm3": [
-     5765.95,
+     5776.189,
      6025.157
     ],
     "material": {
      "leftover_mm3": [
       930.8232233397312,
-      1505.4823377094317
+      1495.2423633086164
      ],
      "overcut_mm3": [
       0.0,
@@ -424,31 +424,31 @@
      "toolpath": "Roughing",
      "issue": 27,
      "moves": 4501,
-     "cut_mm": 15978.541,
+     "cut_mm": 15978.543,
      "rapid_mm": 390.448,
-     "air_cut_mm": 1372.382,
+     "air_cut_mm": 1680.645,
      "plunges": 25,
      "retracts": 25,
-     "removed_mm3": 5724.767,
-     "cycle_seconds_exact_stop": 1752.563,
+     "removed_mm3": 5746.175,
+     "cycle_seconds_exact_stop": 1752.564,
      "cycle_seconds_tangent": 1752.232,
      "engine_seconds": 28.4249
     }
    },
    "toolpath": {
     "moves": 4501,
-    "cycle_seconds_exact_stop": 1752.563,
+    "cycle_seconds_exact_stop": 1752.564,
     "cycle_seconds_tangent": 1752.232,
     "posted_blocks": 4524,
     "post_error": null,
     "removed_mm3": [
-     5724.767,
+     5746.175,
      5987.143
     ],
     "material": {
      "leftover_mm3": [
       939.5261244023775,
-      1546.664960876536
+      1525.257090539153
      ],
      "overcut_mm3": [
       0.0,
@@ -488,10 +488,10 @@
      "moves": 3295,
      "cut_mm": 7879.228,
      "rapid_mm": 200.239,
-     "air_cut_mm": 6462.375,
+     "air_cut_mm": 6463.653,
      "plunges": 3,
      "retracts": 3,
-     "removed_mm3": 5417.771,
+     "removed_mm3": 5422.985,
      "cycle_seconds_exact_stop": 554.341,
      "cycle_seconds_tangent": 531.423,
      "engine_seconds": 0.0803
@@ -504,13 +504,13 @@
     "posted_blocks": 3318,
     "post_error": null,
     "removed_mm3": [
-     5417.771,
+     5422.985,
      5541.754
     ],
     "material": {
      "leftover_mm3": [
       816.3321077371903,
-      1385.292279599272
+      1380.0784195670124
      ],
      "overcut_mm3": [
       0.0,
@@ -553,7 +553,7 @@
      "air_cut_mm": 0.0,
      "plunges": 8,
      "retracts": 8,
-     "removed_mm3": 2185.997,
+     "removed_mm3": 2191.997,
      "cycle_seconds_exact_stop": 55.776,
      "cycle_seconds_tangent": 55.696,
      "engine_seconds": 0.0063
@@ -566,13 +566,13 @@
     "posted_blocks": 63,
     "post_error": null,
     "removed_mm3": [
-     2185.997,
+     2191.997,
      2636.003
     ],
     "material": {
      "leftover_mm3": [
       0.0,
-      831.6203967165204
+      825.6204042143374
      ],
      "overcut_mm3": [
       0.0,
@@ -580,7 +580,7 @@
      ],
      "leftover_cells": [
       0,
-      1456
+      1447
      ],
      "overcut_cells": [
       0,
@@ -805,7 +805,7 @@
      "air_cut_mm": 12.0,
      "plunges": 1,
      "retracts": 1,
-     "removed_mm3": 660.479,
+     "removed_mm3": 660.719,
      "cycle_seconds_exact_stop": 19.564,
      "cycle_seconds_tangent": 19.564,
      "engine_seconds": 0.0365
@@ -819,7 +819,7 @@
      "air_cut_mm": 97.017,
      "plunges": 2,
      "retracts": 2,
-     "removed_mm3": 23.088,
+     "removed_mm3": 23.063,
      "cycle_seconds_exact_stop": 28.139,
      "cycle_seconds_tangent": 28.119,
      "engine_seconds": 0.2639
@@ -832,7 +832,7 @@
     "posted_blocks": 66,
     "post_error": null,
     "removed_mm3": [
-     683.567,
+     683.782,
      717.77
     ],
     "material": null
@@ -859,7 +859,7 @@
      "moves": 356,
      "cut_mm": 1152.664,
      "rapid_mm": 42.264,
-     "air_cut_mm": 15.476,
+     "air_cut_mm": 18.253,
      "plunges": 2,
      "retracts": 2,
      "removed_mm3": 268.999,
@@ -924,7 +924,7 @@
      "air_cut_mm": 0.0,
      "plunges": 8,
      "retracts": 8,
-     "removed_mm3": 2236.157,
+     "removed_mm3": 2243.197,
      "cycle_seconds_exact_stop": 55.776,
      "cycle_seconds_tangent": 55.696,
      "engine_seconds": 0.0091
@@ -938,7 +938,7 @@
      "air_cut_mm": 0.0,
      "plunges": 2,
      "retracts": 2,
-     "removed_mm3": 37.993,
+     "removed_mm3": 37.366,
      "cycle_seconds_exact_stop": 10.934,
      "cycle_seconds_tangent": 10.914,
      "engine_seconds": 0.0179
@@ -951,13 +951,13 @@
     "posted_blocks": 81,
     "post_error": null,
     "removed_mm3": [
-     2274.151,
+     2280.563,
      2623.763
     ],
     "material": {
      "leftover_mm3": [
       0.0,
-      725.6482610613425
+      719.2360178606788
      ],
      "overcut_mm3": [
       0.0,
@@ -1000,7 +1000,7 @@
      "air_cut_mm": 0.0,
      "plunges": 4,
      "retracts": 4,
-     "removed_mm3": 169.623,
+     "removed_mm3": 169.686,
      "cycle_seconds_exact_stop": 15.517,
      "cycle_seconds_tangent": 15.517,
      "engine_seconds": 0.0018
@@ -1013,7 +1013,7 @@
     "posted_blocks": 47,
     "post_error": null,
     "removed_mm3": [
-     169.623,
+     169.686,
      208.627
     ],
     "material": null
@@ -1086,7 +1086,7 @@
      "air_cut_mm": 176.16,
      "plunges": 39,
      "retracts": 39,
-     "removed_mm3": 1270.496,
+     "removed_mm3": 1272.746,
      "cycle_seconds_exact_stop": 165.218,
      "cycle_seconds_tangent": 165.218,
      "engine_seconds": 0.006
@@ -1099,13 +1099,13 @@
     "posted_blocks": 179,
     "post_error": null,
     "removed_mm3": [
-     1270.496,
+     1272.746,
      1305.004
     ],
     "material": {
      "leftover_mm3": [
       28.499903087998064,
-      175.7539132301229
+      173.50391322992638
      ],
      "overcut_mm3": [
       0.0,
@@ -1113,7 +1113,7 @@
      ],
      "leftover_cells": [
       152,
-      680
+      668
      ],
      "overcut_cells": [
       0,
@@ -1145,7 +1145,7 @@
      "moves": 2927,
      "cut_mm": 37871.592,
      "rapid_mm": 212.137,
-     "air_cut_mm": 34195.176,
+     "air_cut_mm": 33811.312,
      "plunges": 12,
      "retracts": 12,
      "removed_mm3": 1983.996,
@@ -1838,15 +1838,15 @@
     "finish-steep": {
      "toolpath": "Steep-and-shallow",
      "issue": 47,
-     "moves": 964,
-     "cut_mm": 667.548,
-     "rapid_mm": 1006.283,
-     "air_cut_mm": 21.975,
-     "plunges": 40,
-     "retracts": 40,
+     "moves": 866,
+     "cut_mm": 1035.45,
+     "rapid_mm": 475.883,
+     "air_cut_mm": 68.251,
+     "plunges": 23,
+     "retracts": 23,
      "removed_mm3": 249.055,
-     "cycle_seconds_exact_stop": 186.177,
-     "cycle_seconds_tangent": 180.807,
+     "cycle_seconds_exact_stop": 171.478,
+     "cycle_seconds_tangent": 168.058,
      "engine_seconds": 0.3919
     },
     "finish-shallow": {
@@ -1854,25 +1854,25 @@
      "issue": 47,
      "moves": 780,
      "cut_mm": 847.455,
-     "rapid_mm": 215.327,
+     "rapid_mm": 215.565,
      "air_cut_mm": 51.882,
      "plunges": 24,
      "retracts": 24,
      "removed_mm3": 1255.632,
-     "cycle_seconds_exact_stop": 156.617,
-     "cycle_seconds_tangent": 152.917,
+     "cycle_seconds_exact_stop": 156.623,
+     "cycle_seconds_tangent": 152.923,
      "engine_seconds": 0.0803
     }
    },
    "toolpath": {
-    "moves": 1744,
-    "cycle_seconds_exact_stop": 342.794,
-    "cycle_seconds_tangent": 333.724,
-    "posted_blocks": 1775,
+    "moves": 1646,
+    "cycle_seconds_exact_stop": 328.101,
+    "cycle_seconds_tangent": 320.981,
+    "posted_blocks": 1677,
     "post_error": null,
     "removed_mm3": [
      1504.686,
-     1596.834
+     1648.473
     ],
     "material": {
      "leftover_mm3": [
@@ -1881,7 +1881,7 @@
      ],
      "overcut_mm3": [
       0.0,
-      100.34042392700681
+      151.97876052781558
      ],
      "leftover_cells": [
       0,
@@ -1957,45 +1957,45 @@
     "rough": {
      "toolpath": "Roughing",
      "issue": 202,
-     "moves": 3724,
-     "cut_mm": 59205.725,
-     "rapid_mm": 21425.742,
-     "air_cut_mm": 5450.585,
-     "link_mm": 6550.554,
-     "plunges": 156,
-     "retracts": 156,
-     "removed_mm3": 2397631.835,
-     "cycle_seconds_exact_stop": 4533.32,
-     "cycle_seconds_tangent": 4532.354,
+     "moves": 3818,
+     "cut_mm": 59247.12,
+     "rapid_mm": 22846.578,
+     "air_cut_mm": 5448.558,
+     "link_mm": 6353.163,
+     "plunges": 170,
+     "retracts": 170,
+     "removed_mm3": 2399071.788,
+     "cycle_seconds_exact_stop": 4549.999,
+     "cycle_seconds_tangent": 4549.216,
      "engine_seconds": 14.5197
     }
    },
    "toolpath": {
-    "moves": 3724,
-    "cycle_seconds_exact_stop": 4533.32,
-    "cycle_seconds_tangent": 4532.354,
-    "posted_blocks": 3861,
+    "moves": 3818,
+    "cycle_seconds_exact_stop": 4549.999,
+    "cycle_seconds_tangent": 4549.216,
+    "posted_blocks": 3975,
     "post_error": null,
     "removed_mm3": [
-     2397631.835,
-     2418574.087
+     2399071.788,
+     2419163.81
     ],
     "material": {
      "leftover_mm3": [
-      88997.14193706622,
-      159192.29016893287
+      88417.24135347322,
+      157752.33710078473
      ],
      "overcut_mm3": [
       0.0,
-      115.35042588449403
+      125.17290847648354
      ],
      "leftover_cells": [
-      87477,
-      17193
+      87361,
+      17021
      ],
      "overcut_cells": [
       0,
-      1050
+      538
      ],
      "max_residual_height_mm": 4.000652000120451,
      "complete": true
@@ -2026,7 +2026,7 @@
      "air_cut_mm": 292.0,
      "plunges": 1216,
      "retracts": 1216,
-     "removed_mm3": 8693.749,
+     "removed_mm3": 8698.869,
      "cycle_seconds_exact_stop": 11873.766,
      "cycle_seconds_tangent": 11873.446,
      "engine_seconds": 0.3345
@@ -2039,13 +2039,13 @@
     "posted_blocks": 9111,
     "post_error": null,
     "removed_mm3": [
-     8693.749,
+     8698.869,
      9198.091
     ],
     "material": {
      "leftover_mm3": [
       3.8399999934493736,
-      541.4508681451769
+      536.3308745364455
      ],
      "overcut_mm3": [
       0.0,
@@ -2053,7 +2053,7 @@
      ],
      "leftover_cells": [
       12,
-      1680
+      1664
      ],
      "overcut_cells": [
       0,

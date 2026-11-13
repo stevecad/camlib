@@ -169,7 +169,7 @@ impl PocketPlan {
         cancel: &impl CancelSignal,
     ) -> Result<f64, String> {
         let top = self.operation.top_z_mm;
-        let skin = 0.01_f64.max(64. * self.operation.tolerance_mm);
+        let skin = crate::entry::skin(self.operation.tolerance_mm);
         let clear = |tip: f64| -> Result<bool, String> {
             let mut work = 1_000_000;
             for &stroke in path {
@@ -197,14 +197,17 @@ impl PocketPlan {
         if high - low > skin && clear(low + skin)? {
             return Ok(low + skin);
         }
-        for _ in 0..12 {
+        // Halve until the bracket is within the skin its callers accept:
+        // each step is a proof, and the number of steps follows from the
+        // depth instead of a fixed count.
+        while high - low > skin {
             if cancel.is_cancelled() {
                 return Err("committed entry search cancelled".into());
             }
-            if high - low <= skin {
+            let middle = (low + high) / 2.;
+            if !(middle > low && middle < high) {
                 break;
             }
-            let middle = (low + high) / 2.;
             if clear(middle)? {
                 high = middle;
             } else {
@@ -252,7 +255,7 @@ impl PocketPlan {
             }
         }
         let scene = &cache.insert((scene, cursor)).0;
-        let skin = 0.01_f64.max(64. * self.operation.tolerance_mm);
+        let skin = crate::entry::skin(self.operation.tolerance_mm);
         let guard = 32. * self.operation.tolerance_mm
             + 4096.
                 * f64::EPSILON
@@ -331,17 +334,19 @@ impl PocketPlan {
             // A supported flat pocket has cylindrical cutter/neck/shank sections
             // and linear holder tapers. Maximum endpoint radius encloses every
             // section, from its lowest Z through the entire vertical descent.
-            for _ in 0..12 {
-                if cancel.is_cancelled() {
-                    return Err("committed entry search cancelled".into());
-                }
-                if high - low <= 0.01_f64.max(64. * self.operation.tolerance_mm) {
-                    break;
-                }
-                let middle = (low + high) / 2.;
-                let mut clear = true;
+            // Halve until the bracket is within the skin the callers accept
+            // (`entry::skin`, the one definition both sides use). A fixed 12
+            // halvings left (top - floor) / 4096, over that skin once the
+            // floor was ~41 mm below the top, so every deep entry was
+            // refused (#237). Each step is a proof; the bracket halves, so
+            // the loop ends, and a bracket that can no longer be halved (or
+            // is not a number) ends it too.
+            let skin = crate::entry::skin(self.operation.tolerance_mm);
+            // Whether every tool section is proven clear with the tip at
+            // `tip`; `None` when the work ran out (nothing is proven then).
+            let mut clear_at = |tip: f64| -> Result<Option<bool>, String> {
                 for &(radius, bottom) in &self.air_entry_parts {
-                    let height = middle + bottom - guard;
+                    let height = tip + bottom - guard;
                     if height > stock.spec().max_mm[2] {
                         continue;
                     }
@@ -354,18 +359,43 @@ impl PocketPlan {
                         cancel,
                     ) {
                         Ok(true) => (),
-                        Ok(false) => {
-                            clear = false;
-                            break;
-                        }
-                        Err(_) if work == 0 && !cancel.is_cancelled() => return Ok(high),
+                        Ok(false) => return Ok(Some(false)),
+                        Err(_) if work == 0 && !cancel.is_cancelled() => return Ok(None),
                         Err(e) => return Err(e),
                     }
                 }
-                if clear {
-                    high = middle;
-                } else {
-                    low = middle;
+                Ok(Some(true))
+            };
+            // The level itself first: "this start reaches the level" is one
+            // proof at one height, the skin above the floor, so the answer
+            // does not depend on where the halving below happens to land
+            // (the same column was otherwise accepted under one top and
+            // refused under another).
+            if high - low > skin {
+                // The height its callers accept: no more than the skin above
+                // the floor after rounding too.
+                let mut level = low + skin;
+                if level - low > skin {
+                    level = level.next_down();
+                }
+                match clear_at(level)? {
+                    Some(true) => return Ok(level),
+                    Some(false) => low = level,
+                    None => return Ok(high),
+                }
+            }
+            while high - low > skin {
+                if cancel.is_cancelled() {
+                    return Err("committed entry search cancelled".into());
+                }
+                let middle = (low + high) / 2.;
+                if !(middle > low && middle < high) {
+                    break;
+                }
+                match clear_at(middle)? {
+                    Some(true) => high = middle,
+                    Some(false) => low = middle,
+                    None => return Ok(high),
                 }
             }
             // High is either the unchanged authored top or a whole-assembly proof.
@@ -376,7 +406,7 @@ impl PocketPlan {
         // The fitted disk admits the complete circle, independent of phase.
         // Its +X extremity may sit on an old sweep's uncertainty band. Try the
         // opposite phase before deciding to repeat a deep cutting descent.
-        if positive - floor <= 0.01_f64.max(64. * self.operation.tolerance_mm) {
+        if positive - floor <= crate::entry::skin(self.operation.tolerance_mm) {
             return Ok((positive, false));
         }
         let negative = height([center[0] - orbit, center[1]])?;
@@ -385,5 +415,115 @@ impl PocketPlan {
         } else {
             (positive, false)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stock::SweepOptions;
+
+    fn deep_cleared_path() -> (PocketPlan, Stock, Stock, Stroke) {
+        let manifest: crate::stream::StreamManifest = serde_json::from_str(include_str!(
+            "../../fixtures/operations/helical-pocket.json"
+        ))
+        .unwrap();
+        let Operation::Pocket(operation) = manifest.operations[0].clone() else {
+            panic!("pocket fixture")
+        };
+        let mut plan = PocketPlan::prepare(
+            operation,
+            &manifest.tools[0],
+            manifest.stock.height().unwrap(),
+            manifest.initial_position_mm,
+            1,
+            &|| false,
+        )
+        .unwrap();
+        let path = *plan.strokes.iter().find(|s| s.arc.is_none()).unwrap();
+        let mut spec = manifest.stock.height().unwrap().clone();
+        spec.max_mm[2] = 100_000.;
+        spec.cell_size_mm = 100.;
+        plan.operation.top_z_mm = spec.max_mm[2];
+        let uncut = Stock::new(spec.clone()).unwrap();
+        let mut cleared = Stock::new(spec).unwrap();
+        // Actual committed cuts clear a tube wider than every part of this
+        // assembly. The coarse cell also holds uncut stock beside the tube.
+        let mut earlier = manifest.tools[0].clone();
+        earlier.cutter.diameter_mm = 16.;
+        earlier.cutter.cutting_length_mm = 100_001.;
+        earlier.cutter.overall_length_mm = 100_010.;
+        earlier.cutter.shank_diameter_mm = 16.;
+        earlier.stickout_mm = 100_005.;
+        earlier.gauge_length_mm = 100_020.;
+        earlier.holders[0].z_min_mm = 100_005.;
+        earlier.holders[0].z_max_mm = 100_020.;
+        earlier.holders[0].radius_min_mm = 8.;
+        earlier.holders[0].radius_max_mm = 8.;
+        let prepared = earlier.prepare().unwrap();
+        let motion = Motion {
+            id: 1,
+            operation: "earlier-clearance".into(),
+            tool: earlier.id.clone(),
+            kind: MoveKind::Cut,
+            curve: path.curve(2.7),
+            feed_mm_min: Some(100.),
+        };
+        let delta = cleared
+            .preview_sweep(&prepared, &motion, 1., SweepOptions::default(), &|| false)
+            .unwrap();
+        cleared.apply_delta(&delta).unwrap();
+        assert_eq!(
+            plan.cell_path_height(&cleared, &[(path.a, path.b)], 0.005),
+            100_000.
+        );
+        (plan, uncut, cleared, path)
+    }
+
+    #[test]
+    fn committed_path_entry_search_converges_with_a_deep_height_bracket() {
+        let (plan, uncut, cleared, path) = deep_cleared_path();
+        let skin = crate::entry::skin(plan.operation.tolerance_mm);
+        let from = plan
+            .cleared_path_start(&[path], 0., &cleared, &|| false)
+            .unwrap();
+        assert!(from >= 2.7, "unproved entry below the material: {from}");
+        assert!(from <= 2.7 + 2. * skin, "entry unnecessarily high: {from}");
+        assert_eq!(
+            plan.cleared_path_start(&[path], 0., &uncut, &|| false)
+                .unwrap(),
+            plan.operation.top_z_mm
+        );
+        assert!(
+            plan.cleared_path_start(&[path], 0., &cleared, &|| true)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn rest_ramp_entry_uses_the_committed_floor_instead_of_a_coarse_search_height() {
+        let (mut plan, _, cleared, path) = deep_cleared_path();
+        plan.operation.entry = Some(crate::entry::PocketEntry::Ramp(crate::entry::RampEntry {
+            angle_rad: 3f64.to_radians(),
+            min_length_mm: Some(0.1),
+            feed_mm_min: Some(100.),
+        }));
+        plan.operation.rest_tolerance_mm = Some(0.01);
+        plan.operation.clearance_z_mm = 100_002.;
+        plan.position[2] = 100_002.;
+        let (moves, _) = plan
+            .rest_ramp_moves(path, 0., Some(&cleared), &|| false)
+            .unwrap();
+        let mut highest = f64::NEG_INFINITY;
+        for (curve, _, _) in moves {
+            let (a, b) = (curve.start(), curve.end());
+            let horizontal = norm([a[0], a[1]], [b[0], b[1]]);
+            if a[2] > b[2] && horizontal > 0. {
+                highest = highest.max(a[2]);
+                assert!(a[2] - b[2] <= horizontal * 3f64.to_radians().tan() + 1e-9);
+            }
+        }
+        assert!(highest.is_finite());
+        assert!(highest <= 2.72, "rest ramp starts in proven air: {highest}");
     }
 }

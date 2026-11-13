@@ -189,11 +189,24 @@ impl PocketFrontPlan {
             .map_err(|e| format!("adaptive pocket level {level} at Z{z}: {e}"))?
             // A pocket's walls are finished surfaces.
             .with_wall_pass(true)
+            // A pocket is asked to clear its whole region: an area of it
+            // no entry reaches refuses the level, as `Pocket` refuses one
+            // (#250, `crate::entry::UnenteredArea`).
+            .with_unentered_refused(true)
             // Each level proves its own rapid descents and fast links from
             // the stock committed when it plans them, as a roughing layer
             // does: the level's operation is built the same way (its top the
             // stock top, or just above the level before it).
             .with_motion_options(motion);
+            // The cutter fits nowhere in the region: the pocket can do
+            // nothing it was asked to (#250).
+            if !plan.cutter_fits() {
+                return Err(crate::pocket::cutter_fits_nowhere(
+                    &format!("adaptive pocket {}", pocket.id),
+                    r,
+                    pocket.radial_allowance_mm,
+                ));
+            }
             layers.push(PocketFrontLayer {
                 tip_z_mm: z,
                 clearing: serde_json::to_value(plan.report()).unwrap(),

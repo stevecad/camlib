@@ -16,8 +16,8 @@
 use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
-    sync::{Condvar, Mutex, MutexGuard},
-    time::Duration,
+    sync::{Mutex, MutexGuard},
+    time::{Duration, Instant},
 };
 
 /// What a fraction counts.
@@ -169,7 +169,6 @@ struct Shared<'a> {
     sink: Mutex<SharedOutput<'a>>,
     state: Mutex<State>,
     stopped: Mutex<bool>,
-    wake: Condvar,
     identity: Vec<u8>,
     operations: usize,
 }
@@ -206,19 +205,34 @@ impl Shared<'_> {
         }
     }
     /// The timer thread: an update at each interval until stopped.
+    ///
+    /// It sleeps; it does not wait on a condition variable with a timeout.
+    /// On Windows such a timeout is as coarse as the system timer (15.6 ms
+    /// unless some process has raised it: SleepConditionVariableSRW counts
+    /// in timer ticks), so a 2 ms interval came out at 11 to 16 ms there,
+    /// while the standard library's sleep uses a high-resolution waitable
+    /// timer (CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, std 1.75 and later).
+    /// Sleeps are no longer than `STOP_CHECK`, so the run's end does not
+    /// wait out a long interval.
     fn tick(&self, interval: Duration) {
-        let mut stopped = lock(&self.stopped);
-        while !*stopped {
-            let (guard, timeout) = self
-                .wake
-                .wait_timeout(stopped, interval)
-                .unwrap_or_else(|e| e.into_inner());
-            stopped = guard;
-            if timeout.timed_out() && !*stopped {
+        const STOP_CHECK: Duration = Duration::from_millis(10);
+        let mut due = Instant::now() + interval;
+        loop {
+            let now = Instant::now();
+            if now < due {
+                std::thread::sleep((due - now).min(STOP_CHECK));
+            }
+            if *lock(&self.stopped) {
+                return;
+            }
+            let now = Instant::now();
+            if now >= due {
                 // Not under `stopped`: a write may wait on the reader.
-                drop(stopped);
                 self.emit(&mut lock(&self.state));
-                stopped = lock(&self.stopped);
+                // The next one an interval after this one was due, or after
+                // now where the write (or the machine) fell behind: updates
+                // are not sent in a burst to catch up.
+                due = (due + interval).max(now);
             }
         }
     }
@@ -228,7 +242,6 @@ struct Stop<'a, 'b>(&'a Shared<'b>);
 impl Drop for Stop<'_, '_> {
     fn drop(&mut self) {
         *lock(&self.0.stopped) = true;
-        self.0.wake.notify_all();
     }
 }
 
@@ -283,7 +296,6 @@ impl<'a> Meter<'a> {
                     failure: None,
                 }),
                 stopped: Mutex::new(false),
-                wake: Condvar::new(),
                 identity: crate::stream::identity_bytes(manifest)?,
                 operations,
             }),
@@ -560,6 +572,38 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(frames, [b"frame".to_vec()]);
+    }
+
+    /// A 2 ms interval is kept on every platform (on Windows a timed wait
+    /// on a condition variable is as coarse as the 15.6 ms system timer),
+    /// and the run's end does not wait out a long one.
+    #[test]
+    fn a_short_interval_is_kept_and_a_long_one_does_not_delay_the_end() {
+        let manifest = manifest();
+        let frames = Mutex::new(0usize);
+        let mut send = |_: &[u8]| {
+            *lock(&frames) += 1;
+            Ok(())
+        };
+        let interval = Cadence::Interval(Duration::from_millis(2));
+        let meter = Meter::new(&manifest, 1, interval, &mut send).unwrap();
+        meter
+            .run(|| {
+                meter.begin("slow", 0)?;
+                std::thread::sleep(Duration::from_millis(400));
+                meter.end()
+            })
+            .unwrap();
+        // 400 ms at 2 ms: two hundred; a third of them on a loaded machine.
+        // At the system timer's 15.6 ms there are 26.
+        let sent = *lock(&frames);
+        assert!(sent >= 66, "{sent} updates in 400 ms at a 2 ms interval");
+        let mut send = |_: &[u8]| Ok(());
+        let interval = Cadence::Interval(Duration::from_secs(1));
+        let meter = Meter::new(&manifest, 1, interval, &mut send).unwrap();
+        let started = Instant::now();
+        meter.run(|| meter.begin("quick", 0)).unwrap();
+        assert!(started.elapsed() < Duration::from_millis(500));
     }
 
     #[test]

@@ -174,7 +174,12 @@ class SimulationControls(unittest.TestCase):
                 native = sim._next()
                 path = Path(directory) / 'state.bin'
                 sim.state.write_checkpoint(path)
-                self.assertEqual(path.read_bytes(), native.raw)
+                # The producer's checkpoint adds its committed cleared columns
+                # (CAMCOL01) after the cells; everything before is identical.
+                ours, theirs = path.read_bytes(), bytes(native.raw)
+                self.assertEqual(ours[:12], theirs[:12])
+                self.assertEqual(theirs[20 : len(ours)], ours[20:])
+                self.assertEqual(theirs[len(ours) : len(ours) + 8], b'CAMCOL01')
                 other = StockState(sim.manifest_frame)
                 other.restore_checkpoint(path)
                 self.assertEqual(other.heights.tobytes(), sim.state.heights.tobytes())

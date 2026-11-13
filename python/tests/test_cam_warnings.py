@@ -1,16 +1,17 @@
 """Valid-but-suspicious plans are reported, not silent."""
 
+from dataclasses import replace
 import unittest
 import warnings
 
 from camlib.jobs import Job, Setup
 from camlib.operations import Pocket
 from camlib.planar import Boundary, Component, PlanarRegion
-from camlib.simulation import CamWarning, StockSpec
+from camlib.simulation import CamWarning, SimulationError, StockSpec
 from camlib.tools import EndMill, HolderSection, ToolAssembly
 
 
-def run(diameter, square):
+def run(diameter, square, rest=False):
     tool = ToolAssembly(
         "m",
         EndMill("e", diameter=diameter, flute_length=20, overall_length=60),
@@ -36,7 +37,13 @@ def run(diameter, square):
         length_register=1,
         coolant="flood",
     )
-    setup = Setup("top", StockSpec((0, 0, 0), (20, 20, 10), 0.5), (tool,), (pocket,), (0, 0, 12))
+    # With `rest`, the pocket is cut 2 mm wider all round first, and a
+    # shallower rest pocket of the region follows: nothing is left for it.
+    wide = Boundary.polygon(((x0 - 2, y0 - 2), (x1 + 2, y0 - 2), (x1 + 2, y1 + 2), (x0 - 2, y1 + 2)))
+    wider = replace(pocket, region=PlanarRegion("wide", (Component(wide),)))
+    shallower = replace(pocket, id="rest", rest_tolerance_mm=0.01, floor_z_mm=8.5)
+    operations = (wider, shallower) if rest else (pocket,)
+    setup = Setup("top", StockSpec((0, 0, 0), (20, 20, 10), 0.5), (tool,), operations, (0, 0, 12))
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         with Job("w", "1", (setup,)).regenerate() as job:
@@ -48,8 +55,17 @@ def run(diameter, square):
 class CamWarningTest(unittest.TestCase):
     def test_empty_and_air_only_operations_warn_and_normal_ones_do_not(self):
         self.assertEqual(run(6, ((5, 5), (15, 15))), [])
-        self.assertIn("no cutting motion", " ".join(run(12, ((5, 5), (15, 15)))))
         self.assertIn("removed no stock", " ".join(run(6, ((50, 50), (60, 60)))))
+        self.assertIn("operation 'rest' produced no cutting motion", " ".join(run(6, ((5, 5), (15, 15)), rest=True)))
+
+    def test_a_pocket_its_cutter_fits_nowhere_in_is_refused_not_warned(self):
+        # A 12 mm cutter in a 10 mm square. This used to be the "no cutting
+        # motion" warning. The pocket can do nothing it was asked to, which
+        # is a refusal (#250), as it is for AdaptivePocket; the warning
+        # stays for plans that are valid and empty (already cleared).
+        with self.assertRaises(SimulationError) as raised:
+            run(12, ((5, 5), (15, 15)))
+        self.assertIn("pocket p: the cutter fits nowhere in the region", str(raised.exception))
 
 
 if __name__ == "__main__":

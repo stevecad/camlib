@@ -462,3 +462,152 @@ fn malformed_or_foreign_proof_sections_are_refused() {
         .comparison_tolerance_mm = 0.004;
     assert!(StreamProducer::from_checkpoint(other, &checkpoint, CHECKPOINT_FRAME_LIMIT).is_err());
 }
+
+/// The producer's cleared-column section (`CAMCOL01`) of a checkpoint: where
+/// it starts in the frame, and the frame body before it.
+fn column_section(checkpoint: &[u8]) -> usize {
+    checkpoint
+        .windows(8)
+        .rposition(|w| w == b"CAMCOL01")
+        .expect("column section")
+}
+
+fn at_half() -> (StreamManifest, Vec<Motion>, usize, Vec<u8>) {
+    let m = manifest();
+    let moves = motions();
+    let k = moves.len() / 2;
+    let mut p = StreamProducer::new(m.clone()).unwrap();
+    push(&mut p, &moves[..k]);
+    let checkpoint = p.checkpoint(CHECKPOINT_FRAME_LIMIT).unwrap();
+    (m, moves, k, checkpoint)
+}
+
+#[test]
+fn the_cleared_columns_survive_a_checkpoint_round_trip() {
+    let (m, moves, k, checkpoint) = at_half();
+    let section = column_section(&checkpoint);
+    // Not vacuous: the section holds columns, not just its header.
+    assert!(checkpoint.len() - section > 100, "{}", checkpoint.len() - section);
+    let mut resumed =
+        StreamProducer::from_checkpoint(m.clone(), &checkpoint, CHECKPOINT_FRAME_LIMIT).unwrap();
+    // Reading then writing again is byte for byte the same checkpoint.
+    assert_eq!(resumed.checkpoint(CHECKPOINT_FRAME_LIMIT).unwrap(), checkpoint);
+    // And the resumed stock lowers the same cells as one that never stopped.
+    let mut whole = StreamProducer::new(m.clone()).unwrap();
+    push(&mut whole, &moves);
+    push(&mut resumed, &moves[k..]);
+    assert_eq!(
+        resumed.stock().unwrap().cells(),
+        whole.stock().unwrap().cells()
+    );
+}
+
+#[test]
+fn a_checkpoint_without_the_column_section_resumes_with_looser_bounds_only() {
+    let (m, moves, k, checkpoint) = at_half();
+    let section = column_section(&checkpoint);
+    // An older or consumer-written checkpoint: the same frame, no columns.
+    let plain = reframe(&checkpoint, &checkpoint[20..section]);
+    let mut resumed =
+        StreamProducer::from_checkpoint(m.clone(), &plain, CHECKPOINT_FRAME_LIMIT).unwrap();
+    let mut whole = StreamProducer::new(m.clone()).unwrap();
+    push(&mut whole, &moves);
+    push(&mut resumed, &moves[k..]);
+    let (a, b) = (resumed.stock().unwrap().cells(), whole.stock().unwrap().cells());
+    assert_eq!(a.len(), b.len());
+    // Never lower than the uninterrupted run's (it only lacks the union
+    // rule's proof), and the lower bounds are identical.
+    let mut looser = 0;
+    for (a, b) in a.iter().zip(b) {
+        assert_eq!(a.lower_mm, b.lower_mm);
+        assert!(a.upper_mm >= b.upper_mm);
+        looser += usize::from(a.upper_mm > b.upper_mm);
+    }
+    println!("{looser} cells keep a looser upper bound");
+}
+
+#[test]
+fn malformed_column_sections_are_refused() {
+    let (m, _, _, checkpoint) = at_half();
+    let at = column_section(&checkpoint);
+    let body = &checkpoint[20..];
+    let section = at - 20;
+    let refused = |body: Vec<u8>, why: &str| {
+        let bytes = reframe(&checkpoint, &body);
+        assert!(
+            StreamProducer::from_checkpoint(m.clone(), &bytes, CHECKPOINT_FRAME_LIMIT).is_err(),
+            "{why}"
+        );
+        assert!(
+            StreamProducer::from_checkpoint_reader(
+                m.clone(),
+                &mut Cursor::new(bytes),
+                CHECKPOINT_FRAME_LIMIT
+            )
+            .is_err(),
+            "{why} (reader)"
+        );
+    };
+    // Unchanged: accepted.
+    StreamProducer::from_checkpoint(
+        m.clone(),
+        &reframe(&checkpoint, body),
+        CHECKPOINT_FRAME_LIMIT,
+    )
+    .unwrap();
+    refused(body[..body.len() - 1].to_vec(), "truncated");
+    refused(body[..section + 12].to_vec(), "header only");
+    refused([body, &[0u8][..]].concat(), "trailing byte");
+    let edit = |name: &str, offset: usize, bytes: &[u8]| {
+        let mut changed = body.to_vec();
+        changed[section + offset..section + offset + bytes.len()].copy_from_slice(bytes);
+        refused(changed, name);
+    };
+    edit("unproven flag", 8 + 32, &[2]);
+    // Layout: magic 8, digest 32, unproven 1, operation (u16 length + text),
+    // union_from u32, count u32, then the columns.
+    let operation = u16::from_le_bytes(body[section + 41..section + 43].try_into().unwrap());
+    let columns = section + 43 + operation as usize + 8;
+    let (first, count) = (columns, (body.len() - columns) / (8 + 1 + 8 * 16));
+    assert!(count > 0);
+    let edit = |name: &str, offset: usize, bytes: &[u8]| {
+        let mut changed = body.to_vec();
+        changed[first + offset..first + offset + bytes.len()].copy_from_slice(bytes);
+        refused(changed, name);
+    };
+    edit("tolerance NaN", 0, &f64::NAN.to_le_bytes());
+    edit("tolerance too large", 0, &1.0f64.to_le_bytes());
+    edit("unknown sweep kind", 8, &[9]);
+    // Words after the tag: 0 floor, 1 radius, 2 error, 3..7 box, then the
+    // shape (line: a, b, unit, length; arc: a, b, centre, radius, angle,
+    // sweep).
+    let word = |i: usize| 9 + 8 * i;
+    edit("radius zero", word(1), &0f64.to_le_bytes());
+    edit("negative path error", word(2), &(-1f64).to_le_bytes());
+    edit("endpoint NaN", word(9), &f64::NAN.to_le_bytes());
+    edit("endpoint off its path", word(9), &1.0e3f64.to_le_bytes());
+}
+
+#[test]
+fn column_sections_for_other_cells_are_dropped_not_trusted() {
+    let (m, _, _, checkpoint) = at_half();
+    let at = column_section(&checkpoint);
+    // Corrupt the digest of the cells the columns were committed with.
+    let mut body = checkpoint[20..].to_vec();
+    body[at - 20 + 8] ^= 0xff;
+    let forged = reframe(&checkpoint, &body);
+    let resumed =
+        StreamProducer::from_checkpoint(m.clone(), &forged, CHECKPOINT_FRAME_LIMIT).unwrap();
+    // The resumed stock keeps none of them: its next checkpoint has a column
+    // section with no columns (a fresh producer's).
+    let again = resumed.checkpoint(CHECKPOINT_FRAME_LIMIT).unwrap();
+    let fresh = StreamProducer::new(m.clone())
+        .unwrap()
+        .checkpoint(CHECKPOINT_FRAME_LIMIT)
+        .unwrap();
+    assert_eq!(
+        again.len() - column_section(&again),
+        fresh.len() - column_section(&fresh)
+    );
+    assert!(checkpoint.len() - at > again.len() - column_section(&again));
+}

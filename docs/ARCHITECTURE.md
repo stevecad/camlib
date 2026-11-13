@@ -68,7 +68,7 @@ CRC-32), then the payload. Kinds (`src/stream.rs`):
 | Kind | Name | Holds |
 |---|---|---|
 | 1 | Chunk | One milling or thermal move and its height-field cell changes |
-| 2 | Checkpoint | The full committed stock and cursor, with the tool in the spindle at that position (#168: a tool change in place is measured from exactly it; a checkpoint written before it was recorded still restores, and such a change is then refused); a producer's also ends with its material checks' per-move proof states (`CAMPRF01` section, #108) |
+| 2 | Checkpoint | The full committed stock and cursor, with the tool in the spindle at that position (#168: a tool change in place is measured from exactly it; a checkpoint written before it was recorded still restores, and such a change is then refused); a producer's also ends with its material checks' per-move proof states (`CAMPRF01` section, #108) and the stock's committed cleared columns (`CAMCOL01` section; decoded sweeps are validated, and a section bound to other cells is dropped). A checkpoint without that section (a consumer's, or one written before it existed) still restores, but the resumed stock cannot use the union rule for passes before the checkpoint: those cells keep their looser upper bound until another pass clears them. Lower bounds are unchanged and no cell is ever lower than the uninterrupted run's, so the difference is only on the safe side |
 | 3 | Manifest | The canonical manifest (its SHA-256 binds every later frame) |
 | 4 | End | The run finished; final cursor and position |
 | 5 | Preview | A partial move's stock (not committed) |
@@ -123,7 +123,25 @@ can say clear, violation or uncertain honestly.
 - **Height field** (`src/stock.rs`, `Stock`): an XY grid of `HeightBounds`
   (lower: material certainly up to here; upper: no material above here). Used by
   milling and thermal runs. Moves are swept with the full tool assembly
-  (cutter and holder). A run starts from the whole box, or from a closed mesh
+  (cutter and holder). A flat end mill's constant-height line or XY arc
+  lowers a cell's upper bound when the whole cell lies in its swept disk, or
+  when the cell, split into sub-squares down to 1/32 of a cell, has every
+  sub-square entirely inside this move's disk or inside one committed
+  cleared column of the same operation at or below the move's height
+  (`Stock::union_covered`). Without this, a cell that two neighbouring
+  passes clear between them kept its old top and showed as a thin "needle".
+  Sub-squares are tested with their half-diagonal and every path error, so
+  material between passes (a hairline wall) keeps its cell up. Only the
+  operation's own passes count, so an operation's stock changes depend on
+  its starting cells and its own moves (the regeneration cache key); a
+  producer checkpoint keeps the columns, so a resumed run lowers the same
+  cells. A checkpoint without them (one written by a consumer, such as
+  `StockState.write_checkpoint`, or before the section existed, or whose
+  columns were kept for other cells) restores the cells alone: the resumed
+  stock then lowers only what a single move covers, never less material
+  than is there, so its upper bounds can be higher than an uninterrupted
+  run's until the operation's own later passes cover those cells. A run
+  starts from the whole box, or from a closed mesh
   (`src/stock_mesh.rs`, manifest `stock` with a `mesh`; always build a run's
   starting stock with `RunStockSpec::initial_stock`, since the grid alone is
   the box). The mesh is converted conservatively: a cell's upper bound is the
@@ -346,6 +364,21 @@ replay of the decoded program.
   tolerance.
 - Different CadQuery/OCP versions tessellate the same solid differently. That
   is why the benchmark freezes its geometry (`bench/fixtures/`).
+- Mesh seams. A mesh whose neighbouring facets do not share their edge
+  vertices (faces tessellated separately, or refined facet by facet) has
+  hairline seams; projected, they are slivers and near-touching boundaries
+  the planar kernel refuses as ambiguous. Two things keep them out (#241).
+  The CadQuery adapter (`python/camlib/_cad_surface.py`) meshes a solid
+  watertight: one point per mesh node of the solid (edge-curve points on CAD
+  edges, for all faces of the edge), every edge bisected in all its facets
+  at once, and the result checked edge by edge before it is returned. And
+  every part shadow (`PreparedRoughingTarget::shadow_simplified`: roughing,
+  rest roughing, waterline flat and bull-nose levels, `silhouette_region`)
+  is closed by the mesh's declared `surface_error_mm`
+  (`planar::close_protectively`: square-join dilation, round-join erosion,
+  so it contains the exact shadow), which bridges seams narrower than twice
+  that error for meshes from anywhere. A mesh declaring an error of 0 is
+  taken as exact and its seams are refused.
 - The Python extension targets CPython 3.12+ (abi3); the Rust MSRV is 1.88.
 - Some tests exercise large inputs on purpose: run suites with memory and time
   limits.

@@ -48,6 +48,7 @@ See [Operations](operations.md) for parameters. Summary:
 | Feeds and speeds | `cutting_data`: rpm and feed from surface speed and feed per tooth, chip thinning, ball effective diameter |
 | Probing, tool setting | Surface, outside and inside corner, bore, boss, pocket and web cycles that correct a work offset, and tool length and diameter on a declared tool setter, with a `ProbeTool` (stylus ball, stem, body); protected positioning, measuring moves checked clear until `search_mm` before the expected contact; stock never changed; what is stored recorded as a premise |
 | Plasma and laser cutting | Sheet parts with holes: kerf compensation (computed or G41/G42 wear), arc/line leads from the scrap, overcut or negative overburn, pierce clearance (center pierce in small holes), inner features and nested parts first, small-hole feed and THC off, micro-joints, common-line cutting of parts one kerf path apart (pairs and rows, opt-in), fixed or programmed pierce/cut heights; every lead, kerf path and pierce proven clear of the parts; sheet simulated cut through |
+| Sheet nesting ([nesting](nesting.md)) | Copies of parts with holes and arcs placed on a sheet or remnant by bottom-left fill, with declared kerf, leads, part spacing, edge margin, rotations, mirror and quantities; parts in holes of other parts; optional seeded search of the order; deterministic; the distances between parts and to the sheet edge proven by an independent closed-form check; parts that do not fit refused or listed. A heuristic: no claim of the densest nest |
 | Turning (lathe) | Facing, outside roughing (axial passes, every diameter left at its allowance), finishing, external, internal and face grooving, parting off, external and internal single-point threading, drilling on the axis (pecks), inside roughing and finishing (boring bars) of a turned profile and bore with insert/holder/bar geometry, the holder's body also from a supplied model (`TurningToolModel`: a mesh with its error, a declared placement and a cross-check against the declared insert); every move checked against the part, its bore, the stock and the chuck; axisymmetric stock with outer and inner bounds; constant surface speed (G96 with its G50/D limit) and feed per revolution (G95/G99); G18 output, finishing arcs (fillets, ball ends, the nose rolling round corners) as native G2/G3, radius or diameter X, T0101 words; a lathe setup is an ordinary `Setup` streamed like every run (per-move stock, playback with partial moves, cancellation, posted replay on the stock) with a material check (leftover material against the part) after each operation |
 
 Not supported: undercuts,
@@ -241,6 +242,12 @@ decoded G-code.
 
 - Planar regions from faces (`export_floor_region`), surface meshes from
   solids with a stated error (`export_surface_mesh`), `Roughing.from_solid`.
+  The mesh of a solid is watertight: every facet edge is shared by two
+  facets with identical end points, within a face and across the faces of a
+  CAD edge (nodes on a CAD edge are points of the edge curve, and an edge is
+  bisected in all its facets at once), with no zero-area facet. The stated
+  error covers the distance between the edge curves and each face
+  (`edge_weld_mm` per face in the mesh's `source`).
 - `export_stock_mesh(solid)`: a planar-faced solid (blank, casting envelope) as
   a `StockMesh` for `StockSpec.from_mesh`.
 - `flow_paths(face, ...)`: a face's parameter lines as XY passes for flow

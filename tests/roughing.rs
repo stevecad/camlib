@@ -3957,45 +3957,85 @@ fn separately_tessellated_boss(wall: f64) -> Vec<[[f64; 3]; 3]> {
 #[test]
 fn separately_tessellated_faces_give_a_shadow_for_the_cutter() {
     let cancel = AtomicBool::new(false);
+    // A mesh that claims to be exact (error 0): without a cutter the exact
+    // union keeps slivers between the two faces' edges; one touches another
+    // boundary within the tolerance, and the refusal says where and why.
+    let exact = PreparedRoughingTarget::prepare(
+        mesh(separately_tessellated_boss(11.), 0.),
+        1e-5,
+        &cancel,
+    )
+    .unwrap();
+    let refused = exact.shadow(11., 0.2, &mut 0, &cancel).err().unwrap();
+    assert!(refused.contains("intersect or touch near ("), "{refused}");
+    assert!(refused.contains("not watertight"), "{refused}");
+    // For a 12 mm cutter the slivers are filled: no cutter disk fits in one.
+    let filled = exact
+        .shadow_for_cutter(11., 0.2, 6., &mut 0, &cancel)
+        .unwrap();
+    assert!(filled.report.filled_holes > 0);
+    assert!(filled.report.seam_closing.is_none());
+    // Lenses between the two faces' chords along the radius 3 circle only.
+    assert!(
+        filled.report.filled_hole_area_mm2 < 0.5,
+        "{:?}",
+        filled.report
+    );
+    // The same mesh declaring the 0.01 mm it is good for (#241): its seams
+    // (the chords' sagitta, 0.0092) are below that error and are closed, with
+    // or without a cutter. This was the refusal above before; a seam below
+    // the mesh's own declared error says nothing about the part.
     let target = PreparedRoughingTarget::prepare(
         mesh(separately_tessellated_boss(11.), 0.01),
         1e-5,
         &cancel,
     )
     .unwrap();
-    // Without a cutter the exact union keeps slivers between the two faces'
-    // edges; one touches another boundary within the tolerance, and the
-    // refusal says where and why.
-    let refused = target.shadow(11., 0.2, &mut 0, &cancel).err().unwrap();
-    assert!(refused.contains("intersect or touch near ("), "{refused}");
-    assert!(refused.contains("not watertight"), "{refused}");
-    // For a 12 mm cutter the slivers are filled: no cutter disk fits in one.
-    let shadow = target
-        .shadow_for_cutter(11., 0.2, 6., &mut 0, &cancel)
-        .unwrap();
-    assert!(shadow.report.filled_holes > 0);
-    // Lenses between the two faces' chords along the radius 3 circle only.
-    assert!(
-        shadow.report.filled_hole_area_mm2 < 0.5,
-        "{:?}",
-        shadow.report
-    );
-    let region = shadow
-        .region
-        .prepare(ConstructionOptions::default())
-        .unwrap();
-    assert_eq!(
-        (region.summary().components, region.summary().holes),
-        (1, 0)
-    );
-    // Every projected facet point stays protected (filling only adds area).
-    for triangle in separately_tessellated_boss(11.) {
-        for p in triangle {
-            assert!(signed(&region, [p[0], p[1]]) > -1e-4, "{p:?}");
+    for (shadow, cutter) in [
+        (filled, 6.),
+        (target.shadow(11., 0.2, &mut 0, &cancel).unwrap(), 0.),
+        (
+            target
+                .shadow_for_cutter(11., 0.2, 6., &mut 0, &cancel)
+                .unwrap(),
+            6.,
+        ),
+    ] {
+        // With a cutter the slivers are filled as holes too small for it and
+        // the exact union stands; without one the union is not a valid
+        // region and is closed by the declared error.
+        if shadow.report.source_error_mm > 0. {
+            if cutter == 0. {
+                assert!(shadow.report.seam_closing.is_some(), "{:?}", shadow.report);
+            }
+            let added = shadow.report.seam_closing.map_or(0., |closing| {
+                assert_eq!(closing.distance_mm, 0.01);
+                closing.added_area_mm2
+            });
+            assert!(
+                added + shadow.report.filled_hole_area_mm2 < 0.5,
+                "{:?}",
+                shadow.report
+            );
         }
+        let region = shadow
+            .region
+            .prepare(ConstructionOptions::default())
+            .unwrap();
+        assert_eq!(
+            (region.summary().components, region.summary().holes),
+            (1, 0)
+        );
+        // Every projected facet point stays protected (filling and closing
+        // only add area).
+        for triangle in separately_tessellated_boss(11.) {
+            for p in triangle {
+                assert!(signed(&region, [p[0], p[1]]) > -1e-4, "{p:?}");
+            }
+        }
+        assert!(signed(&region, [0., 0.]) > 1.);
+        assert!(signed(&region, [3.2, 0.]) < 0.);
     }
-    assert!(signed(&region, [0., 0.]) > 1.);
-    assert!(signed(&region, [3.2, 0.]) < 0.);
 }
 
 #[test]
@@ -4575,4 +4615,333 @@ fn engagement_front_link_chip_thinning_needs_a_link_feed() {
         error.contains("link_chip_thinning needs link_feed_mm_min"),
         "{error}"
     );
+}
+
+/// A closed axis-aligned box mesh (outward triangles) for a synthetic target.
+fn closed_box(x0: f64, y0: f64, z0: f64, x1: f64, y1: f64, z1: f64) -> Vec<[[f64; 3]; 3]> {
+    let p = [
+        [x0, y0, z0],
+        [x1, y0, z0],
+        [x1, y1, z0],
+        [x0, y1, z0],
+        [x0, y0, z1],
+        [x1, y0, z1],
+        [x1, y1, z1],
+        [x0, y1, z1],
+    ];
+    let quad = |a, b, c, d| vec![[p[a], p[b], p[c]], [p[a], p[c], p[d]]];
+    [
+        quad(4, 6, 5, 7), // top (+z)
+        quad(0, 2, 1, 3), // bottom (-z)
+        quad(0, 1, 5, 4), // y0 face (-y)
+        quad(3, 7, 6, 2), // y1 face (+y)
+        quad(0, 4, 7, 3), // x0 face (-x)
+        quad(1, 2, 6, 5), // x1 face (+x)
+    ]
+    .concat()
+}
+
+/// Independent part certificate for the bar test (the frustum test's
+/// certificate, for this part): no cutter centre enters the retained bar
+/// x 0..60, y 12..28 grown by the cutter radius plus the radial allowance.
+fn certify_bar(c: &Curve) {
+    if c.start()[2].min(c.end()[2]) > 12. {
+        return;
+    }
+    let part = [[0., 12.], [60., 28.]];
+    let mut stack = vec![(0., 1., 0)];
+    let mut visits = 0;
+    while let Some((a, b, depth)) = stack.pop() {
+        visits += 1;
+        assert!(visits < 200_000, "part certificate work bound");
+        if box_distance(bounds(c, a, b), part) >= 3.1 {
+            continue;
+        }
+        assert!(
+            depth < 32,
+            "uncertified retained-bar column at {c:?}, interval{a}..{b}"
+        );
+        let m = (a + b) / 2.;
+        stack.push((a, m, depth + 1));
+        stack.push((m, b, depth + 1));
+    }
+}
+
+/// The bar job: stock (0,0,0)-(60,40,12) at cell 0.4, a full-length bar
+/// x 0..60, y 12..28, z 0..12 retained, a flat 6 mm tool, engagement_front
+/// clearing at 0.6 mm width, stepdown 6, floor 1. Both side strips run the
+/// stock's whole 60 mm length.
+fn bar_manifest(top_z: f64, ends: bool) -> StreamManifest {
+    serde_json::from_value(bar_input(top_z, ends)).unwrap()
+}
+
+/// The bar job's manifest JSON, for tests that change it before parsing.
+fn bar_input(top_z: f64, ends: bool) -> serde_json::Value {
+    // `top_z` is the stock and part height; above 12 the first layer still
+    // cuts at Z6 (one deep stepdown) and the tool is lengthened to reach.
+    let saved: serde_json::Value =
+        serde_json::from_str(include_str!("../fixtures/regressions/retained-body.json")).unwrap();
+    let mut input = saved["cases"]["adaptive"]["policies"]["omit_proven_empty"]["input"].clone();
+    input["stock"]["min_mm"] = serde_json::json!([0.0, 0.0, 0.0]);
+    input["stock"]["max_mm"] = serde_json::json!([60.0, 40.0, top_z]);
+    input["stock"]["cell_size_mm"] = 0.4.into();
+    if top_z > 12. {
+        let tool = &mut input["tools"][0];
+        tool["cutter"]["cutting_length_mm"] = (top_z + 6.).into();
+        tool["cutter"]["overall_length_mm"] = (top_z + 26.).into();
+        tool["stickout_mm"] = (top_z + 16.).into();
+        tool["gauge_length_mm"] = (top_z + 46.).into();
+        tool["holders"][0]["z_min_mm"] = (top_z + 16.).into();
+        tool["holders"][0]["z_max_mm"] = (top_z + 46.).into();
+    }
+    input["initial_position_mm"] = serde_json::json!([0.0, 0.0, top_z + 2.]);
+    input["tools"][0]["cutter"]["diameter_mm"] = 6.0.into();
+    input["tools"][0]["cutter"]["shank_diameter_mm"] = 6.0.into();
+    for holder in input["tools"][0]["holders"].as_array_mut().unwrap() {
+        holder["radius_max_mm"] = 6.0.into();
+        holder["radius_min_mm"] = 6.0.into();
+    }
+    let op = input["operations"][0].as_object_mut().unwrap();
+    op["omit_empty_cuts"] = false.into();
+    op["top_z_mm"] = top_z.into();
+    op["floor_z_mm"] = 1.0.into();
+    op["stepdown_mm"] = (top_z - 6.).into();
+    op["clearance_z_mm"] = (top_z + 2.).into();
+    op["radial_allowance_mm"] = 0.1.into();
+    op["bottom_allowance_mm"] = 0.0.into();
+    op["target"] = serde_json::json!({
+        "version": 1,
+        "units": "mm",
+        "triangles": if ends {
+            // End walls close both strips: x 0..4 and 56..60, full height.
+            [
+                closed_box(0., 12., 0., 60., 28., top_z),
+                closed_box(0., 0., 0., 4., 40., top_z),
+                closed_box(56., 0., 0., 60., 40., top_z),
+            ]
+            .concat()
+        } else {
+            closed_box(0., 12., 0., 60., 28., top_z)
+        },
+        "surface_error_mm": 0.0,
+        "source": null,
+    });
+    let clearing = op["clearing"].as_object_mut().unwrap();
+    for key in [
+        "orbit_radius_mm",
+        "min_orbit_radius_mm",
+        "local_orbit_tolerance_mm",
+    ] {
+        clearing.remove(key);
+    }
+    clearing.insert("path_strategy".into(), "engagement_front".into());
+    clearing.insert("max_radial_engagement_mm".into(), 0.6.into());
+    input
+}
+
+/// Run the bar job to completion, committing every motion to stock, and
+/// return (mean first-layer cut length per pass mm, report). Every motion
+/// is certified against the bar, and every vertical entry is checked to
+/// descend only through cut stock or air (the frustum test's check).
+fn run_bar(top_z: f64, ends: bool) -> (f64, serde_json::Value) {
+    let m = bar_manifest(top_z, ends);
+    m.validate().unwrap();
+    let tool = m.tools[0].prepare().unwrap();
+    let mut stock = Stock::new(m.stock.height().unwrap().clone()).unwrap();
+    let mut plan = OperationPlan::prepare_with_stock(
+        m.operations[0].clone(),
+        &m.tools[0],
+        &stock,
+        m.initial_position_mm,
+        1,
+        &|| false,
+    )
+    .unwrap();
+    let mut history: Vec<camlib::motion::Motion> = Vec::new();
+    let mut current = m.initial_position_mm;
+    let (mut first_cut, mut first_passes) = (0f64, 0usize);
+    let mut in_cut = false;
+    while let Some(motion) = plan.next_motion_with_stock(&stock, &|| false).unwrap() {
+        assert!(history.len() < 60000, "unbounded engagement_front path");
+        assert_eq!(motion.curve.start(), current);
+        current = motion.curve.end();
+        certify_bar(&motion.curve);
+        if motion.kind == MoveKind::Plunge && current[2] < top_z {
+            for radial in [0., 1.5, 3.] {
+                for i in 0..16 {
+                    let angle = TAU * i as f64 / 16.;
+                    let p = [
+                        current[0] + radial * angle.cos(),
+                        current[1] + radial * angle.sin(),
+                    ];
+                    if p[0] < 0. || p[0] > 60. || p[1] < 0. || p[1] > 40. {
+                        continue;
+                    }
+                    let height = history
+                        .iter()
+                        .filter(|old| old.kind != MoveKind::Rapid)
+                        .map(|old| exact_height_for(&old.curve, p, 3., top_z))
+                        .fold(top_z, f64::min);
+                    assert!(
+                        height <= current[2] + 1e-6,
+                        "plunge into material at {p:?}: {height} > {}",
+                        current[2]
+                    );
+                }
+            }
+        }
+        let length = motion
+            .curve
+            .prepare(m.sweep.tolerance_mm)
+            .unwrap()
+            .length_mm();
+        // The first layer cuts at Z6: count its cut length and its passes
+        // (a pass is a maximal run of consecutive cutting motions).
+        let first_layer = motion.kind == MoveKind::Cut
+            && (motion.curve.start()[2] - 6.).abs() < 1e-6
+            && (motion.curve.end()[2] - 6.).abs() < 1e-6;
+        if first_layer {
+            first_passes += usize::from(!in_cut);
+            in_cut = true;
+            first_cut += length;
+        } else {
+            in_cut = false;
+        }
+        let delta = stock
+            .preview_sweep(&tool, &motion, 1., m.sweep, &|| false)
+            .unwrap();
+        stock.apply_delta(&delta).unwrap();
+        history.push(motion);
+    }
+    plan.finish_report(&|| false).unwrap();
+    let report = serde_json::to_value(plan.report()).unwrap();
+    let layers = report["layers"].as_array().unwrap();
+    assert_eq!(report["completed_layers"], layers.len());
+    for layer in layers {
+        let clearing = &layer["clearing"];
+
+        assert_eq!(clearing["strategy"], "engagement_front");
+        assert!(clearing["passes"].as_u64().unwrap() > 0);
+        assert!(
+            clearing["max_estimated_engagement_mm"].as_f64().unwrap() <= 1.3 * 0.6,
+            "{clearing}"
+        );
+    }
+    assert!(first_passes > 0, "no first-layer passes planned");
+    (first_cut / first_passes as f64, report)
+}
+
+/// Step-ups beside vertical walls find nothing to cut: the full layer below
+/// already cut every wall down to its allowance. Each layer hands its
+/// cleared-height memory to the next; an empty step-up (no motion) used to
+/// drop it, so the step-up after it steered from whole-cell stock bounds,
+/// saw material along every wall the full layer had cut, and ran passes in
+/// air there (on alternate step-ups).
+#[test]
+fn engagement_front_empty_step_up_keeps_the_cleared_memory() {
+    let mut input = bar_input(12., false);
+    // Walls off the 0.4 mm stock cells, so whole-cell bounds overlap them.
+    input["operations"][0]["target"]["triangles"] =
+        serde_json::to_value(closed_box(0., 12.15, 0., 60., 27.85, 12.)).unwrap();
+    input["operations"][0]["stepdown_mm"] = 11.0.into();
+    input["operations"][0]["stepup_mm"] = 2.0.into();
+    let m: StreamManifest = serde_json::from_value(input).unwrap();
+    m.validate().unwrap();
+    let tool = m.tools[0].prepare().unwrap();
+    let mut stock = Stock::new(m.stock.height().unwrap().clone()).unwrap();
+    let mut plan = OperationPlan::prepare_with_stock(
+        m.operations[0].clone(),
+        &m.tools[0],
+        &stock,
+        m.initial_position_mm,
+        1,
+        &|| false,
+    )
+    .unwrap();
+    let mut cut_at = std::collections::HashMap::<u64, f64>::new();
+    while let Some(motion) = plan.next_motion_with_stock(&stock, &|| false).unwrap() {
+        if motion.kind == MoveKind::Cut {
+            let (a, b) = (motion.curve.start(), motion.curve.end());
+            *cut_at.entry(a[2].to_bits()).or_default() += (b[0] - a[0]).hypot(b[1] - a[1]);
+        }
+        let delta = stock
+            .preview_sweep(&tool, &motion, 1., m.sweep, &|| false)
+            .unwrap();
+        stock.apply_delta(&delta).unwrap();
+    }
+    plan.finish_report(&|| false).unwrap();
+    let report = serde_json::to_value(plan.report()).unwrap();
+    let layers = report["layers"].as_array().unwrap();
+    let ups: Vec<_> = layers
+        .iter()
+        .filter(|l| l["step_up_of_z_mm"].is_number())
+        .collect();
+    assert!(
+        ups.len() >= 3,
+        "expected several step-ups: {}",
+        layers.len()
+    );
+    // On the old planner every step-up here was empty. On the proven
+    // planner a step-up may take a stroke at a real sliver (its contact is
+    // proven against the exact sweeps), but none runs along the walls: the
+    // bug ran passes the length of every wall (tens of mm per step-up).
+    // The lowest step-up takes one stroke of under half a millimetre at a
+    // real sliver (with or without the memory: it is not this defect). Every
+    // step-up above it cuts nothing at all, where the defect ran passes the
+    // length of the walls (124 mm at Z6.5).
+    for (i, l) in ups.iter().enumerate() {
+        let z = l["tip_z_mm"].as_f64().unwrap();
+        let cut = cut_at.get(&z.to_bits()).copied().unwrap_or(0.);
+        if i == 0 {
+            assert!(cut < 0.5, "step-up at Z{z} cut {cut:.2} mm: {}", l["clearing"]);
+        } else {
+            assert_eq!(
+                (cut, l["clearing"]["passes"].as_u64()),
+                (0., Some(0)),
+                "step-up at Z{z} beside vertical walls: {}",
+                l["clearing"]
+            );
+            // It steered from the cleared memory handed through the empty
+            // step-up before it, not from whole-cell stock bounds.
+            assert_eq!(l["clearing"]["stock_top_carried"], true, "{}", l["clearing"]);
+        }
+    }
+}
+
+/// The strips closed by end walls (so later passes start beside the stock,
+/// proven only by the committed sweeps), with the operation's top 48 mm
+/// above the Z6 layer (a deep layer, as under a tall part). A vertical entry into cut stock is
+/// proven by bisecting the column between the top and the layer; with a
+/// fixed 12 halvings that search could not resolve below (top - z) / 4096,
+/// over its 0.01 mm acceptance once top - z exceeded ~41 mm, so every such
+/// entry was refused and the layer fell back to short stay-down passes.
+#[test]
+fn engagement_front_deep_layer_entries_are_proven() {
+    let z6 = |report: &serde_json::Value| {
+        report["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| (l["tip_z_mm"].as_f64().unwrap() - 6.).abs() < 1e-6)
+            .expect("a Z6 layer")["clearing"]
+            .clone()
+    };
+    let (shallow_mean, shallow) = run_bar(12., true);
+    let (deep_mean, deep) = run_bar(54., true);
+    let (shallow, deep) = (z6(&shallow), z6(&deep));
+    let count = |c: &serde_json::Value, key: &str| c[key].as_u64().unwrap();
+    // The same strips, only deeper: entries beside the cut stock are proven
+    // as on the shallow layer, not refused and replaced by helixes.
+    // The same strips, only deeper: exactly the entries the shallow layer
+    // proves, no more refused and none replaced by a helix.
+    assert_eq!(
+        count(&deep, "unproven_air_starts"),
+        count(&shallow, "unproven_air_starts"),
+        "deep layer refused entries the shallow one proves: {deep}"
+    );
+    assert_eq!(
+        count(&deep, "helical_entries"),
+        count(&shallow, "helical_entries")
+    );
+    assert!((deep_mean - shallow_mean).abs() < 0.5, "{deep_mean} {shallow_mean}");
 }

@@ -370,6 +370,17 @@ pub struct PointDistance {
     pub distance_mm: f64,
     pub witness: DistanceWitness,
 }
+/// A ball's contact with the solid at a fixed level (`level_contact`).
+#[derive(Clone, Copy, Debug)]
+pub struct LevelContact {
+    /// Distance from the ball's center to the solid.
+    pub distance_mm: f64,
+    /// Unit normal from the nearest point of the solid to the center.
+    pub normal: Vec3,
+    /// Least and greatest z component of the contact normals of every prism
+    /// within the tie distance of the nearest.
+    pub cos_axis: [f64; 2],
+}
 #[derive(Clone, Copy)]
 pub enum Support {
     Base,
@@ -887,6 +898,108 @@ impl PreparedSurface {
             return Err("waterline center must be above the offset base".into());
         }
         self.distance(p, Some(p[2] - radius), work, cancel)
+    }
+    /// The contact of a ball centered at `p` on a fixed level with the
+    /// retained solid: the nearest point of the solid and the unit normal
+    /// from it to `p`, as `level_distance` finds it (the base and prisms
+    /// wholly below `p[2] - radius` cannot touch a ball of that radius there).
+    /// `cos_axis` is the range of the normal's z component over every prism
+    /// within `tie` of the nearest: a ball resting against a wall and a floor
+    /// at once touches both. A side of a prism gives exactly 0 (a vertical
+    /// wall), a facet its slope, an edge the angle the ball rolls over it at.
+    /// `None` when nothing is within reach of the level.
+    pub fn level_contact(
+        &self,
+        p: Vec3,
+        radius: f64,
+        tie: f64,
+        work: &mut SurfaceWork,
+        cancel: &impl CancelSignal,
+    ) -> Result<Option<LevelContact>, String> {
+        let Some(nearest) = self.level_distance(p, radius, work, cancel)? else {
+            return Ok(None);
+        };
+        let DistanceWitness::Prism(index) = nearest.witness else {
+            return Ok(None);
+        };
+        let distance = nearest.distance_mm;
+        let normal_of = |q: Vec3, d: f64| -> Vec3 {
+            if d > 0. {
+                [(p[0] - q[0]) / d, (p[1] - q[1]) / d, (p[2] - q[2]) / d]
+            } else {
+                // Inside the solid: no contact normal; the axis stands in.
+                [0., 0., 1.]
+            }
+        };
+        let (d2, q) = self.prism_closest(p, index, work);
+        let normal = normal_of(q, d2.sqrt());
+        let mut cos_axis = [normal[2], normal[2]];
+        let min_top = p[2] - radius;
+        let limit = distance + tie;
+        let limit_sq = limit * limit;
+        let lower = |min: Vec3, max: Vec3| {
+            (0..3)
+                .map(|k| {
+                    ((if k == 2 { self.floor } else { min[k] }) - p[k])
+                        .max(p[k] - max[k])
+                        .max(0.)
+                        .powi(2)
+                })
+                .sum::<f64>()
+        };
+        let margin = 4096. * f64::EPSILON * (1. + limit_sq);
+        let mut pending = vec![0usize];
+        while let Some(i) = pending.pop() {
+            work.nodes += 1;
+            work.check(cancel)?;
+            let node = &self.nodes[i];
+            if node.max[2] < min_top || lower(node.min, node.max) > limit_sq + margin {
+                continue;
+            }
+            if let Some([a, b]) = node.children {
+                pending.push(a);
+                pending.push(b);
+                continue;
+            }
+            for ti in node.range.clone() {
+                let t = &self.triangles[ti];
+                if ti == index || t.max[2] < min_top || lower(t.min, t.max) > limit_sq + margin {
+                    continue;
+                }
+                let (d2, q) = self.prism_closest(p, ti, work);
+                if d2 <= limit_sq {
+                    let z = normal_of(q, d2.sqrt())[2];
+                    cos_axis = [cos_axis[0].min(z), cos_axis[1].max(z)];
+                }
+            }
+        }
+        Ok(Some(LevelContact {
+            distance_mm: distance,
+            normal,
+            cos_axis,
+        }))
+    }
+    /// Squared distance from `p` to prism `index` and its nearest point
+    /// (`p` itself inside the prism).
+    fn prism_closest(&self, p: Vec3, index: usize, work: &mut SurfaceWork) -> (f64, Vec3) {
+        let t = &self.triangles[index];
+        if p[2] >= self.floor && t.height_at(p).is_some_and(|z| p[2] <= z) {
+            return (0., p);
+        }
+        work.distance_tests += 7;
+        let mut best = closest_on_triangle(p, t.p);
+        for k in 0..3 {
+            let (a, b) = (t.p[k], t.p[(k + 1) % 3]);
+            let (af, bf) = ([a[0], a[1], self.floor], [b[0], b[1], self.floor]);
+            // The wall below edge a-b: two triangles in one vertical plane.
+            for wall in [[a, b, bf], [a, bf, af]] {
+                let candidate = closest_on_triangle(p, wall);
+                if candidate.0 < best.0 {
+                    best = candidate;
+                }
+            }
+        }
+        best
     }
     fn distance(
         &self,
@@ -1577,6 +1690,47 @@ fn point_segment_sq(p: Vec3, a: Vec3, b: Vec3) -> f64 {
     };
     let v = sub(p, add(a, mul(d, t)));
     dot(v, v)
+}
+/// Squared distance from `p` to segment a-b and its nearest point.
+fn closest_on_segment(p: Vec3, a: Vec3, b: Vec3) -> (f64, Vec3) {
+    let d = sub(b, a);
+    let l2 = dot(d, d);
+    let t = if l2 > 0. {
+        (dot(sub(p, a), d) / l2).clamp(0., 1.)
+    } else {
+        0.
+    };
+    let q = add(a, mul(d, t));
+    let v = sub(p, q);
+    (dot(v, v), q)
+}
+/// Squared distance from `p` to triangle `t` and its nearest point (a
+/// degenerate triangle is its edges).
+fn closest_on_triangle(p: Vec3, t: [Vec3; 3]) -> (f64, Vec3) {
+    let n = cross(sub(t[1], t[0]), sub(t[2], t[0]));
+    let nn = dot(n, n);
+    if nn > 0. {
+        let distance = dot(n, sub(p, t[0]));
+        let q = sub(p, mul(n, distance / nn));
+        let omit = if n[0].abs() >= n[1].abs() && n[0].abs() >= n[2].abs() {
+            0
+        } else if n[1].abs() >= n[2].abs() {
+            1
+        } else {
+            2
+        };
+        if inside_fast(t, q, omit) {
+            return (distance * distance / nn, q);
+        }
+    }
+    let mut best = closest_on_segment(p, t[0], t[1]);
+    for (a, b) in [(t[1], t[2]), (t[2], t[0])] {
+        let candidate = closest_on_segment(p, a, b);
+        if candidate.0 < best.0 {
+            best = candidate;
+        }
+    }
+    best
 }
 fn point_triangle_sq(p: Vec3, t: [Vec3; 3]) -> f64 {
     let n = cross(sub(t[1], t[0]), sub(t[2], t[0]));

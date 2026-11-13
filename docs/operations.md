@@ -123,6 +123,38 @@ Every planned tool-centre path is checked against the original region before
 any motion is emitted: if geometry construction ever went wrong, the operation
 fails instead of cutting into an island or wall.
 
+**What a pocket operation cannot get into is refused** (`Pocket`,
+`RestPocket` and `AdaptivePocket` on every path strategy; #250). A pocket
+operation is asked to clear its region, so it never leaves part of it
+without a word:
+
+- **An area no entry reaches refuses the operation.** That is a part of the
+  region the cutter fits in, with material in it, that the operation's entry
+  cannot bring the cutter down into: no helix of the entry's radii fits
+  (`Pocket`, `RestPocket`; a plunge, `entry=None`, always fits); for
+  `AdaptivePocket` no place in that connected area of tool centres is clear
+  of material to enter from and no helix fits, or the area is tighter than
+  the planner resolves (below); for `disk_front` and `stock_front` no orbit
+  fits. The message names the operation, a tool-centre position in the
+  area, the area's extent, what was tried (the helix or orbit radii and what
+  the area leaves) and the options: another entry (`RampEntry`, a plunge, a
+  smaller helix), a smaller cutter, an earlier operation that opens a start
+  there, or a region without that area.
+- **A region the cutter fits nowhere in refuses the operation**, since it
+  can do nothing it was asked to. (This used to be an empty plan with a
+  `CamWarning`.)
+- `Pocket`, `RestPocket`, `disk_front` and `stock_front` refuse before any
+  motion. `AdaptivePocket`'s default strategy plans from the stock, so it
+  refuses when a level starts, before that level's first motion: for the
+  first level that is before any motion of the operation.
+- **Not refused:** a pocket with nothing left to cut, and the parts of a
+  region the cutter cannot reach from where it does fit (corners, a part
+  narrower than the cutter). Those are left and reported as the residual
+  area (`geometric_residual_area_mm2`).
+
+`Roughing` is different on purpose: see
+[3D roughing](#3d-roughing-roughing-restroughing).
+
 **A top below the remaining stock** (`Pocket` and `AdaptivePocket`, issue
 #129). `top_z_mm` may be below the stock's original top when earlier
 operations removed the material: the depth (and the cutting-length check) is
@@ -367,6 +399,36 @@ no full-width slotting, for hard materials and high-speed toolpaths.
   `entry=RampEntry(angle_deg)` it ramps in along a straight path instead (see
   [Ramp entry](#ramp-entry-rampentry)): the entry for a pocket too narrow for
   a helix.
+- **Areas no entry reaches** are refused as for `Pocket` (see
+  [above](#pocket-pocket-restpocket)). Here an area is a connected set of
+  tool centres the planner can use. It has a way in where the cutter's
+  whole disk is clear of material at one of them (an entry from air or from
+  cleared stock, so an earlier operation that opens a start there is one),
+  or where a helix fits at its most open position on material; with neither
+  (a slot barely wider than the cutter) the level is refused when it starts.
+  `entry=RampEntry(angle_deg)` ramps into such an area instead, and is
+  refused by name where no ramp fits.
+- **A slot only a little wider than the cutter** leaves it less play than
+  the engagement front plans in: it steers on a grid (a twentieth of the
+  cutter radius, or a fifth of the stepover if that is finer) and keeps
+  tool centres about 1.9 cells further from the walls than the cutter
+  radius, 0.19 mm with a 4 mm cutter. An area that tight with stock in it
+  and no position the planner can use is refused the same way, with that
+  figure; a `Pocket` follows the walls' exact offset and cuts it. A channel
+  that tight which opens into a wider part of the region is not such an
+  area: the level's wall pass follows the walls' exact offset into it and
+  cuts it.
+- **The residual area of a level** (`layers[].clearing`) counts all the
+  stock left in the region at that level, from the region and the stock
+  (on the steering grid, with the stock's whole-cell bounds), not from
+  where the planner could stand. `geometric_residual_area_mm2` is the sum
+  of `residual_reachable_area_mm2` (within reach of the planner's
+  positions: slivers too thin to cut), `residual_unresolved_area_mm2` (the
+  cutter reaches it in the region but the planner's positions do not: the
+  skin along the walls before the wall pass, a channel tighter than the
+  planner resolves) and `residual_unreachable_area_mm2` (beyond the
+  cutter's reach: corners, the radial allowance, parts narrower than the
+  cutter).
 - `cutting_sense`: `"climb"` (default) or `"conventional"` with a clockwise
   spindle.
 - **Links and entries** take the options `Roughing`'s adaptive clearing has
@@ -409,6 +471,13 @@ no full-width slotting, for hard materials and high-speed toolpaths.
   `clockwise` sets the orbit direction, `max_engagement_deg` (default 90)
   bounds the total contact, and `min_orbit_radius_mm` with
   `local_orbit_tolerance_mm` sizes each orbit from the clearance around it.
+  An orbit sweeps a disk of the cutter radius plus the orbit radius. An
+  area of the region the cutter fits in (a component of its tool-centre
+  region) that is nowhere that wide is an area no entry reaches: the pocket
+  is refused before any motion with the sweep's size and the options (#250;
+  it used to be left). The narrower parts of an area an orbit does fit in
+  are left and reported in the plan's residual region, as before. The same
+  holds for `stock_front`.
 - `path_strategy="stock_front"` is a development strategy; it stops with an
   error where its coverage is unresolved.
 
@@ -445,10 +514,27 @@ narrow a gap the cutter still fits until no entry reaches it; that layer then
 keeps the exact shadow, as it would with `contour_tolerance_mm` 0, and
 `shadow.simplified.reason` says so with the entry refusal it avoided. Holes in that projection smaller than a
 disk of half the cutter's radius are protected too, since the cutter cannot
-enter them (the layer report's `shadow.filled_holes`). A target mesh whose faces
-were tessellated separately leaves such slivers between neighbouring faces; a
-gap that still makes the layer's topology ambiguous is refused with its
-location. `clearing` is one of:
+enter them (the layer report's `shadow.filled_holes`).
+
+A target mesh whose faces were tessellated separately has hairline seams
+between neighbouring faces (their shared edge is subdivided differently on
+each side). A mesh declares how far the part's surface may be from its facets
+(`surface_error_mm`), so two facet edges that should be one may lie up to
+twice that error apart, and a gap that narrow says nothing about the part.
+Every shadow is therefore closed by the mesh's declared error: gaps, channels
+and notches narrower than twice the error are protected, concave corners are
+rounded to the error, and nothing is removed (the closed shadow contains the
+exact one). Its boundary is then simplified at the scale of eight times
+`tolerance_mm`, again only by adding area: shorter edges are absorbed (a seam
+leaves the two faces' vertices a hair apart along the outline), and a concave
+vertex that stands out by less than that is dropped. The layer report's
+`shadow.seam_closing` gives the distance and the area it added. Roughing keeps at least the error clear of the shadow
+anyway, so its cutter positions are the same as from the exact shadow. A
+seam wider than twice the declared error, and any seam of a mesh declaring an
+error of 0 (an exact mesh), still makes the layer's topology ambiguous and is
+refused with its location: export the mesh with shared edge vertices
+(`camlib.cadquery.export_surface_mesh` does), or declare its real error.
+`clearing` is one of:
 
 - `RasterClearing(stepover_mm, routing=None)`: parallel passes;
   `routing="economical"` orders and joins the rows to shorten links,
@@ -490,6 +576,29 @@ location. `clearing` is one of:
     [Ramp entry](#ramp-entry-rampentry)); entries from beside the stock or
     from cleared stock are used first, as with `StockEdgeEntry`. Offset and
     raster clearing refuse a ramp entry.
+  - **Areas no entry reaches are listed, not refused** (#250). A roughing
+    layer legitimately has material its cutter cannot enter (a rest pass
+    with a smaller cutter takes it), so `Roughing` does not follow the
+    pocket rule. When a layer starts, each area the cutter fits in that has
+    material and no way in (as defined for
+    [`AdaptivePocket`](#adaptive-pocket-adaptivepocket)) is put in the
+    layer's report, `layers[].clearing.unentered_areas`: `reason`
+    (`no_helix_fits`, `no_helix_allowed`, `tighter_than_planner_resolves`,
+    or `no_orbit_fits` with `stock_front`), `at_mm`, the extent of its tool
+    centres (`min_mm`, `max_mm`), `level_z_mm`, `cutter_radius_mm`,
+    `radii_tried_mm`, `needed_mm` and `available_mm`. Its stock is in the
+    layer's residual area, which counts all the stock left in the layer's
+    region (the three parts described for `AdaptivePocket`). A layer whose
+    region the cutter fits nowhere in says so in its diagnostics, as a
+    pocket plan does, and all its stock is residual.
+  - **Roughing that would make no motion at all** because of such an area
+    is refused, with the first area's place and the options, instead of
+    planning nothing. Roughing with nothing left to cut is not an error.
+  - Offset and raster clearing fit an entry for every area before any
+    motion, with helix radii down to 0.1 mm, and refuse the operation where
+    an area has none (for example with `StockEdgeEntry(helix=None)` and an
+    enclosed area), naming the area, what was tried and the options. They
+    leave no area without an entry, so they list none.
   - `path_strategy="disk_front"` is refused in `Roughing`. It covers a region
     it takes to be solid with small orbits and never reads the stock;
     `Roughing`'s region is the stock grown by a margin, so it orbited through
@@ -705,8 +814,13 @@ itself with `Flat` or a pocket.
 **Refused:** a silhouette whose error exceeds `max_error_mm` (the message
 gives its parts; supply a finer mesh), a depth with nothing at or above it,
 an invalid mesh, and a mesh whose facets' projections touch within the
-construction tolerance without sharing vertices (not watertight), as for
-`Roughing`. `max_error_mm` has no default.
+construction tolerance without sharing vertices (not watertight) across a
+seam wider than twice its declared `surface_error_mm`, as for `Roughing`.
+Narrower seams are closed, as for every shadow (see `Roughing`): channels
+narrower than twice the declared error are part of the silhouette and its
+concave corners are rounded to the error, which the operations' clearance
+(they add the region's `boundary_error_mm`) already covers. `max_error_mm`
+has no default.
 
 ## Drilling: `Drilling`
 
@@ -1398,6 +1512,19 @@ with a vertical plunge onto the surface. Over a convex edge the contact
 normal turns gradually, so a shallow pass may roll over the edge until the
 limit.
 
+The contact is the one the tool has where it is. A drop-cutter pass
+(`Parallel`, `Spiral`, `Radial`, `Project`) rests on the part from above, so
+its contact is the dropped ball's. A `Waterline` pass is on its level: its
+contact is the nearest point of the part to the ball's center at that level,
+90 degrees against a vertical wall at any height below the wall's top edge, a
+face's own slope on a sloped face, the roll-over angle on an edge. (A ball
+dropped at a wall's foot lands on the floor, which would call the wall flat.)
+Where the ball touches a wall and a floor at once, as on the level that
+finishes a wall down to its floor, both contacts count, and the contour is
+kept if either lies within the limits. With both definitions a steep pass
+above `t − o` and a shallow pass below `t + o` cover every reachable surface
+with the declared overlap.
+
 `camlib.steep_and_shallow(id, tool, surface, floor_z_mm, clearance_z_mm,
 top_z_mm=, bottom_z_mm=, stepdown_mm=, stepover_mm=, threshold_deg=45,
 overlap_deg=5, shallow="parallel")` returns the two operations of the usual
@@ -1564,6 +1691,10 @@ holes), `feed_mm_min`, `cut_height_mm`, and a beam tool:
 `camlib.Torch(id, kerf_width=...)` or `camlib.LaserHead(id, kerf_width=...)`
 (the kerf is the beam's diameter; the nozzle and body are collision geometry).
 The setup's stock is the sheet (its top and thickness).
+
+`parts` can come from [`camlib.Nest`](nesting.md), which places copies of
+parts on a sheet with declared spacing, margin and rotations and proves the
+layout.
 
 ```python
 torch = camlib.Torch("torch", kerf_width=1.5)

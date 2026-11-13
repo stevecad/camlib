@@ -1033,13 +1033,24 @@ impl PreparedRegion {
     /// slivers of uncovered area that the integer backend returns touching
     /// another boundary within the construction tolerance (for example
     /// between facets of a mesh whose faces were tessellated separately).
-    /// Returns the construction and the filled holes (count and area).
+    ///
+    /// With `close_mm > 0` the union is first closed by that distance
+    /// (`close_protectively`): gaps and channels narrower than twice the
+    /// distance are bridged before the topology is validated, so seams of
+    /// that size between the operands (a mesh whose neighbouring facets do
+    /// not share their edge vertices) cannot make it ambiguous.
+    /// Returns the construction, the filled holes (count and area) and what
+    /// the closing added.
     pub(crate) fn union_linear_filling(
         regions: &[Self],
         fill_holes_below_mm2: f64,
-    ) -> Result<(Construction, FilledHoles), String> {
+        close_mm: f64,
+    ) -> Result<(Construction, FilledHoles, Option<SeamClosing>), String> {
         if !fill_holes_below_mm2.is_finite() || fill_holes_below_mm2 < 0. {
             return Err("hole fill area must be finite and nonnegative".into());
+        }
+        if !close_mm.is_finite() || !(0. ..=1.).contains(&close_mm) {
+            return Err("union closing distance must be finite, 0..1 mm".into());
         }
         let first = regions.first().ok_or("linear union needs an operand")?;
         let options = first.options;
@@ -1057,15 +1068,47 @@ impl PreparedRegion {
         if !clipper.execute(ClipType::Union, FillRule::NonZero, &mut closed, None) {
             return Err("integer batch union backend failed".into());
         }
-        let filled = fill_small_holes(&mut closed, grid, fill_holes_below_mm2);
         let error = regions
             .iter()
             .map(|r| r.definition.boundary_error_mm)
             .fold(0f64, f64::max)
             + options.tolerance_mm;
-        first
+        // The exact union, and the union closed by the declared distance.
+        // Seams between the operands show in the exact union as boundaries
+        // that touch (it is then not a valid region) or as sliver holes and
+        // gaps (it is valid, with pieces the closing joins). A mesh without
+        // seams gives the same components and holes either way; its exact
+        // union is then used as it is, because closing it would only move
+        // its boundary by the rounding margin: enough to change what is
+        // planned around it, for nothing.
+        let exact = {
+            let mut exact = closed.clone();
+            let filled = fill_small_holes(&mut exact, grid, fill_holes_below_mm2);
+            first
+                .integer_result(exact, "clipper2_rust_1.2.0_linear_batch", error, 0., grid)
+                .map(|r| (r.report, filled, None))
+        };
+        if close_mm == 0. {
+            return exact;
+        }
+        // Edges within 32 times the kernel's shortest (a quarter of the
+        // tolerance, `boundary_to_polyline`) are absorbed.
+        let closing = close_protectively(&mut closed, grid, close_mm, 8. * options.tolerance_mm);
+        let filled = fill_small_holes(&mut closed, grid, fill_holes_below_mm2);
+        let joined = first
             .integer_result(closed, "clipper2_rust_1.2.0_linear_batch", error, 0., grid)
-            .map(|r| (r.report, filled))
+            .map(|r| (r.report, filled, Some(closing)));
+        match (&exact, &joined) {
+            (Ok((a, ..)), Ok((b, ..)))
+                if (a.after_components, a.after_holes) == (b.after_components, b.after_holes) =>
+            {
+                exact
+            }
+            // The closing joined something, or the exact union is not a
+            // valid region: the closed one, reported by the caller. If the
+            // closed one fails, its refusal is the one to show.
+            _ => joined,
+        }
     }
 }
 
@@ -1112,6 +1155,213 @@ impl PreparedRegion {
     }
 }
 
+/// Twice the signed area of integer paths, exactly.
+fn twice_area(paths: &Paths64) -> i128 {
+    paths
+        .iter()
+        .map(|path| {
+            (0..path.len())
+                .map(|i| {
+                    let (a, b) = (path[i], path[(i + 1) % path.len()]);
+                    a.x as i128 * b.y as i128 - b.x as i128 * a.y as i128
+                })
+                .sum::<i128>()
+        })
+        .sum()
+}
+
+/// Grid units added to the dilation and taken from the erosion of
+/// `close_protectively`. The operands' vertices were rounded to the grid
+/// (at most 0.71 unit each), and so are the vertices of the dilation and of
+/// the erosion: 2.13 units in all, covered by the 4 these two make.
+const CLOSING_MARGIN_UNITS: f64 = 2.;
+
+/// Replace the region of `paths` (positive outers, negative holes) by a
+/// region that contains its morphological closing by a disc of `close_mm`,
+/// and so contains the region itself: every gap, channel and notch narrower
+/// than `2 * close_mm` is filled, and concave corners are rounded to that
+/// radius. Nothing is removed. Returns what was added.
+///
+/// The closing of X by a disc B is (X dilated by B) eroded by B; it contains
+/// X (Serra, "Image Analysis and Mathematical Morphology", Academic Press
+/// 1982, ch. II: the closing is extensive, increasing and idempotent). Both
+/// steps here err on the side that keeps that containment:
+///
+/// * the dilation uses square joins, which contain the disc's arc at every
+///   convex corner (the cut is tangent to the circle; Clipper2 "JoinType",
+///   <https://www.angusj.com/clipper2/Docs/Units/Clipper/Types/JoinType.htm>),
+///   so it contains the dilation by the disc;
+/// * the erosion uses round joins: Clipper2 replaces each arc around a
+///   reflex corner by chords between points of the circle, which lie inside
+///   the circle, so less is removed than the disc removes and the result
+///   contains the erosion by the disc.
+///
+/// A round-joined dilation would do the opposite (chords inside the arc
+/// leave out up to the sagitta, and the erosion then cuts a sharp corner
+/// back by the sagitta over the sine of its half angle). Integer rounding
+/// is covered by `CLOSING_MARGIN_UNITS`. A convex corner comes back exactly:
+/// its square cut, moved in by the distance, passes through the corner.
+///
+/// What it changes for a consumer that keeps a clearance c >= close_mm from
+/// the region: nothing but the rounding. The points at least c from X and
+/// from its closing are the same (the complement's opening by B eroded by a
+/// disc no smaller than B is the complement's erosion; Serra, ch. II), so a
+/// cutter-centre region, or an offset by c, is the same as before.
+///
+/// Last, the boundary is simplified at the scale `short_mm`
+/// (`absorb_short_edges`), again only by adding area: the round joins leave
+/// two vertices at every shallow concave corner, and the vertices of two
+/// faces that should be one vertex leave short edges along the outline.
+/// Edges near the kernel's shortest make the offsets taken of the region
+/// later ambiguous.
+///
+/// Every region is treated the same way, with or without seams. Joining the
+/// closing to the exact region only where it adds something (so that a
+/// region with nothing to close stays bit for bit the same) was tried and
+/// is not robust: the exact union of a seamed mesh can itself be the
+/// ambiguous topology, and what stays unbridged near a gap's mouth touches
+/// its neighbours again.
+fn close_protectively(paths: &mut Paths64, grid: f64, close_mm: f64, short_mm: f64) -> SeamClosing {
+    let before = twice_area(paths);
+    let units = close_mm / grid;
+    let grown = clipper2_rust::inflate_paths_64(
+        paths,
+        units + CLOSING_MARGIN_UNITS,
+        clipper2_rust::JoinType::Square,
+        clipper2_rust::EndType::Polygon,
+        2.,
+        0.,
+    );
+    let shrink = units - CLOSING_MARGIN_UNITS;
+    *paths = if shrink > 0. {
+        clipper2_rust::inflate_paths_64(
+            &grown,
+            -shrink,
+            clipper2_rust::JoinType::Round,
+            clipper2_rust::EndType::Polygon,
+            2.,
+            0.,
+        )
+    } else {
+        grown
+    };
+    absorb_short_edges(paths, short_mm / grid, units);
+    SeamClosing {
+        distance_mm: close_mm,
+        added_area_mm2: (twice_area(paths) - before) as f64 * 0.5 * grid * grid,
+    }
+}
+
+/// Simplify the boundary of the region of `paths` at the scale `limit`
+/// (grid units), only ever by adding area (the region is on the left of each
+/// directed edge: outers counter-clockwise, holes clockwise):
+///
+/// * an end of an edge where the boundary turns right (a concave corner of
+///   the region, or a straight run) is dropped, which adds the triangle it
+///   cut off, when the edge is shorter than `limit`, or shorter than
+///   `reach` with that triangle thinner than `limit` (the two ends a round
+///   join leaves at a shallow concave corner);
+/// * an edge shorter than `limit` between two convex corners is replaced by
+///   the point where its two neighbours meet when prolonged, if that point
+///   is within four times `limit` of both ends (the cut corner is put back)
+///   and, after rounding to the grid, both ends are on or to the left of the
+///   new edges.
+///
+/// Which side a point is on is decided with exact integer orientations. An
+/// edge neither rule can take stays.
+fn absorb_short_edges(paths: &mut Paths64, limit: f64, reach: f64) {
+    // cross(q - p, r - p): positive when r is to the left of p -> q.
+    fn side(p: Point64, q: Point64, r: Point64) -> i128 {
+        (q.x - p.x) as i128 * (r.y - p.y) as i128 - (q.y - p.y) as i128 * (r.x - p.x) as i128
+    }
+    let limit2 = (limit * limit) as i128;
+    let reach2 = (reach * reach) as i128;
+    let near2 = 16 * limit2;
+    let length2 = |a: Point64, b: Point64| {
+        let (dx, dy) = ((b.x - a.x) as i128, (b.y - a.y) as i128);
+        dx * dx + dy * dy
+    };
+    // r is within `limit` of the line p -> q (a choice of what to simplify,
+    // not of side: floating point is enough).
+    let thin = |p: Point64, q: Point64, r: Point64| {
+        let cross = side(p, q, r) as f64;
+        cross * cross <= limit * limit * length2(p, q) as f64
+    };
+    for path in paths.iter_mut() {
+        let mut i = 0;
+        // Vertices passed since the last change: a whole turn ends the path.
+        let mut quiet = 0;
+        while path.len() > 3 && quiet < path.len() {
+            let n = path.len();
+            let (ia, ib) = (i % n, (i + 1) % n);
+            let (s1, a, b, s2) = (path[(i + n - 1) % n], path[ia], path[ib], path[(i + 2) % n]);
+            let short = length2(a, b) <= limit2;
+            if !short && length2(a, b) > reach2 {
+                i = ib;
+                quiet += 1;
+                continue;
+            }
+            let removed = if side(a, b, s2) <= 0 && (short || thin(a, s2, b)) {
+                Some(ib)
+            } else if side(s1, a, b) <= 0 && (short || thin(s1, b, a)) {
+                Some(ia)
+            } else if !short {
+                None
+            } else {
+                // Lines s1 -> a and b -> s2 meet at a + t (a - s1).
+                let (ux, uy) = ((a.x - s1.x) as f64, (a.y - s1.y) as f64);
+                let (vx, vy) = ((s2.x - b.x) as f64, (s2.y - b.y) as f64);
+                let cross = ux * vy - uy * vx;
+                let t = ((b.x - a.x) as f64 * vy - (b.y - a.y) as f64 * vx) / cross;
+                let (x, y) = (a.x as f64 + t * ux, a.y as f64 + t * uy);
+                let corner = (cross != 0. && x.is_finite() && y.is_finite())
+                    .then(|| {
+                        [
+                            (x.floor(), y.floor()),
+                            (x.ceil(), y.floor()),
+                            (x.floor(), y.ceil()),
+                            (x.ceil(), y.ceil()),
+                        ]
+                        .into_iter()
+                        .map(|(x, y)| Point64::new(x as i64, y as i64))
+                        .find(|&c| {
+                            length2(c, a) <= near2
+                                && length2(c, b) <= near2
+                                && c != s1
+                                && c != s2
+                                && side(s1, c, a) >= 0
+                                && side(s1, c, b) >= 0
+                                && side(c, s2, a) >= 0
+                                && side(c, s2, b) >= 0
+                                && side(s1, c, s2) > 0
+                        })
+                    })
+                    .flatten();
+                if let Some(corner) = corner {
+                    path[ia] = corner;
+                    Some(ib)
+                } else {
+                    None
+                }
+            };
+            match removed {
+                Some(index) => {
+                    path.remove(index);
+                    let n = path.len();
+                    // Look again from the edge before the change.
+                    let at = if index < ia { ia - 1 } else { ia };
+                    i = (at + n - 1) % n;
+                    quiet = 0;
+                }
+                None => {
+                    i = ib;
+                    quiet += 1;
+                }
+            }
+        }
+    }
+}
+
 /// Drop the holes (negative paths) smaller than `below_mm2`.
 fn fill_small_holes(closed: &mut Paths64, grid: f64, below_mm2: f64) -> FilledHoles {
     let mut filled = FilledHoles::default();
@@ -1136,6 +1386,17 @@ fn fill_small_holes(closed: &mut Paths64, grid: f64, below_mm2: f64) -> FilledHo
         });
     }
     filled
+}
+
+/// What closing a protective union added (`PreparedRegion::union_linear_filling`).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct SeamClosing {
+    /// Gaps, channels and notches narrower than twice this were filled, and
+    /// concave corners rounded to this radius.
+    pub distance_mm: f64,
+    /// Area added to the exact union: what was filled, plus the rounding
+    /// margin along the whole boundary.
+    pub added_area_mm2: f64,
 }
 
 /// Holes a protective union filled (`PreparedRegion::union_linear_filling`).

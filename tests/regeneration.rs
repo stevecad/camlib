@@ -258,17 +258,25 @@ fn cache_limits_leave_generation_usable_and_failed_output_does_not_publish() {
 #[test]
 fn zero_motion_operations_have_complete_reusable_entries() {
     use camlib::{motion::Coolant, planar::PlanarRegion, pocket::PocketOperation};
+    // The operation with no motion is a rest pocket with nothing left: the
+    // facing before it has taken the stock below the pocket's floor. (This
+    // used to be a pocket too small for its cutter, which is now refused,
+    // #250: an operation whose cutter fits nowhere can do nothing it was
+    // asked to, while a rest pocket with nothing left is a valid empty
+    // plan.)
     let directory = Directory::new();
     let mut m = manifest();
+    let (faced, _, _) = execute(m.clone(), Directory::new().options());
+    assert!(faced.completed() > 0);
     let tool = m.tools[0].id.clone();
-    m.operations = vec![Operation::Pocket(PocketOperation {
+    m.operations.push(Operation::Pocket(PocketOperation {
         max_stay_down_mm: None,
         limits: None,
         id: "empty".into(),
         tool,
-        region: PlanarRegion::circle("too-small", [6., 5.], 1.).unwrap(),
+        region: PlanarRegion::circle("faced-away", [6., 5.], 4.9).unwrap(),
         top_z_mm: 4.,
-        floor_z_mm: 3.,
+        floor_z_mm: 3.5,
         stepdown_mm: 1.,
         stepover_mm: 2.,
         feed_mm_min: 600.,
@@ -282,19 +290,20 @@ fn zero_motion_operations_have_complete_reusable_entries() {
         tool_number: 1,
         length_register: 1,
         coolant: Coolant::Flood,
-        rest_tolerance_mm: None,
+        rest_tolerance_mm: Some(0.01),
         boundary_clockwise: None,
         entry: None,
         retract_z_mm: None,
         feed_z_mm: None,
-    })];
+    }));
     let (cold, _, r) = execute(m.clone(), directory.options());
-    assert_eq!(cold.completed(), 0);
-    assert_eq!(r[0]["report"]["regeneration"]["saved"], true);
+    // Every motion of the run is the facing's.
+    assert_eq!(cold.completed(), faced.completed());
+    assert_eq!(r[1]["report"]["regeneration"]["saved"], true);
     m.run.revision = "warm-empty".into();
     let (warm, _, r) = execute(m, directory.options());
-    assert_eq!(warm.completed(), 0);
-    assert_eq!(r[0]["report"]["regeneration"]["cache_hit"], true);
+    assert_eq!(warm.completed(), faced.completed());
+    assert_eq!(r[1]["report"]["regeneration"]["cache_hit"], true);
 }
 #[test]
 fn typed_delta_old_values_are_checked_even_with_a_valid_artifact_checksum() {

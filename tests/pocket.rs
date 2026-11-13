@@ -740,6 +740,25 @@ fn allowances_tool_changes_split_channels_and_empty_regions_are_explicit() {
             .is_none_or(|v| v > 0.)
     );
     op.radial_allowance_mm = 100.;
+    // As a `Pocket` operation this is refused (#250): the cutter fits
+    // nowhere in the region, so the operation can do nothing it was asked
+    // to. The planner itself still plans it as an explicitly empty plan
+    // (below), which is what a roughing layer needs: there the cutter
+    // legitimately fits nowhere at some depths.
+    let refused = camlib::operation::OperationPlan::prepare(
+        Operation::Pocket(op.clone()),
+        &tool(),
+        &stock(),
+        [0., 0., 12.],
+        1,
+        &AtomicBool::new(false),
+    )
+    .map(|_| ())
+    .unwrap_err();
+    assert!(
+        refused.contains("pocket pocket-1: the cutter fits nowhere in the region"),
+        "{refused}"
+    );
     let mut p = plan(op);
     assert_eq!(p.report().center_components, 0);
     assert!(drain(&mut p).is_empty());

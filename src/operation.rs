@@ -265,9 +265,12 @@ impl OperationPlan {
             Operation::Waterline(p) => Ok(Self::Waterline(Box::new(
                 WaterlinePlan::prepare_with_stock(p, tool, stock, initial, first_id, cancel)?,
             ))),
-            Operation::Pocket(p) => Ok(Self::Pocket(Box::new(PocketPlan::prepare_with_stock(
-                p, tool, stock, initial, first_id, cancel,
-            )?))),
+            Operation::Pocket(p) => {
+                let plan =
+                    PocketPlan::prepare_with_stock(p, tool, stock, initial, first_id, cancel)?;
+                plan.refuse_no_cutter_position()?;
+                Ok(Self::Pocket(Box::new(plan)))
+            }
             Operation::AdaptivePocket(p)
                 if p.path_strategy == crate::adaptive::AdaptivePathStrategy::EngagementFront =>
             {
@@ -277,9 +280,12 @@ impl OperationPlan {
                     )?,
                 )))
             }
-            Operation::AdaptivePocket(p) => Ok(Self::Adaptive(Box::new(
-                AdaptivePlan::prepare_with_stock(p, tool, stock, initial, first_id, cancel)?,
-            ))),
+            Operation::AdaptivePocket(p) => {
+                let plan =
+                    AdaptivePlan::prepare_with_stock(p, tool, stock, initial, first_id, cancel)?;
+                plan.refuse_unentered()?;
+                Ok(Self::Adaptive(Box::new(plan)))
+            }
             Operation::Roughing(p) => Ok(Self::Roughing(Box::new(
                 RoughingPlan::prepare_with_stock(p, tool, stock, initial, first_id, cancel)?,
             ))),
@@ -323,9 +329,11 @@ impl OperationPlan {
                     )?,
                 )))
             }
-            Operation::AdaptivePocket(p) => Ok(Self::Adaptive(Box::new(AdaptivePlan::prepare(
-                p, tool, stock, initial, first_id, cancel,
-            )?))),
+            Operation::AdaptivePocket(p) => {
+                let plan = AdaptivePlan::prepare(p, tool, stock, initial, first_id, cancel)?;
+                plan.refuse_unentered()?;
+                Ok(Self::Adaptive(Box::new(plan)))
+            }
             Operation::Waterline(p) => Ok(Self::Waterline(Box::new(WaterlinePlan::prepare(
                 p, tool, stock, initial, first_id, cancel,
             )?))),
@@ -378,9 +386,11 @@ impl OperationPlan {
             Operation::Facing(p) => Ok(Self::Facing(Box::new(FacingPlan::prepare(
                 p, tool, stock, initial, first_id, cancel,
             )?))),
-            Operation::Pocket(p) => Ok(Self::Pocket(Box::new(PocketPlan::prepare(
-                p, tool, stock, initial, first_id, cancel,
-            )?))),
+            Operation::Pocket(p) => {
+                let plan = PocketPlan::prepare(p, tool, stock, initial, first_id, cancel)?;
+                plan.refuse_no_cutter_position()?;
+                Ok(Self::Pocket(Box::new(plan)))
+            }
             Operation::TrochoidalSlot(p) => Ok(Self::Slot(Box::new(SlotPlan::prepare(
                 p, tool, stock, initial, first_id, cancel,
             )?))),

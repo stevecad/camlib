@@ -185,6 +185,7 @@ _EXPORTS = {
         "turning",
     ),
     **dict.fromkeys(("PlanarRegion", "Boundary", "Component"), "planar"),
+    **dict.fromkeys(("Nest", "NestPart", "NestPlacement", "NestResult"), "nesting"),
     "WorkFrame": "motion",
     **dict.fromkeys(("cutting_data", "CuttingData"), "cutting"),
     **dict.fromkeys(

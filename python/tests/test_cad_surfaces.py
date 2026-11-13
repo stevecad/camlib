@@ -7,7 +7,7 @@ import os
 import unittest
 from functools import lru_cache
 from camlib.cadquery import export_surface_mesh
-from camlib._cad_surface import _interpolation_error, _surface_bounds, _bezier_bounds, _regularize_facet
+from camlib._cad_surface import _interpolation_error, _surface_bounds, _bezier_bounds
 
 
 @lru_cache(None)
@@ -44,7 +44,7 @@ class ParametricCadTest(unittest.TestCase):
             bound = (
                 face['interpolation_error_mm']
                 + face['trim_error_mm']
-                + face['regularization_mm']
+                + face['edge_weld_mm']
                 + mesh.source['cad_topology_error_mm']
                 + mesh.source['numerical_guard_mm']
             )
@@ -88,7 +88,7 @@ class ParametricCadTest(unittest.TestCase):
                         linear = tuple(sum(w * q[k] for w, q in zip(weights, points)) for k in range(3))
                         self.assertLessEqual(math.dist(actual, linear), bound + 1e-9)
 
-    def test_rational_bezier_and_collapsed_facet_bounds(self):
+    def test_rational_bezier_bounds(self):
         import cadquery as cq
 
         # A quadratic CAD curve supplies independent actual derivatives.
@@ -106,12 +106,6 @@ class ParametricCadTest(unittest.TestCase):
             curve.D2(i / 32, p, d1, d2)
             self.assertLessEqual(d1.Magnitude(), speed + 1e-12)
             self.assertLessEqual(d2.Magnitude(), accel + 1e-12)
-        original = ((1.0, 2.0, 3.0),) * 3
-        output, error = _regularize_facet(original)
-        self.assertGreater(error, 0)
-        self.assertLessEqual(error, 0.0001)
-        for p, q in zip(original, output):
-            self.assertLessEqual(math.dist(p, q), error)
 
     def test_positive_rational_weights_and_c0_join_use_valid_derivative_bounds(self):
         from OCP.gp import gp_Pnt, gp_Vec

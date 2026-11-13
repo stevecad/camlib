@@ -257,9 +257,25 @@ fn removal_bounds_enclose_the_sampled_sweep() {
     }
 }
 
+/// Each `level` move's XY distance from `p` to its path, with its height.
+fn flat_reach(p: [f64; 2]) -> [(f64, f64); 3] {
+    let segment = |a: [f64; 2], b: [f64; 2]| {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let t = (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy)).clamp(0., 1.);
+        (p[0] - a[0] - t * dx).hypot(p[1] - a[1] - t * dy)
+    };
+    [
+        (segment([-2., 3.], [12., 3.]), 5.),
+        (segment([-2., 6.], [12., 6.5]), 4.),
+        (((p[0] - 5.).hypot(p[1] - 5.) - 3.).abs(), 4.5),
+    ]
+}
+
 /// On three-axis moves the height view bounds the same material as the
-/// height field the existing kernel computes: identical for a flat end mill
-/// at constant height (both use the exact distance to the path), and
+/// height field the existing kernel computes: identical lower bounds for a
+/// flat end mill at constant height (both use the exact distance to the
+/// path; the height field may prove a tighter upper bound in cells no single
+/// whole-cell test covers), and
 /// overlapping elsewhere (the dexel columns skip cells the chord's padded
 /// box cannot reach, where the height kernel pads by the cell's circle).
 #[test]
@@ -299,7 +315,41 @@ fn height_view_matches_the_height_field() {
                     "{name}: cell {i} bounds do not overlap: {a:?} {b:?}"
                 );
                 if exact {
-                    assert_eq!(a, b, "{name}: cell {i}");
+                    // Lower bounds are always identical. An upper bound is
+                    // identical too, unless the union rule lowered the cell:
+                    // it proves a partly covered cell cleared by splitting
+                    // it (`Stock::union_covered`). Then the height field's
+                    // bound is tighter than the dexel's, but never below the
+                    // true top. Both are checked against the moves
+                    // themselves: the highest surface left over any point of
+                    // the cell.
+                    assert_eq!(a.lower_mm, b.lower_mm, "{name}: cell {i}");
+                    let [cx, cy] = height.cell_center(i).unwrap();
+                    let half = s.cell_size_mm / 2.;
+                    let mut top = f64::MIN;
+                    for u in 0..=6 {
+                        for v in 0..=6 {
+                            let p = [
+                                cx - half + s.cell_size_mm * u as f64 / 6.,
+                                cy - half + s.cell_size_mm * v as f64 / 6.,
+                            ];
+                            let mut z = s.max_mm[2];
+                            for (d, height) in flat_reach(p) {
+                                if d <= 1.5 {
+                                    z = z.min(height);
+                                }
+                            }
+                            top = top.max(z);
+                        }
+                    }
+                    assert!(b.upper_mm >= top - 1e-9, "{name}: cell {i}: {b:?} top {top}");
+                    if b.upper_mm != a.upper_mm {
+                        assert!(b.upper_mm < a.upper_mm, "{name}: cell {i}: {a:?} {b:?}");
+                        // A lowered cell is covered whole by the moves, if
+                        // by no single one of them (a move's own test is
+                        // conservative at a curved edge).
+                        assert!(top < s.max_mm[2], "{name}: cell {i}: {a:?} {b:?}");
+                    }
                 }
             }
             let (h, d) = (height.volume(), dexel.volume());

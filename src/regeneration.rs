@@ -235,6 +235,11 @@ impl Store {
         if m.rapid_retracts {
             inputs["rapid_retracts"] = true.into();
         }
+        // Without a height-field premise an operation lowers no cell from its
+        // own passes together (`Stock::union_covered`): its deltas differ.
+        if producer.stock()?.heightfield_unproven() {
+            inputs["heightfield_unproven"] = true.into();
+        }
         Ok(inputs)
     }
     fn key_from_inputs(&self, mut inputs: Value) -> Result<String, String> {
