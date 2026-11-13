@@ -458,8 +458,8 @@ no full-width slotting, for hard materials and high-speed toolpaths.
     from it and feeds across at depth, which adds a short link.
   - `ramp_clearance_mm`: each helix starts this far above the material it
     meets, never above `feed_z_mm`.
-  The wall pass is entered by a plunge and its lead-in arc at `feed_mm_min`;
-  it has no stay-down link. `path_strategy="disk_front"` and `"stock_front"`
+  The wall pass is reached like any other pass (a stay-down link, or a
+  descent with these options) and enters on its lead-in arc at `feed_mm_min`. `path_strategy="disk_front"` and `"stock_front"`
   refuse all four by name.
 - Orbit options, `max_stay_down_mm` and `rest_tolerance_mm` do not apply and
   are refused. Corners the cutter cannot reach are left and reported as the
@@ -565,6 +565,26 @@ refused with its location: export the mesh with shared edge vertices
     `confined_stroke_mm`, `confined_max_engagement_deg`). This needs an entry
     that allows a helix or a ramp; with `StockEdgeEntry(helix=None)` the
     operation stops and names the place.
+  - **Each layer ends with a pass along the walls**, where stock still
+    stands beside them. The front's passes end at a wall a stepover apart,
+    which leaves a cusp between every two pass ends, well over the
+    `radial_allowance_mm` asked for (0.16 to 0.30 mm along a straight wall
+    where 0.1 mm was asked, with a 6 mm cutter at 0.6 mm engagement). The wall pass runs on the wall's exact offset
+    (cutter radius plus the allowance), so the walls are left with the
+    allowance and the operation after roughing meets even stock. It runs
+    only along stretches where the committed cuts do not already prove the
+    cutter's path clear (to within 0.01 mm, or 64 `tolerance_mm` if that is
+    more): a wall that ends where the stock does is an open run, and a
+    step-up layer beside a vertical wall cuts nothing. Two runs are joined
+    through the air between them when feeding across takes no longer than
+    a new entry's descent at the plunge feed would
+    (`feed_mm_min` x (feed height - layer Z) / `plunge_mm_min`). A run is
+    reached like any pass and enters on a quarter-arc lead-in; its strokes
+    are proven within the engagement limit like any other, and where one is
+    not (an inside corner, where the skin is as thick as the corner is
+    deep) it is entry motion as above, or with `StockEdgeEntry(helix=None)`
+    the run is left out. Reported per layer as `wall_passes` and
+    `wall_passes_skipped`.
   - Every cutting and link move is also checked exactly against the layer
     region before it is emitted, and the run fails rather than emit one that
     does not fit. Orbit options and `omit_empty_cuts` do not apply, the entry

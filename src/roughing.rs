@@ -1576,7 +1576,10 @@ impl RoughingPlan {
                                 cutting_sense.unwrap_or(CuttingSense::Climb) == CuttingSense::Climb,
                                 &cancel,
                             )?
-                            .with_motion_options(front),
+                            .with_motion_options(front)
+                            // The walls are left with the allowance asked
+                            // for, not with the cusps between pass ends.
+                            .with_wall_runs(true),
                         )),
                         RoughingClearing::Adaptive {
                             path_strategy,

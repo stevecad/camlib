@@ -679,9 +679,11 @@ pub struct EngagementFrontReport {
     #[serde(skip_serializing_if = "is_zero_f64")]
     pub thinned_link_mm: f64,
     pub unproven_air_starts: usize,
-    /// Wall passes (see `EngagementFrontPlan::with_wall_pass`): closed loops
-    /// cut along the region's walls after the level is cleared, and loops
-    /// left uncut because no start beside them was proven clear.
+    /// Wall passes (see `EngagementFrontPlan::with_wall_pass` and
+    /// `with_wall_runs`): loops, or runs of them, cut along the region's
+    /// walls after the level is cleared, and those left uncut because no
+    /// way onto them was found or their engagement was not proven where the
+    /// entry policy allows no entry motion.
     #[serde(skip_serializing_if = "is_zero")]
     pub wall_passes: usize,
     #[serde(skip_serializing_if = "is_zero")]
@@ -1945,6 +1947,105 @@ fn fit_certifiable(
     }
     (out, refitted)
 }
+/// Whether the committed sweeps of `scene` prove that a cutter of radius `r`
+/// moved along `s` at `z` meets no material thicker than the entry skin
+/// (`crate::entry::skin`): the whole tube of the stroke, of the radius less
+/// the skin, lies in cleared columns (`EngagementScene::clear_line`, a
+/// proof of clearance; the contact-angle bound of `check_leading` is an
+/// upper bound that stays well above zero in cleared space beside earlier
+/// sweeps, so it cannot say a stroke is in air).
+///
+/// An arc is covered by chords: its tube lies in the chords' tubes of the
+/// radius plus the arc's sagitta, and the chords are short enough that the
+/// sagitta is at most half the skin. A stroke the proof's work limit does
+/// not settle is not proven clear.
+fn wall_piece_is_clear(
+    scene: &EngagementScene,
+    s: Stroke,
+    z: f64,
+    r: f64,
+    tolerance: f64,
+    cancel: &impl CancelSignal,
+) -> Result<bool, String> {
+    let skin = crate::entry::skin(tolerance);
+    let (chords, sagitta) = match s.arc {
+        None => (1, 0.),
+        Some((centre, sweep)) => {
+            let radius = (s.a[0] - centre[0]).hypot(s.a[1] - centre[1]);
+            let most = 2. * (1. - (skin / 2. / radius).min(1.)).acos();
+            let chords = ((sweep.abs() / most).ceil() as usize).max(1);
+            (
+                chords,
+                radius * (1. - (sweep.abs() / chords as f64 / 2.).cos()),
+            )
+        }
+    };
+    for i in 0..chords {
+        if cancel.is_cancelled() {
+            return Err("engagement_front planning cancelled".into());
+        }
+        let chord = stroke_part(s, i as f64 / chords as f64, (i + 1) as f64 / chords as f64);
+        let mut work = WALL_PIECE_WORK;
+        match scene.clear_line(
+            chord.a,
+            chord.b,
+            r - skin + sagitta,
+            z,
+            tolerance,
+            &mut work,
+            cancel,
+        ) {
+            Ok(true) => (),
+            Ok(false) => return Ok(false),
+            Err(_) if !cancel.is_cancelled() => return Ok(false),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(true)
+}
+/// Work one chord of a wall piece may spend proving itself clear.
+const WALL_PIECE_WORK: u64 = 200_000;
+/// The length of a stroke.
+fn stroke_length(s: Stroke) -> f64 {
+    match s.arc {
+        Some((centre, sweep)) => (s.a[0] - centre[0]).hypot(s.a[1] - centre[1]) * sweep.abs(),
+        None => (s.b[0] - s.a[0]).hypot(s.b[1] - s.a[1]),
+    }
+}
+/// The part of a stroke from the fraction `f0` of its length to `f1`. The
+/// stroke's own ends are kept exactly, and a point between is the same
+/// whichever part it ends, so consecutive parts connect.
+fn stroke_part(s: Stroke, f0: f64, f1: f64) -> Stroke {
+    let at = |f: f64| -> Point {
+        if f <= 0. {
+            return s.a;
+        }
+        if f >= 1. {
+            return s.b;
+        }
+        match s.arc {
+            Some((centre, sweep)) => {
+                let radius = (s.a[0] - centre[0]).hypot(s.a[1] - centre[1]);
+                let angle = (s.a[1] - centre[1]).atan2(s.a[0] - centre[0]) + sweep * f;
+                [
+                    centre[0] + radius * angle.cos(),
+                    centre[1] + radius * angle.sin(),
+                ]
+            }
+            None => [
+                s.a[0] + (s.b[0] - s.a[0]) * f,
+                s.a[1] + (s.b[1] - s.a[1]) * f,
+            ],
+        }
+    };
+    Stroke {
+        a: at(f0),
+        b: at(f1),
+        arc: s
+            .arc
+            .map(|(centre, sweep)| (centre, sweep * (f1.min(1.) - f0.max(0.)))),
+    }
+}
 
 /// Line/arc fit tolerance as a fraction of the steering grid cell.
 const FIT_FRACTION: f64 = 0.25;
@@ -2102,6 +2203,9 @@ pub(crate) struct EngagementFrontPlan {
     /// Finish each wall with one pass along it (`with_wall_pass`), and
     /// whether this level's have been planned.
     wall_pass: bool,
+    /// Cut along the walls only where material stands beside them
+    /// (`with_wall_runs`).
+    wall_runs: bool,
     walls_done: bool,
     /// Reachable material area of this level (left, at its start) as of the
     /// last candidate refresh: planning progress (#198), read by nothing
@@ -2274,6 +2378,7 @@ impl EngagementFrontPlan {
             proof: None,
             remnant: false,
             wall_pass: false,
+            wall_runs: false,
             walls_done: false,
             area_mm2: None,
             ramp_slots: vec![],
@@ -2298,10 +2403,27 @@ impl EngagementFrontPlan {
     /// the cutter centre on the boundary's offset by the cutter radius and
     /// the radial allowance. The front leaves a thin, uneven skin on the
     /// walls (it stops where the material ahead is thin, and its steering
-    /// grid keeps centres about two cells off the exact offset); a pocket's
-    /// walls are finished surfaces, a roughing layer's are not.
+    /// grid keeps centres about two cells off the exact offset), and a
+    /// pocket's walls are finished surfaces. Every boundary of a pocket is
+    /// a wall; a roughing layer has `with_wall_runs` instead.
     pub(crate) fn with_wall_pass(mut self, on: bool) -> Self {
         self.wall_pass = on;
+        self
+    }
+    /// After the level is cleared, cut along its walls wherever material
+    /// still stands beside them, and nowhere else (`plan_wall_runs`).
+    ///
+    /// A roughing layer's region is the stock's surroundings less the
+    /// part's shadow: most of its boundary is air, and a wall is often an
+    /// open run that ends where the stock does. The front ends its passes
+    /// at the wall a stepover apart, so between two pass ends a cusp
+    /// stands on the wall, well beyond the radial allowance asked for
+    /// (0.16 to 0.30 mm along a straight wall where 0.1 mm was asked, with
+    /// a 6 mm cutter at 0.6 mm engagement; a step-up found one and nibbled
+    /// its top). One pass along the wall leaves the allowance and no more,
+    /// which is what the operation after roughing is told to expect.
+    pub(crate) fn with_wall_runs(mut self, on: bool) -> Self {
+        self.wall_runs = on;
         self
     }
     /// See `RoughingOperation::rapid_descent_clearance_mm` (validated there).
@@ -4207,31 +4329,46 @@ impl EngagementFrontPlan {
     ///
     /// The loops are the pocket guides' own boundary strokes: the exact
     /// offset of the region by the cutter radius and the radial allowance.
-    /// Each is entered from stock this level has cleared: a point a few grid
-    /// cells inside the loop whose whole column the committed cuts prove
-    /// clear, then a straight lead onto the loop. Every stroke is certified
-    /// against the region and proven within the engagement limit like any
-    /// other; in an inside corner, where the skin is as thick as the corner
-    /// is deep, an unproven stroke is entry motion (see `confined_strokes`).
+    /// Each is entered on a quarter-arc lead-in from a few grid cells
+    /// inside it, reached as a pass's start is (`wall_entry`). Every stroke
+    /// is certified against the region and proven within the engagement
+    /// limit like any other; in an inside corner, where the skin is as
+    /// thick as the corner is deep, an unproven stroke is entry motion (see
+    /// `confined_strokes`).
     fn plan_walls(&mut self, stock: &Stock, cancel: &impl CancelSignal) -> Result<(), String> {
-        let z = self.z;
-        let c = self.layer.as_ref().unwrap().g.c;
+        for wall in self.wall_loops() {
+            if cancel.is_cancelled() {
+                return Err("engagement_front planning cancelled".into());
+            }
+            self.wall_loop(&wall, stock, cancel)?;
+        }
+        Ok(())
+    }
+
+    /// The closed loops of the guides' boundary strokes: the exact offset
+    /// of the region by the cutter radius and the radial allowance.
+    fn wall_loops(&self) -> Vec<Vec<Stroke>> {
         let first = self.guides.report().raster_strokes;
-        let strokes: Vec<Stroke> = self.guides.guide_strokes()[first..].to_vec();
         let mut loops: Vec<Vec<Stroke>> = vec![];
-        for s in strokes {
+        for &s in &self.guides.guide_strokes()[first..] {
             match loops.last_mut() {
                 Some(l) if l.last().is_some_and(|p| p.b == s.a) => l.push(s),
                 _ => loops.push(vec![s]),
             }
         }
-        for wall in loops {
-            if cancel.is_cancelled() {
-                return Err("engagement_front planning cancelled".into());
-            }
-            if wall.first().map(|s| s.a) != wall.last().map(|s| s.b) {
-                continue;
-            }
+        loops.retain(|wall| wall.first().map(|s| s.a) == wall.last().map(|s| s.b));
+        loops
+    }
+
+    /// One pass round a whole wall loop (see `plan_walls`).
+    fn wall_loop(
+        &mut self,
+        wall: &[Stroke],
+        stock: &Stock,
+        cancel: &impl CancelSignal,
+    ) -> Result<(), String> {
+        let z = self.z;
+        {
             // A start: the middle of a wall stroke (longest first: a corner's
             // start would sit against the next wall's skin), with a
             // proven-clear point a few cells inside it.
@@ -4261,53 +4398,22 @@ impl EngagementFrontPlan {
             };
             let mut order: Vec<usize> = (0..wall.len()).collect();
             order.sort_by(|a, b| span(&wall[*b]).total_cmp(&span(&wall[*a])).then(a.cmp(b)));
+            self.layer.as_mut().unwrap().journal.clear();
+            let mark = self.checkpoint();
+            let from = self.pending.len();
             let mut entry = None;
-            'search: for k in order {
+            for k in order {
                 let (first, second) = halves(wall[k]);
-                let t = second.tangent(false);
-                for side in [1., -1.] {
-                    // A quarter-arc lead-in tangent to the wall, as a contour
-                    // pass is entered: the skin comes into the cut gradually
-                    // and stays ahead of the cutter.
-                    let lead = 4. * c;
-                    let centre = [
-                        second.a[0] - side * lead * t[1],
-                        second.a[1] + side * lead * t[0],
-                    ];
-                    let q = [centre[0] - lead * t[0], centre[1] - lead * t[1]];
-                    let arc = Stroke {
-                        a: q,
-                        b: second.a,
-                        arc: Some((centre, side * std::f64::consts::FRAC_PI_2)),
-                    };
-                    if !self.guides.stroke_geometry_fits_radius(arc, self.r) {
-                        continue;
-                    }
-                    let (height, _) =
-                        self.guides
-                            .cleared_entry_start(q, 0., z, Some(stock), cancel)?;
-                    if height - z <= crate::entry::skin(self.op.tolerance_mm) {
-                        entry = Some((k, arc, height, first, second));
-                        break 'search;
-                    }
+                if self.wall_entry(second, stock, cancel)? {
+                    entry = Some((k, first, second));
+                    break;
                 }
             }
-            let Some((k, lead_in, height, first, second)) = entry else {
+            let Some((k, first, second)) = entry else {
                 self.report.wall_passes_skipped += 1;
-                continue;
+                return Ok(());
             };
-            let q = lead_in.a;
-            let from = self.pending.len();
-            let here = self.position;
-            let proven = self
-                .proven(height)
-                .map(|h| h.max(self.guides.cell_entry_height(stock, q)));
-            let above = self.travel(stock, here, q, proven, z);
-            self.line(above, [q[0], q[1], z], MoveKind::Plunge);
             let start = second.a;
-            self.certify(lead_in)?;
-            self.report.arcs += 1;
-            self.queue(lead_in.curve(z), MoveKind::Cut, None);
             let round = std::iter::once(second)
                 .chain((1..wall.len()).map(|i| wall[(k + i) % wall.len()]))
                 .chain(std::iter::once(first));
@@ -4320,14 +4426,347 @@ impl EngagementFrontPlan {
             }
             if self.prove(stock, from, from, false, cancel)?.is_some() {
                 if self.entry.policy() == EntryPolicy::StockEdge {
-                    self.pending.truncate(from);
+                    self.rollback(&mark);
+                    self.report.wall_passes_skipped += 1;
+                    return Ok(());
+                }
+                self.prove(stock, from, from, true, cancel)?;
+            }
+            self.position = [start[0], start[1], z];
+            self.report.wall_passes += 1;
+        }
+        Ok(())
+    }
+
+    /// Queue the way onto a wall pass that starts with `onto`: to the start
+    /// of a quarter-arc lead-in tangent to it, as a contour pass is entered
+    /// (the skin comes into the cut gradually and stays ahead of the
+    /// cutter), then the arc. Whether a way was found; nothing is queued
+    /// otherwise.
+    ///
+    /// The arc starts a few grid cells off the wall, at a centre the front
+    /// itself may stand on, so it is reached as a pass's start is
+    /// (`wall_approach`).
+    fn wall_entry(
+        &mut self,
+        onto: Stroke,
+        stock: &Stock,
+        cancel: &impl CancelSignal,
+    ) -> Result<bool, String> {
+        let lead = 4. * self.layer.as_ref().unwrap().g.c;
+        let t = onto.tangent(false);
+        for side in [1., -1.] {
+            let centre = [
+                onto.a[0] - side * lead * t[1],
+                onto.a[1] + side * lead * t[0],
+            ];
+            let q = [centre[0] - lead * t[0], centre[1] - lead * t[1]];
+            let arc = Stroke {
+                a: q,
+                b: onto.a,
+                arc: Some((centre, side * std::f64::consts::FRAC_PI_2)),
+            };
+            if !self.guides.stroke_geometry_fits_radius(arc, self.r) {
+                continue;
+            }
+            // From the arc's centre to the wall.
+            let toward = [side * t[1], -side * t[0]];
+            if self.wall_approach(stock, q, toward, cancel)? {
+                self.certify(arc)?;
+                self.report.arcs += 1;
+                self.queue(arc.curve(self.z), MoveKind::Cut, None);
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Queue the way from where the cutter is to `q` at this level, as a
+    /// pass's start is reached (`plan_pass`): a stay-down link through
+    /// cleared stock when the cutter is at the level and one is found;
+    /// otherwise a vertical entry, if the committed sweeps prove the whole
+    /// column at `q` clear, coming down a few stock cells back from the
+    /// wall (opposite `toward`) where the rapid can come lower
+    /// (`offset_descent`). Whether a way was found.
+    fn wall_approach(
+        &mut self,
+        stock: &Stock,
+        q: Point,
+        toward: Point,
+        cancel: &impl CancelSignal,
+    ) -> Result<bool, String> {
+        let (z, r) = (self.z, self.r);
+        let here = self.position;
+        let from = [here[0], here[1]];
+        let keep_down = 6. * r;
+        let link = if (here[2] - z).abs() >= 1e-9 {
+            None
+        } else if (q[0] - from[0]).hypot(q[1] - from[1]) <= keep_down
+            && let Some((samples, widest)) = self.link_samples(from, q)
+            && self
+                .guides
+                .stroke_geometry_fits_radius(Stroke::line(from, q), r)
+        {
+            Some((vec![q], samples, widest))
+        } else {
+            self.routed_link(from, q, 3. * keep_down)
+        };
+        if let Some((waypoints, samples, widest)) = link {
+            let layer = self.layer.as_mut().unwrap();
+            for p in samples {
+                layer.cut(p, r);
+            }
+            self.report.max_estimated_engagement_mm =
+                self.report.max_estimated_engagement_mm.max(widest);
+            self.report.stay_down_links += 1;
+            if waypoints.len() > 1 {
+                self.report.routed_links += 1;
+            }
+            let mut at = here;
+            for w in waypoints {
+                self.report.certified_strokes += 1;
+                let next = [w[0], w[1], z];
+                self.link(stock, at, next, cancel)?;
+                at = next;
+            }
+            return Ok(true);
+        }
+        let (height, _) = self
+            .guides
+            .cleared_entry_start(q, 0., z, Some(stock), cancel)?;
+        if height - z > crate::entry::skin(self.op.tolerance_mm) {
+            return Ok(false);
+        }
+        let proven = self
+            .proven(height)
+            .map(|h| h.max(self.guides.cell_entry_height(stock, q)));
+        if let Some((p, proven_p, samples)) =
+            self.offset_descent(stock, q, toward, proven, cancel)?
+        {
+            let above = self.travel(stock, here, p, proven_p, z);
+            self.line(above, [p[0], p[1], z], MoveKind::Plunge);
+            let layer = self.layer.as_mut().unwrap();
+            for s in samples {
+                layer.cut(s, r);
+            }
+            self.report.certified_strokes += 1;
+            self.link(stock, [p[0], p[1], z], [q[0], q[1], z], cancel)?;
+            self.report.offset_descents += 1;
+        } else {
+            let above = self.travel(stock, here, q, proven, z);
+            self.line(above, [q[0], q[1], z], MoveKind::Plunge);
+        }
+        self.report.lifts += 1;
+        Ok(true)
+    }
+
+    /// The committed cleared sweeps as the scene the proofs are made in,
+    /// brought up to the stock's last commit (as `prove` brings it).
+    fn committed_scene(
+        &mut self,
+        stock: &Stock,
+        cancel: &impl CancelSignal,
+    ) -> Result<(EngagementScene, ClearanceCursor), String> {
+        let (mut scene, mut cursor) = match self.proof.take() {
+            Some(held) => held,
+            None => (
+                EngagementScene::new_with_cancel(stock.spec().clone(), vec![], cancel)?,
+                ClearanceCursor::default(),
+            ),
+        };
+        let (rebuild, sweeps) =
+            stock.committed_clearance_since(&mut cursor, self.op.tolerance_mm, cancel)?;
+        if rebuild || !sweeps.is_empty() {
+            // Recorded proofs stood for the sweeps before these.
+            self.proof_memo = ProofMemo::default();
+        }
+        if rebuild {
+            scene = EngagementScene::new_with_cancel(stock.spec().clone(), sweeps, cancel)?;
+        } else {
+            for sweep in sweeps {
+                scene.append(sweep)?;
+            }
+        }
+        Ok((scene, cursor))
+    }
+
+    /// Cut along the walls where material stands beside them
+    /// (`with_wall_runs`), after the level's passes are committed.
+    ///
+    /// The wall loops are those of `plan_walls`. Each is taken in pieces no
+    /// longer than the cutter is wide, and a piece the committed sweeps
+    /// prove clear cuts nothing (`wall_piece_is_clear`). The other pieces
+    /// are joined into runs. Two runs are joined across the air between
+    /// them when feeding through it takes no longer than the feed-rate
+    /// descent of a new entry would (feed x (feed height - Z) / plunge
+    /// feed); a loop with no longer gap than that is cut whole, as a
+    /// pocket's is.
+    ///
+    /// A run is entered like a whole loop, on a quarter-arc lead-in reached
+    /// as a pass's start is (`wall_entry`); where no arc fits or is
+    /// reached it starts on the loop, in the air before the run, at a point
+    /// whose column the committed cuts prove clear. Runs are taken nearest
+    /// first. Every stroke is certified and proven like any other (an
+    /// unproven one is entry motion where the entry policy allows, as in
+    /// `plan_walls`).
+    fn plan_wall_runs(&mut self, stock: &Stock, cancel: &impl CancelSignal) -> Result<(), String> {
+        enum Wall {
+            Whole(Vec<Stroke>),
+            Run {
+                before: Stroke,
+                strokes: Vec<Stroke>,
+            },
+        }
+        let z = self.z;
+        let longest = 2. * self.r;
+        let bridge = self.op.feed_mm_min * (self.heights.feed - z).max(0.) / self.op.plunge_mm_min;
+        let loops = self.wall_loops();
+        if loops.is_empty() {
+            return Ok(());
+        }
+        let (scene, cursor) = self.committed_scene(stock, cancel)?;
+        let mut walls: Vec<Wall> = vec![];
+        let mut failed = None;
+        'loops: for wall in loops {
+            let pieces: Vec<Stroke> = wall
+                .iter()
+                .flat_map(|&s| {
+                    let n = ((stroke_length(s) / longest).ceil() as usize).max(1);
+                    (0..n).map(move |i| {
+                        stroke_part(s, i as f64 / n as f64, (i + 1) as f64 / n as f64)
+                    })
+                })
+                .filter(|s| stroke_length(*s) > 0.)
+                .collect();
+            let mut cuts = Vec::with_capacity(pieces.len());
+            for s in &pieces {
+                if cancel.is_cancelled() {
+                    failed = Some("engagement_front planning cancelled".to_string());
+                    break 'loops;
+                }
+                match wall_piece_is_clear(&scene, *s, z, self.r, self.op.tolerance_mm, cancel) {
+                    Ok(clear) => cuts.push(!clear),
+                    Err(e) => {
+                        failed = Some(e);
+                        break 'loops;
+                    }
+                }
+            }
+            let n = pieces.len();
+            if !cuts.contains(&true) {
+                continue;
+            }
+            // Air gaps: (first piece, pieces, length), round the loop.
+            let mut gaps: Vec<(usize, usize, f64)> = vec![];
+            for i in 0..n {
+                if !cuts[i] && cuts[(i + n - 1) % n] {
+                    let mut count = 0;
+                    let mut length = 0.;
+                    while !cuts[(i + count) % n] {
+                        length += stroke_length(pieces[(i + count) % n]);
+                        count += 1;
+                    }
+                    gaps.push((i, count, length));
+                }
+            }
+            gaps.retain(|gap| gap.2 > bridge);
+            if gaps.is_empty() {
+                walls.push(Wall::Whole(wall));
+                continue;
+            }
+            for (g, &(first, count, _)) in gaps.iter().enumerate() {
+                // The run after this gap ends where the next gap starts.
+                let start = (first + count) % n;
+                let end = gaps[(g + 1) % gaps.len()].0;
+                let length = (end + n - start) % n;
+                walls.push(Wall::Run {
+                    before: pieces[(start + n - 1) % n],
+                    strokes: (0..length).map(|i| pieces[(start + i) % n]).collect(),
+                });
+            }
+        }
+        self.proof = Some((scene, cursor));
+        if let Some(e) = failed {
+            return Err(e);
+        }
+        while !walls.is_empty() {
+            if cancel.is_cancelled() {
+                return Err("engagement_front planning cancelled".into());
+            }
+            let here = self.position;
+            let distance = |w: &Wall| {
+                let p = match w {
+                    Wall::Whole(strokes) => strokes[0].a,
+                    Wall::Run { strokes, .. } => strokes[0].a,
+                };
+                (p[0] - here[0]).hypot(p[1] - here[1])
+            };
+            let mut nearest = 0;
+            for i in 1..walls.len() {
+                if distance(&walls[i]) < distance(&walls[nearest]) {
+                    nearest = i;
+                }
+            }
+            let (before, strokes) = match walls.remove(nearest) {
+                Wall::Whole(wall) => {
+                    self.wall_loop(&wall, stock, cancel)?;
+                    continue;
+                }
+                Wall::Run { before, strokes } => (before, strokes),
+            };
+            self.layer.as_mut().unwrap().journal.clear();
+            let mark = self.checkpoint();
+            let from = self.pending.len();
+            let mut entered = self.wall_entry(strokes[0], stock, cancel)?;
+            if !entered {
+                // No lead-in arc fits or is reached: start on the loop, in
+                // the air before the run, at the nearest point whose column
+                // is proven clear.
+                for back in [0.25, 0.5, 0.75, 1.] {
+                    let lead = stroke_part(before, 1. - back, 1.);
+                    let q = lead.a;
+                    let (height, _) =
+                        self.guides
+                            .cleared_entry_start(q, 0., z, Some(stock), cancel)?;
+                    if height - z > crate::entry::skin(self.op.tolerance_mm) {
+                        continue;
+                    }
+                    let proven = self
+                        .proven(height)
+                        .map(|h| h.max(self.guides.cell_entry_height(stock, q)));
+                    let above = self.travel(stock, here, q, proven, z);
+                    self.line(above, [q[0], q[1], z], MoveKind::Plunge);
+                    self.report.lifts += 1;
+                    self.certify(lead)?;
+                    if lead.arc.is_some() {
+                        self.report.arcs += 1;
+                    }
+                    self.queue(lead.curve(z), MoveKind::Cut, None);
+                    entered = true;
+                    break;
+                }
+            }
+            if !entered {
+                self.report.wall_passes_skipped += 1;
+                continue;
+            }
+            for &s in &strokes {
+                self.certify(s)?;
+                if s.arc.is_some() {
+                    self.report.arcs += 1;
+                }
+                self.queue(s.curve(z), MoveKind::Cut, None);
+            }
+            if self.prove(stock, from, from, false, cancel)?.is_some() {
+                if self.entry.policy() == EntryPolicy::StockEdge {
+                    self.rollback(&mark);
                     self.report.wall_passes_skipped += 1;
                     continue;
                 }
                 self.prove(stock, from, from, true, cancel)?;
             }
-            self.position = [start[0], start[1], z];
-            self.report.lifts += 1;
+            let end = strokes.last().unwrap().b;
+            self.position = [end[0], end[1], z];
             self.report.wall_passes += 1;
         }
         Ok(())
@@ -5076,9 +5515,13 @@ impl EngagementFrontPlan {
                 self.note_unentered()?;
             }
             if !self.plan_pass(stock, cancel)? {
-                if self.wall_pass && !self.walls_done {
+                if (self.wall_pass || self.wall_runs) && !self.walls_done {
                     self.walls_done = true;
-                    self.plan_walls(stock, cancel)?;
+                    if self.wall_runs {
+                        self.plan_wall_runs(stock, cancel)?;
+                    } else {
+                        self.plan_walls(stock, cancel)?;
+                    }
                     continue;
                 }
                 let here = self.position;

@@ -4631,8 +4631,8 @@ fn closed_box(x0: f64, y0: f64, z0: f64, x1: f64, y1: f64, z1: f64) -> Vec<[[f64
     ];
     let quad = |a, b, c, d| vec![[p[a], p[b], p[c]], [p[a], p[c], p[d]]];
     [
-        quad(4, 6, 5, 7), // top (+z)
-        quad(0, 2, 1, 3), // bottom (-z)
+        quad(4, 5, 6, 7), // top (+z)
+        quad(0, 3, 2, 1), // bottom (-z)
         quad(0, 1, 5, 4), // y0 face (-y)
         quad(3, 7, 6, 2), // y1 face (+y)
         quad(0, 4, 7, 3), // x0 face (-x)
@@ -4744,7 +4744,15 @@ fn bar_input(top_z: f64, ends: bool) -> serde_json::Value {
 /// is certified against the bar, and every vertical entry is checked to
 /// descend only through cut stock or air (the frustum test's check).
 fn run_bar(top_z: f64, ends: bool) -> (f64, serde_json::Value) {
-    let m = bar_manifest(top_z, ends);
+    let (mean, report, _) = run_bar_job(bar_manifest(top_z, ends), top_z);
+    (mean, report)
+}
+
+/// `run_bar` for a bar job's manifest, returning its motions as well.
+fn run_bar_job(
+    m: StreamManifest,
+    top_z: f64,
+) -> (f64, serde_json::Value, Vec<camlib::motion::Motion>) {
     m.validate().unwrap();
     let tool = m.tools[0].prepare().unwrap();
     let mut stock = Stock::new(m.stock.height().unwrap().clone()).unwrap();
@@ -4760,7 +4768,7 @@ fn run_bar(top_z: f64, ends: bool) -> (f64, serde_json::Value) {
     let mut history: Vec<camlib::motion::Motion> = Vec::new();
     let mut current = m.initial_position_mm;
     let (mut first_cut, mut first_passes) = (0f64, 0usize);
-    let mut in_cut = false;
+    let (mut in_cut, mut run_cut, mut run_on_wall) = (false, 0f64, false);
     while let Some(motion) = plan.next_motion_with_stock(&stock, &|| false).unwrap() {
         assert!(history.len() < 60000, "unbounded engagement_front path");
         assert_eq!(motion.curve.start(), current);
@@ -4795,17 +4803,25 @@ fn run_bar(top_z: f64, ends: bool) -> (f64, serde_json::Value) {
             .prepare(m.sweep.tolerance_mm)
             .unwrap()
             .length_mm();
-        // The first layer cuts at Z6: count its cut length and its passes
-        // (a pass is a maximal run of consecutive cutting motions).
+        // The first layer cuts at Z6: count the cut length and the number
+        // of the front's passes (a pass is a maximal run of consecutive
+        // cutting motions; the layer's wall pass is not one of the front's:
+        // how it is split depends on the heights, see `plan_wall_runs`).
         let first_layer = motion.kind == MoveKind::Cut
             && (motion.curve.start()[2] - 6.).abs() < 1e-6
             && (motion.curve.end()[2] - 6.).abs() < 1e-6;
         if first_layer {
-            first_passes += usize::from(!in_cut);
             in_cut = true;
-            first_cut += length;
+            run_cut += length;
+            // A wall pass runs on the bar's exact offset (3.1 mm); the
+            // front's passes keep about two grid cells further off.
+            run_on_wall |= box_distance(bounds(&motion.curve, 0., 1.), [[0., 12.], [60., 28.]]) < 3.15;
         } else {
-            in_cut = false;
+            if in_cut && !run_on_wall {
+                first_passes += 1;
+                first_cut += run_cut;
+            }
+            (in_cut, run_cut, run_on_wall) = (false, 0., false);
         }
         let delta = stock
             .preview_sweep(&tool, &motion, 1., m.sweep, &|| false)
@@ -4828,7 +4844,130 @@ fn run_bar(top_z: f64, ends: bool) -> (f64, serde_json::Value) {
         );
     }
     assert!(first_passes > 0, "no first-layer passes planned");
-    (first_cut / first_passes as f64, report)
+    (first_cut / first_passes as f64, report, history)
+}
+
+/// The least and the most stock left on the bar's two walls (y 12 and y 28,
+/// x 0..60) at height `z`, every 0.05 mm along them: the distance from the
+/// wall point to the nearest cutter centre of any feed move at or below
+/// `z`, less the cutter radius. Worked out from the motions' own curves,
+/// with nothing of the planner or the stock model in it.
+fn bar_wall_stock(history: &[camlib::motion::Motion], z: f64) -> (f64, f64) {
+    let near = |c: &Curve, p: [f64; 2]| -> f64 {
+        let (a, b) = (c.start(), c.end());
+        let to = |q: [f64; 3]| (p[0] - q[0]).hypot(p[1] - q[1]);
+        match circle(c) {
+            Some((o, sweep)) => {
+                let radius = (a[0] - o[0]).hypot(a[1] - o[1]);
+                let start = (a[1] - o[1]).atan2(a[0] - o[0]);
+                let turn = ((p[1] - o[1]).atan2(p[0] - o[0]) - start) * sweep.signum();
+                if turn.rem_euclid(TAU) <= sweep.abs() {
+                    ((p[0] - o[0]).hypot(p[1] - o[1]) - radius).abs()
+                } else {
+                    to(a).min(to(b))
+                }
+            }
+            None => {
+                let d = [b[0] - a[0], b[1] - a[1]];
+                let length2 = d[0] * d[0] + d[1] * d[1];
+                let t = if length2 > 0. {
+                    (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / length2).clamp(0., 1.)
+                } else {
+                    0.
+                };
+                (p[0] - a[0] - t * d[0]).hypot(p[1] - a[1] - t * d[1])
+            }
+        }
+    };
+    let feeds: Vec<&Curve> = history
+        .iter()
+        .filter(|m| m.kind != MoveKind::Rapid && m.kind != MoveKind::Retract)
+        .filter(|m| m.curve.start()[2].max(m.curve.end()[2]) <= z + 1e-9)
+        .map(|m| &m.curve)
+        .collect();
+    let (mut least, mut most) = (f64::INFINITY, 0f64);
+    for wall in [12., 28.] {
+        for i in 0..=1200 {
+            let p = [i as f64 * 0.05, wall];
+            let left = feeds
+                .iter()
+                .map(|c| near(c, p))
+                .fold(f64::INFINITY, f64::min)
+                - 3.;
+            least = least.min(left);
+            most = most.max(left);
+        }
+    }
+    (least, most)
+}
+
+/// Adaptive roughing leaves the radial allowance on the walls, and no more.
+///
+/// The front's passes end at a wall a stepover apart; between two pass
+/// ends the round cutter leaves a cusp (up to 0.4 mm here, where 0.1 mm was
+/// asked for; a step-up used to find one and nibble its top). Each layer
+/// now ends with a pass along the walls (`plan_wall_runs`).
+#[test]
+fn engagement_front_wall_pass_leaves_the_allowance_on_the_walls() {
+    let (_, report, history) = run_bar_job(bar_manifest(12., false), 12.);
+    for layer in report["layers"].as_array().unwrap() {
+        let z = layer["tip_z_mm"].as_f64().unwrap();
+        let (least, most) = bar_wall_stock(&history, z);
+        // The allowance, and the planner's own margins on top of it (the
+        // shadow's and the offset's, 1.3 um together here): never less.
+        assert!(
+            least >= 0.1 && most <= 0.102,
+            "wall stock at Z{z}: {least:.4}..{most:.4} mm, asked 0.1: {}",
+            layer["clearing"]
+        );
+        assert!(
+            layer["clearing"]["wall_passes"].as_u64().unwrap() >= 1,
+            "{}",
+            layer["clearing"]
+        );
+    }
+}
+
+/// A wall pass runs only where material stands beside the wall.
+///
+/// The bar's walls run the stock's whole length and end in air. With a
+/// plunge as fast as the feed and a feed height 2 mm above the stock, going
+/// round the bar's end through the air (26 mm) takes longer than a new
+/// entry, so each wall is its own run: none of its cutting moves lies
+/// wholly beyond the stock, and the walls are still left with the allowance.
+#[test]
+fn engagement_front_wall_runs_end_where_the_stock_does() {
+    let mut input = bar_input(12., false);
+    input["operations"][0]["plunge_mm_min"] = input["operations"][0]["feed_mm_min"].clone();
+    let m: StreamManifest = serde_json::from_value(input).unwrap();
+    let (_, report, history) = run_bar_job(m, 12.);
+    for layer in report["layers"].as_array().unwrap() {
+        let z = layer["tip_z_mm"].as_f64().unwrap();
+        let (least, most) = bar_wall_stock(&history, z);
+        // The allowance, and the planner's own margins on top of it (the
+        // shadow's and the offset's, 1.3 um together here): never less.
+        assert!(
+            least >= 0.1 && most <= 0.102,
+            "wall stock at Z{z}: {least:.4}..{most:.4} mm, asked 0.1: {}",
+            layer["clearing"]
+        );
+        assert_eq!(layer["clearing"]["wall_passes"], 2, "{}", layer["clearing"]);
+    }
+    let stock = [[0., 0.], [60., 40.]];
+    // A run's lead-in arc (a quarter turn of 0.4 mm radius here) may lie
+    // beyond the stock; nothing longer does.
+    for motion in &history {
+        if motion.kind == MoveKind::Cut
+            && box_distance(bounds(&motion.curve, 0., 1.), stock) >= 3.
+        {
+            let length = motion.curve.prepare(1e-6).unwrap().length_mm();
+            assert!(
+                length < 1.,
+                "cutting move of {length:.2} mm wholly in air: {:?}",
+                motion.curve
+            );
+        }
+    }
 }
 
 /// Step-ups beside vertical walls find nothing to cut: the full layer below
@@ -4881,30 +5020,24 @@ fn engagement_front_empty_step_up_keeps_the_cleared_memory() {
         "expected several step-ups: {}",
         layers.len()
     );
-    // On the old planner every step-up here was empty. On the proven
-    // planner a step-up may take a stroke at a real sliver (its contact is
-    // proven against the exact sweeps), but none runs along the walls: the
-    // bug ran passes the length of every wall (tens of mm per step-up).
-    // The lowest step-up takes one stroke of under half a millimetre at a
-    // real sliver (with or without the memory: it is not this defect). Every
-    // step-up above it cuts nothing at all, where the defect ran passes the
-    // length of the walls (124 mm at Z6.5).
-    for (i, l) in ups.iter().enumerate() {
+    // Every step-up cuts nothing at all: the full layer's passes end at the
+    // wall a stepover apart and leave cusps on it between their ends, and
+    // its wall pass takes them (`plan_wall_runs`). Before roughing had a wall
+    // pass the lowest step-up found one of those cusps and took a stroke of
+    // 0.31 mm at it; the defect this test is named for ran passes the length
+    // of the walls (124 mm at Z6.5).
+    for l in &ups {
         let z = l["tip_z_mm"].as_f64().unwrap();
         let cut = cut_at.get(&z.to_bits()).copied().unwrap_or(0.);
-        if i == 0 {
-            assert!(cut < 0.5, "step-up at Z{z} cut {cut:.2} mm: {}", l["clearing"]);
-        } else {
-            assert_eq!(
-                (cut, l["clearing"]["passes"].as_u64()),
-                (0., Some(0)),
-                "step-up at Z{z} beside vertical walls: {}",
-                l["clearing"]
-            );
-            // It steered from the cleared memory handed through the empty
-            // step-up before it, not from whole-cell stock bounds.
-            assert_eq!(l["clearing"]["stock_top_carried"], true, "{}", l["clearing"]);
-        }
+        assert_eq!(
+            (cut, l["clearing"]["passes"].as_u64()),
+            (0., Some(0)),
+            "step-up at Z{z} beside vertical walls: {}",
+            l["clearing"]
+        );
+        // It steered from the cleared memory handed on by the layer before
+        // it (through an empty step-up too), not from whole-cell bounds.
+        assert_eq!(l["clearing"]["stock_top_carried"], true, "{}", l["clearing"]);
     }
 }
 

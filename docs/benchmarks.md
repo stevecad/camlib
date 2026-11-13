@@ -69,9 +69,9 @@ comparable only on the same machine; CI runs the same benchmark on every push.
 | Pocket | [#25](https://github.com/stevecad/camlib/issues/25) | `pocket-dense` (clear-pocket) | 9088 | 79836 | 292 (0%) | 26383 | 1216 | 1216 | 8699 | 11873.8 / 11873.4 | 0.335 |
 | Pocket | [#25](https://github.com/stevecad/camlib/issues/25) | `rest-pocket` (pocket) | 30 | 99 | 8 (8%) | 44 | 4 | 4 | 124 | 16.7 / 16.7 | 0.001 |
 | RestPocket | [#25](https://github.com/stevecad/camlib/issues/25) | `rest-pocket` (rest) | 82 | 206 | 117 (57%) | 37 | 4 | 8 | 2 | 26.3 / 26.1 | 0.002 |
-| AdaptivePocket | [#26](https://github.com/stevecad/camlib/issues/26) | `adaptive-pocket` (adaptive) | 522 | 1096 | 493 (45%) | 90 | 8 | 8 | 472 | 144.4 / 144.1 | 1.814 |
+| AdaptivePocket | [#26](https://github.com/stevecad/camlib/issues/26) | `adaptive-pocket` (adaptive) | 528 | 1122 | 519 (46%) | 51 | 6 | 6 | 472 | 144.3 / 144.0 | 1.814 |
 | Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `rough-parallel` (rough) | 2927 | 37872 | 33811 (89%) | 212 | 12 | 12 | 1984 | 8900.3 / 8898.9 | 0.065 |
-| Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-adaptive` (rough) | 4501 | 15979 | 1681 (11%) | 390 | 25 | 25 | 5746 | 1752.6 / 1752.2 | 28.425 |
+| Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-adaptive` (rough) | 5067 | 16332 | 3267 (20%) | 441 | 30 | 30 | 5803 | 1808.3 / 1807.4 | 28.425 |
 | Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-fine-mesh` (rough) | 3295 | 7879 | 6464 (82%) | 200 | 3 | 3 | 5423 | 554.3 / 531.4 | 0.080 |
 | Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-offset` (rough) | 924 | 10665 | 6089 (57%) | 250 | 5 | 8 | 5776 | 1439.8 / 1436.8 | 0.028 |
 | Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-raster` (rough) | 2169 | 27414 | 21241 (77%) | 614 | 13 | 24 | 5803 | 7932.3 / 7931.6 | 0.043 |
@@ -124,7 +124,7 @@ comparable only on the same machine; CI runs the same benchmark on every push.
 | TurnFaceGroove | [#57](https://github.com/stevecad/camlib/issues/57) | `lathe-face-groove` (fg) | 29 | 22 | 22 (100%) | 98 | 12 | 13 | 308 | 75.0 / 75.0 | 0.003 |
 | Geodesic | [#118](https://github.com/stevecad/camlib/issues/118) | `geodesic` (geodesic) | 5336 | 767 | 79 (10%) | 22 | 1 | 1 | 1506 | 131.0 / 127.9 | 0.222 |
 | Geodesic | [#118](https://github.com/stevecad/camlib/issues/118) | `geodesic-boundary` (geodesic) | 713 | 712 | 5 (1%) | 53 | 3 | 3 | 1504 | 84.2 / 81.0 | 0.079 |
-| Roughing | [#202](https://github.com/stevecad/camlib/issues/202) | `roughing-adaptive-large` (rough) | 3818 | 59247 | 5449 (9%) | 22847 | 170 | 170 | 2399072 | 4550.0 / 4549.2 | 14.520 |
+| Roughing | [#202](https://github.com/stevecad/camlib/issues/202) | `roughing-adaptive-large` (rough) | 3994 | 61340 | 5499 (9%) | 23424 | 174 | 174 | 2418061 | 4700.3 / 4698.0 | 14.520 |
 
 ## Per workload
 
@@ -133,10 +133,10 @@ comparable only on the same machine; CI runs the same benchmark on every push.
 | `facing` | Face a 40 x 24 block 2 mm | 20 | 47.1 / 47.1 | 43 | 0.0 / 254.0 | 0.0 / 0.0 | 0.011 | 0.005 | 0.003 | 26 |
 | `pocket` | Pocket around a round island (CAD region) | 352 | 508.3 / 508.3 | 375 | 3.8 / 537.6 | 0.0 / 489.6 | 0.035 | 0.009 | 0.024 | 31 |
 | `rest-pocket` | Face, 4 mm pocket, 2 mm rest pocket | 130 | 69.9 / 69.6 | 169 | 0.0 / 267.0 | 0.0 / 66.0 | 0.008 | 0.003 | 0.011 | 26 |
-| `adaptive-pocket` | Adaptive clearing of an L pocket | 522 | 144.4 / 144.1 | 545 | 0.0 / 481.6 | 0.0 / 56.0 | 1.822 | 0.105 | 3.489 | 385 |
+| `adaptive-pocket` | Adaptive clearing of an L pocket | 528 | 144.3 / 144.0 | 551 | 0.0 / 481.6 | 0.0 / 56.0 | 1.822 | 0.105 | 3.489 | 385 |
 | `roughing-raster` | 3D raster roughing around a frustum | 2169 | 7932.3 / 7931.6 | 2192 | 930.8 / 1468.4 | 0.0 / 83.1 | 0.054 | 0.010 | 0.188 | 389 |
 | `roughing-offset` | 3D offset roughing around a frustum | 924 | 1439.8 / 1436.8 | 947 | 930.8 / 1495.2 | 0.0 / 83.1 | 0.048 | 0.018 | 0.293 | 388 |
-| `roughing-adaptive` | 3D adaptive roughing around a frustum | 4501 | 1752.6 / 1752.2 | 4524 | 939.5 / 1525.3 | 0.0 / 53.8 | 28.443 | 4.817 | 44.237 | 395 |
+| `roughing-adaptive` | 3D adaptive roughing around a frustum | 5067 | 1808.3 / 1807.4 | 5090 | 930.8 / 1468.4 | 0.0 / 83.1 | 28.443 | 4.817 | 44.237 | 395 |
 | `roughing-fine-mesh` | 3D offset roughing of a filleted boss from a fine mesh | 3295 | 554.3 / 531.4 | 3318 | 816.3 / 1380.1 | 0.0 / 0.4 | 0.314 | 0.227 | 10.079 | 406 |
 | `contour` | Outer and inner walls of an annulus | 40 | 55.8 / 55.7 | 63 | 0.0 / 825.6 | 0.0 / 430.2 | 0.011 | 0.005 | 0.010 | 384 |
 | `holes` | Pilot drilling then helical bore milling | 62 | 51.0 / 50.9 | 93 | 0.0 / 413.1 | 0.0 / 125.1 | 0.025 | 0.005 | 0.013 | 388 |
@@ -161,7 +161,7 @@ comparable only on the same machine; CI runs the same benchmark on every push.
 | `waterline` | Waterline finishing of a tapered island | 112 | 33.0 / 33.0 | 135 | 369.9 / 809.3 | 0.0 / 89.3 | 0.135 | 0.129 | 0.009 | 389 |
 | `steep-and-shallow` | Steep-and-shallow finishing of a roof | 1646 | 328.1 / 321.0 | 1677 | 0.0 / 149.8 | 0.0 / 152.0 | 0.481 | 0.379 | 0.107 | 388 |
 | `facing-large` | Face a 300 x 200 block 2 mm (production size) | 140 | 2153.3 / 2153.3 | 163 | – | – | 0.408 | 0.048 | 0.009 | 69 |
-| `roughing-adaptive-large` | 3D adaptive roughing of a 420 x 300 mm plate with bosses (production size) | 3818 | 4550.0 / 4549.2 | 3975 | 88417.2 / 157752.3 | 0.0 / 125.2 | 14.610 | 2.526 | 48.296 | 134 |
+| `roughing-adaptive-large` | 3D adaptive roughing of a 420 x 300 mm plate with bosses (production size) | 3994 | 4700.3 / 4698.0 | 4151 | 87492.3 / 138763.0 | 0.0 / 17399.6 | 14.610 | 2.526 | 48.296 | 134 |
 | `pocket-dense` | Pocket around a round island, 0.4 mm stepover, 0.25 mm stepdown | 9088 | 11873.8 / 11873.4 | 9111 | 3.8 / 536.3 | 0.0 / 489.6 | 0.344 | 0.010 | 0.532 | 44 |
 | `parallel-dense` | Parallel finishing of a roof, 0.1 mm stepover | 14023 | 1618.0 / 1555.9 | 14046 | 0.0 / 143.9 | 0.0 / 101.0 | 0.638 | 0.004 | 0.838 | 415 |
 | `spiral-dense` | Spiral finishing of a roof, 0.15 mm stepover | 12767 | 1125.9 / 1123.9 | 12790 | 0.0 / 144.2 | 0.0 / 86.6 | 0.498 | 0.007 | 0.748 | 417 |

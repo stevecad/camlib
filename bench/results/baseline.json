@@ -237,23 +237,23 @@
     "adaptive": {
      "toolpath": "AdaptivePocket",
      "issue": 26,
-     "moves": 522,
-     "cut_mm": 1095.835,
-     "rapid_mm": 89.83,
-     "air_cut_mm": 492.507,
-     "plunges": 8,
-     "retracts": 8,
+     "moves": 528,
+     "cut_mm": 1122.34,
+     "rapid_mm": 50.739,
+     "air_cut_mm": 519.012,
+     "plunges": 6,
+     "retracts": 6,
      "removed_mm3": 472.318,
-     "cycle_seconds_exact_stop": 144.388,
-     "cycle_seconds_tangent": 144.112,
+     "cycle_seconds_exact_stop": 144.295,
+     "cycle_seconds_tangent": 143.979,
      "engine_seconds": 1.8143
     }
    },
    "toolpath": {
-    "moves": 522,
-    "cycle_seconds_exact_stop": 144.388,
-    "cycle_seconds_tangent": 144.112,
-    "posted_blocks": 545,
+    "moves": 528,
+    "cycle_seconds_exact_stop": 144.295,
+    "cycle_seconds_tangent": 143.979,
+    "posted_blocks": 551,
     "post_error": null,
     "removed_mm3": [
      472.318,
@@ -423,44 +423,44 @@
     "rough": {
      "toolpath": "Roughing",
      "issue": 27,
-     "moves": 4501,
-     "cut_mm": 15978.543,
-     "rapid_mm": 390.448,
-     "air_cut_mm": 1680.645,
-     "plunges": 25,
-     "retracts": 25,
-     "removed_mm3": 5746.175,
-     "cycle_seconds_exact_stop": 1752.564,
-     "cycle_seconds_tangent": 1752.232,
+     "moves": 5067,
+     "cut_mm": 16331.834,
+     "rapid_mm": 440.673,
+     "air_cut_mm": 3266.87,
+     "plunges": 30,
+     "retracts": 30,
+     "removed_mm3": 5803.069,
+     "cycle_seconds_exact_stop": 1808.3,
+     "cycle_seconds_tangent": 1807.436,
      "engine_seconds": 28.4249
     }
    },
    "toolpath": {
-    "moves": 4501,
-    "cycle_seconds_exact_stop": 1752.564,
-    "cycle_seconds_tangent": 1752.232,
-    "posted_blocks": 4524,
+    "moves": 5067,
+    "cycle_seconds_exact_stop": 1808.3,
+    "cycle_seconds_tangent": 1807.436,
+    "posted_blocks": 5090,
     "post_error": null,
     "removed_mm3": [
-     5746.175,
-     5987.143
+     5803.069,
+     6025.157
     ],
     "material": {
      "leftover_mm3": [
-      939.5261244023775,
-      1525.257090539153
+      930.8232233397312,
+      1468.3624145064769
      ],
      "overcut_mm3": [
       0.0,
-      53.760860024094924
+      83.07274859123649
      ],
      "leftover_cells": [
-      4788,
-      476
+      4720,
+      544
      ],
      "overcut_cells": [
       0,
-      324
+      404
      ],
      "max_residual_height_mm": 2.200650402008413,
      "complete": true
@@ -1957,45 +1957,45 @@
     "rough": {
      "toolpath": "Roughing",
      "issue": 202,
-     "moves": 3818,
-     "cut_mm": 59247.12,
-     "rapid_mm": 22846.578,
-     "air_cut_mm": 5448.558,
-     "link_mm": 6353.163,
-     "plunges": 170,
-     "retracts": 170,
-     "removed_mm3": 2399071.788,
-     "cycle_seconds_exact_stop": 4549.999,
-     "cycle_seconds_tangent": 4549.216,
+     "moves": 3994,
+     "cut_mm": 61339.776,
+     "rapid_mm": 23424.251,
+     "air_cut_mm": 5498.695,
+     "link_mm": 6394.859,
+     "plunges": 174,
+     "retracts": 174,
+     "removed_mm3": 2418061.169,
+     "cycle_seconds_exact_stop": 4700.284,
+     "cycle_seconds_tangent": 4697.972,
      "engine_seconds": 14.5197
     }
    },
    "toolpath": {
-    "moves": 3818,
-    "cycle_seconds_exact_stop": 4549.999,
-    "cycle_seconds_tangent": 4549.216,
-    "posted_blocks": 3975,
+    "moves": 3994,
+    "cycle_seconds_exact_stop": 4700.284,
+    "cycle_seconds_tangent": 4697.972,
+    "posted_blocks": 4151,
     "post_error": null,
     "removed_mm3": [
-     2399071.788,
-     2419163.81
+     2418061.169,
+     2437363.235
     ],
     "material": {
      "leftover_mm3": [
-      88417.24135347322,
-      157752.33710078473
+      87492.27059128557,
+      138762.95601458114
      ],
      "overcut_mm3": [
       0.0,
-      125.17290847648354
+      17399.62716421212
      ],
      "leftover_cells": [
-      87361,
-      17021
+      87176,
+      13408
      ],
      "overcut_cells": [
       0,
-      538
+      3993
      ],
      "max_residual_height_mm": 4.000652000120451,
      "complete": true
