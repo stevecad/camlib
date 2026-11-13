@@ -3,7 +3,9 @@ requires = ["setuptools>=78", "wheel>=0.42"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "camlib"
+# The distribution name on PyPI. The package it installs is still imported as
+# `camlib` (PyPI's `camlib` belongs to an unrelated project).
+name = "cam-engine"
 version = "0.1.0"
 description = "Python-programmable native CAM engine: three-axis milling, turning and plasma/laser cutting"
 readme = "README.md"
@@ -14,6 +16,8 @@ requires-python = ">=3.12"
 [project.urls]
 Repository = "https://github.com/stevecad/camlib"
 Documentation = "https://github.com/stevecad/camlib/tree/main/docs"
+Changelog = "https://github.com/stevecad/camlib/blob/main/CHANGELOG.md"
+Issues = "https://github.com/stevecad/camlib/issues"
 
 [tool.setuptools]
 package-dir = {"" = "python"}

@@ -1,0 +1,164 @@
+name: Release
+
+# Pushing a tag v<version> builds the wheels and the source distribution,
+# tests each one installed (not from the source tree), and only then
+# publishes them to PyPI as `cam-engine` and creates the GitHub release.
+# See docs/release.md.
+#
+# Publishing uses PyPI trusted publishing: PyPI accepts an upload from this
+# workflow file in this repository's `pypi` environment, so no token is
+# stored. The workflow's file name and the environment's name are registered
+# on PyPI; renaming either stops publishing until PyPI is told.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+# The Rust version the wheels are built with: the one CI tests with (ci.yml).
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: '1.100'
+
+jobs:
+  version:
+    name: Tag matches the declared versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python packaging/check_release.py "$GITHUB_REF_NAME"
+
+  linux:
+    name: Linux wheel (${{ matrix.arch }})
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the manylinux_2_28 wheel
+        run: CAMLIB_RUST="$RUST_VERSION" packaging/build-manylinux-wheel.sh dist
+      # A clean machine: a Python image with nothing of this repository
+      # installed and no Rust. The package tests run both forms of the
+      # standalone example (inspection export, and the default refusal)
+      # against the installed wheel; the source tree is mounted read-only
+      # for the tests and the example, and is not on the import path.
+      - name: Test the installed wheel on a clean machine
+        run: |
+          docker run --rm -v "$PWD/dist":/dist:ro -v "$PWD":/src:ro -w /tmp python:3.12-slim bash -euo pipefail -c '
+            python -m pip install -q /dist/*.whl
+            python -c "import camlib, pathlib; assert \"site-packages\" in str(pathlib.Path(camlib.__file__)), camlib.__file__"
+            python /src/python/tests/test_package.py -v
+          '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux-${{ matrix.arch }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  windows:
+    name: Windows wheel (x64)
+    needs: version
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Build wheel
+        run: python -m pip wheel . --no-deps --wheel-dir dist
+      - name: Test the installed wheel without the source build
+        shell: pwsh
+        run: |
+          python -m venv 'wheel environment'
+          $wheel = (Get-ChildItem dist/cam_engine-*-win_amd64.whl).FullName
+          & '.\wheel environment\Scripts\python.exe' -m pip install $wheel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Rename-Item target target-hidden
+          & '.\wheel environment\Scripts\python.exe' -m unittest -v python/tests/test_package.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows-x64
+          path: dist/*.whl
+          if-no-files-found: error
+
+  sdist:
+    name: Source distribution
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Build
+        run: |
+          python -m pip install -q build
+          python -m build --sdist --outdir dist
+      # What pip does on a platform without a wheel: compile the engine from
+      # the archive alone, in a directory that is not the checkout.
+      - name: Install from the archive and test
+        run: |
+          python -m venv /tmp/sdist-env
+          /tmp/sdist-env/bin/python -m pip install -q dist/*.tar.gz
+          cd /tmp && /tmp/sdist-env/bin/python "$GITHUB_WORKSPACE/python/tests/test_package.py" -v
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-source
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: [linux, windows, sdist]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/cam-engine/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    name: GitHub release
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - name: Create the release with notes from the merged pull requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes

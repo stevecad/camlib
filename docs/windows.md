@@ -49,7 +49,7 @@ Build a distributable wheel with:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip wheel . --no-deps --wheel-dir dist
-$wheel = (Get-ChildItem dist\camlib-*-win_amd64.whl).FullName
+$wheel = (Get-ChildItem dist\cam_engine-*-win_amd64.whl).FullName
 .\.venv\Scripts\python.exe -m pip install --force-reinstall $wheel
 ```
 

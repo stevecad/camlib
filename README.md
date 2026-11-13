@@ -105,7 +105,19 @@ produce explicit premises and advice; ordinary job verification still decides re
 
 ## Install
 
-Requires Python 3.12+ and a Rust toolchain (the package compiles the engine):
+Requires Python 3.12+. The distribution is named `cam-engine`; the package is
+imported as `camlib`.
+
+```sh
+python -m pip install cam-engine
+```
+
+Wheels are published for Linux x86_64 and aarch64 (glibc 2.28 or newer) and
+Windows x64. On other platforms pip builds from the source distribution, which
+needs a Rust toolchain. See [Releasing](docs/release.md) for what a release is
+tested with, and the [changelog](CHANGELOG.md).
+
+From a checkout (needs a Rust toolchain: the package compiles the engine):
 
 ```sh
 python -m pip install .
@@ -118,12 +130,12 @@ For native Windows x64 installation, build tools and PowerShell commands, see
 The CadQuery example (`examples/cadquery_job.py`) also needs CadQuery/OCP
 installed in the same Python environment.
 
-A portable Linux x86_64 wheel (manylinux_2_28: glibc 2.28 or newer, CPython
-3.12+) is built in Docker from the committed tree:
+A portable Linux wheel (manylinux_2_28: glibc 2.28 or newer, CPython 3.12+)
+is built in Docker from the committed tree, for the machine's architecture:
 
 ```sh
-packaging/build-manylinux-wheel.sh          # writes dist/camlib-*-manylinux_2_28_x86_64.whl
-python -m pip install dist/camlib-*-manylinux_2_28_x86_64.whl
+packaging/build-manylinux-wheel.sh          # writes dist/cam_engine-*-manylinux_2_28_x86_64.whl
+python -m pip install dist/cam_engine-*-manylinux_2_28_x86_64.whl
 ```
 
 Start with **[Getting started](docs/getting-started.md)**, then

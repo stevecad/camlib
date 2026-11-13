@@ -219,7 +219,7 @@ jobs:
         shell: pwsh
         run: |
           python -m venv 'wheel environment'
-          $wheel = (Get-ChildItem dist/camlib-*-win_amd64.whl).FullName
+          $wheel = (Get-ChildItem dist/cam_engine-*-win_amd64.whl).FullName
           & '.\wheel environment\Scripts\python.exe' -m pip install $wheel cadquery
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Test installed package without source-build fallback
