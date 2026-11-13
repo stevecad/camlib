@@ -1287,6 +1287,29 @@ impl Stock {
     pub(crate) fn contact_index(&self) -> Option<&crate::stock_contact::HeightIndex> {
         self.contact_index.as_ref()
     }
+    /// The highest upper bound of the stock over the cells a disk of radius
+    /// `r` at `xy` can touch (whole cells: an overestimate, never an
+    /// underestimate); the stock's bottom where it touches none.
+    pub fn top_under_disk(&self, xy: [f64; 2], r: f64) -> f64 {
+        let [wx, wy] = self.step;
+        let reach = r + 0.5 * wx.hypot(wy);
+        let range = |c: f64, lo: f64, w: f64, n: usize| {
+            let a = ((c - reach - lo) / w).floor().max(0.) as usize;
+            let b = (((c + reach - lo) / w).ceil().max(0.) as usize).min(n);
+            a..b
+        };
+        let mut top = self.spec.min_mm[2];
+        for j in range(xy[1], self.spec.min_mm[1], wy, self.ny) {
+            for i in range(xy[0], self.spec.min_mm[0], wx, self.nx) {
+                let k = j * self.nx + i;
+                let c = self.cell_center(k).unwrap_or(xy);
+                if (c[0] - xy[0]).hypot(c[1] - xy[1]) <= reach {
+                    top = top.max(self.cells[k].upper_mm);
+                }
+            }
+        }
+        top
+    }
     pub fn cell_center(&self, index: usize) -> Option<[f64; 2]> {
         (index < self.cells.len()).then(|| {
             [

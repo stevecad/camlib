@@ -1455,7 +1455,7 @@ impl WaterlinePlan {
                     )? {
                         continue;
                     }
-                    let top = stock_top(stock, p, self.radius);
+                    let top = stock.top_under_disk(p, self.radius);
                     if top > plunge_z + self.op.tolerance_mm {
                         continue;
                     }
@@ -1585,29 +1585,4 @@ pub(crate) fn flat_level_loops(
         }
     }
     Ok((loops, error))
-}
-
-/// Highest live stock upper bound over the cells a disk of radius r at xy
-/// can touch (whole cells: an overestimate, never an underestimate).
-fn stock_top(stock: &Stock, xy: [f64; 2], r: f64) -> f64 {
-    let spec = stock.spec();
-    let [nx, ny] = stock.dimensions();
-    let [wx, wy] = stock.cell_widths_mm();
-    let reach = r + 0.5 * wx.hypot(wy);
-    let range = |c: f64, lo: f64, w: f64, n: usize| {
-        let a = ((c - reach - lo) / w).floor().max(0.) as usize;
-        let b = (((c + reach - lo) / w).ceil().max(0.) as usize).min(n);
-        a..b
-    };
-    let mut top = spec.min_mm[2];
-    for j in range(xy[1], spec.min_mm[1], wy, ny) {
-        for i in range(xy[0], spec.min_mm[0], wx, nx) {
-            let k = j * nx + i;
-            let c = stock.cell_center(k).unwrap_or(xy);
-            if (c[0] - xy[0]).hypot(c[1] - xy[1]) <= reach {
-                top = top.max(stock.cells()[k].upper_mm);
-            }
-        }
-    }
-    top
 }

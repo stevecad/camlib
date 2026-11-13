@@ -1844,7 +1844,7 @@ impl FlatPlan {
         stock: &Stock,
         cancel: &impl CancelSignal,
     ) -> Result<Option<(f64, Vec<Vec3>)>, String> {
-        let at_start = stock_top(stock, run.a, self.radius);
+        let at_start = stock.top_under_disk(run.a, self.radius);
         if at_start <= run.z + self.op.tolerance_mm {
             return Ok(None);
         }
@@ -2084,34 +2084,9 @@ fn run_stock_top(
             run.a[0] + f * (run.b[0] - run.a[0]),
             run.a[1] + f * (run.b[1] - run.a[1]),
         ];
-        top = top.max(stock_top(stock, xy, wide));
+        top = top.max(stock.top_under_disk(xy, wide));
     }
     Ok(top)
-}
-
-/// Highest live stock upper bound over the cells a disk of radius r at xy
-/// can touch (whole cells: an overestimate, never an underestimate).
-fn stock_top(stock: &Stock, xy: [f64; 2], r: f64) -> f64 {
-    let spec = stock.spec();
-    let [nx, ny] = stock.dimensions();
-    let [wx, wy] = stock.cell_widths_mm();
-    let reach = r + 0.5 * wx.hypot(wy);
-    let range = |c: f64, lo: f64, w: f64, n: usize| {
-        let a = ((c - reach - lo) / w).floor().max(0.) as usize;
-        let b = (((c + reach - lo) / w).ceil().max(0.) as usize).min(n);
-        a..b
-    };
-    let mut top = spec.min_mm[2];
-    for j in range(xy[1], spec.min_mm[1], wy, ny) {
-        for i in range(xy[0], spec.min_mm[0], wx, nx) {
-            let k = j * nx + i;
-            let c = stock.cell_center(k).unwrap_or(xy);
-            if (c[0] - xy[0]).hypot(c[1] - xy[1]) <= reach {
-                top = top.max(stock.cells()[k].upper_mm);
-            }
-        }
-    }
-    top
 }
 
 #[cfg(test)]
