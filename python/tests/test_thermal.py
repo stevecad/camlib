@@ -382,6 +382,27 @@ class ThermalCutTest(unittest.TestCase):
                     report = u.update.report
         self.assertEqual(report["micro_joints"], 6)
 
+    def test_the_part_order_is_declared_and_reported(self):
+        def report_of(**cut):
+            with job(**cut).regenerate() as run:
+                for u in run:
+                    if isinstance(u.update, OperationUpdate) and u.update.stage == "end":
+                        return u.update.report
+
+        nearest = report_of()
+        self.assertEqual(nearest["part_order"], {"kind": "nearest"})
+        self.assertGreater(nearest["rapid_length_mm"], 0)
+        # The washer lies in the plate's hole: it is cut first in every order.
+        for order in ("given", camlib.SpreadHeat(min_distance_mm=50)):
+            report = report_of(part_order=order)
+            outlines = [part for part, hole in report["order"] if hole is None]
+            self.assertEqual(outlines, [1, 0])
+        self.assertEqual(report["part_order"], {"kind": "spread", "min_distance_mm": 50})
+        with self.assertRaisesRegex(ValueError, "part_order 'random'.*SpreadHeat"):
+            report_of(part_order="random")
+        with self.assertRaises(TypeError):
+            camlib.SpreadHeat()  # no default distance
+
     def test_grbl_laser_m4_power(self):
         laser = camlib.LaserHead("laser", kerf_width=0.2)
         j = job(

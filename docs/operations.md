@@ -1794,7 +1794,31 @@ cut = camlib.ThermalCut("plasma", torch, parts, feed_mm_min=2500, cut_height_mm=
   same path with G41/G42, turned on over the straight lead-in and off over the
   straight lead-out, so the operator can trim the kerf at the controller.
 - **Order**: holes before their part's outline; a part lying in another part's
-  hole before that hole; parts nearest first. The report lists the order.
+  hole before that hole. Among parts at the same depth `part_order` chooses the
+  next one: `"nearest"` (default: the part whose outline starts nearest to
+  where the last loop started, the shortest travel), `"given"` (the order of
+  `parts`, for an order planned elsewhere), or `SpreadHeat(min_distance_mm)`:
+  the nearest part whose outline starts at least that far from the last one,
+  so two parts cut one after the other are not neighbours and the heat is
+  spread over the sheet (when every remaining part is nearer, the farthest of
+  them). The distance is the shop's for the plate; none is assumed. The rules
+  above are checked on the finished order whichever is chosen. The report
+  lists the `order`, the least distance between consecutive parts
+  (`min_part_step_mm`) and the travel with the beam off (`rapid_length_mm`).
+- **Parts already cut**: a part or a hole's slug that is cut free can tilt
+  between the table's slats and stand above the sheet, where the torch hits it
+  on a later traverse. `avoid_cut_parts=AvoidCutParts(clearance_mm)` keeps
+  every rapid between cuts that distance (from the beam centre: include the
+  torch body's radius; no default) from every piece cut free earlier, going
+  round them over the corners of their boxes. A hole's slug is free once the
+  hole is cut and a part once its outline is, unless micro-joints hold it. The
+  first leg away from a cut may leave across the slug the torch stands over,
+  and may pass nearer than the clearance to the part it has just cut round,
+  never across it. A rapid with no way round is refused with its end points
+  (use a smaller clearance, more part spacing or another `part_order`); the
+  final rapids are checked again against the freed pieces apart from the
+  routing, and the report counts the `rerouted_rapids`. Not planned together
+  with `common_line`.
 - **Direction**: outlines clockwise, holes counter-clockwise (the part on the
   right of travel, the good side of a plasma arc with clockwise swirl);
   `reverse=True` swaps both.

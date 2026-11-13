@@ -45,6 +45,8 @@ cut = dataclasses.replace(cut, parts=result.region)   # cut the nest
 | `part_in_part` | Parts may be placed in holes of other parts (default `True`) |
 | `allow_unplaced` | Return a partial nest listing what did not fit instead of refusing (default `False`) |
 | `search_iterations`, `seed` | Exchanges of the placement order to try (default 0) |
+| `start_corner` | The corner of the sheet's bounding box the fill starts from: `"lower_left"` (default), `"lower_right"`, `"upper_left"`, `"upper_right"` |
+| `fill_axis` | The axis parts are stacked along from the start corner before the nest advances along the other: `"y"` (default) fills a column, then the next column in x; `"x"` fills a row, then the next row in y |
 
 There are no defaults for the sheet, kerf, leads, spacing, margin, resolution,
 quantities or rotations.
@@ -139,6 +141,84 @@ and unplaced copies always add up to the declared quantities.
 | `lead_reach_mm` | How far leads and pierce craters may reach beyond a kerf's edge |
 | `check` | The independent check's report |
 
+## Where the nest starts
+
+`start_corner` and `fill_axis` choose which part of the sheet is used first,
+and so where the remnant is left. The fill is the same bottom-left fill,
+planned in a frame in which the sheet is reflected and/or its axes exchanged
+(one of the eight symmetries of the square) and mapped back; a part's
+rotation and mirror flag are never changed by it, and the independent check
+runs on the sheet itself, as for any layout.
+
+```python
+nest = camlib.Nest.for_cut(cut, sheet, parts, part_spacing_mm=2, edge_margin_mm=5, resolution_mm=1,
+                           start_corner="upper_right", fill_axis="x")   # rows from the top right
+```
+
+## Remnants
+
+`Nest.remnant(result, remnant_margin_mm=...)` gives what is left of the sheet
+after the nest is cut, as a `Remnant`: `region` (a `PlanarRegion` in the
+sheet's own coordinates), `pieces` (its separate pieces, largest first, each
+usable as the `sheet` of the next `Nest`), `area_mm2`, `sheet_area_mm2`,
+`cut_reach_mm` and `check`.
+
+It is the sheet less every part's outline grown by everything the cut can
+reach beyond it (the kerf, the allowance and the leads' and pierce craters'
+reach: the same distance the nest's guarantee uses) and by
+`remnant_margin_mm`. The band is taken all round each part, also where no
+lead was placed, so the remnant never claims material the cut may have
+removed; it can leave out a little that is still there. Its outline is built
+to 0.01 mm (curved edges as chords), with the parts grown by eight times
+that first, so the coarser edge only gives material up. A part goes with the
+slugs of its holes and whatever was nested inside it. `remnant_margin_mm` has
+no default: it is what you give up for the heat-affected edge, dross, warp
+and how exactly the sheet is put back on the table. The result is checked at
+points of every part's outline before it is returned, and
+`python/tests/test_nesting.py` checks it against the simulated stock of the
+cut (no cell the torch removed lies in the remnant).
+
+```python
+left = nest.remnant(result, remnant_margin_mm=3)
+camlib.dxf.write_regions(left.pieces[0], "remnant-0412.dxf")     # keep it with the plate
+
+# Next job, the plate back against the same reference corner:
+(sheet,) = camlib.dxf.read_parts("remnant-0412.dxf", unit_mm=1, join_tolerance_mm=0.001)
+nest = camlib.Nest.for_cut(cut, sheet, parts, part_spacing_mm=2, edge_margin_mm=5, resolution_mm=1)
+```
+
+A remnant is the planned one, not a measured one, and it is in the
+coordinates of the sheet it was cut from: it is only as good as the plate's
+position when it is put back. `Nest.remnant` also takes the `parts` region of
+any `ThermalCut` (a hand layout). Parts held by micro-joints count as removed.
+
+## DXF
+
+`camlib.dxf.read_parts(path, unit_mm=, join_tolerance_mm=)` reads the closed
+outlines of a drawing as parts: one `PlanarRegion` per outline with the holes
+drawn inside it (an outline inside a hole is a part of its own), ready for
+`NestPart`. It reads `LINE`, `ARC`, `CIRCLE`, `LWPOLYLINE` and 2D `POLYLINE`
+entities with their bulges, in any order and direction, and keeps arcs as
+arcs.
+
+- `unit_mm` is the size of a drawing unit in millimetres (1, or 25.4 for
+  inches). There is no default, and a file whose `$INSUNITS` says otherwise is
+  refused.
+- `join_tolerance_mm` is how far apart two ends may be and still be one
+  corner. There is no default. The largest gap closed becomes the region's
+  `boundary_error_mm`, which the cut adds to its allowance. An end with
+  nothing to join, or three ends at one point, is refused with the entity and
+  the point.
+- Splines, ellipses, blocks, hatches and anything off the Z = 0 plane are
+  refused by name (explode them to lines and arcs in the drawing). Text and
+  dimensions are refused too unless their types are listed in `ignore=`;
+  `layers=` restricts reading to named layers.
+
+`camlib.dxf.write_regions(regions, path)` writes regions as closed polylines
+in millimetres (`$INSUNITS` 4), outlines on layer `OUTLINE` and holes on
+`HOLE`, with full precision; `read_parts(path, unit_mm=1, ...)` reads them
+back. This is 2D line and arc geometry only: camlib holds no CAD kernel.
+
 ## Limits
 
 - **A heuristic, not an optimum.** Bottom-left fill gives a good nest quickly;
@@ -161,4 +241,5 @@ and unplaced copies always add up to the declared quantities.
 - **One sheet.** Nest the unplaced parts on the next sheet with another request.
 - **Not modeled:** common-line cutting between neighbours, grain direction
   beyond the allowed rotations, heat distribution and cut order (the
-  `ThermalCut` orders the loops), tip-up of cut parts, skeleton cut-up.
+  `ThermalCut` orders the loops: its `part_order`), tip-up of cut parts,
+  skeleton cut-up.

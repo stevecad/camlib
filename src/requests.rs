@@ -68,6 +68,10 @@ pub enum Request {
     Nest {
         nest: Box<crate::nesting::NestRequest>,
     },
+    /// What is left of a sheet after a thermal cut (`crate::nesting::remnant`).
+    Remnant {
+        remnant: Box<crate::nesting::remnant::RemnantRequest>,
+    },
     /// The independent check of a nest layout, from anywhere.
     VerifyNest {
         nest: Box<crate::nesting::NestRequest>,
@@ -158,6 +162,7 @@ fn execute(session: &mut Session, request: Request) -> Result<Value, String> {
             Ok(json!({"region":silhouette.region,"report":silhouette.report}))
         }
         Request::Nest { nest } => Ok(json!(crate::nesting::nest(&nest, &AtomicBool::new(false))?)),
+        Request::Remnant { remnant } => Ok(json!(crate::nesting::remnant::remnant(&remnant)?)),
         Request::VerifyNest {
             nest,
             placements,

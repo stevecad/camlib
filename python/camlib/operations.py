@@ -1832,6 +1832,29 @@ class CommonLine:
 
 
 @dataclass(frozen=True)
+class SpreadHeat:
+    """A ``ThermalCut`` part order that spreads the heat: after a part, the
+    nearest part whose outline starts at least ``min_distance_mm`` away is cut
+    next (the farthest one when every remaining part is nearer), so
+    consecutive parts are not neighbours. The distance is the shop's choice
+    for the plate; there is no default."""
+
+    min_distance_mm: float
+
+
+@dataclass(frozen=True)
+class AvoidCutParts:
+    """Keep a ``ThermalCut``'s rapids ``clearance_mm`` from every part and
+    slug already cut free (they can tip up between the table's slats): the
+    travel goes round them, and a rapid with no way round is refused by name.
+    The clearance is measured from the beam centre, so include the torch
+    body's radius; there is no default. Pieces held by micro-joints are not
+    counted as free."""
+
+    clearance_mm: float
+
+
+@dataclass(frozen=True)
 class ThermalCut:
     """Plasma or laser profile cutting of sheet parts (``parts``: a
     PlanarRegion whose components are the parts to keep, each with holes)
@@ -1857,7 +1880,19 @@ class ThermalCut:
     of parts placed ``common_line_spacing_mm()`` apart once: holes first,
     then each common line (pierced in the scrap on its extension), then the
     one outline of the group. Parts whose kerf paths coincide in any other
-    way are refused; the report lists the ``common_lines``."""
+    way are refused; the report lists the ``common_lines``.
+
+    ``part_order`` chooses which part is cut next: ``"nearest"`` (default: the
+    shortest travel), ``"given"`` (the order of ``parts``) or
+    ``SpreadHeat(min_distance_mm)`` (consecutive parts kept apart, against
+    heat building up in one place). In every order a part nested in another
+    part's hole is cut before that part and a part's holes before its
+    outline; the report gives the ``order``, the ``min_part_step_mm`` and the
+    ``rapid_length_mm``.
+
+    ``avoid_cut_parts=AvoidCutParts(clearance_mm)`` keeps every rapid that
+    distance from the pieces already cut free; the report counts the
+    ``rerouted_rapids``. It is not planned together with ``common_line``."""
 
     id: str
     tool: object
@@ -1885,6 +1920,8 @@ class ThermalCut:
     tool_number: int = field(kw_only=True)
     length_register: int = field(kw_only=True)
     common_line: CommonLine | None = field(default=None, kw_only=True)
+    part_order: object = field(default="nearest", kw_only=True)
+    avoid_cut_parts: AvoidCutParts | None = field(default=None, kw_only=True)
 
     def common_line_spacing_mm(self):
         """The gap between two parts whose facing edges are a common line:
@@ -1918,6 +1955,17 @@ class ThermalCut:
             }
         if self.common_line is not None:
             result["common_line"] = dict(min_length_mm=self.common_line.min_length_mm)
+        if self.avoid_cut_parts is None:
+            result.pop("avoid_cut_parts")
+        else:
+            result["avoid_cut_parts"] = dict(clearance_mm=self.avoid_cut_parts.clearance_mm)
+        order = self.part_order
+        if isinstance(order, SpreadHeat):
+            result["part_order"] = dict(kind="spread", min_distance_mm=order.min_distance_mm)
+        elif order in ("nearest", "given"):
+            result["part_order"] = dict(kind=order)
+        else:
+            raise ValueError(f"ThermalCut part_order {order!r}: use 'nearest', 'given' or SpreadHeat(min_distance_mm)")
         for key in (
             "pierce_height_mm",
             "travel_height_mm",

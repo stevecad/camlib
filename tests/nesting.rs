@@ -534,3 +534,96 @@ fn a_nest_feeds_a_thermal_cut_whose_leads_stay_in_their_reserved_room() {
     }
     assert!(leads_beyond_kerf > 0 && worst > KERF, "leads were exercised: {worst}");
 }
+
+/// One 40 x 20 rectangle (no rotation) on a 400 x 250 sheet.
+fn one_block() -> NestRequest {
+    request(
+        region(rect(0., 0., 400., 250.), vec![]),
+        vec![part(region(rect(0., 0., 40., 20.), vec![]), 1, &[0.])],
+    )
+}
+
+#[test]
+fn a_nest_starts_from_the_declared_corner() {
+    use camlib::nesting::StartCorner::*;
+    // Everything cut for a part stays edge_margin_mm from the sheet's edge:
+    // the part itself lies cut_reach + margin from the two edges of its
+    // start corner (within the planner's column spacing and slack).
+    let mut r = one_block();
+    let inset = cut_reach(&r) + r.edge_margin_mm;
+    let default = run(&r).unwrap();
+    for (corner, left, low) in [
+        (LowerLeft, true, true),
+        (LowerRight, false, true),
+        (UpperLeft, true, false),
+        (UpperRight, false, false),
+    ] {
+        r.start_corner = corner;
+        let result = run(&r).unwrap();
+        assert_eq!(result.check.status, "proven", "{corner:?}");
+        let b = result.used_bounds_mm.unwrap();
+        let x_gap = if left { b[0] } else { 400. - b[2] };
+        let y_gap = if low { b[1] } else { 250. - b[3] };
+        for gap in [x_gap, y_gap] {
+            assert!(gap >= inset - 1e-9 && gap <= inset + r.resolution_mm + 0.01, "{corner:?}: {b:?}");
+        }
+        // The part is not turned or mirrored by the corner.
+        assert_eq!(result.placements[0].rotation_deg, 0.);
+        assert!(!result.placements[0].mirrored);
+        assert!((b[2] - b[0] - 40.).abs() < 1e-9 && (b[3] - b[1] - 20.).abs() < 1e-9);
+        if corner == LowerLeft {
+            assert_eq!(result.placements, default.placements);
+            assert_eq!(result.region, default.region);
+        }
+    }
+}
+
+#[test]
+fn the_fill_axis_stacks_parts_along_y_or_along_x() {
+    use camlib::nesting::{FillAxis, StartCorner};
+    let mut r = one_block();
+    r.parts[0].quantity = 3;
+    // Along y (the default): three blocks in one column.
+    let columns = run(&r).unwrap();
+    let b = columns.used_bounds_mm.unwrap();
+    assert!((b[2] - b[0] - 40.).abs() < 1e-9 && b[3] - b[1] > 3. * 20., "{b:?}");
+    // Along x: three blocks in one row.
+    r.fill_axis = FillAxis::X;
+    let rows = run(&r).unwrap();
+    let b = rows.used_bounds_mm.unwrap();
+    assert!((b[3] - b[1] - 20.).abs() < 1e-9 && b[2] - b[0] > 3. * 40., "{b:?}");
+    assert_eq!(rows.check.status, "proven");
+    // From the upper right, along x: the row hangs from the top edge and
+    // runs leftward from the right edge.
+    r.start_corner = StartCorner::UpperRight;
+    let result = run(&r).unwrap();
+    let b = result.used_bounds_mm.unwrap();
+    let inset = cut_reach(&r) + r.edge_margin_mm;
+    assert!(400. - b[2] <= inset + r.resolution_mm + 0.01 && 250. - b[3] <= inset + r.resolution_mm + 0.01, "{b:?}");
+    assert!((b[3] - b[1] - 20.).abs() < 1e-9, "{b:?}");
+}
+
+#[test]
+fn every_corner_and_axis_nests_the_mixed_parts_with_the_distances_proven() {
+    use camlib::nesting::{FillAxis, StartCorner::*};
+    // Arcs, holes, rotations, parts in holes: the independent check runs on
+    // the sheet itself for each of the eight frames.
+    let base = mixed();
+    let placed = run(&base).unwrap().placements.len();
+    for corner in [LowerLeft, LowerRight, UpperLeft, UpperRight] {
+        for axis in [FillAxis::Y, FillAxis::X] {
+            let mut r = mixed();
+            r.start_corner = corner;
+            r.fill_axis = axis;
+            let result = run(&r).unwrap();
+            assert_eq!(result.check.status, "proven", "{corner:?} {axis:?}");
+            assert_eq!(result.placements.len(), placed, "{corner:?} {axis:?}");
+            // Only declared rotations, never a mirror image.
+            for p in &result.placements {
+                assert!(r.parts[p.part].rotations_deg.contains(&p.rotation_deg) && !p.mirrored);
+            }
+            // The layout verifies as a layout from anywhere does.
+            verify(&r, &result.placements, &result.region).unwrap();
+        }
+    }
+}

@@ -323,3 +323,158 @@ fn machining_limits_cover_beam_depth_and_travel() {
         .is_err()
     );
 }
+
+/// Five 26 x 26 squares in a row, 10 mm apart, each with a hole.
+fn row() -> PlanarRegion {
+    PlanarRegion {
+        version: 1,
+        units: "mm".into(),
+        name: "row".into(),
+        boundary_error_mm: 0.,
+        components: (0..5)
+            .map(|k| {
+                let x = 10. + 36. * k as f64;
+                Component {
+                    outer: rect(x, 40., x + 26., 66.),
+                    holes: vec![circle([x + 13., 53.], 5.)],
+                }
+            })
+            .collect(),
+        source: serde_json::Value::Null,
+    }
+}
+
+#[test]
+fn the_part_order_is_nearest_given_or_spread_and_holes_always_come_first() {
+    let cut = |extra: serde_json::Value| {
+        let mut op = operation(extra);
+        op.parts = row();
+        let (_, plan, _) = run(op).unwrap();
+        let report = serde_json::to_value(plan.report()).unwrap();
+        let order: Vec<(usize, Option<usize>)> = serde_json::from_value(report["order"].clone()).unwrap();
+        // In every order: each part's hole, then its outline, one after the other.
+        for pair in order.chunks(2) {
+            assert_eq!(pair[0], (pair[0].0, Some(0)));
+            assert_eq!(pair[1], (pair[0].0, None));
+        }
+        let parts: Vec<usize> = order.iter().filter(|l| l.1.is_none()).map(|l| l.0).collect();
+        (
+            parts,
+            report["min_part_step_mm"].as_f64().unwrap(),
+            report["rapid_length_mm"].as_f64().unwrap(),
+        )
+    };
+    // Nearest (the default): along the row, each part next to the last.
+    let (nearest, step, travel) = cut(serde_json::json!({}));
+    assert_eq!(nearest, [0, 1, 2, 3, 4]);
+    assert!((step - 36.).abs() < 1e-9);
+    // Given, with the parts listed in another order.
+    let mut op = operation(serde_json::json!({"part_order": {"kind": "given"}}));
+    let mut parts = row();
+    parts.components.swap(0, 3);
+    op.parts = parts;
+    let (_, plan, _) = run(op).unwrap();
+    let given: Vec<usize> = plan.report().order.iter().filter(|l| l.1.is_none()).map(|l| l.0).collect();
+    assert_eq!(given, [0, 1, 2, 3, 4]);
+    // Spread: no two consecutive parts are neighbours while a part farther
+    // than the declared distance remains, and the travel is what it costs.
+    let (spread, step, spread_travel) = cut(serde_json::json!({"part_order": {"kind": "spread", "min_distance_mm": 60.}}));
+    let mut sorted = spread.clone();
+    sorted.sort();
+    assert_eq!(sorted, [0, 1, 2, 3, 4]);
+    assert!(step >= 60. - 1e-9, "{spread:?} {step}");
+    assert!(spread_travel > travel);
+    // The distance is declared, and must make sense.
+    let mut op = operation(serde_json::json!({"part_order": {"kind": "spread", "min_distance_mm": 0.}}));
+    op.parts = row();
+    assert!(run(op).err().unwrap().contains("min_distance_mm 0 must be positive"));
+    assert!(
+        serde_json::from_value::<ThermalCutOperation>(serde_json::json!({"part_order": {"kind": "spread"}})).is_err()
+    );
+}
+
+#[test]
+fn rapids_go_round_parts_already_cut_free_or_the_cut_is_refused() {
+    // Five parts in a row, cut in an order that sends the torch back along
+    // the row: without the option the rapids cross parts already cut free.
+    let cut = |extra: serde_json::Value| {
+        let mut op = operation(extra);
+        op.parts = row();
+        run(op)
+    };
+    let spread = serde_json::json!({"kind": "spread", "min_distance_mm": 60.});
+    // Independently of the planner: replay the moves, free a part when its
+    // outline's cut is complete, and measure every later rapid against it.
+    let squares: Vec<[f64; 4]> = (0..5).map(|k| [10. + 36. * k as f64, 40., 36. + 36. * k as f64, 66.]).collect();
+    let gap = |a: [f64; 3], b: [f64; 3], s: &[f64; 4]| {
+        // Least distance from the segment to the square, by sampling.
+        (0..=400)
+            .map(|k| {
+                let t = k as f64 / 400.;
+                let (x, y) = (a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]));
+                let dx = (s[0] - x).max(x - s[2]).max(0.);
+                let dy = (s[1] - y).max(y - s[3]).max(0.);
+                dx.hypot(dy)
+            })
+            .fold(f64::INFINITY, f64::min)
+    };
+    let worst = |extra: serde_json::Value| -> (f64, serde_json::Value) {
+        let (events, plan, _) = cut(extra).unwrap();
+        let report = serde_json::to_value(plan.report()).unwrap();
+        let outlines: Vec<usize> = plan.report().order.iter().filter(|l| l.1.is_none()).map(|l| l.0).collect();
+        let all: Vec<Motion> = events
+            .into_iter()
+            .filter_map(|e| match e {
+                Event::Motion { motion } => Some(motion),
+                _ => None,
+            })
+            .collect();
+        // A part is free once the torch has left its outline: count the
+        // cut moves that lie on each square's kerf to find when.
+        let mut free: Vec<usize> = vec![];
+        let mut least = f64::INFINITY;
+        let mut next = 0;
+        let mut on_outline = false;
+        for m in &all {
+            let (a, b) = (m.curve.start(), m.curve.end());
+            match m.kind {
+                MoveKind::Cut => {
+                    let s = &squares[outlines[next.min(4)]];
+                    // On the outline's kerf: outside the square, within 2 mm.
+                    let outside = a[0] < s[0] || a[0] > s[2] || a[1] < s[1] || a[1] > s[3];
+                    on_outline |= outside && gap(a, b, s) < 2.;
+                }
+                MoveKind::Rapid if a[0] != b[0] || a[1] != b[1] => {
+                    if on_outline {
+                        free.push(outlines[next]);
+                        next += 1;
+                        on_outline = false;
+                        // Leaving the part just cut: its own kerf side.
+                        for &p in &free[..free.len() - 1] {
+                            least = least.min(gap(a, b, &squares[p]));
+                        }
+                        continue;
+                    }
+                    for &p in &free {
+                        least = least.min(gap(a, b, &squares[p]));
+                    }
+                }
+                _ => {}
+            }
+        }
+        (least, report)
+    };
+    let (crossing, report) = worst(serde_json::json!({"part_order": spread}));
+    assert!(crossing < 1e-6, "{crossing}");
+    assert!(report.get("rerouted_rapids").is_none());
+    let (kept, report) = worst(serde_json::json!({"part_order": spread, "avoid_cut_parts": {"clearance_mm": 4.}}));
+    assert!(kept >= 4. - 1e-6, "{kept}");
+    assert!(report["rerouted_rapids"].as_u64().unwrap() > 0);
+    // A clearance wider than the gaps between the parts cannot be kept.
+    let error = cut(serde_json::json!({"part_order": spread, "avoid_cut_parts": {"clearance_mm": 30.}}))
+        .err()
+        .unwrap();
+    assert!(error.contains("cannot keep 30 mm from the parts already cut free"), "{error}");
+    let error = cut(serde_json::json!({"avoid_cut_parts": {"clearance_mm": 0.}})).err().unwrap();
+    assert!(error.contains("clearance_mm 0 must be positive"), "{error}");
+}

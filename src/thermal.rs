@@ -27,7 +27,9 @@ use serde::{Deserialize, Serialize};
 use std::f64::consts::{FRAC_PI_2, PI};
 
 mod common_line;
+mod tip_up;
 pub use common_line::{CommonLine, CommonLineReport};
+pub use tip_up::AvoidCutParts;
 
 /// How the torch or head height is controlled.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,6 +96,27 @@ pub struct MicroJoints {
     pub holes: bool,
 }
 
+/// Which part is cut next. Whatever the choice, a part nested in another
+/// part's hole is cut before that part, a part's holes before its outline,
+/// and parts joined by common lines as one group: only the order of parts
+/// at the same nesting depth is chosen here.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PartOrder {
+    /// The part whose outline starts nearest to where the last loop
+    /// started: the shortest travel, and the most heat in one place.
+    #[default]
+    Nearest,
+    /// The parts in the order they are given in `parts`.
+    Given,
+    /// Spread the heat: the nearest part whose outline starts at least
+    /// `min_distance_mm` from where the last loop started, so consecutive
+    /// parts are not neighbours; when every remaining part is nearer than
+    /// that, the farthest of them. The distance is the shop's (plate
+    /// thickness, material and how much it moves); none is assumed.
+    Spread { min_distance_mm: f64 },
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThermalCutOperation {
@@ -150,6 +173,13 @@ pub struct ThermalCutOperation {
     /// swirl). True reverses both.
     #[serde(default)]
     pub reverse: bool,
+    /// Which part is cut next (default: the nearest).
+    #[serde(default)]
+    pub part_order: PartOrder,
+    /// Keep rapids clear of parts and slugs already cut free, which can
+    /// tip up between the slats (see `thermal/tip_up.rs`). Off unless set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avoid_cut_parts: Option<AvoidCutParts>,
     /// "wear": the same beam-center path posted with G41/G42 so the operator
     /// can trim the kerf at the controller (turned on over the straight
     /// lead-in, off over the straight lead-out).
@@ -177,6 +207,16 @@ pub struct ThermalCutReport {
     pub cut_length_mm: f64,
     /// Loop order: (part index, hole index or None for the outline).
     pub order: Vec<(usize, Option<usize>)>,
+    pub part_order: PartOrder,
+    /// The least distance between the starts of two parts cut one after the
+    /// other (absent with fewer than two parts).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_part_step_mm: Option<f64>,
+    /// Travel between cuts with the beam off, in the sheet's plane.
+    pub rapid_length_mm: f64,
+    /// Rapids taken round parts already cut free (`avoid_cut_parts`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rerouted_rapids: Option<usize>,
     pub loops_completed: usize,
     /// The common lines, in cutting order (empty unless `common_line`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -599,23 +639,58 @@ impl ThermalCutPlan {
             common = plan;
         }
         // Order: deepest parts first; within a part its holes, then its
-        // outline; parts of equal depth nearest first.
+        // outline; parts of equal depth as `part_order` says.
+        if let PartOrder::Spread { min_distance_mm } = op.part_order
+            && !(min_distance_mm.is_finite() && min_distance_mm > 0. && min_distance_mm <= 1e6)
+        {
+            return Err(format!(
+                "thermal cut part_order spread: min_distance_mm {min_distance_mm} must be positive (how far apart the starts of two parts cut one after the other should be)"
+            ));
+        }
+        if let Some(avoid) = &op.avoid_cut_parts {
+            if !(avoid.clearance_mm.is_finite()
+                && avoid.clearance_mm > 0.
+                && avoid.clearance_mm <= 1e4)
+            {
+                return Err(format!(
+                    "thermal cut avoid_cut_parts: clearance_mm {} must be positive (the distance rapids keep from parts already cut free, from the beam centre: include the torch body's radius)",
+                    avoid.clearance_mm
+                ));
+            }
+            if op.common_line.is_some() {
+                return Err("thermal cut: avoid_cut_parts is not planned together with common_line (the travel to a common line's pierce is not routed); use one of them".into());
+            }
+        }
         let mut order = vec![];
+        let mut part_sequence = vec![];
         let mut remaining: Vec<usize> = (0..definition.components.len()).collect();
         let mut at = [initial[0], initial[1]];
         while !remaining.is_empty() {
             let deepest = remaining.iter().map(|&i| depth[i]).max().unwrap();
-            let (k, _) = remaining
+            let candidates = remaining
                 .iter()
                 .enumerate()
                 .filter(|(_, i)| depth[**i] == deepest)
                 .map(|(k, &i)| {
                     let v = definition.components[i].outer.vertices[0];
                     (k, (v[0] - at[0]).hypot(v[1] - at[1]))
-                })
-                .min_by(|a, b| a.1.total_cmp(&b.1))
-                .unwrap();
+                });
+            let (k, _) = match op.part_order {
+                PartOrder::Nearest => candidates.min_by(|a, b| a.1.total_cmp(&b.1)),
+                // `remaining` keeps the given order.
+                PartOrder::Given => candidates.min_by_key(|c| c.0),
+                PartOrder::Spread { min_distance_mm } => {
+                    let all: Vec<(usize, f64)> = candidates.collect();
+                    all.iter()
+                        .copied()
+                        .filter(|c| c.1 >= min_distance_mm || part_sequence.is_empty())
+                        .min_by(|a, b| a.1.total_cmp(&b.1))
+                        .or_else(|| all.iter().copied().max_by(|a, b| a.1.total_cmp(&b.1)))
+                }
+            }
+            .unwrap();
             let part = remaining.remove(k);
+            part_sequence.push(part);
             // Parts joined by common lines are cut as one group.
             let members = common.members(part);
             remaining.retain(|p| !members.contains(p));
@@ -725,6 +800,12 @@ impl ThermalCutPlan {
             );
         }
         let mut common_lines: Vec<CommonLineReport> = vec![];
+        // Pieces cut free so far, the piece the last loop freed, and per
+        // completed loop the piece it freed (for the check of the rapids).
+        let mut freed = tip_up::Freed::default();
+        let mut leaving: Option<usize> = None;
+        let mut freed_by_loop: Vec<Option<usize>> = vec![];
+        let mut rerouted = 0;
         // What each pierce cuts, for the refusals of the kerf checks.
         let mut pierced = vec![];
         for &l in &order {
@@ -943,7 +1024,15 @@ impl ThermalCutPlan {
                 lin = l;
                 (center, a, pierce) = geometry(l);
             }
-            // Travel to the pierce point and pierce.
+            // Travel to the pierce point and pierce: round the pieces
+            // already cut free where that is asked for.
+            let detour = match &op.avoid_cut_parts {
+                Some(avoid) => freed
+                    .route([pos[0], pos[1]], pierce, avoid.clearance_mm, leaving)
+                    .map_err(|e| format!("thermal cut {}: {e}", op.id))?,
+                None => vec![],
+            };
+            rerouted += usize::from(!detour.is_empty());
             if program {
                 push_move(
                     &mut steps,
@@ -952,6 +1041,12 @@ impl ThermalCutPlan {
                     MoveKind::Rapid,
                     None,
                 );
+            }
+            for p in detour {
+                let z = pos[2];
+                push_move(&mut steps, at_z(p, z), &mut pos, MoveKind::Rapid, None);
+            }
+            if program {
                 push_move(
                     &mut steps,
                     at_z(pierce, pos[2]),
@@ -1249,6 +1344,16 @@ impl ThermalCutPlan {
             steps.push_back(Step::Event(Event::Beam { power_percent: 0. }));
             steps.push_back(Step::Done);
             micro_joints += joints;
+            // What this loop cut free: the hole's slug or the part, unless
+            // micro-joints hold it.
+            leaving = (op.avoid_cut_parts.is_some() && joints == 0).then(|| {
+                let c = &definition.components[lp.part];
+                freed.add(match lp.hole {
+                    Some(h) => &c.holes[h],
+                    None => &c.outer,
+                })
+            });
+            freed_by_loop.push(leaving);
             if program {
                 push_move(
                     &mut steps,
@@ -1327,6 +1432,90 @@ impl ThermalCutPlan {
                 events.push(e);
             }
         }
+        // The order's rules, checked on the order as it will be cut, apart
+        // from how it was chosen: a part's holes before its outline, and no
+        // part before one nested deeper (a part in a hole goes first).
+        let mut outline_at = vec![usize::MAX; definition.components.len()];
+        let mut last_depth = usize::MAX;
+        for (k, &(part, hole)) in report_order.iter().enumerate() {
+            match hole {
+                None => {
+                    outline_at[part] = k;
+                    if depth[part] > last_depth {
+                        return Err(format!(
+                            "thermal cut {}: the cut order puts part {part}, nested in another part's hole, after a part outside it; this is a planner defect: report it",
+                            op.id
+                        ));
+                    }
+                    last_depth = depth[part];
+                }
+                Some(h) if outline_at[part] != usize::MAX => {
+                    return Err(format!(
+                        "thermal cut {}: the cut order puts hole {h} of part {part} after its outline; this is a planner defect: report it",
+                        op.id
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+        // The rapids as they will be run, checked against the pieces cut
+        // free before each: apart from the routing that chose them.
+        if let Some(avoid) = &op.avoid_cut_parts {
+            let (mut count, mut done, mut exempt) = (0, 0, None);
+            for step in &steps {
+                match step {
+                    Step::Done => {
+                        exempt = freed_by_loop[done];
+                        if let Some(i) = exempt {
+                            count = i + 1;
+                        }
+                        done += 1;
+                    }
+                    Step::Move(curve, MoveKind::Rapid, _) => {
+                        let (a, b) = (curve.start(), curve.end());
+                        if a[0] == b[0] && a[1] == b[1] {
+                            continue;
+                        }
+                        if let Some((piece, distance)) = freed.blocked(
+                            count,
+                            [a[0], a[1]],
+                            [b[0], b[1]],
+                            avoid.clearance_mm,
+                            exempt,
+                        ) {
+                            return Err(format!(
+                                "thermal cut {}: a rapid from ({:.3}, {:.3}) to ({:.3}, {:.3}) passes {distance:.3} mm from freed piece {piece}, nearer than avoid_cut_parts allows; this is a planner defect: report it",
+                                op.id, a[0], a[1], b[0], b[1]
+                            ));
+                        }
+                        exempt = None;
+                    }
+                    _ => {}
+                }
+            }
+            debug_assert_eq!(freed.len(), freed_by_loop.iter().flatten().count());
+        }
+        let start_of = |part: usize| {
+            let v = definition.components[part].outer.vertices[0];
+            [v[0], v[1]]
+        };
+        let min_part_step_mm = part_sequence
+            .windows(2)
+            .map(|w| {
+                let (a, b) = (start_of(w[0]), start_of(w[1]));
+                (a[0] - b[0]).hypot(a[1] - b[1])
+            })
+            .min_by(f64::total_cmp);
+        let rapid_length_mm: f64 = steps
+            .iter()
+            .map(|s| match s {
+                Step::Move(curve, MoveKind::Rapid, _) => {
+                    let (a, b) = (curve.start(), curve.end());
+                    (a[0] - b[0]).hypot(a[1] - b[1])
+                }
+                _ => 0.,
+            })
+            .sum();
         let report = ThermalCutReport {
             strategy: "thermal_cut",
             geometric_residual_status: ResidualStatus::Pending,
@@ -1339,6 +1528,10 @@ impl ThermalCutPlan {
             micro_joints,
             cut_length_mm: cut_length,
             order: report_order,
+            part_order: op.part_order,
+            min_part_step_mm,
+            rapid_length_mm,
+            rerouted_rapids: op.avoid_cut_parts.map(|_| rerouted),
             loops_completed: 0,
             common_lines,
             diagnostics,
