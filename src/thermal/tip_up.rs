@@ -253,13 +253,10 @@ impl Freed {
             let mut done = vec![false; n];
             let mut found_blockers = vec![];
             best[0] = 0.;
-            loop {
-                let Some(u) = (0..n)
-                    .filter(|&k| !done[k] && best[k].is_finite())
-                    .min_by(|&a, &b| best[a].total_cmp(&best[b]))
-                else {
-                    break;
-                };
+            while let Some(u) = (0..n)
+                .filter(|&k| !done[k] && best[k].is_finite())
+                .min_by(|&a, &b| best[a].total_cmp(&best[b]))
+            {
                 if u == 1 {
                     break;
                 }

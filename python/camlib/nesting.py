@@ -30,12 +30,20 @@ class NestPart:
     how many copies (``quantity``) and the rotations it may take
     (``rotations_deg``, counter-clockwise; ``(0,)`` keeps it as drawn, for
     grained or brushed sheet). ``mirror=True`` also allows the part turned
-    over. There are no defaults for the quantity or the rotations."""
+    over. There are no defaults for the quantity or the rotations.
+
+    ``priority``: parts of a higher priority are placed first, so nearest the
+    start corner (within a priority, largest first). ``fill=True`` makes the
+    part a filler: placed after every other part, as many copies as fit up to
+    ``quantity``; copies that do not fit are not a refusal, and the result's
+    ``filled`` says how many were placed."""
 
     region: object
     quantity: int
     rotations_deg: tuple
     mirror: bool = False
+    priority: int = 0
+    fill: bool = False
 
     def to_dict(self):
         return dict(
@@ -43,6 +51,8 @@ class NestPart:
             quantity=self.quantity,
             rotations_deg=list(self.rotations_deg),
             mirror=self.mirror,
+            priority=self.priority,
+            fill=self.fill,
         )
 
 
@@ -88,6 +98,8 @@ class NestResult:
     lead_reach_mm: float
     check: dict
     report: dict
+    # Copies placed of each filler part: ((part, copies), ...).
+    filled: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -219,6 +231,7 @@ class Nest:
             lead_reach_mm=report["lead_reach_mm"],
             check=report["check"],
             report=report,
+            filled=tuple((part, copies) for part, copies in report.get("filled", ())),
         )
 
     def remnant(self, parts, *, remnant_margin_mm):

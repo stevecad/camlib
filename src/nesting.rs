@@ -91,6 +91,15 @@ pub struct NestPart {
     /// Whether the part may also be placed mirrored (turned over).
     #[serde(default)]
     pub mirror: bool,
+    /// Parts of a higher priority are placed before those of a lower one
+    /// (so nearer the start corner); within a priority, largest first.
+    #[serde(default)]
+    pub priority: i32,
+    /// A filler: placed after every other part, as many copies as fit up to
+    /// `quantity`. Copies that do not fit are not a refusal; the result
+    /// lists how many were placed.
+    #[serde(default)]
+    pub fill: bool,
 }
 
 fn yes() -> bool {
@@ -279,6 +288,9 @@ pub struct NestResult {
     pub check: NestCheck,
     pub search_iterations: u32,
     pub search_improvements: u32,
+    /// Copies placed of each filler part: (part, copies).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub filled: Vec<(usize, u32)>,
     pub diagnostics: Vec<String>,
 }
 
@@ -992,7 +1004,14 @@ pub fn nest(request: &NestRequest, cancel: &impl CancelSignal) -> Result<NestRes
         resolution: request.resolution_mm,
         cancel,
     };
-    // Largest area first; equal areas in the declared order.
+    // Required parts before fillers, higher priority first, then largest
+    // area first; equal ones in the declared order.
+    let class = |i: usize| {
+        (
+            request.parts[i].fill,
+            std::cmp::Reverse(request.parts[i].priority),
+        )
+    };
     let mut order: Vec<usize> = request
         .parts
         .iter()
@@ -1000,8 +1019,9 @@ pub fn nest(request: &NestRequest, cancel: &impl CancelSignal) -> Result<NestRes
         .flat_map(|(i, p)| std::iter::repeat_n(i, p.quantity as usize))
         .collect();
     order.sort_by(|&a, &b| {
-        planner.areas[b]
-            .total_cmp(&planner.areas[a])
+        class(a)
+            .cmp(&class(b))
+            .then(planner.areas[b].total_cmp(&planner.areas[a]))
             .then(a.cmp(&b))
     });
     let mut best = planner.fill(&order)?;
@@ -1011,7 +1031,9 @@ pub fn nest(request: &NestRequest, cancel: &impl CancelSignal) -> Result<NestRes
         for _ in 0..request.search_iterations {
             let i = (next_random(&mut state) % order.len() as u64) as usize;
             let j = (next_random(&mut state) % order.len() as u64) as usize;
-            if order[i] == order[j] {
+            // An exchange never crosses a priority or puts a filler
+            // before a required part.
+            if order[i] == order[j] || class(order[i]) != class(order[j]) {
                 continue;
             }
             order.swap(i, j);
@@ -1052,7 +1074,7 @@ pub fn nest(request: &NestRequest, cancel: &impl CancelSignal) -> Result<NestRes
         .parts
         .iter()
         .enumerate()
-        .filter(|(i, p)| copies[*i] < p.quantity)
+        .filter(|(i, p)| !p.fill && copies[*i] < p.quantity)
         .map(|(i, p)| Unplaced {
             part: i,
             quantity: p.quantity - copies[i],
@@ -1133,6 +1155,13 @@ pub fn nest(request: &NestRequest, cancel: &impl CancelSignal) -> Result<NestRes
         check,
         search_iterations: request.search_iterations,
         search_improvements: improvements,
+        filled: request
+            .parts
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.fill)
+            .map(|(i, _)| (i, copies[i]))
+            .collect(),
         diagnostics,
     })
 }

@@ -37,7 +37,7 @@ cut = dataclasses.replace(cut, parts=result.region)   # cut the nest
 | Field | Meaning |
 |---|---|
 | `sheet` | A `PlanarRegion` of one outline; its holes are areas already cut out of a remnant |
-| `parts` | `NestPart(region, quantity, rotations_deg, mirror=False)`: a `PlanarRegion` of one outline with holes, the number of copies, the allowed rotations (degrees counter-clockwise; `(0,)` keeps the part as drawn), and whether it may also be turned over |
+| `parts` | `NestPart(region, quantity, rotations_deg, mirror=False, priority=0, fill=False)`: a `PlanarRegion` of one outline with holes, the number of copies, the allowed rotations (degrees counter-clockwise; `(0,)` keeps the part as drawn), and whether it may also be turned over. Parts of a higher `priority` are placed first (nearest the start corner). `fill=True` makes a filler: placed after every other part, as many copies as fit up to `quantity`, with no refusal for the rest (the result's `filled` lists `(part, copies)`) |
 | `kerf_mm`, `lead_in`, `lead_out`, `pierce_clearance_mm` | What the cut will use. `Nest.for_cut(cut, ...)` reads them, and the tolerances, from a `ThermalCut` |
 | `part_spacing_mm` | Material left between what is cut for two parts |
 | `edge_margin_mm` | Material left between what is cut for a part and the sheet's outline or holes |

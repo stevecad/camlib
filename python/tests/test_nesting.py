@@ -130,6 +130,21 @@ class NestingTest(unittest.TestCase):
         ys = [v[1] for v in SHEET.components[0].outer.vertices]
         return min(xs), min(ys), max(xs), max(ys)
 
+    def test_priority_parts_go_first_and_a_filler_takes_what_is_left(self):
+        small = one(rect(0, 0, 20, 12))
+        parts = (camlib.NestPart(PLATE, 1, (0,)), camlib.NestPart(small, 2, (0,), priority=1))
+        result = nest(parts=parts).run()
+        corner = {p.part: math.hypot(*p.translation_mm) for p in result.placements}
+        self.assertLess(corner[1], corner[0])
+        many = (camlib.NestPart(PLATE, 2, (0,)), camlib.NestPart(small, 400, (0, 90), fill=True))
+        result = nest(parts=many).run()
+        self.assertEqual(result.unplaced, ())
+        ((part, copies),) = result.filled
+        self.assertEqual(part, 1)
+        self.assertTrue(0 < copies < 400)
+        self.assertEqual(sum(p.part == 1 for p in result.placements), copies)
+        self.assertEqual(result.check["status"], "proven")
+
     def test_inputs_are_declared_not_assumed(self):
         with self.assertRaises(TypeError):
             camlib.NestPart(PLATE)  # no default quantity or rotations

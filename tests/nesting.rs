@@ -39,6 +39,8 @@ fn part(region: PlanarRegion, quantity: u32, rotations_deg: &[f64]) -> NestPart 
         quantity,
         rotations_deg: rotations_deg.to_vec(),
         mirror: false,
+        priority: 0,
+        fill: false,
     }
 }
 /// A plate with a large round hole, a slot with rounded ends and a bolt hole.
@@ -626,4 +628,42 @@ fn every_corner_and_axis_nests_the_mixed_parts_with_the_distances_proven() {
             verify(&r, &result.placements, &result.region).unwrap();
         }
     }
+}
+
+#[test]
+fn priority_parts_go_first_and_fillers_take_what_is_left() {
+    // Small blocks with priority are placed before the large plate, so they
+    // sit at the start corner; without it the plate does.
+    let small = || region(rect(0., 0., 30., 20.), vec![]);
+    let mut r = request(
+        region(rect(0., 0., 400., 250.), vec![]),
+        vec![part(plate(), 1, &[0.]), part(small(), 2, &[0.])],
+    );
+    let corner_of = |result: &NestResult, part: usize| {
+        let p = result.placements.iter().find(|p| p.part == part).unwrap();
+        p.translation_mm[0].hypot(p.translation_mm[1])
+    };
+    let plain = run(&r).unwrap();
+    assert!(corner_of(&plain, 0) < corner_of(&plain, 1));
+    r.parts[1].priority = 1;
+    let first = run(&r).unwrap();
+    assert!(corner_of(&first, 1) < corner_of(&first, 0));
+    assert_eq!(first.check.status, "proven");
+    // A filler: as many as fit, after the required parts; what does not fit
+    // is not a refusal, and a required part that does not fit still is.
+    let mut r = request(
+        region(rect(0., 0., 200., 120.), vec![]),
+        vec![part(plate(), 1, &[0.]), part(small(), 500, &[0., 90.])],
+    );
+    assert!(run(&r).unwrap_err().contains("part 1"));
+    r.parts[1].fill = true;
+    let filled = run(&r).unwrap();
+    assert!(filled.unplaced.is_empty());
+    let (which, copies) = filled.filled[0];
+    assert_eq!(which, 1);
+    assert!(copies > 0 && copies < 500, "{copies}");
+    assert_eq!(filled.placements.iter().filter(|p| p.part == 1).count() as u32, copies);
+    assert_eq!(filled.check.status, "proven");
+    r.parts[0].quantity = 9;
+    assert!(run(&r).unwrap_err().contains("part 0: "));
 }
