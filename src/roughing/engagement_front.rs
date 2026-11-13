@@ -679,6 +679,10 @@ pub struct EngagementFrontReport {
     #[serde(skip_serializing_if = "is_zero_f64")]
     pub thinned_link_mm: f64,
     pub unproven_air_starts: usize,
+    /// Entry clearance proofs that ran out of work before deciding
+    /// (`PocketReport::entry_proofs_unresolved`).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub entry_proofs_unresolved: usize,
     /// Wall passes (see `EngagementFrontPlan::with_wall_pass` and
     /// `with_wall_runs`): loops, or runs of them, cut along the region's
     /// walls after the level is cleared, and those left uncut because no
@@ -768,6 +772,7 @@ impl Default for EngagementFrontReport {
             thinned_links: 0,
             thinned_link_mm: 0.,
             unproven_air_starts: 0,
+            entry_proofs_unresolved: 0,
             wall_passes: 0,
             wall_passes_skipped: 0,
             grid_refreshes: 0,
@@ -2505,6 +2510,7 @@ impl EngagementFrontPlan {
         if !self.finished || !self.pending.is_empty() {
             return Err("drain engagement_front motions before report".into());
         }
+        self.report.entry_proofs_unresolved = self.guides.entry_proofs_unresolved();
         if self.report.geometric_residual_status == ResidualStatus::Pending {
             match &self.layer {
                 Some(layer) => {

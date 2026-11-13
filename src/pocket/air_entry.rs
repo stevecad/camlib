@@ -7,7 +7,25 @@ pub(super) fn none(n: &usize) -> bool {
     *n == 0
 }
 
+/// Work one clearance proof of an entry may spend (index visits and
+/// primitive tests of the committed sweeps): about 15 ms. A column cleared
+/// by many overlapping sweeps takes the most: 435,000 was the largest on a
+/// 104 x 74 mm job of 24,000 moves cut in 0.2 mm layers (#280), where a
+/// limit of 100,000 left half the entries of a slot unproven. A proof that
+/// runs out proves nothing, costs cycle time only (a longer entry), and is
+/// counted (`PocketReport::entry_proofs_unresolved`).
+pub(crate) const ENTRY_PROOF_WORK: u64 = 1_000_000;
+
 impl PocketPlan {
+    fn unresolved_entry_proof(&self) {
+        self.entry_proofs_unresolved
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    /// Entry clearance proofs that ran out of work (`ENTRY_PROOF_WORK`).
+    pub(crate) fn entry_proofs_unresolved(&self) -> usize {
+        self.entry_proofs_unresolved
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
     /// The lowest tip height at `point` above which every whole-cell stock
     /// upper bound lies clear of the tool assembly's sections (each section's
     /// radius plus a guard, over every cell its disk overlaps). The stream's
@@ -223,7 +241,7 @@ impl PocketPlan {
         let top = self.operation.top_z_mm;
         let skin = crate::entry::skin(self.operation.tolerance_mm);
         let clear = |tip: f64| -> Result<bool, String> {
-            let mut work = 1_000_000;
+            let mut work = self.entry_proof_work;
             for &stroke in path {
                 let motion = Motion {
                     id: self.next_id,
@@ -238,6 +256,9 @@ impl PocketPlan {
                         continue;
                     }
                     if !stock.history_clearance(&motion, radius, bottom, &mut work, cancel)? {
+                        if work == 0 {
+                            self.unresolved_entry_proof();
+                        }
                         return Ok(false);
                     }
                 }
@@ -312,7 +333,7 @@ impl PocketPlan {
             + 4096.
                 * f64::EPSILON
                 * (1. + a[0].abs() + a[1].abs() + b[0].abs() + b[1].abs() + z.abs());
-        let mut work = 100_000;
+        let mut work = self.entry_proof_work;
         for &(radius, bottom) in &self.air_entry_parts {
             let height = z + skin + bottom - guard;
             if height > stock.spec().max_mm[2] {
@@ -329,7 +350,12 @@ impl PocketPlan {
             ) {
                 Ok(true) => (),
                 Ok(false) => return Ok(false),
-                Err(_) if !cancel.is_cancelled() => return Ok(false),
+                Err(_) if !cancel.is_cancelled() => {
+                    if work == 0 {
+                        self.unresolved_entry_proof();
+                    }
+                    return Ok(false);
+                }
                 Err(e) => return Err(e),
             }
         }
@@ -381,7 +407,6 @@ impl PocketPlan {
         let height = |point: Point| -> Result<f64, String> {
             let guard = 32. * self.operation.tolerance_mm
                 + 4096. * f64::EPSILON * (1. + point[0].abs() + point[1].abs() + top.abs());
-            let mut work = 100_000;
             let (mut low, mut high) = (floor, top);
             // A supported flat pocket has cylindrical cutter/neck/shank sections
             // and linear holder tapers. Maximum endpoint radius encloses every
@@ -395,8 +420,15 @@ impl PocketPlan {
             // is not a number) ends it too.
             let skin = crate::entry::skin(self.operation.tolerance_mm);
             // Whether every tool section is proven clear with the tip at
-            // `tip`; `None` when the work ran out (nothing is proven then).
-            let mut clear_at = |tip: f64| -> Result<Option<bool>, String> {
+            // `tip`. Each height is its own proof with its own work
+            // (`ENTRY_PROOF_WORK`): one that runs out proves nothing at
+            // that height, is counted, and the search goes on above it.
+            // One budget for the whole search let the first, costliest
+            // proof (the level itself, on stock cleared by many sweeps)
+            // spend it all, and the search then returned the top without
+            // looking (#280).
+            let clear_at = |tip: f64| -> Result<bool, String> {
+                let mut work = self.entry_proof_work;
                 for &(radius, bottom) in &self.air_entry_parts {
                     let height = tip + bottom - guard;
                     if height > stock.spec().max_mm[2] {
@@ -411,12 +443,15 @@ impl PocketPlan {
                         cancel,
                     ) {
                         Ok(true) => (),
-                        Ok(false) => return Ok(Some(false)),
-                        Err(_) if work == 0 && !cancel.is_cancelled() => return Ok(None),
+                        Ok(false) => return Ok(false),
+                        Err(_) if work == 0 && !cancel.is_cancelled() => {
+                            self.unresolved_entry_proof();
+                            return Ok(false);
+                        }
                         Err(e) => return Err(e),
                     }
                 }
-                Ok(Some(true))
+                Ok(true)
             };
             // The level itself first: "this start reaches the level" is one
             // proof at one height, the skin above the floor, so the answer
@@ -430,11 +465,10 @@ impl PocketPlan {
                 if level - low > skin {
                     level = level.next_down();
                 }
-                match clear_at(level)? {
-                    Some(true) => return Ok(level),
-                    Some(false) => low = level,
-                    None => return Ok(high),
+                if clear_at(level)? {
+                    return Ok(level);
                 }
+                low = level;
             }
             while high - low > skin {
                 if cancel.is_cancelled() {
@@ -444,14 +478,15 @@ impl PocketPlan {
                 if !(middle > low && middle < high) {
                     break;
                 }
-                match clear_at(middle)? {
-                    Some(true) => high = middle,
-                    Some(false) => low = middle,
-                    None => return Ok(high),
+                if clear_at(middle)? {
+                    high = middle;
+                } else {
+                    low = middle;
                 }
             }
             // High is either the unchanged authored top or a whole-assembly proof.
-            // Stock uncertainty/work exhaustion can only retain more cutting entry.
+            // Stock uncertainty or a proof out of work can only retain more
+            // cutting entry.
             Ok(high)
         };
         let positive = height([center[0] + orbit, center[1]])?;
@@ -550,6 +585,101 @@ mod tests {
             plan.cleared_path_start(&[path], 0., &cleared, &|| true)
                 .is_err()
         );
+    }
+
+    /// A proof that runs out of work proves nothing at its height and does
+    /// not end the search (#280).
+    ///
+    /// The column at the point is cleared to Z6 by one full-circle sweep (a
+    /// single sweep holds the whole cutter disk: a few units of work) and
+    /// from there to Z2 by 101 overlapping straight sweeps (no one of them
+    /// holds the disk, so the proof divides it against all of them). With
+    /// too little work for the second, the level's proof runs out. The
+    /// search used to return the operation's top there, without trying any
+    /// other height, and the entry came down from the top in a helix through
+    /// air. It now goes on and finds Z6, and the proofs that ran out are
+    /// counted. With the full work the level itself is proven.
+    #[test]
+    fn an_entry_proof_out_of_work_does_not_end_the_search() {
+        let manifest: crate::stream::StreamManifest = serde_json::from_str(include_str!(
+            "../../fixtures/operations/helical-pocket.json"
+        ))
+        .unwrap();
+        let Operation::Pocket(operation) = manifest.operations[0].clone() else {
+            panic!("pocket fixture")
+        };
+        let mut plan = PocketPlan::prepare(
+            operation,
+            &manifest.tools[0],
+            manifest.stock.height().unwrap(),
+            manifest.initial_position_mm,
+            1,
+            &|| false,
+        )
+        .unwrap();
+        let tool = manifest.tools[0].prepare().unwrap();
+        let mut stock = Stock::new(manifest.stock.height().unwrap().clone()).unwrap();
+        let centre = [8., 12.];
+        let mut cut = |id: u64, curve: Curve| {
+            let motion = Motion {
+                id,
+                operation: "earlier".into(),
+                tool: manifest.tools[0].id.clone(),
+                kind: MoveKind::Cut,
+                curve,
+                feed_mm_min: Some(100.),
+            };
+            let delta = stock
+                .preview_sweep(&tool, &motion, 1., SweepOptions::default(), &|| false)
+                .unwrap();
+            stock.apply_delta(&delta).unwrap();
+        };
+        let start = [centre[0] + 1.5, centre[1], 6.];
+        cut(
+            1,
+            Curve::Arc {
+                start,
+                end: start,
+                center: [centre[0], centre[1], 6.],
+                plane: crate::motion::Plane::Xy,
+                sweep_rad: std::f64::consts::TAU,
+            },
+        );
+        for row in 0..=100 {
+            let y = centre[1] - 1. + 0.02 * row as f64;
+            cut(
+                2 + row,
+                Curve::Line {
+                    start: [centre[0] - 2., y, 2.],
+                    end: [centre[0] + 2., y, 2.],
+                },
+            );
+        }
+        let skin = crate::entry::skin(plan.operation.tolerance_mm);
+        let top = plan.operation.top_z_mm;
+
+        // The one-sweep proof takes under 20 units of work and the level's
+        // over 320: 80 is enough for the first only.
+        plan.entry_proof_work = 80;
+        let (short, _) = plan
+            .cleared_entry_start(centre, 0., 2., Some(&stock), &|| false)
+            .unwrap();
+        assert!(
+            (6. ..=6. + 2. * skin).contains(&short),
+            "with little work the search found {short}, not the Z6 one sweep proves (top {top})"
+        );
+        assert!(plan.entry_proofs_unresolved() > 0);
+
+        plan.entry_proof_work = ENTRY_PROOF_WORK;
+        let before = plan.entry_proofs_unresolved();
+        let (full, _) = plan
+            .cleared_entry_start(centre, 0., 2., Some(&stock), &|| false)
+            .unwrap();
+        assert!(
+            (2. ..=2. + skin).contains(&full),
+            "with the full work the level is proven: {full}"
+        );
+        assert_eq!(plan.entry_proofs_unresolved(), before);
     }
 
     #[test]

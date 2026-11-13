@@ -112,6 +112,13 @@ that are kept.** Boundaries are polygons (`Boundary.polygon`) or line/arc loops
 - `RestPocket` cuts only material left by earlier operations (it reads the
   simulated stock), typically with a smaller tool. `rest_tolerance_mm` (0.01)
   is how much leftover is ignored.
+- An entry comes straight down, or starts its helix or ramp, from the lowest
+  height at which the cuts already committed (by this or an earlier
+  operation) prove the whole tool clear of stock, so a level cut where an
+  earlier operation has been does not come down again from the top. Each
+  such proof has a work limit. One that reaches it proves nothing: the entry
+  then starts higher than it had to, which costs time and nothing else, and
+  the report counts it in `entry_proofs_unresolved` (absent when zero).
 - Links between separate regions (longer than ordinary stepovers) stay at
   cutting depth only through stock proven already cleared, and only when that
   is faster than leaving at `feed_z_mm` and plunging again (the default) or up

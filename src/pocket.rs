@@ -498,6 +498,13 @@ pub struct PocketReport {
     pub entry_navigation_moves: usize,
     #[serde(skip_serializing_if = "air_entry::none")]
     pub cleared_entry_descents: usize,
+    /// Proofs that an entry's column or path is clear of stock which ran
+    /// out of work before deciding (`air_entry::ENTRY_PROOF_WORK`). Each
+    /// proves nothing: the entry starts higher, or takes a helix or a
+    /// retract where a straight descent or a link might have been proven.
+    /// That costs cycle time, never safety.
+    #[serde(default, skip_serializing_if = "air_entry::none")]
+    pub entry_proofs_unresolved: usize,
     pub entry_geometry_work: usize,
     pub entry_radii_mm: Vec<f64>,
     pub max_entry_turns_per_descent: usize,
@@ -1352,6 +1359,10 @@ pub struct PocketPlan {
     /// Committed-clearance scene for air entries, extended incrementally from
     /// the stock's column history (see `ClearanceCursor`).
     entry_scene: EntrySceneCache,
+    /// Work one entry clearance proof may spend
+    /// (`air_entry::ENTRY_PROOF_WORK`), and how many ran out.
+    entry_proof_work: u64,
+    entry_proofs_unresolved: std::sync::atomic::AtomicUsize,
     rest_stock_identity: Option<u64>,
     rest_pending: Option<Motion>,
     /// End of the previous entry helix turn; a helix starting there continues
@@ -1681,6 +1692,7 @@ impl PocketPlan {
             entry_turns: 0,
             entry_navigation_moves: 0,
             cleared_entry_descents: 0,
+            entry_proofs_unresolved: 0,
             entry_geometry_work: 0,
             entry_radii_mm: vec![],
             max_entry_turns_per_descent: 0,
@@ -1728,6 +1740,8 @@ impl PocketPlan {
             rest_tool: (op.rest_tolerance_mm.is_some() || op.entry.is_some())
                 .then(|| assembly.clone()),
             entry_scene: EntrySceneCache::default(),
+            entry_proof_work: air_entry::ENTRY_PROOF_WORK,
+            entry_proofs_unresolved: Default::default(),
             air_entry_parts: if op.entry.is_some() {
                 crate::verification::parts(&prepared_tool)?
                     .iter()
@@ -2792,6 +2806,7 @@ impl PocketPlan {
         if !self.finished || !self.pending.is_empty() {
             return Err("drain pocket motions before final report".into());
         }
+        self.report.entry_proofs_unresolved = self.entry_proofs_unresolved();
         if self.report.geometric_residual_status != ResidualStatus::Pending {
             return Ok(&self.report);
         }
@@ -2972,6 +2987,9 @@ impl PocketPlan {
         stock: &Stock,
         cancel: &impl CancelSignal,
     ) -> Result<Option<Motion>, String> {
+        // Up to the motion before this one; the call that ends the plan
+        // (it returns no motion) has them all.
+        self.report.entry_proofs_unresolved = self.entry_proofs_unresolved();
         if let Some(bound) = &mut self.stock_top {
             bound.validate(stock, cancel)?;
         }
