@@ -68,6 +68,11 @@ pub enum Request {
     Nest {
         nest: Box<crate::nesting::NestRequest>,
     },
+    /// Nest over several sheets in the order given (`crate::nesting::nest_sheets`).
+    NestSheets {
+        nest: Box<crate::nesting::NestRequest>,
+        sheets: Vec<PlanarRegion>,
+    },
     /// What is left of a sheet after a thermal cut (`crate::nesting::remnant`).
     Remnant {
         remnant: Box<crate::nesting::remnant::RemnantRequest>,
@@ -162,6 +167,11 @@ fn execute(session: &mut Session, request: Request) -> Result<Value, String> {
             Ok(json!({"region":silhouette.region,"report":silhouette.report}))
         }
         Request::Nest { nest } => Ok(json!(crate::nesting::nest(&nest, &AtomicBool::new(false))?)),
+        Request::NestSheets { nest, sheets } => Ok(json!(crate::nesting::nest_sheets(
+            &nest,
+            &sheets,
+            &AtomicBool::new(false)
+        )?)),
         Request::Remnant { remnant } => Ok(json!(crate::nesting::remnant::remnant(&remnant)?)),
         Request::VerifyNest {
             nest,

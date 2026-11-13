@@ -667,3 +667,37 @@ fn priority_parts_go_first_and_fillers_take_what_is_left() {
     r.parts[0].quantity = 9;
     assert!(run(&r).unwrap_err().contains("part 0: "));
 }
+
+#[test]
+fn parts_that_overflow_a_sheet_go_on_the_next_one() {
+    use camlib::nesting::nest_sheets;
+    let cancel = AtomicBool::new(false);
+    let small = region(rect(0., 0., 200., 120.), vec![]);
+    let mut r = request(small.clone(), vec![part(plate(), 5, &[0., 90.]), part(washer(), 4, &[0.])]);
+    // One plate fits a 200 x 120 sheet: one sheet is not enough.
+    assert!(run(&r).is_err());
+    let sheets = vec![small.clone(), region(rect(0., 0., 400., 250.), vec![]), small.clone(), small];
+    let result = nest_sheets(&r, &sheets, &cancel).unwrap();
+    assert!(result.unplaced.is_empty());
+    let mut placed = [0u32; 2];
+    for sheet in &result.sheets {
+        assert_eq!(sheet.nest.check.status, "proven");
+        for p in &sheet.nest.placements {
+            placed[p.part] += 1;
+        }
+        // Each sheet's layout verifies on its own sheet, with the parts as the request names them.
+        let mut one = r.clone();
+        one.sheet = sheets[sheet.sheet].clone();
+        verify(&one, &sheet.nest.placements, &sheet.nest.region).unwrap();
+    }
+    assert_eq!(placed, [5, 4]);
+    // The sheets are used in the order given, and one that is not needed is left alone.
+    assert_eq!(result.sheets[0].sheet, 0);
+    assert!(result.sheets.len() < sheets.len() || result.sheets.last().unwrap().sheet == 3);
+    // Not enough sheets: refused naming what is left, or listed.
+    let error = nest_sheets(&r, &sheets[..1], &cancel).unwrap_err();
+    assert!(error.contains("left over after 1 sheet(s)") && error.contains("part 0: 4 of 5"), "{error}");
+    r.allow_unplaced = true;
+    let partial = nest_sheets(&r, &sheets[..1], &cancel).unwrap();
+    assert_eq!(partial.unplaced.iter().map(|u| (u.part, u.quantity)).collect::<Vec<_>>()[0], (0, 4));
+}

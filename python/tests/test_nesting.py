@@ -145,6 +145,27 @@ class NestingTest(unittest.TestCase):
         self.assertEqual(sum(p.part == 1 for p in result.placements), copies)
         self.assertEqual(result.check["status"], "proven")
 
+    def test_parts_that_overflow_one_sheet_go_on_the_next(self):
+        many = (camlib.NestPart(PLATE, 5, (0, 90)), camlib.NestPart(WASHER, 6, (0,)))
+        with self.assertRaisesRegex(ValueError, "do not fit on the sheet"):
+            nest(parts=many).run()
+        sheets = (SHEET, SHEET, SHEET, SHEET)
+        used, left = nest(parts=many).run_sheets(sheets)
+        self.assertEqual(left, ())
+        self.assertEqual([index for index, _ in used], list(range(len(used))))
+        self.assertGreater(len(used), 1)
+        counts = [0, 0]
+        for _, result in used:
+            self.assertEqual(result.check["status"], "proven")
+            for p in result.placements:
+                counts[p.part] += 1
+        self.assertEqual(counts, [5, 6])
+        with self.assertRaisesRegex(ValueError, r"left over after 1 sheet\(s\).*part 0"):
+            nest(parts=many).run_sheets(sheets[:1])
+        used, left = nest(parts=many, allow_unplaced=True).run_sheets(sheets[:1])
+        self.assertEqual(len(used), 1)
+        self.assertEqual(left[0][0], 0)
+
     def test_inputs_are_declared_not_assumed(self):
         with self.assertRaises(TypeError):
             camlib.NestPart(PLATE)  # no default quantity or rotations

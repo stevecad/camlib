@@ -102,6 +102,25 @@ class NestResult:
     filled: tuple = ()
 
 
+def _nest_result(report):
+    return NestResult(
+        placements=tuple(
+            NestPlacement(p["part"], p["copy"], p["rotation_deg"], p["mirrored"], tuple(p["translation_mm"]))
+            for p in report["placements"]
+        ),
+        unplaced=tuple((u["part"], u["quantity"]) for u in report["unplaced"]),
+        region=PlanarRegion.from_dict(report["region"]),
+        utilisation=report["utilisation"],
+        placed_area_mm2=report["placed_area_mm2"],
+        sheet_area_mm2=report["sheet_area_mm2"],
+        used_bounds_mm=tuple(report["used_bounds_mm"]) if report.get("used_bounds_mm") else None,
+        lead_reach_mm=report["lead_reach_mm"],
+        check=report["check"],
+        report=report,
+        filled=tuple((part, copies) for part, copies in report.get("filled", ())),
+    )
+
+
 @dataclass(frozen=True)
 class Remnant:
     """What is left of a sheet after a cut (``Nest.remnant``). ``region`` is
@@ -216,22 +235,20 @@ class Nest:
     def run(self):
         """Plan and prove the nest. Raises ValueError when the request is
         invalid or parts do not fit (unless ``allow_unplaced``)."""
-        report = _request("nest", nest=self.to_dict())
-        return NestResult(
-            placements=tuple(
-                NestPlacement(p["part"], p["copy"], p["rotation_deg"], p["mirrored"], tuple(p["translation_mm"]))
-                for p in report["placements"]
-            ),
-            unplaced=tuple((u["part"], u["quantity"]) for u in report["unplaced"]),
-            region=PlanarRegion.from_dict(report["region"]),
-            utilisation=report["utilisation"],
-            placed_area_mm2=report["placed_area_mm2"],
-            sheet_area_mm2=report["sheet_area_mm2"],
-            used_bounds_mm=tuple(report["used_bounds_mm"]) if report.get("used_bounds_mm") else None,
-            lead_reach_mm=report["lead_reach_mm"],
-            check=report["check"],
-            report=report,
-            filled=tuple((part, copies) for part, copies in report.get("filled", ())),
+        return _nest_result(_request("nest", nest=self.to_dict()))
+
+    def run_sheets(self, sheets):
+        """Nest the parts over several ``sheets`` (PlanarRegions: full sheets
+        and remnants) in the order given; this nest's own ``sheet`` is not
+        used. Each sheet takes what fits of what is left. Returns
+        ``((sheet index, NestResult), ...)`` for the sheets that took parts
+        and the required parts left over as ``((part, quantity), ...)``:
+        refused, naming them, unless ``allow_unplaced``. A filler part fills
+        every sheet that is used."""
+        report = _request("nest_sheets", nest=self.to_dict(), sheets=[_region(s) for s in sheets])
+        return (
+            tuple((entry["sheet"], _nest_result(entry["nest"])) for entry in report["sheets"]),
+            tuple((u["part"], u["quantity"]) for u in report["unplaced"]),
         )
 
     def remnant(self, parts, *, remnant_margin_mm):

@@ -238,7 +238,10 @@ back. This is 2D line and arc geometry only: camlib holds no CAD kernel.
   hole's edge, but its spacing to that pierce and lead is not part of the
   nest's proof: the cut proves them clear of the part, or refuses.
 - **Declared rotations only.** No free rotation.
-- **One sheet.** Nest the unplaced parts on the next sheet with another request.
+- **Several sheets.** `Nest.run_sheets(sheets)` nests over full sheets and
+  remnants in the order given: each takes what fits of what is left. It
+  returns the nests of the sheets used and the parts left over (refused
+  unless `allow_unplaced`). It does not choose among sheets or balance them.
 - **Not modeled:** common-line cutting between neighbours, grain direction
   beyond the allowed rotations, heat distribution and cut order (the
   `ThermalCut` orders the loops: its `part_order`), tip-up of cut parts,

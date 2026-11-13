@@ -1166,6 +1166,111 @@ pub fn nest(request: &NestRequest, cancel: &impl CancelSignal) -> Result<NestRes
     })
 }
 
+/// One sheet of a nest over several sheets.
+#[derive(Clone, Debug, Serialize)]
+pub struct SheetNest {
+    /// Index into the sheets given.
+    pub sheet: usize,
+    /// The nest on that sheet; its placements and unplaced parts name the
+    /// request's parts by their own indices.
+    pub nest: NestResult,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SheetsResult {
+    /// The sheets that took parts, in the order given.
+    pub sheets: Vec<SheetNest>,
+    /// Required parts left over after the last sheet (only with
+    /// `allow_unplaced`).
+    pub unplaced: Vec<Unplaced>,
+}
+
+/// Nests the request's parts over `sheets` in the order given (the
+/// request's own sheet is not used): each sheet takes what fits of what is
+/// left, the next takes the rest. A filler part fills every sheet that is
+/// used. Required parts left after the last sheet are refused, naming them,
+/// or listed with `allow_unplaced`; none is dropped. A sheet reached with
+/// nothing required left is not used.
+pub fn nest_sheets(
+    request: &NestRequest,
+    sheets: &[PlanarRegion],
+    cancel: &impl CancelSignal,
+) -> Result<SheetsResult, String> {
+    if sheets.is_empty() {
+        return Err("nest: give at least one sheet".into());
+    }
+    let mut left: Vec<u32> = request.parts.iter().map(|p| p.quantity).collect();
+    let mut used = vec![];
+    for (s, sheet) in sheets.iter().enumerate() {
+        // The parts still wanted, with where each stands in the request.
+        let wanted: Vec<usize> = (0..request.parts.len()).filter(|&i| left[i] > 0).collect();
+        if !wanted.iter().any(|&i| !request.parts[i].fill) {
+            break;
+        }
+        let mut one = request.clone();
+        one.sheet = sheet.clone();
+        one.allow_unplaced = true;
+        one.parts = wanted
+            .iter()
+            .map(|&i| NestPart {
+                quantity: left[i],
+                ..request.parts[i].clone()
+            })
+            .collect();
+        let mut result = nest(&one, cancel).map_err(|e| format!("sheet {s}: {e}"))?;
+        // Back to the request's part indices.
+        for p in &mut result.placements {
+            p.part = wanted[p.part];
+        }
+        for u in &mut result.unplaced {
+            u.part = wanted[u.part];
+        }
+        for f in &mut result.filled {
+            f.0 = wanted[f.0];
+        }
+        for &i in &wanted {
+            if request.parts[i].fill {
+                continue;
+            }
+            let placed = result.placements.iter().filter(|p| p.part == i).count() as u32;
+            left[i] -= placed;
+        }
+        if !result.placements.is_empty() {
+            used.push(SheetNest {
+                sheet: s,
+                nest: result,
+            });
+        }
+    }
+    let unplaced: Vec<Unplaced> = (0..request.parts.len())
+        .filter(|&i| !request.parts[i].fill && left[i] > 0)
+        .map(|i| Unplaced {
+            part: i,
+            quantity: left[i],
+        })
+        .collect();
+    if !unplaced.is_empty() && !request.allow_unplaced {
+        let list: Vec<String> = unplaced
+            .iter()
+            .map(|u| {
+                format!(
+                    "part {}: {} of {}",
+                    u.part, u.quantity, request.parts[u.part].quantity
+                )
+            })
+            .collect();
+        return Err(format!(
+            "nest: these parts are left over after {} sheet(s) ({}); give more sheets or fewer parts, or set allow_unplaced to get the nests with the rest listed",
+            sheets.len(),
+            list.join(", ")
+        ));
+    }
+    Ok(SheetsResult {
+        sheets: used,
+        unplaced,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
