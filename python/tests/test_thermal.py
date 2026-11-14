@@ -564,6 +564,47 @@ class BeamPostsInInchesTest(unittest.TestCase):
         )
         self.assertGreater(arcs, 0)
 
+    def test_a_crop_cut_is_the_end_of_every_posted_program(self):
+        # The crop cut (#296 D3) through each plasma post, in inches: the
+        # program's last cutting block is the crop line, decoded and
+        # certified against the plan like the rest.
+        from test_drill_cycles import example
+
+        tool = camlib.Torch("torch", kerf_width=1.5)
+        crop = camlib.CropCut(((150, 0), (150, 120)))
+        for module, post, decoder, machine, cut in (
+            ("qtplasmac_post", "QtPlasmaCPost", "QtPlasmaCDecoder", dict(planes=("xy",), max_sweep_rad=math.tau), {}),
+            (
+                "centroid_plasma_post",
+                "CentroidPlasmaPost",
+                "CentroidPlasmaDecoder",
+                dict(max_sweep_rad=math.tau),
+                dict(height_control=False),
+            ),
+            ("wincnc_plasma_post", "WinCNCPlasmaPost", "WinCNCPlasmaDecoder", {}, dict(height_control=False)),
+        ):
+            m = example(module)
+            j = self.rings(tool, 0, crop=crop, **cut)
+            header = j.compile().setup("sheet").program_header()
+            setting = ToolSetting.for_tool(
+                tool, number=1, length_register=1, position_after_mm=header.initial_position_mm
+            )
+            lines = j.post_nc(
+                "sheet",
+                machine=m.define_machine(
+                    "table", setting, output_units="inch", decimals=4, helices=False, **self.LIMITS, **machine
+                ),
+                post=getattr(m, post),
+                decoder=getattr(m, decoder),
+                lowering=camlib.LoweringOptions(native_arcs=True),
+                accept={"unchecked_machine"},
+            ).text.splitlines()
+            moves = [line.split() for line in lines if line[:2] in ("G0", "G1", "G2", "G3")]
+            fed = [words for words in moves if words[0] != "G0"]
+            # To (150, 120) mm, from a block that started at x 150 mm.
+            self.assertTrue({"X5.9055", "Y4.7244"} <= set(fed[-1]), (module, fed[-1]))
+            self.assertTrue(any("X5.9055" in words for words in moves[:-1]), module)
+
 
 def polygon(center, radius, n, start_deg=0):
     import math

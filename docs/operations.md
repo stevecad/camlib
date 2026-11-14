@@ -1855,6 +1855,17 @@ cut = camlib.ThermalCut("plasma", torch, parts, feed_mm_min=2500, cut_height_mm=
   and fires again after it (no pierce clearance there). Not with wear
   compensation.
 - `power_percent` is the laser power (posted as S).
+- **Crop cut**: `crop=camlib.CropCut(((x0, y0), (x1, y1)))` (or three points
+  for an L) adds a last cut that frees the usable offcut from the skeleton.
+  The points are the kerf's centre line in the sheet's coordinates. The beam
+  is pierced at the first point and follows them at the cut's feed and
+  height, with no leads and no kerf offset. Nothing is assumed about the
+  sheet's edges: put the ends on the edge, or past it by the run-off your
+  shop uses (the machine's travel is checked as for any move). Its pierce
+  crater and its kerf are proven clear of every part, and with
+  `avoid_cut_parts` the travel to it goes round the pieces already cut. The
+  report gives `crop_length_mm`; `Nest.remnant(..., crop=...)` then returns
+  the offcut as a piece of its own ([nesting](nesting.md)).
 
 Every lead and kerf path is proven not to touch any part, and every pierce
 crater to stay clear of them, before any motion is produced. The simulated

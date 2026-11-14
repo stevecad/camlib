@@ -95,6 +95,11 @@ pub struct ThermalMarkReport {
     pub segments: usize,
     pub closed_paths: usize,
     pub mark_length_mm: f64,
+    /// The rapids between the marks, in the sheet's plane (as the cut's).
+    pub rapid_length_mm: f64,
+    /// The marks at the programmed feed, in seconds (nominal, without
+    /// acceleration).
+    pub feed_seconds: f64,
     /// Per path: the part (component of `parts`) its start lies in.
     pub parts: Vec<Option<usize>>,
     /// "proven": every mark's width lies inside its part. "not_checked":
@@ -476,6 +481,16 @@ impl ThermalMarkPlan {
                 events.push(e);
             }
         }
+        let rapid_length_mm: f64 = steps
+            .iter()
+            .map(|s| match s {
+                Step::Move(curve, MoveKind::Rapid) => {
+                    let (a, b) = (curve.start(), curve.end());
+                    (a[0] - b[0]).hypot(a[1] - b[1])
+                }
+                _ => 0.,
+            })
+            .sum();
         let report = ThermalMarkReport {
             strategy: "thermal_mark",
             geometric_residual_status: ResidualStatus::Pending,
@@ -484,6 +499,8 @@ impl ThermalMarkPlan {
             segments,
             closed_paths,
             mark_length_mm: length,
+            rapid_length_mm,
+            feed_seconds: length / op.feed_mm_min * 60.,
             parts: owners,
             containment: if op.allow_off_part {
                 "not_checked"

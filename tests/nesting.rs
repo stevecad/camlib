@@ -41,6 +41,7 @@ fn part(region: PlanarRegion, quantity: u32, rotations_deg: &[f64]) -> NestPart 
         mirror: false,
         priority: 0,
         fill: false,
+        marks: vec![],
     }
 }
 /// A plate with a large round hole, a slot with rounded ends and a bolt hole.
@@ -700,4 +701,82 @@ fn parts_that_overflow_a_sheet_go_on_the_next_one() {
     r.allow_unplaced = true;
     let partial = nest_sheets(&r, &sheets[..1], &cancel).unwrap();
     assert_eq!(partial.unplaced.iter().map(|u| (u.part, u.quantity)).collect::<Vec<_>>()[0], (0, 4));
+}
+
+/// Points along a path: the test's own walk of its lines and arcs.
+fn walk(path: &camlib::trace::TracePath) -> Vec<[f64; 2]> {
+    use camlib::trace::TraceSegment;
+    let mut p = path.start_mm;
+    let mut out = vec![p];
+    for segment in &path.segments {
+        match *segment {
+            TraceSegment::Line { end_mm } => {
+                for k in 1..=8 {
+                    let f = k as f64 / 8.;
+                    out.push([p[0] + f * (end_mm[0] - p[0]), p[1] + f * (end_mm[1] - p[1])]);
+                }
+                p = end_mm;
+            }
+            TraceSegment::Arc { center_mm: c, sweep_rad } => {
+                let (r, a) = ((p[0] - c[0]).hypot(p[1] - c[1]), (p[1] - c[1]).atan2(p[0] - c[0]));
+                for k in 1..=8 {
+                    let t = a + sweep_rad * k as f64 / 8.;
+                    out.push([c[0] + r * t.cos(), c[1] + r * t.sin()]);
+                }
+                p = *out.last().unwrap();
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn part_marks_are_placed_with_every_copy_turned_and_mirrored_with_it() {
+    use camlib::trace::{TracePath, TraceSegment};
+    let mut request = mixed();
+    // On the bracket's foot: an "L" and a quarter arc, not symmetric.
+    request.parts[2].mirror = true;
+    request.parts[2].marks = vec![
+        TracePath {
+            start_mm: [10., 4.],
+            segments: vec![
+                TraceSegment::Line { end_mm: [50., 4.] },
+                TraceSegment::Line { end_mm: [50., 10.] },
+            ],
+        },
+        TracePath {
+            start_mm: [20., 9.],
+            segments: vec![TraceSegment::Arc {
+                center_mm: [23., 9.],
+                sweep_rad: std::f64::consts::FRAC_PI_2,
+            }],
+        },
+    ];
+    request.parts[1].marks = vec![TracePath {
+        start_mm: [7., 0.],
+        segments: vec![TraceSegment::Line { end_mm: [10., 0.] }],
+    }];
+    let result = run(&request).unwrap();
+    assert_eq!(result.marks.len(), 6 + 5 * 2);
+    let (mut turned, mut mirrored) = (0, 0);
+    for placed in &result.marks {
+        let p = &result.placements[placed.placement];
+        let source = &request.parts[p.part].marks[placed.mark];
+        turned += usize::from(p.rotation_deg != 0.);
+        mirrored += usize::from(p.mirrored);
+        let (s, c) = p.rotation_deg.to_radians().sin_cos();
+        let expected = walk(source);
+        let found = walk(&placed.path);
+        assert_eq!(expected.len(), found.len());
+        for (e, f) in expected.iter().zip(&found) {
+            let x = if p.mirrored { -e[0] } else { e[0] };
+            let q = [c * x - s * e[1] + p.translation_mm[0], s * x + c * e[1] + p.translation_mm[1]];
+            assert!((q[0] - f[0]).hypot(q[1] - f[1]) < 1e-9, "{p:?} {e:?} {q:?} {f:?}");
+        }
+    }
+    // Turned copies were among them. (The nest took no mirrored copy here;
+    // a mirrored placement is checked in the engine's unit tests.)
+    assert!(turned > 0, "{turned} {mirrored}");
+    // No marks declared: none returned.
+    assert!(run(&mixed()).unwrap().marks.is_empty());
 }

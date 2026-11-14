@@ -69,6 +69,7 @@ use crate::{
     planar::{Boundary, Component, ConstructionOptions, PlanarRegion},
     stock::CancelSignal,
     thermal::Lead,
+    trace::{TracePath, TraceSegment},
 };
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
@@ -100,6 +101,52 @@ pub struct NestPart {
     /// lists how many were placed.
     #[serde(default)]
     pub fill: bool,
+    /// Marks on the part (a part number, a bend line), in the part's own
+    /// coordinates: placed with every copy and returned as the result's
+    /// `marks`, the paths of a `ThermalMark`, which proves each inside its
+    /// part at the mark's width.
+    #[serde(default)]
+    pub marks: Vec<TracePath>,
+}
+
+/// One part mark as placed with a copy of its part.
+#[derive(Clone, Debug, Serialize)]
+pub struct PlacedMark {
+    /// The placed copy it belongs to: an index into `placements` (and the
+    /// component of `region`).
+    pub placement: usize,
+    /// Which of the part's marks.
+    pub mark: usize,
+    pub path: TracePath,
+}
+
+/// A part's mark moved with a placement. Turning a part over mirrors its
+/// marks with it, so an arc then runs the other way.
+fn placed_mark(path: &TracePath, p: &Placement) -> TracePath {
+    let turn = rotation(p.rotation_deg);
+    let point = |v: P2| {
+        let q = apply(p.mirrored, turn, p.translation_mm, [v[0], v[1], 0.]);
+        [q[0], q[1]]
+    };
+    TracePath {
+        start_mm: point(path.start_mm),
+        segments: path
+            .segments
+            .iter()
+            .map(|segment| match *segment {
+                TraceSegment::Line { end_mm } => TraceSegment::Line {
+                    end_mm: point(end_mm),
+                },
+                TraceSegment::Arc {
+                    center_mm,
+                    sweep_rad,
+                } => TraceSegment::Arc {
+                    center_mm: point(center_mm),
+                    sweep_rad: if p.mirrored { -sweep_rad } else { sweep_rad },
+                },
+            })
+            .collect(),
+    }
 }
 
 fn yes() -> bool {
@@ -291,6 +338,9 @@ pub struct NestResult {
     /// Copies placed of each filler part: (part, copies).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub filled: Vec<(usize, u32)>,
+    /// The parts' marks, placed with every copy, in placement order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub marks: Vec<PlacedMark>,
     pub diagnostics: Vec<String>,
 }
 
@@ -1142,8 +1192,24 @@ pub fn nest(request: &NestRequest, cancel: &impl CancelSignal) -> Result<NestRes
             check.parts_in_holes
         ));
     }
+    let marks = placements
+        .iter()
+        .enumerate()
+        .flat_map(|(placement, p)| {
+            request.parts[p.part]
+                .marks
+                .iter()
+                .enumerate()
+                .map(move |(mark, path)| PlacedMark {
+                    placement,
+                    mark,
+                    path: placed_mark(path, p),
+                })
+        })
+        .collect();
     Ok(NestResult {
         strategy: "bottom_left_fill",
+        marks,
         placements,
         unplaced,
         region,
@@ -1274,6 +1340,52 @@ pub fn nest_sheets(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_mark_on_a_part_turned_over_is_mirrored_with_it() {
+        // A quarter arc from (2, 0) counter-clockwise about the origin, then
+        // a line to (0, 5): mirrored in x, turned a quarter turn and moved.
+        let path = TracePath {
+            start_mm: [2., 0.],
+            segments: vec![
+                TraceSegment::Arc {
+                    center_mm: [0., 0.],
+                    sweep_rad: PI / 2.,
+                },
+                TraceSegment::Line { end_mm: [0., 5.] },
+            ],
+        };
+        let placement = Placement {
+            part: 0,
+            copy: 0,
+            rotation_deg: 90.,
+            mirrored: true,
+            translation_mm: [10., 20.],
+        };
+        let placed = placed_mark(&path, &placement);
+        // (x, y) -> (-x, y) -> (-y, -x) + (10, 20).
+        let close = |a: P2, b: P2| (a[0] - b[0]).hypot(a[1] - b[1]) < 1e-12;
+        assert!(close(placed.start_mm, [10., 18.]));
+        let TraceSegment::Arc {
+            center_mm,
+            sweep_rad,
+        } = placed.segments[0]
+        else {
+            panic!()
+        };
+        assert!(close(center_mm, [10., 20.]) && sweep_rad == -PI / 2.);
+        // The arc's end, walked from the placed start: the source's end
+        // (0, 2) goes to (8, 20).
+        let a = (placed.start_mm[1] - center_mm[1]).atan2(placed.start_mm[0] - center_mm[0])
+            + sweep_rad;
+        assert!(close(
+            [center_mm[0] + 2. * a.cos(), center_mm[1] + 2. * a.sin()],
+            [8., 20.]
+        ));
+        let TraceSegment::Line { end_mm } = placed.segments[1] else {
+            panic!()
+        };
+        assert!(close(end_mm, [5., 20.]));
+    }
 
     fn area(pieces: &[Trapezoid]) -> f64 {
         pieces

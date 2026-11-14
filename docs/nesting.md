@@ -140,6 +140,27 @@ and unplaced copies always add up to the declared quantities.
 | `used_bounds_mm` | The box round the placed parts |
 | `lead_reach_mm` | How far leads and pierce craters may reach beyond a kerf's edge |
 | `check` | The independent check's report |
+| `marks`, `mark_placements` | The parts' marks as placed (below) and, for each, the `(placement, mark)` it came from |
+
+## Part labels
+
+`NestPart(..., marks=(...))` declares marks on a part in the part's own
+coordinates: `TracePath` lines and arcs (a part number in your own stroke
+letters, a bend line, a layout mark). camlib has no lettering of its own, so
+the strokes are the caller's. The nest places them with every copy, turned
+with it and mirrored with a part that is turned over, and returns them as
+`result.marks`: the `paths` of a `ThermalMark` run before the cut, which
+proves every mark inside its part at the mark's width and refuses one that
+is not.
+
+```python
+seven = camlib.TracePath((26, 12), (camlib.TraceLine((34, 12)), camlib.TraceLine((29, 0))))
+result = camlib.Nest.for_cut(cut, sheet, (camlib.NestPart(plate, 4, (0, 90), marks=(seven,)),),
+                             part_spacing_mm=2, edge_margin_mm=5, resolution_mm=1).run()
+marking = camlib.ThermalMark("labels", torch, result.region, result.marks, feed_mm_min=4000,
+                             mark_height_mm=2.5, power_percent=15, mark_width_mm=0.8,
+                             tool_number=1, length_register=1)
+```
 
 ## Where the nest starts
 
@@ -191,6 +212,45 @@ A remnant is the planned one, not a measured one, and it is in the
 coordinates of the sheet it was cut from: it is only as good as the plate's
 position when it is put back. `Nest.remnant` also takes the `parts` region of
 any `ThermalCut` (a hand layout). Parts held by micro-joints count as removed.
+
+With the cut's crop cut ([operations](operations.md), `ThermalCut(crop=...)`),
+`Nest.remnant(result, remnant_margin_mm=..., crop=cut.crop)` also removes the
+crop cut's kerf, its pierce clearance and the margin to both sides of it, so
+the offcut it frees is one of the `pieces`, apart from the skeleton. The
+crop cut is checked like the parts: points along it lie that far outside the
+remnant (`check["crop"]`).
+
+## Cut report
+
+`camlib.sheet_report(reports, nest=, remnant=, rapid_mm_min=, consumables=)`
+adds up what cutting one sheet takes, from the reports of its `ThermalCut`
+and `ThermalMark` operations (`OperationUpdate.report` of each operation's
+last update):
+
+| Field | Meaning |
+|---|---|
+| `parts`, `pierces`, `cut_length_mm` | Parts cut, beam starts and the kerf's length (with a crop cut's) |
+| `mark_starts`, `mark_length_mm` | Marks made and their length |
+| `rapid_length_mm` | Travel between cuts and marks, in the sheet's plane |
+| `feed_seconds`, `dwell_seconds` | Every fed move at its programmed feed (small holes at their reduced feed); the pierce delays |
+| `rapid_seconds`, `seconds` | The rapids at `rapid_mm_min`, and the total. `None` without a rapid rate |
+| `part_area_mm2`, `sheet_area_mm2`, `utilisation` | From `nest` (a `NestResult`); `None` without one |
+| `remnant_area_mm2` | From `remnant` (a `Remnant`); `None` without one |
+| `consumables` | Per declared `Consumable`: the share of its life this sheet uses |
+
+The times are nominal: they leave out acceleration, height moves and what
+the controller does on its own (height sensing before a pierce, corner
+slow-down), so a real sheet takes longer. `camlib.Consumable(name,
+life_pierces=, life_cut_mm=)` declares a wearing part's life; camlib has no
+consumable figures of its own. The share is given by pierces and by cut
+length separately, and they are not combined: how the two add up is the
+torch maker's knowledge, not camlib's.
+
+```python
+report = camlib.sheet_report(reports, nest=result, remnant=left, rapid_mm_min=machine_rapid,
+                             consumables=(camlib.Consumable("nozzle", life_pierces=400),))
+print(report.cut_length_mm, report.pierces, report.seconds, report.utilisation)
+```
 
 ## DXF
 

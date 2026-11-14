@@ -46,6 +46,33 @@ pub struct RemnantRequest {
     /// Material given up beyond everything the cut can have removed. No
     /// default: it is the shop's judgement of its edges and its fixturing.
     pub remnant_margin_mm: f64,
+    /// The crop cut made after the parts (the thermal cut's `crop`): its
+    /// kerf and pierce crater are removed too, so an offcut it frees is a
+    /// piece of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crop: Option<crate::thermal::CropCut>,
+}
+
+/// A box round the segment a-b, `r` to each side and past each end.
+fn band(a: [f64; 2], b: [f64; 2], r: f64) -> Boundary {
+    let length = (b[0] - a[0]).hypot(b[1] - a[1]);
+    let t = [(b[0] - a[0]) / length, (b[1] - a[1]) / length];
+    let n = [-t[1], t[0]];
+    let corner = |p: [f64; 2], along: f64, across: f64| {
+        [
+            p[0] + along * r * t[0] + across * r * n[0],
+            p[1] + along * r * t[1] + across * r * n[1],
+            0.,
+        ]
+    };
+    Boundary {
+        vertices: vec![
+            corner(a, -1., -1.),
+            corner(b, 1., -1.),
+            corner(b, 1., 1.),
+            corner(a, -1., 1.),
+        ],
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -57,6 +84,11 @@ pub struct RemnantCheck {
     pub min_part_distance_mm: f64,
     /// The distance required: cut reach plus margin.
     pub required_distance_mm: f64,
+    /// Points of the crop cut tested, the least distance found from one to
+    /// the remnant, and the distance required of them (half the kerf, the
+    /// pierce clearance and the margin).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crop: Option<(usize, f64, f64)>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -192,7 +224,8 @@ pub fn remnant(request: &RemnantRequest) -> Result<Remnant, String> {
         }),
     };
     let mut diagnostics = vec![];
-    if request.parts.components.is_empty() {
+    let mut crop_check: Option<(usize, f64, f64)> = None;
+    if request.parts.components.is_empty() && request.crop.is_none() {
         let mut region = empty(request.sheet.components.clone());
         region.boundary_error_mm = request.sheet.boundary_error_mm;
         return Ok(Remnant {
@@ -206,6 +239,7 @@ pub fn remnant(request: &RemnantRequest) -> Result<Remnant, String> {
                 part_points: 0,
                 min_part_distance_mm: f64::INFINITY,
                 required_distance_mm: required,
+                crop: crop_check,
             },
             diagnostics,
         });
@@ -245,7 +279,50 @@ pub fn remnant(request: &RemnantRequest) -> Result<Remnant, String> {
             }
         });
     }
-    let removed = removed.expect("parts");
+    // The crop cut's kerf and its pierce crater, as boxes round its
+    // segments.
+    let crop_required = request.kerf_mm / 2.
+        + request.pierce_clearance_mm.unwrap_or(request.kerf_mm)
+        + request.remnant_margin_mm;
+    if let Some(crop) = &request.crop {
+        let points = &crop.points_mm;
+        if !(2..=3).contains(&points.len())
+            || !points
+                .iter()
+                .flatten()
+                .all(|v| v.is_finite() && v.abs() <= 1e6)
+            || points
+                .windows(2)
+                .any(|w| (w[0][0] - w[1][0]).hypot(w[0][1] - w[1][1]) <= request.kerf_mm)
+        {
+            return Err("remnant: crop needs two points (a straight cut) or three (an L), each more than a kerf from the next".into());
+        }
+        for (i, w) in points.windows(2).enumerate() {
+            let cut = PlanarRegion {
+                version: 1,
+                units: "mm".into(),
+                name: format!("crop {i}"),
+                boundary_error_mm: 0.,
+                components: vec![Component {
+                    outer: band(w[0], w[1], crop_required + slack),
+                    holes: vec![],
+                }],
+                source: serde_json::Value::Null,
+            }
+            .prepare(options)
+            .map_err(|e| format!("remnant: crop cut: {e}"))?;
+            removed = Some(match removed {
+                None => cut,
+                Some(all) => {
+                    all.boolean_prepared(&cut, Boolean::Union)
+                        .map_err(|e| format!("remnant: uniting what the crop cut removed: {e}"))?
+                        .into_parts()
+                        .1
+                }
+            });
+        }
+    }
+    let removed = removed.expect("parts or a crop cut");
     let left = sheet
         .boolean_prepared(&removed, Boolean::Difference)
         .map_err(|e| format!("remnant: the sheet less what the cut removed: {e}"))?;
@@ -276,6 +353,33 @@ pub fn remnant(request: &RemnantRequest) -> Result<Remnant, String> {
                     ));
                 }
             }
+        }
+        if let Some(crop) = &request.crop {
+            let (mut points, mut nearest) = (0, f64::INFINITY);
+            for w in crop.points_mm.windows(2) {
+                let length = (w[0][0] - w[1][0]).hypot(w[0][1] - w[1][1]);
+                let steps = (length / crop_required.max(tolerance))
+                    .ceil()
+                    .clamp(1., 1e5) as usize;
+                for k in 0..=steps {
+                    let f = k as f64 / steps as f64;
+                    let p = [
+                        w[0][0] + f * (w[1][0] - w[0][0]),
+                        w[0][1] + f * (w[1][1] - w[0][1]),
+                    ];
+                    let q = prepared.query(p)?;
+                    let distance = -q.signed_clearance_mm.unwrap_or(f64::NEG_INFINITY);
+                    points += 1;
+                    nearest = nearest.min(distance);
+                    if matches!(q.verdict, Verdict::Allowed) || distance < crop_required {
+                        return Err(format!(
+                            "remnant: the construction failed its check and is not returned: the crop cut at ({:.4}, {:.4}) is {distance:.4} mm from the remnant, less than the {crop_required:.4} mm it removes with the margin; this is a defect: report it",
+                            p[0], p[1]
+                        ));
+                    }
+                }
+            }
+            crop_check = Some((points, nearest, crop_required));
         }
         let sheet_uncertainty = request.sheet.boundary_error_mm + 2. * uncertainty;
         for c in &region.components {
@@ -312,6 +416,7 @@ pub fn remnant(request: &RemnantRequest) -> Result<Remnant, String> {
             part_points,
             min_part_distance_mm: least,
             required_distance_mm: required,
+            crop: crop_check,
         },
         diagnostics,
     })

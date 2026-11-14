@@ -180,6 +180,10 @@ pub struct ThermalCutOperation {
     /// tip up between the slats (see `thermal/tip_up.rs`). Off unless set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avoid_cut_parts: Option<AvoidCutParts>,
+    /// A last cut that frees the usable offcut from the skeleton. Off unless
+    /// set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crop: Option<CropCut>,
     /// "wear": the same beam-center path posted with G41/G42 so the operator
     /// can trim the kerf at the controller (turned on over the straight
     /// lead-in, off over the straight lead-out).
@@ -191,6 +195,18 @@ pub struct ThermalCutOperation {
     pub work_offset: u8,
     pub tool_number: u32,
     pub length_register: u32,
+}
+
+/// The crop cut: a straight cut (two points) or an L (three), in the
+/// sheet's coordinates, made after every part is cut. The beam is pierced at
+/// the first point and follows the points at the cut's feed and height, with
+/// no leads and no kerf offset: the points are the kerf's centre line.
+/// Nothing is assumed about the sheet's edges: the caller places the ends
+/// (on the edge, or past it by the run-off the shop uses).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CropCut {
+    pub points_mm: Vec<[f64; 2]>,
 }
 
 #[derive(Debug, Serialize)]
@@ -214,6 +230,16 @@ pub struct ThermalCutReport {
     pub min_part_step_mm: Option<f64>,
     /// Travel between cuts with the beam off, in the sheet's plane.
     pub rapid_length_mm: f64,
+    /// The crop cut's length (in `cut_length_mm` too; its pierce is one of
+    /// `pierces`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crop_length_mm: Option<f64>,
+    /// Every fed move (plunges, leads, cuts) at its programmed feed, in
+    /// seconds: nominal, without acceleration or the controller's own
+    /// corner and height-control behaviour.
+    pub feed_seconds: f64,
+    /// The pierce delays the program dwells for, in seconds.
+    pub dwell_seconds: f64,
     /// Rapids taken round parts already cut free (`avoid_cut_parts`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rerouted_rapids: Option<usize>,
@@ -435,6 +461,16 @@ impl ThermalCutPlan {
                             && s.feed_percent <= 100.
                     }),
                     "small_holes needs a positive max_diameter_mm and feed_percent in (0, 100]".into(),
+                ),
+                (
+                    op.crop.as_ref().is_none_or(|c| {
+                        (2..=3).contains(&c.points_mm.len())
+                            && c.points_mm.iter().flatten().all(|v| v.is_finite() && v.abs() <= 1e6)
+                            && c.points_mm.windows(2).all(|w| {
+                                (w[0][0] - w[1][0]).hypot(w[0][1] - w[1][1]) > kerf
+                            })
+                    }),
+                    "crop needs two points (a straight cut) or three (an L), each more than a kerf from the next".into(),
                 ),
                 (
                     op.micro_joints.is_none_or(|j| {
@@ -1364,6 +1400,111 @@ impl ThermalCutPlan {
                 );
             }
         }
+        // The crop cut, last: every part is cut, so nothing it frees can be a
+        // part. Its pierce crater and its kerf are proven clear of every
+        // part as a lead's are.
+        let mut crop_length_mm = None;
+        if let Some(crop) = &op.crop {
+            let points = &crop.points_mm;
+            let low = |p: [f64; 2]| at_z(p, z_check);
+            probe(
+                &crater_probe,
+                line(at_z(points[0], top + 1.), low(points[0])),
+                "crop cut's pierce point",
+            )?;
+            for w in points.windows(2) {
+                probe(&kerf_probe, line(low(w[0]), low(w[1])), "crop cut")?;
+            }
+            let detour = match &op.avoid_cut_parts {
+                Some(avoid) => freed
+                    .route([pos[0], pos[1]], points[0], avoid.clearance_mm, leaving)
+                    .map_err(|e| format!("thermal cut {}: crop cut: {e}", op.id))?,
+                None => vec![],
+            };
+            rerouted += usize::from(!detour.is_empty());
+            if program {
+                push_move(
+                    &mut steps,
+                    [pos[0], pos[1], z_travel.max(pos[2])],
+                    &mut pos,
+                    MoveKind::Rapid,
+                    None,
+                );
+            }
+            for p in detour {
+                let z = pos[2];
+                push_move(&mut steps, at_z(p, z), &mut pos, MoveKind::Rapid, None);
+            }
+            if program {
+                let z = pos[2];
+                push_move(
+                    &mut steps,
+                    at_z(points[0], z),
+                    &mut pos,
+                    MoveKind::Rapid,
+                    None,
+                );
+                push_move(
+                    &mut steps,
+                    at_z(points[0], z_pierce),
+                    &mut pos,
+                    MoveKind::Rapid,
+                    None,
+                );
+            } else {
+                push_move(
+                    &mut steps,
+                    at_z(points[0], z_cut),
+                    &mut pos,
+                    MoveKind::Rapid,
+                    None,
+                );
+            }
+            steps.push_back(Step::Event(Event::Beam {
+                power_percent: power,
+            }));
+            if op.pierce_delay_s > 0. {
+                steps.push_back(Step::Event(Event::Dwell {
+                    seconds: op.pierce_delay_s,
+                }));
+            }
+            push_move(
+                &mut steps,
+                at_z(points[0], z_cut),
+                &mut pos,
+                MoveKind::Plunge,
+                op.plunge_mm_min,
+            );
+            if op.height_control {
+                steps.push_back(Step::Event(Event::HeightControl { on: true }));
+            }
+            let mut length = 0.;
+            for w in points.windows(2) {
+                length += (w[0][0] - w[1][0]).hypot(w[0][1] - w[1][1]);
+                push_move(
+                    &mut steps,
+                    at_z(w[1], z_cut),
+                    &mut pos,
+                    MoveKind::Cut,
+                    Some(op.feed_mm_min),
+                );
+            }
+            if op.height_control {
+                steps.push_back(Step::Event(Event::HeightControl { on: false }));
+            }
+            steps.push_back(Step::Event(Event::Beam { power_percent: 0. }));
+            if program {
+                push_move(
+                    &mut steps,
+                    [pos[0], pos[1], z_travel],
+                    &mut pos,
+                    MoveKind::Rapid,
+                    None,
+                );
+            }
+            cut_length += length;
+            crop_length_mm = Some(length);
+        }
         if common.len() > 0 {
             common_line::check_kerfs(steps.iter(), &pierced, kerf, op.tolerance_mm)?;
         }
@@ -1516,6 +1657,16 @@ impl ThermalCutPlan {
                 _ => 0.,
             })
             .sum();
+        let (mut feed_seconds, mut dwell_seconds) = (0., 0.);
+        for step in &steps {
+            match step {
+                Step::Move(curve, kind, Some(feed)) if !kind.is_rapid() => {
+                    feed_seconds += curve.prepare(op.tolerance_mm)?.length_mm() / feed * 60.;
+                }
+                Step::Event(Event::Dwell { seconds }) => dwell_seconds += seconds,
+                _ => {}
+            }
+        }
         let report = ThermalCutReport {
             strategy: "thermal_cut",
             geometric_residual_status: ResidualStatus::Pending,
@@ -1524,13 +1675,16 @@ impl ThermalCutPlan {
             parts: definition.components.len(),
             loops: order.len() - common.len(),
             small_holes: small,
-            pierces: order.len(),
+            pierces: order.len() + usize::from(op.crop.is_some()),
             micro_joints,
             cut_length_mm: cut_length,
             order: report_order,
             part_order: op.part_order,
             min_part_step_mm,
             rapid_length_mm,
+            crop_length_mm,
+            feed_seconds,
+            dwell_seconds,
             rerouted_rapids: op.avoid_cut_parts.map(|_| rerouted),
             loops_completed: 0,
             common_lines,

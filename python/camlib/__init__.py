@@ -80,6 +80,7 @@ _EXPORTS = {
             "SmallHoles",
             "SpreadHeat",
             "AvoidCutParts",
+            "CropCut",
             "MicroJoints",
             "CommonLine",
             "Flat",
@@ -187,7 +188,10 @@ _EXPORTS = {
         "turning",
     ),
     **dict.fromkeys(("PlanarRegion", "Boundary", "Component"), "planar"),
-    **dict.fromkeys(("Nest", "NestPart", "NestPlacement", "NestResult", "Remnant"), "nesting"),
+    **dict.fromkeys(
+        ("Nest", "NestPart", "NestPlacement", "NestResult", "Remnant", "Consumable", "SheetReport", "sheet_report"),
+        "nesting",
+    ),
     "WorkFrame": "motion",
     **dict.fromkeys(("cutting_data", "CuttingData"), "cutting"),
     **dict.fromkeys(

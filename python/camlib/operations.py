@@ -1855,6 +1855,22 @@ class AvoidCutParts:
 
 
 @dataclass(frozen=True)
+class CropCut:
+    """The last cut of a ``ThermalCut``: it frees the usable offcut from the
+    skeleton. ``points_mm``: two (x, y) points for a straight cut or three for
+    an L, in the sheet's coordinates; they are the kerf's centre line. The
+    beam is pierced at the first point and follows them at the cut's feed and
+    height, with no leads. Nothing is assumed about the sheet's edges: place
+    the ends on the edge, or past it by the run-off your shop uses. The pierce
+    crater and the kerf are proven clear of every part."""
+
+    points_mm: tuple
+
+    def to_dict(self):
+        return dict(points_mm=[[float(v) for v in point] for point in self.points_mm])
+
+
+@dataclass(frozen=True)
 class ThermalCut:
     """Plasma or laser profile cutting of sheet parts (``parts``: a
     PlanarRegion whose components are the parts to keep, each with holes)
@@ -1892,7 +1908,10 @@ class ThermalCut:
 
     ``avoid_cut_parts=AvoidCutParts(clearance_mm)`` keeps every rapid that
     distance from the pieces already cut free; the report counts the
-    ``rerouted_rapids``. It is not planned together with ``common_line``."""
+    ``rerouted_rapids``. It is not planned together with ``common_line``.
+
+    ``crop=CropCut(points)`` adds a last straight or L-shaped cut that frees
+    the offcut from the skeleton; the report gives its ``crop_length_mm``."""
 
     id: str
     tool: object
@@ -1922,6 +1941,7 @@ class ThermalCut:
     common_line: CommonLine | None = field(default=None, kw_only=True)
     part_order: object = field(default="nearest", kw_only=True)
     avoid_cut_parts: AvoidCutParts | None = field(default=None, kw_only=True)
+    crop: CropCut | None = field(default=None, kw_only=True)
 
     def common_line_spacing_mm(self):
         """The gap between two parts whose facing edges are a common line:
@@ -1955,6 +1975,10 @@ class ThermalCut:
             }
         if self.common_line is not None:
             result["common_line"] = dict(min_length_mm=self.common_line.min_length_mm)
+        if self.crop is None:
+            result.pop("crop")
+        else:
+            result["crop"] = self.crop.to_dict()
         if self.avoid_cut_parts is None:
             result.pop("avoid_cut_parts")
         else:

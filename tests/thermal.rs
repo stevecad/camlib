@@ -478,3 +478,88 @@ fn rapids_go_round_parts_already_cut_free_or_the_cut_is_refused() {
     let error = cut(serde_json::json!({"avoid_cut_parts": {"clearance_mm": 0.}})).err().unwrap();
     assert!(error.contains("clearance_mm 0 must be positive"), "{error}");
 }
+
+#[test]
+fn a_crop_cut_is_the_last_cut_and_frees_the_offcut() {
+    use camlib::nesting::remnant::{RemnantRequest, remnant};
+    let crop = serde_json::json!({"points_mm": [[135., 0.], [135., 108.], [0., 108.]]});
+    let (events, plan, stock) = run(operation(serde_json::json!({"crop": crop.clone()}))).unwrap();
+    let report = serde_json::to_value(plan.report()).unwrap();
+    assert_eq!(report["crop_length_mm"], 108. + 135.);
+    let plain = serde_json::to_value(run(operation(serde_json::json!({}))).unwrap().1.report()).unwrap();
+    assert_eq!(report["pierces"].as_u64(), Some(plain["pierces"].as_u64().unwrap() + 1));
+    let added = report["cut_length_mm"].as_f64().unwrap() - plain["cut_length_mm"].as_f64().unwrap();
+    assert!((added - 243.).abs() < 1e-9);
+    // The last two cutting moves are the crop cut, after every other cut,
+    // at the cut height and feed.
+    let cuts: Vec<&Motion> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Motion { motion } if motion.kind == MoveKind::Cut => Some(motion),
+            _ => None,
+        })
+        .collect();
+    let last = &cuts[cuts.len() - 2..];
+    assert_eq!((last[0].curve.start(), last[0].curve.end()), ([135., 0., 7.5], [135., 108., 7.5]));
+    assert_eq!(last[1].curve.end(), [0., 108., 7.5]);
+    assert_eq!(last[1].feed_mm_min, Some(2500.));
+    // The sheet is cut through along it; the parts are whole.
+    assert_eq!(top_at(&stock, [135., 50.]), (0., 0.));
+    assert_eq!(top_at(&stock, [60., 108.]), (0., 0.));
+    assert_eq!(top_at(&stock, [70., 30.]), (6., 6.));
+    // The remnant with the crop cut: the offcut is a piece of its own, the
+    // other side of the kerf from the parts.
+    let request: RemnantRequest = serde_json::from_value(serde_json::json!({
+        "sheet": PlanarRegion {
+            version: 1, units: "mm".into(), name: "sheet".into(), boundary_error_mm: 0.,
+            components: vec![Component { outer: rect(0., 0., 200., 120.), holes: vec![] }],
+            source: serde_json::Value::Null,
+        },
+        "parts": parts(), "kerf_mm": KERF,
+        "lead_in": {"length_mm": 2., "radius_mm": 3.}, "lead_out": {"length_mm": 1., "radius_mm": 2.},
+        "tolerance_mm": 1e-5, "remnant_margin_mm": 1., "crop": crop
+    }))
+    .unwrap();
+    let left = remnant(&request).unwrap();
+    let offcut = &left.region.components[0];
+    // An L round the top and the right: every corner beyond the kerf's edge
+    // and the margin (half the kerf, the pierce clearance, the margin).
+    let reach = KERF / 2. + KERF + 1.;
+    for v in &offcut.outer.vertices {
+        assert!(v[0] >= 135. + reach || v[1] >= 108. + reach, "{v:?}");
+    }
+    let (points, nearest, required) = left.check.crop.unwrap();
+    assert!(points > 50 && nearest >= required && required == reach);
+    // No cell the cut removed lies in any piece of the remnant.
+    let spec = spec();
+    for j in 0..480 {
+        for i in 0..800 {
+            let p = [(i as f64 + 0.5) * spec.cell_size_mm, (j as f64 + 0.5) * spec.cell_size_mm];
+            if top_at(&stock, p).1 < 6. {
+                for c in &left.region.components {
+                    let all = std::iter::once(&c.outer).chain(&c.holes);
+                    assert!(all.clone().all(|b| b.vertices.iter().all(|v| v[2] == 0.)));
+                    assert!(!inside(&c.outer, p) || c.holes.iter().any(|h| inside(h, p)), "{p:?}");
+                }
+            }
+        }
+    }
+    // Through a part, or not a line: refused by name.
+    let through = run(operation(serde_json::json!({"crop": {"points_mm": [[60., 0.], [60., 120.]]}})));
+    assert!(through.err().unwrap().contains("crop cut"));
+    let point = run(operation(serde_json::json!({"crop": {"points_mm": [[150., 0.]]}})));
+    assert!(point.err().unwrap().contains("crop needs two points"));
+}
+
+/// Even-odd test against a boundary's vertices (straight-edged outlines).
+fn inside(b: &Boundary, p: [f64; 2]) -> bool {
+    let v = &b.vertices;
+    let mut inside = false;
+    for i in 0..v.len() {
+        let (a, c) = (v[i], v[(i + 1) % v.len()]);
+        if (a[1] > p[1]) != (c[1] > p[1]) && p[0] < a[0] + (p[1] - a[1]) * (c[0] - a[0]) / (c[1] - a[1]) {
+            inside = !inside;
+        }
+    }
+    inside
+}
