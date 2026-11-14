@@ -2233,7 +2233,7 @@ fn probe_legs(
 }
 
 #[pyfunction]
-#[pyo3(signature = (curve_json, start, unit, decimals, geometry_tolerance, output_tolerance, radius_tolerance, radius_relative_tolerance=0.0))]
+#[pyo3(signature = (curve_json, start, unit, decimals, geometry_tolerance, output_tolerance, radius_tolerance, radius_relative_tolerance=0.0, max_sweep_rad=f64::INFINITY))]
 #[allow(clippy::too_many_arguments)]
 fn round_circular_words(
     curve_json: &str,
@@ -2244,6 +2244,7 @@ fn round_circular_words(
     output_tolerance: f64,
     radius_tolerance: f64,
     radius_relative_tolerance: f64,
+    max_sweep_rad: f64,
 ) -> PyResult<(Vec<f64>, Vec<f64>)> {
     if curve_json.len() > 4096 {
         return Err(PyValueError::new_err(
@@ -2263,6 +2264,7 @@ fn round_circular_words(
             absolute_mm: radius_tolerance,
             relative: radius_relative_tolerance,
         },
+        max_sweep_rad,
     )
     .map_err(PyValueError::new_err)?;
     Ok((end.to_vec(), offsets.to_vec()))
@@ -2350,6 +2352,7 @@ struct DefaultMotionPost {
     geometry_tolerance: f64,
     output_tolerance: f64,
     radius_tolerance: camlib::post_rounding::RadiusTolerance,
+    max_sweep_rad: f64,
 }
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -2361,6 +2364,8 @@ struct DefaultMotionConfig {
     decimals: usize,
     geometry_tolerance: f64,
     output_tolerance: f64,
+    /// The largest sweep the machine accepts in one arc block.
+    max_sweep_rad: f64,
 }
 #[pymethods]
 impl DefaultMotionPost {
@@ -2386,6 +2391,7 @@ impl DefaultMotionPost {
             decimals: c.decimals,
             geometry_tolerance: c.geometry_tolerance,
             output_tolerance: c.output_tolerance,
+            max_sweep_rad: c.max_sweep_rad,
             radius_tolerance: c.decoder.radius_tolerance(),
             decoder: camlib::post_decode::Decoder::new(c.decoder).map_err(PyValueError::new_err)?,
         })
@@ -2559,6 +2565,7 @@ impl DefaultMotionPost {
                     self.geometry_tolerance,
                     self.output_tolerance,
                     self.radius_tolerance,
+                    self.max_sweep_rad,
                 )
                 .map_err(|error| {
                     PyValueError::new_err(format!(

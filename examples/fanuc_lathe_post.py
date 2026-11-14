@@ -33,7 +33,8 @@ Premises (declared, not checked on the machine):
   reads a least-increment count).
 - G00 runs each axis at its own rate unless linear-interpolation positioning
   is set (parameter LRP, No. 1401#1): rapids move one axis at a time
-  (refused otherwise).
+  (refused otherwise; an axis that only settles onto its rounded word,
+  within the machine's tolerance, is not a second move).
 - No local coordinate system (G52) and no tool-nose radius compensation
   active at the start; no smoothing that departs from the programmed path.
 - Tool-nose radius compensation (compensation="wear"): the program is the
@@ -236,8 +237,13 @@ class FanucLatheDecoder(NativeGCodeDecoder):
             if (
                 x is not None
                 and z is not None
-                and x * self.units / 2 != self.position[0]
-                and z * self.units != self.position[2]
+                # Each axis at its own rate keeps the tool inside the rectangle of
+                # the two moves. Where the smaller side is within the machine's
+                # tolerance (an axis only settling onto its rounded word: inch
+                # output from a position stated in millimetres), every path in it
+                # is within that tolerance of the straight line.
+                and min(abs(x * self.units / 2 - self.position[0]), abs(z * self.units - self.position[2]))
+                > self.machine.tolerance_mm
             ):
                 raise ValueError("G00 moving X and Z together may not follow a straight line")
         if text == d.code("end"):

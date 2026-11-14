@@ -113,6 +113,9 @@ pub fn arc_radii(start: [f64; 2], end: [f64; 2], offset: [f64; 2], unit: f64) ->
     }
 }
 
+/// `max_sweep_rad`: the largest sweep the machine accepts in one block;
+/// candidates whose written sweep exceeds it are not taken.
+#[allow(clippy::too_many_arguments)]
 pub fn circular_words(
     source: &Curve,
     start: Vec3,
@@ -121,6 +124,7 @@ pub fn circular_words(
     geometry_tolerance: f64,
     output_tolerance: f64,
     radius_tolerance: RadiusTolerance,
+    max_sweep_rad: f64,
 ) -> Result<(Vec3, Vec3), String> {
     if ![1., 25.4].contains(&unit)
         || !(2..=9).contains(&decimals)
@@ -218,6 +222,12 @@ pub fn circular_words(
         };
         if w == 0. {
             w = sweep.signum() * TAU;
+        }
+        // The arc as written, not as planned, is what the controller runs: a
+        // half turn whose rounded words span a hair more than the machine's
+        // largest sweep is not one it accepts.
+        if w.abs() > max_sweep_rad {
+            return None;
         }
         let curve = if helix {
             Curve::Helix {
@@ -413,11 +423,22 @@ mod tests {
             sweep_rad: -1.5609402989751604,
         };
         assert!(
-            circular_words(&source, [20.069, 22.0, 8.5], 1., 3, 1e-5, 0.01, ABS_0_005).is_err()
+            circular_words(
+                &source,
+                [20.069, 22.0, 8.5],
+                1.,
+                3,
+                1e-5,
+                0.01,
+                ABS_0_005,
+                f64::INFINITY
+            )
+            .is_err()
         );
         let start = [20.069, 21.9998, 8.5];
-        let (end, offsets) = circular_words(&source, start, 1., 4, 1e-5, 0.01, ABS_0_005)
-            .expect("representable words");
+        let (end, offsets) =
+            circular_words(&source, start, 1., 4, 1e-5, 0.01, ABS_0_005, f64::INFINITY)
+                .expect("representable words");
         // Decode the emitted words as a controller would (clockwise G2).
         let (x, y) = (-offsets[0], -offsets[1]);
         let (ex, ey) = (
@@ -479,6 +500,7 @@ mod tests {
                 1e-5,
                 0.01,
                 RadiusTolerance::default(),
+                f64::INFINITY,
             )
             .expect("full-circle words");
             assert_eq!(end, start);
@@ -643,8 +665,17 @@ mod tests {
             plane: Plane::Xy,
             sweep_rad: 3.1403928936857164,
         };
-        let (end, offsets) =
-            circular_words(&source, [9.995, 20., 0.], 1., 3, 1e-5, 0.01, EXACT).unwrap();
+        let (end, offsets) = circular_words(
+            &source,
+            [9.995, 20., 0.],
+            1.,
+            3,
+            1e-5,
+            0.01,
+            EXACT,
+            f64::INFINITY,
+        )
+        .unwrap();
         assert_eq!((end[0], end[1]), (29.999, 20.));
         assert_eq!((offsets[0], offsets[1]), (10.002, 0.006));
     }

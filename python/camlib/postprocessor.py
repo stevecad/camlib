@@ -1811,6 +1811,7 @@ class GCodePost(PostProcessor):
                 self.machine.tolerance_mm,
                 self.machine.dialect.radius_tolerance_mm,
                 self.machine.dialect.radius_relative_tolerance,
+                self.machine.max_sweep_rad,
             )
         except ValueError as error:
             raise ValueError(
@@ -3223,6 +3224,7 @@ class PostEngine:
                         decimals=self.machine.decimals,
                         geometry_tolerance=post.geometry_tolerance_mm,
                         output_tolerance=self.machine.tolerance_mm,
+                        max_sweep_rad=self.machine.max_sweep_rad,
                     )
                 )
             )

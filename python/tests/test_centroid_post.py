@@ -23,7 +23,7 @@ def machine(p, s, **settings):
         s.tools,
         traverse_feed_mm_min=3000,
         work_to_machine=WorkFrame(origin_mm=(100, 200, 300)),
-        decimals=3,
+        decimals=settings.pop('decimals', 3),
         **{
             'output_units': 'mm',
             'max_feed_mm_min': 10000,
@@ -72,6 +72,27 @@ class CentroidPostTest(unittest.TestCase):
         decoded = [v for c in chunks for v in c.motions]
         self.assertGreater(len(decoded), 3)
         self.assertEqual(decoded[0].curve.end, (10, 0, 3))
+
+    def test_the_same_program_in_inches(self):
+        # A control that runs in inches: G20, four decimals, and the decoded
+        # motions are still the source's within the machine's tolerance.
+        p, s = fixture()
+        m = machine(p, s, output_units='inch', decimals=4)
+        chunks = list(post_centroid(p, m))
+        lines = ''.join(c.text for c in chunks).splitlines()
+        self.assertIn('G20', lines)
+        self.assertNotIn('G21', lines)
+        metric = [v for c in post_centroid(p, machine(p, s)) for v in c.motions]
+        decoded = [v for c in chunks for v in c.motions]
+        self.assertEqual(len(decoded), len(metric))
+        for a, b in zip(decoded, metric):
+            self.assertLess(max(abs(x - y) for x, y in zip(a.curve.end, b.curve.end)), m.tolerance_mm)
+        # Words are inches: nothing as large as the millimetre values.
+        xs = [
+            float(w[1:]) for line in lines for w in line.split(' ') if w[:1] == 'X' and line[:2] in ('G1', 'G2', 'G3')
+        ]
+        mm = [v.curve.end[0] for v in metric]
+        self.assertLess(max(xs), max(mm) / 20)
 
     def test_rigid_tapping_writes_q_lead_on_every_line(self):
         spec = importlib.util.spec_from_file_location('tapping_test', ROOT / 'python/tests/test_tapping.py')

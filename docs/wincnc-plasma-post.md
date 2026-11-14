@@ -38,6 +38,7 @@ program = job.post_nc("sheet", machine=machine, post=w.WinCNCPlasmaPost,
 | Start | `M65` | Plasma setup macro |
 | Each cut | `G0 X Y`, `M61`, the cut, `M62` | M61 fires the torch: touch, pierce height, pierce delay, cut height, THC per the material setup; M62 turns it off |
 | Arcs | `G2`/`G3 X Y I J`, at most half a turn | I/J are always relative in WinCNC; no plane words (XY only) |
+| Inches | `output_units="inch"`, `decimals=4`: `G20`, every word in inches | A half-turn arc is kept as an arc only where its rounded inch words still span no more than half a turn; otherwise it is written as checked lines (with `LoweringOptions(native_arcs=True)`) |
 | Feeds | `F` on every cutting move | |
 | Z | None | Plan with `height_mode="fixed"` and start with the torch at the cut height |
 | End | `M66` | End macro |

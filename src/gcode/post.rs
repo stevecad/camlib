@@ -1518,6 +1518,7 @@ impl DefaultPost {
                 absolute_mm: m.dialect.radius_tolerance_mm,
                 relative: m.dialect.radius_relative_tolerance,
             },
+            m.max_sweep_rad,
         )
         .map_err(|error| {
             format!(

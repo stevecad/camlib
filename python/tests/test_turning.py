@@ -896,6 +896,69 @@ class TurningTest(unittest.TestCase):
                 )
             )
 
+    def test_the_fanuc_and_centroid_lathe_posts_in_inches(self):
+        # A lathe whose control runs in inches: the same plan posted in
+        # inches (G20) at four decimals, with feeds per revolution that are
+        # exact in inches, and certified against the plan like any program.
+        from test_drill_cycles import example
+
+        css = dict(rpm=3000, surface_speed_m_min=200)
+        plan = job(
+            feed_per_rev=True,
+            tools=(camlib.TurnToolSetting(cnmg(), 1, 1),),
+            operations=(
+                camlib.TurnFace("face", "cnmg", 0, feed_mm_rev=0.254, **{'rpm': 1000, **css}),
+                camlib.TurnRough("rough", "cnmg", feed_mm_rev=0.254, **{'rpm': 1000, **css}),
+                camlib.TurnFinish("finish", "cnmg", feed_mm_rev=0.1016, **{'rpm': 1200, **css}),
+            ),
+        ).plan()
+        tools = tuple(
+            ToolSetting.for_tool(t, number=i, length_register=i, position_after_mm=plan.program.initial_position_mm)
+            for i, t in enumerate(plan.program.tools, 1)
+        )
+        for module, post, decoder in (
+            ("fanuc_lathe_post", "FanucLathePost", "FanucLatheDecoder"),
+            ("centroid_lathe_post", "CentroidLathePost", "CentroidLatheDecoder"),
+        ):
+            with self.subTest(post=module):
+                p = example(module)
+                m = p.define_machine(
+                    "lathe",
+                    tools,
+                    max_spindle_rpm=4000,
+                    output_units='inch',
+                    decimals=4,
+                    max_feed_mm_min=10000,
+                    arcs=True,
+                    helices=True,
+                    max_sweep_rad=6.283185307179586,
+                    max_tool_number=99999,
+                    max_length_register=99999,
+                    tool_changes=True,
+                    flood=True,
+                    mist=True,
+                    rapid_mm_min=6000,
+                )
+                nc = "".join(
+                    x.text
+                    for x in post_program(
+                        plan.program,
+                        machine=m,
+                        post=getattr(p, post),
+                        decoder=getattr(p, decoder),
+                        # An arc with no exactly consistent inch words at four
+                        # decimals is written as checked lines.
+                        lowering=camlib.LoweringOptions(native_arcs=True),
+                    )
+                ).splitlines()
+                self.assertIn("G20", nc[:4])
+                self.assertNotIn("G21", nc)
+                self.assertIn("G99 F0.01", nc)  # 0.254 mm/rev
+                # Diameters and lengths in inches: the 40 mm bar is under 1.6 in.
+                xs = [float(w[1:]) for line in nc for w in line.split(" ") if w[:1] == "X" and line[:1] == "G"]
+                self.assertTrue(xs and max(xs) < 4, max(xs))
+                self.assertFalse(any(w.startswith("Y") for line in nc for w in line.split(" ")))
+
     def test_fanuc_lathe_post(self):
         from test_drill_cycles import example
 

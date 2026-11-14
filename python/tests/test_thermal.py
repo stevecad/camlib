@@ -3,6 +3,7 @@ checks, posting (generic G-code with M3 S/M5 and THC words, GRBL laser M4)."""
 
 from pathlib import Path
 import sys
+import math
 import unittest
 
 import camlib
@@ -463,6 +464,105 @@ class ThermalCutTest(unittest.TestCase):
         # Fixed height: one Z (the cut height) from the first move on.
         moves = [line for line in lines if line.startswith(("G0 ", "G1 "))]
         self.assertEqual({w for line in moves for w in line.split() if w[0] == "Z"}, {"Z7"})
+
+
+class BeamPostsInInchesTest(unittest.TestCase):
+    """Every beam post on a controller that runs in inches: the same cuts are
+    posted in inches (G20) at four decimals and certified against the plan
+    like any program. Rings at positions that are not round in inches: their
+    half-turn arcs, rounded to inch words, must still be arcs the machine
+    accepts (a half turn at most on WinCNC) or checked lines."""
+
+    FIXED = dict(
+        height_mode="fixed",
+        pierce_height_mm=None,
+        travel_height_mm=None,
+        plunge_mm_min=None,
+        pierce_delay_s=0,
+    )
+    LIMITS = dict(
+        max_feed_mm_min=10000,
+        max_spindle_rpm=30000,
+        arcs=True,
+        max_tool_number=1,
+        max_length_register=1,
+        tool_changes=True,
+        rapid_mm_min=6000,
+    )
+
+    def rings(self, tool, k, **cut):
+        from dataclasses import replace
+
+        cx, cy = 60 + 3.137 * k, 55 + 1.713 * k
+        parts = PlanarRegion("rings", (Component(circle((cx, cy), 24), (circle((cx, cy), 10),)),), 0)
+        j = job(tool, **{**self.FIXED, **cut})
+        setup = j.setups[0]
+        op = replace(setup.operations[0].operation, parts=parts)
+        setup = replace(
+            setup, operations=(camlib.OperationNode(op, sources=()),), initial_position_mm=(0, 0, THICKNESS + 1.5)
+        )
+        return camlib.Job("plasma", "1", (setup,))
+
+    def posted(self, module, post, decoder, tool, machine, **cut):
+        from test_drill_cycles import example
+
+        m = example(module)
+        arcs = 0
+        for k in range(12):
+            j = self.rings(tool, k, **cut)
+            header = j.compile().setup("sheet").program_header()
+            setting = ToolSetting.for_tool(
+                tool, number=1, length_register=1, position_after_mm=header.initial_position_mm
+            )
+            lines = j.post_nc(
+                "sheet",
+                machine=m.define_machine("table", setting, output_units="inch", decimals=4, **self.LIMITS, **machine),
+                post=getattr(m, post),
+                decoder=getattr(m, decoder),
+                lowering=camlib.LoweringOptions(native_arcs=True),
+                accept={"unchecked_machine"},
+            ).text.splitlines()
+            self.assertIn("G20", lines[:6], (module, k))
+            words = [w for line in lines for w in line.split() if w[0] == "X" and line[:2] in ("G0", "G1", "G2", "G3")]
+            xs = [float(w[1:]) for w in words]
+            # The rings and their leads span about 30..125 mm in x: 1.2..4.9 in. Nothing is posted in millimetres.
+            self.assertTrue(xs and 1.0 < min(xs) and max(xs) < 5.2, (module, k, min(xs), max(xs)))
+            arcs += sum(line[:2] in ("G2", "G3") for line in lines)
+        return arcs
+
+    def test_qtplasmac_in_inches(self):
+        arcs = self.posted(
+            "qtplasmac_post",
+            "QtPlasmaCPost",
+            "QtPlasmaCDecoder",
+            camlib.Torch("torch", kerf_width=1.5),
+            dict(planes=("xy",), helices=False, max_sweep_rad=math.tau),
+        )
+        self.assertGreater(arcs, 0)
+
+    def test_centroid_plasma_in_inches(self):
+        arcs = self.posted(
+            "centroid_plasma_post",
+            "CentroidPlasmaPost",
+            "CentroidPlasmaDecoder",
+            camlib.Torch("torch", kerf_width=1.5),
+            dict(helices=False, max_sweep_rad=math.tau),
+            height_control=False,
+        )
+        self.assertGreater(arcs, 0)
+
+    def test_wincnc_in_inches(self):
+        # WinCNC takes at most half a turn per arc: a ring's half turns are
+        # written as arcs only where their inch words do not span more.
+        arcs = self.posted(
+            "wincnc_plasma_post",
+            "WinCNCPlasmaPost",
+            "WinCNCPlasmaDecoder",
+            camlib.Torch("torch", kerf_width=1.5),
+            dict(helices=False),
+            height_control=False,
+        )
+        self.assertGreater(arcs, 0)
 
 
 def polygon(center, radius, n, start_deg=0):

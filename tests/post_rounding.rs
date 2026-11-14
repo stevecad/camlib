@@ -87,7 +87,7 @@ fn check_representable_arc(original: Curve) {
                     };
                     let actual = start.map(|x| (x / step).round() * step);
                     let (target, offset) =
-                        circular_words(&source, actual, unit, decimals as usize, 1e-5, 0.01, ABS_0_005)
+                        circular_words(&source, actual, unit, decimals as usize, 1e-5, 0.01, ABS_0_005, f64::INFINITY)
                             .unwrap_or_else(|e| panic!("unit{unit} plane{plane:?} reverse{reverse} helix{helix}: {source:?}: {e}"));
                     let mut values = vec![target[u], target[v]];
                     let mut addresses = String::new();
@@ -138,11 +138,11 @@ fn exact_full_turn_words_are_preserved_and_invalid_budgets_reject() {
     };
     let actual = source.start();
     assert_eq!(
-        circular_words(&source, actual, 1., 3, 1e-5, 0.01, ABS_0_005).unwrap(),
+        circular_words(&source, actual, 1., 3, 1e-5, 0.01, ABS_0_005, f64::INFINITY).unwrap(),
         ([2., 0., 3.], [-2., 0., 0.])
     );
-    assert!(circular_words(&source, actual, 1., 1, 1e-5, 0.01, ABS_0_005).is_err());
-    assert!(circular_words(&source, actual, 1., 3, 1e-5, f64::NAN, ABS_0_005).is_err());
+    assert!(circular_words(&source, actual, 1., 1, 1e-5, 0.01, ABS_0_005, f64::INFINITY).is_err());
+    assert!(circular_words(&source, actual, 1., 3, 1e-5, f64::NAN, ABS_0_005, f64::INFINITY).is_err());
     let wrong = [2.1, 0., 3.];
-    assert!(circular_words(&source, wrong, 1., 3, 1e-5, 0.001, ABS_0_005).is_err());
+    assert!(circular_words(&source, wrong, 1., 3, 1e-5, 0.001, ABS_0_005, f64::INFINITY).is_err());
 }

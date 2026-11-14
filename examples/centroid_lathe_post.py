@@ -35,7 +35,8 @@ Premises (declared, not checked on the machine):
   (tool_change_position_mode="table").
 - G0 runs each axis at its own maximum rate: a rapid moving both X and Z
   would not follow a straight line, so rapids move one axis at a time
-  (refused otherwise).
+  (refused otherwise; an axis that only settles onto its rounded word,
+  within the machine's tolerance, is not a second move).
 - M30 ends the program like M2 (moves Z home, then restarts).
 - Tool-nose compensation in the control (TurnFinish compensation="wear"):
   G41/G42 T<oo> (9.15) names the active offset, whose nose radius holds
@@ -211,8 +212,13 @@ class CentroidLatheDecoder(NativeGCodeDecoder):
             if (
                 x is not None
                 and z is not None
-                and x * self.units / 2 != self.position[0]
-                and z * self.units != self.position[2]
+                # Each axis at its own rate keeps the tool inside the rectangle of
+                # the two moves. Where the smaller side is within the machine's
+                # tolerance (an axis only settling onto its rounded word: inch
+                # output from a position stated in millimetres), every path in it
+                # is within that tolerance of the straight line.
+                and min(abs(x * self.units / 2 - self.position[0]), abs(z * self.units - self.position[2]))
+                > self.machine.tolerance_mm
             ):
                 raise ValueError('G0 moving X and Z together does not follow a straight line on CNC12')
         if text == d.code('end'):
