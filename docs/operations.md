@@ -1333,6 +1333,37 @@ move's lowest tip) and any point of it may lie within the section's radius of
 the tool axis anywhere on the move. `steep_and_shallow` can then take the
 part's lowest point as its floor. Waterline is admitted the same way.
 
+Pass entries: a row (or a pattern pass, or a re-entry after a gap) is entered
+by a vertical plunge only where the live stock under the cutter's lower face
+stands no more than `tolerance_mm` above the entry. The stock cells bound
+that: each cell counts up to its highest point at its nearest point to the
+tool axis anywhere in the footprint. A cell whose upper bound is no higher
+than the part's own highest point within it (plus `stock_to_leave_mm`) is
+stock finished to size, which the cells cannot tell from the part: it is not
+counted. That is the bound's resolution, and its cost: a plunge may touch up
+to one cell's worth of slope-induced stock (the part's height range across a
+cell, about the cell size times the surface slope). The run report gives the
+largest such excess as `max_admitted_plunge_mm`. Where stock stands higher,
+the pass is first entered from the side: back along its own first segment,
+or straight away from the stock's box when it starts beside it, up to four
+cutter radii, the cutter plunges where it meets no such stock (in air), the
+machining limits allow the plunge and the lead, and the horizontal lead at
+the entry height to the pass is proven clear of the part (`side_entries`).
+Failing that, the pass is entered by the declared `entry=RampEntry(angle_deg,
+min_length_mm=..., feed_mm_min=...)` (as `Flat`, `Pocket` and `Contour` take
+it): the cutter comes down through air to the stock's top over the path the
+ramp follows (the raster row's line, or the pattern pass's own path), then
+zigzags down that path at the declared angle and feed, never below the
+part's contact along it, every move proven clear of the protected part; the
+report counts them as `ramped_entries`. There is no fallback to a plunge. The operation is refused, naming the pass, the stock
+above it and the fixes, when no entry is declared, when the pass is one-way
+(a zigzag would cut back along the row), when the stock stands above the
+feed height, when the ramp does not fit (the path is too short for the angle
+or shorter than `min_length_mm`) and when a ramp leg is not clear of the
+part. Rough or rest-rough the area first so the finishing pass starts in
+cleared stock, declare an entry, or use finer stock cells when the cell bound
+is pessimistic (next to steep walls coarse cells can overstate the depth).
+
 Flat and bull-nose end mills work too (raster and the spiral, radial and
 project patterns). Their contact with each triangle is exact (facet, edge and
 vertex), and every move between computed points is proven not to gouge: per

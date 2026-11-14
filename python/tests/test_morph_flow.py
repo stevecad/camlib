@@ -88,6 +88,8 @@ class MorphFlowTest(unittest.TestCase):
             tool_number=1,
             length_register=1,
             coolant="flood",
+            # Paths that start under the stock are ramped in, not plunged.
+            entry=camlib.RampEntry(angle_deg=10, min_length_mm=1),
         )
         report, moves, statuses, removed = run(config, op)
         self.assertNotIn("violation", statuses)

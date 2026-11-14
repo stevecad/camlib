@@ -775,14 +775,74 @@ fn one_way_rows_cut_one_direction_link_by_rapid_and_leave_the_zigzag_surface() {
 fn one_way_keeps_its_direction_on_slope_limited_runs_and_is_refused_off_raster() {
     let m = fixture();
     let cancel = AtomicBool::new(false);
-    // Slope-limited rows are cut as separate runs (vertical plunge entry):
-    // every run still goes the same way.
+    let tool = m.tools[0].prepare().unwrap();
+    // Under fresh stock a one-way run cannot be ramped in (a zigzag would
+    // cut back along the row) and is not plunged: refused by name.
+    let mut op = operation(&m);
+    op.one_way = true;
+    op.slope_from_deg = 10.;
+    op.entry = Some(
+        serde_json::from_value(serde_json::json!({
+            "kind": "ramp", "angle_rad": 10f64.to_radians(), "min_length_mm": 1.0
+        }))
+        .unwrap(),
+    );
+    let spec = m.stock.height().unwrap();
+    let mut p =
+        ParallelPlan::prepare(op, &m.tools[0], spec, m.initial_position_mm, 1, &cancel).unwrap();
+    let mut stock = Stock::new(spec.clone()).unwrap();
+    let error = loop {
+        match p.next_motion_with_stock(&stock, &cancel) {
+            Ok(Some(motion)) => {
+                let d = stock
+                    .preview_sweep(&tool, &motion, 1., m.sweep, &cancel)
+                    .unwrap();
+                stock.apply_delta(&d).unwrap();
+            }
+            Ok(None) => panic!("a one-way run under stock was entered"),
+            Err(e) => break e,
+        }
+    };
+    assert!(error.contains("one-way pass cannot ramp in"), "{error}");
+    // With no stock standing over the run entries (the stock is the part
+    // itself, as after a finish to size), slope-limited rows are cut as
+    // separate runs (vertical plunge entry): every run still goes the same
+    // way.
+    let part = operation(&m).surface.triangles.clone();
+    let fitted = camlib::stock_mesh::MeshStockSpec::from_mesh(
+        camlib::stock_mesh::StockMesh::from_triangles(&part).unwrap(),
+        0.25,
+        1 << 20,
+    )
+    .unwrap();
     for reverse in [false, true] {
         let mut op = operation(&m);
         op.reverse = reverse;
         op.one_way = true;
         op.slope_from_deg = 10.;
-        let (motions, _, _) = run_rows(&m, op);
+        let mut stock = fitted.initial_stock(&cancel).unwrap();
+        let mut p = ParallelPlan::prepare(
+            op,
+            &m.tools[0],
+            fitted.grid(),
+            m.initial_position_mm,
+            1,
+            &cancel,
+        )
+        .unwrap();
+        let mut motions = vec![];
+        while let Some(motion) = p.next_motion_with_stock(&stock, &cancel).unwrap() {
+            let d = stock
+                .preview_sweep(&tool, &motion, 1., m.sweep, &cancel)
+                .unwrap();
+            stock.apply_delta(&d).unwrap();
+            motions.push((motion, true));
+        }
+        // Accepted at the stock bound's resolution: the cells' upper bounds
+        // stand above the ball's face only by the part's own height range
+        // within a cell, and the report says how much.
+        let admitted = p.report().max_admitted_plunge_mm;
+        assert!(admitted > 0. && admitted < 0.25, "{admitted}");
         let forward = if reverse { -1. } else { 1. };
         let mut cuts = 0;
         for (motion, _) in &motions {

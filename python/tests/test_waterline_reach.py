@@ -128,6 +128,8 @@ class WaterlineReachTest(unittest.TestCase):
             threshold_deg=45,
             tool_number=1,
             length_register=1,
+            # The shallow passes start under the cone's stock: ramped in.
+            entry=camlib.RampEntry(angle_deg=10, min_length_mm=1),
             **CUT,
         )
         checks = StreamChecks(stock_contact=StockContactOptions())

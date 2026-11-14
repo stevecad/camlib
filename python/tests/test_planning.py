@@ -10,7 +10,7 @@ from camlib.dynamics import MotionPolicy
 from camlib.jobs import Job, Setup, RegenerationCache, OperationNode
 from camlib.material import Target, SurfaceTarget, Options
 from camlib.machine import Box, MachineBody, ToolCalibration, ToolChangeRoute
-from camlib.operations import Facing, RestPocket, Parallel
+from camlib.operations import Facing, RestPocket, Parallel, RampEntry
 from camlib.planar import Boundary, Component, PlanarRegion
 from camlib.planning import (
     PlanningCandidate,
@@ -77,7 +77,7 @@ def candidate(id='reference', *, feed=600, floor=0.5):
 POLICY = ComparisonPolicy((('top', 2.0),), 30)
 
 
-def surface_correction(shape='ball'):
+def surface_correction(shape='ball', entry=True):
     """Real native cutter against an exact inclined plane and unchanged goal."""
     base = candidate()
     setup = base.job.setups[0]
@@ -117,6 +117,9 @@ def surface_correction(shape='ball'):
         tool_number=2,
         length_register=7,
         coolant='flood',
+        # The correction's passes start under the leftover they remove: a
+        # declared ramp enters them (none: such a pass is refused).
+        entry=RampEntry(angle_deg=10, min_length_mm=0.25) if entry else None,
     )
     checks = replace(
         setup.verification,
@@ -259,6 +262,21 @@ class PlanningTest(unittest.TestCase):
                 self.assertEqual(revised.verification, base.job.setups[0].verification)
                 self.assertEqual(revised.tools, base.job.setups[0].tools)
                 self.assertIsNotNone(revised.operations[-1].limits.contain)
+
+    def test_native_parallel_rest_correction_with_no_entry_is_refused_by_name(self):
+        # The same correction with no entry declared: its passes start under
+        # the leftover, so the candidate is refused, naming the entry.
+        policy = ComparisonPolicy((('surface', 3.6),), 120)
+        base, rest = surface_correction('ball', entry=False)
+        result = correct_residuals(
+            base,
+            (CorrectionTemplate('surface', rest),),
+            policy=policy,
+            max_passes=1,
+            executable=os.environ.get('CAMLIB_TEST_ENGINE'),
+        )
+        self.assertIsNone(result.candidate, result)
+        self.assertIn('declares no entry', result.reason + ' ' + str(result.evaluations[-1].reasons))
 
     def test_native_surface_rest_refuses_inaccessible_keepout_and_unsafe_corrections(self):
         from camlib.limits import AvoidArea, Limits

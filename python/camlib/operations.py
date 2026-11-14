@@ -113,9 +113,14 @@ class Parallel:
     # or the high end with reverse) and returns at retract_z_mm with a rapid
     # link, for a consistent climb or conventional cut (docs/operations.md).
     one_way: bool = False
+    # How a row is entered where live stock stands above its entry:
+    # RampEntry(angle_deg, ...), a ramp down the row line. None: no stock
+    # stands above the entries, and one that does is refused.
+    entry: object | None = None
 
     def to_dict(self):
         result = {field: getattr(self, field) for field in self.__dataclass_fields__}
+        _entry_dict(result)
         result.update(
             kind="parallel",
             tool=getattr(self.tool, "id", self.tool),
@@ -130,8 +135,15 @@ class Parallel:
         return result
 
 
+def _entry_dict(result):
+    entry = result.pop("entry", None)
+    if entry is not None:
+        result["entry"] = entry.to_dict() if hasattr(entry, "to_dict") else dict(entry)
+
+
 def _pattern_dict(op, kind, pattern_fields):
     result = {field: getattr(op, field) for field in op.__dataclass_fields__ if field not in pattern_fields}
+    _entry_dict(result)
     pattern = {field: getattr(op, field) for field in pattern_fields}
     if kind == "project":
         pattern["paths"] = [path.to_dict() if hasattr(path, "to_dict") else path for path in pattern["paths"]]
@@ -250,6 +262,8 @@ class Scallop:
     rest_threshold_mm: float | None = None
     retract_z_mm: float | None = None
     feed_z_mm: float | None = None
+    # Entry where live stock stands above a pass: RampEntry(...), as in Parallel.
+    entry: object | None = None
 
     def to_dict(self):
         return _pattern_dict(self, "scallop", ())
@@ -306,6 +320,8 @@ class Geodesic:
     retract_z_mm: float | None = None
     feed_z_mm: float | None = None
     mode: str = "contact"
+    # Entry where live stock stands above a pass: RampEntry(...), as in Parallel.
+    entry: object | None = None
 
     def __post_init__(self):
         _geodesic_seed(self.seed)
@@ -375,6 +391,8 @@ class Pencil:
     rest_threshold_mm: float | None = None
     retract_z_mm: float | None = None
     feed_z_mm: float | None = None
+    # Entry where live stock stands above a pass: RampEntry(...), as in Parallel.
+    entry: object | None = None
 
     def to_dict(self):
         result = _pattern_dict(self, "pencil", ("min_angle_deg", "sample_mm"))
@@ -420,6 +438,8 @@ class Spiral:
     rest_threshold_mm: float | None = None
     retract_z_mm: float | None = None
     feed_z_mm: float | None = None
+    # Entry where live stock stands above a pass: RampEntry(...), as in Parallel.
+    entry: object | None = None
 
     def to_dict(self):
         return _pattern_dict(
@@ -462,6 +482,8 @@ class Radial:
     rest_threshold_mm: float | None = None
     retract_z_mm: float | None = None
     feed_z_mm: float | None = None
+    # Entry where live stock stands above a pass: RampEntry(...), as in Parallel.
+    entry: object | None = None
 
     def to_dict(self):
         return _pattern_dict(
@@ -503,6 +525,8 @@ class Morph:
     rest_threshold_mm: float | None = None
     retract_z_mm: float | None = None
     feed_z_mm: float | None = None
+    # Entry where live stock stands above a pass: RampEntry(...), as in Parallel.
+    entry: object | None = None
 
     def to_dict(self):
         return _pattern_dict(self, "morph", ("from_path", "to_path"))
@@ -539,6 +563,8 @@ class Project:
     rest_threshold_mm: float | None = None
     retract_z_mm: float | None = None
     feed_z_mm: float | None = None
+    # Entry where live stock stands above a pass: RampEntry(...), as in Parallel.
+    entry: object | None = None
 
     def to_dict(self):
         return _pattern_dict(self, "project", ("paths",))

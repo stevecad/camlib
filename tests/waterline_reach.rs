@@ -187,6 +187,7 @@ fn parallel(surface: &[[Vec3; 3]], slope_to: f64) -> Operation {
         "stepover_mm": 1,
         "clearance_z_mm": 50,
         "slope_to_deg": slope_to,
+        "entry": {"kind": "ramp", "angle_rad": 10f64.to_radians(), "min_length_mm": 1.0},
         "axis": "x",
         "reverse": false,
         "stock_to_leave_mm": 0,

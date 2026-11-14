@@ -386,11 +386,29 @@ def _stepped_target():
 
 def _pencil():
     import camlib
+    import cadquery as cq
+    from camlib.cadquery import export_stock_mesh
 
     tool = _ball4()
-    op = camlib.Pencil("pencil", tool, _mesh(_stepped), 0, 12, **CUT, tool_number=1, length_register=1)
+    op = camlib.Pencil(
+        "pencil",
+        tool,
+        _mesh(_stepped),
+        0,
+        12,
+        **CUT,
+        tool_number=1,
+        length_register=1,
+    )
+    # Pencil follows the floors and tops: the blank is the part with 0.1 mm
+    # left on them and the walls to size, so no entry plunges into stock.
+    blank = (
+        cq.Workplane("XY")
+        .box(24, 16, 4.1, centered=False)
+        .union(cq.Workplane("XY").box(8, 8, 3, centered=False).translate((8, 4, 4.1)))
+    )
     return dict(
-        stock=camlib.StockSpec((0, 0, 0), (24, 16, 8), 0.25),
+        stock=camlib.StockSpec.from_mesh(export_stock_mesh(blank), 0.05),
         tools=(tool,),
         operations=(op,),
         revision="bench",
@@ -413,7 +431,7 @@ def _pattern(name):
 
         config = _options(_roof())
         tool, surface = config["tools"][0], config["operations"][0].surface
-        return dict(config, operations=(t.patterns(tool, surface)[name],))
+        return dict(config, stock=t.roughed_roof_stock(), operations=(t.patterns(tool, surface)[name],))
 
     return build
 
@@ -428,8 +446,25 @@ def _geodesic(seed):
 
         config = _options(_roof())
         tool, surface = config["tools"][0], config["operations"][0].surface
-        op = camlib.Geodesic("geodesic", tool, surface, 0, 0.75, 12, seed, **CUT, tool_number=1, length_register=1)
-        return dict(config, operations=(op,))
+        op = camlib.Geodesic(
+            "geodesic",
+            tool,
+            surface,
+            0,
+            0.75,
+            12,
+            seed,
+            **CUT,
+            tool_number=1,
+            length_register=1,
+            entry=camlib.RampEntry(angle_deg=10, min_length_mm=1),
+        )
+        # Finishing follows roughing: the blank is the roof's planar envelope
+        # (as the pattern workloads); passes that start under its leftover are
+        # ramped in by the declared entry.
+        import test_surface_patterns as t
+
+        return dict(config, stock=t.roughed_roof_stock(), operations=(op,))
 
     return build
 

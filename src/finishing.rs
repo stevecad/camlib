@@ -158,6 +158,13 @@ pub struct ParallelOperation<G = SurfaceMesh> {
     /// Containment and avoid areas (clamps, fixtures, features to leave alone).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limits: Option<crate::limits::Limits>,
+    /// How a pass is entered where live stock stands above its entry: a
+    /// ramp down the pass line (`RampEntry`: declared angle, feed and
+    /// shortest reversal). None declares that no stock stands above the
+    /// entries; an entry that has stock above it is then refused (see
+    /// `ParallelPlan::plunge_or_ramp`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<crate::entry::PocketEntry>,
 }
 fn default_axis() -> TraverseAxis {
     TraverseAxis::X
@@ -352,6 +359,7 @@ impl<G> ParallelOperation<G> {
     ) -> Result<ParallelOperation<H>, E> {
         Ok(ParallelOperation {
             limits: self.limits,
+            entry: self.entry,
             id: self.id,
             tool: self.tool,
             surface: f(self.surface)?,
@@ -403,6 +411,20 @@ pub struct ParallelReport {
     pub vertical_transitions: usize,
     pub transition_moves: usize,
     pub max_transition_height_mm: f64,
+    /// Passes entered by the declared ramp because the live stock stood
+    /// above the pass's entry height.
+    #[serde(skip_serializing_if = "no_entries")]
+    pub ramped_entries: usize,
+    /// Passes entered by a plunge in air back along their first segment and
+    /// a horizontal lead, because live stock stood above the air entry.
+    #[serde(skip_serializing_if = "no_entries")]
+    pub side_entries: usize,
+    /// The most stock an entry plunge was let through where the stock
+    /// cells cannot tell stock from the part: a cell whose upper bound is no
+    /// higher than the part's highest point within it (stock finished to
+    /// size) may stand above the cutter's face by up to the part's height
+    /// range across that cell.
+    pub max_admitted_plunge_mm: f64,
     pub path_error_mm: f64,
     pub safety_margin_mm: f64,
     pub stock_to_leave_mm: f64,
@@ -420,11 +442,17 @@ pub struct ParallelReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub geodesic: Option<geodesic::GeodesicReport>,
 }
+fn no_entries(n: &usize) -> bool {
+    *n == 0
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
     Lift,
     Approach,
     Entry,
+    /// Zigzag down along the row through stock above the entry height.
+    Ramp,
     Lead,
     Cut,
     Exit,
@@ -534,6 +562,15 @@ pub struct ParallelPlan {
     /// XY polylines of a non-raster pattern (entered by a vertical plunge).
     passes: Vec<Pass>,
     transition: Vec<(Vec3, MoveKind)>,
+    /// Ramp points (tip) down to the pass's air entry, at the entry feed.
+    ramp: std::collections::VecDeque<Vec3>,
+    /// Where the entry plunge stops (tip): the entry, or a ramp's start.
+    entry_target: f64,
+    /// The operation's machining limits (side entries are checked on them).
+    limits: Option<crate::limits::PreparedLimits>,
+    /// The part, for its highest point within a stock cell (entry checks).
+    part: crate::flat::Index,
+    part_scratch: std::cell::RefCell<(Vec<u32>, u32)>,
     prepared_segment: Option<(Segment, Option<f64>)>,
     phase: Phase,
     next_id: u64,
@@ -838,6 +875,15 @@ impl ParallelPlan {
                 ),
             ],
         )?;
+        if let Some(entry) = &op.entry {
+            let Some(ramp) = entry.ramp() else {
+                return Err(
+                    "parallel finishing: only a RampEntry enters a pass through stock (a helix has no place on a pass line); use entry=RampEntry(angle_deg, ...) or declare none"
+                        .into(),
+                );
+            };
+            ramp.validate(op.tolerance_mm, op.plunge_mm_min)?;
+        }
         let clipped = if op
             .surface
             .triangles
@@ -1132,6 +1178,9 @@ impl ParallelPlan {
             vertical_transitions: 0,
             transition_moves: 0,
             max_transition_height_mm: 0.,
+            ramped_entries: 0,
+            side_entries: 0,
+            max_admitted_plunge_mm: 0.,
             path_error_mm: op.path_error_mm,
             safety_margin_mm: op.safety_margin_mm,
             stock_to_leave_mm: op.stock_to_leave_mm,
@@ -1153,7 +1202,11 @@ impl ParallelPlan {
             16. * op.tolerance_mm,
         )?;
         let tip_offset = if flat.is_some() { 0. } else { radius };
+        let part = crate::flat::Index::new(mesh, op.floor_z_mm, radius, cancel)?;
+        let part_scratch = std::cell::RefCell::new((vec![0u32; part.len()], 0u32));
         Ok(Self {
+            part,
+            part_scratch,
             flat,
             tip_offset,
             heights,
@@ -1175,6 +1228,14 @@ impl ParallelPlan {
             cursor: 0,
             passes,
             transition: vec![],
+            ramp: Default::default(),
+            entry_target: 0.,
+            limits: op
+                .limits
+                .as_ref()
+                .filter(|l| !l.is_empty())
+                .map(|l| crate::limits::PreparedLimits::new(l, radius, op.tolerance_mm))
+                .transpose()?,
             prepared_segment: None,
             phase: Phase::Lift,
             next_id: first_id,
@@ -1756,7 +1817,344 @@ impl ParallelPlan {
             *splits += 1;
         }
     }
+    /// How the pass is entered, decided before the cutter travels to it.
+    /// A straight plunge where the live stock under the cutter's lower face
+    /// (each cell at its highest point and its point nearest the axis)
+    /// stands no more than a tolerance above it at the air entry. Otherwise
+    /// the pass first looks back along its own first segment, up to four cutter
+    /// radii, for a point the plunge reaches with no more than that, which
+    /// the machining limits allow and from which a horizontal lead at the
+    /// entry height to the pass is proven clear of the part: the cutter then
+    /// plunges there, in air, and leads in (`side_entries`). Failing that,
+    /// the declared `RampEntry` ramps down the pass's own path (a raster
+    /// row's line, or a pattern pass's polyline, as far as a ramp from the
+    /// feed height would reach), from the stock's top over that path, never
+    /// below the part's contact along it (z = max(planar ramp, contact)),
+    /// every move proven clear of the part (`ramped_entries`). No entry
+    /// declared, a one-way pass (a zigzag would cut back along the row),
+    /// stock above the feed height, a ramp that does not fit and one that is
+    /// not clear are refused, naming the pass: the cutter is never plunged
+    /// into stock. Sets `air_start`, `entry_target` and `ramp`.
+    fn plan_entry(
+        &mut self,
+        stock: &Stock,
+        work: &mut SurfaceWork,
+        cancel: &impl CancelSignal,
+    ) -> Result<(), String> {
+        self.ramp.clear();
+        let e = self.air_start;
+        let entry = e[2] - self.tip_offset;
+        self.entry_target = entry;
+        let a = [e[0], e[1]];
+        let (excess, admitted) = self.entry_excess(stock, a, entry);
+        if excess <= self.op.tolerance_mm {
+            self.report.max_admitted_plunge_mm = self.report.max_admitted_plunge_mm.max(admitted);
+            return Ok(());
+        }
+        // The path a lead or ramp follows: a raster row's line (air entry to
+        // air end), or a pattern pass's own polyline.
+        let line: Vec<[f64; 2]> = if self.passes.is_empty() {
+            vec![a, [self.air_end[0], self.air_end[1]]]
+        } else {
+            self.vertices.iter().map(|v| [v[0], v[1]]).collect()
+        };
+        if let Some((c, admitted)) = self.side_entry(stock, &line, entry, work, cancel)? {
+            self.air_start = [c[0], c[1], e[2]];
+            self.report.max_admitted_plunge_mm = self.report.max_admitted_plunge_mm.max(admitted);
+            self.report.side_entries += 1;
+            return Ok(());
+        }
+        let reach = self
+            .op
+            .entry
+            .as_ref()
+            .and_then(|e| e.ramp())
+            .map_or(0., |r| {
+                (self.heights.feed - entry).max(0.) / r.angle_rad.tan()
+            });
+        // The path, up to the length a ramp from the feed height would need.
+        let mut segments = vec![];
+        let mut length = 0.;
+        for w in line.windows(2) {
+            let (p, q) = (w[0], w[1]);
+            let d = (q[0] - p[0]).hypot(q[1] - p[1]);
+            if d <= 0. {
+                continue;
+            }
+            let f = if length + d > reach {
+                ((reach - length) / d).max(0.)
+            } else {
+                1.
+            };
+            let q = [p[0] + f * (q[0] - p[0]), p[1] + f * (q[1] - p[1])];
+            segments.push((p, q));
+            length += f * d;
+            if f < 1. {
+                break;
+            }
+        }
+        let chain: Vec<_> = segments
+            .iter()
+            .map(|&(p, q)| crate::pocket::Stroke::line(p, q))
+            .collect();
+        // The stock's top over the ramp's own footprint: the stretch of the
+        // path a ramp from that height needs (the whole path when it must
+        // reverse), raised until it no longer grows.
+        let over = |span: f64| -> Result<f64, String> {
+            let mut top = f64::MIN;
+            let mut walked = 0.;
+            for &(p, q) in &segments {
+                let d = (q[0] - p[0]).hypot(q[1] - p[1]);
+                let f = if walked + d > span {
+                    ((span - walked) / d).clamp(0., 1.)
+                } else {
+                    1.
+                };
+                let q = [p[0] + f * (q[0] - p[0]), p[1] + f * (q[1] - p[1])];
+                top = top.max(crate::flat::segment_stock_top(
+                    stock,
+                    p,
+                    q,
+                    self.radius,
+                    cancel,
+                )?);
+                walked += f * d;
+                if f < 1. {
+                    break;
+                }
+            }
+            Ok(top)
+        };
+        let mut top = entry + excess;
+        if let Some(ramp) = self.op.entry.as_ref().and_then(|e| e.ramp())
+            && !segments.is_empty()
+        {
+            let tan = ramp.angle_rad.tan();
+            let mut settled = false;
+            for _ in 0..32 {
+                let span = ((top - entry) / tan).min(length);
+                let next = over(span)?.max(entry + excess);
+                if next <= top {
+                    settled = true;
+                    break;
+                }
+                top = next;
+            }
+            if !settled {
+                top = top.max(over(length)?);
+            }
+        }
+        let b = line.last().copied().unwrap_or(a);
+        let which = format!(
+            "parallel finishing {}: the pass entered at X{:.3} Y{:.3} Z{entry:.3} (its path runs towards X{:.3} Y{:.3}) has live stock {excess:.3} mm above the cutter there and up to Z{top:.3} along the path",
+            self.op.id, a[0], a[1], b[0], b[1]
+        );
+        let Some(ramp) = self.op.entry.as_ref().and_then(|e| e.ramp()) else {
+            return Err(format!(
+                "{which}, and the operation declares no entry: the cutter is not plunged into stock. Declare entry=RampEntry(angle_deg, ...) for the tool, rough or rest-rough this area first, or use finer stock cells"
+            ));
+        };
+        if self.op.one_way {
+            return Err(format!(
+                "{which}: a one-way pass cannot ramp in (a zigzag would cut back along the row). Rough or rest-rough this area first, or cut the rows zigzag"
+            ));
+        }
+        if length <= 16. * self.op.tolerance_mm {
+            return Err(format!(
+                "{which}: the path is shorter than 16 tolerances, too short to ramp on. Rough or rest-rough this area first"
+            ));
+        }
+        if top > self.heights.feed {
+            return Err(format!(
+                "{which}, above the feed height Z{:.3}: raise feed_z_mm/retract_z_mm or rough this area first",
+                self.heights.feed
+            ));
+        }
+        let curves = ramp.zigzag(&chain, top, entry).map_err(|why| {
+            format!(
+                "{which}: {why}. Use a steeper declared angle, a longer pass, or rough this area first"
+            )
+        })?;
+        // Each planar leg, sampled finely enough to follow the part, kept at
+        // or above the part's contact along it.
+        let [wx, wy] = stock.cell_widths_mm();
+        let step = (0.5 * wx.min(wy))
+            .min(self.radius / 4.)
+            .max(16. * self.op.tolerance_mm);
+        let first = curves.first().map_or(a, |c| {
+            let q = c.start();
+            [q[0], q[1]]
+        });
+        // (tip point, its planar ramp height): the planar legs sampled finely
+        // enough to follow the part, each kept at or above the part's
+        // contact; a move that is not proven clear (the part bulges between
+        // samples, e.g. over a convex edge) is halved, the midpoint lifted
+        // onto the contact, down to a depth.
+        let mut samples: Vec<(Vec3, f64)> = vec![([first[0], first[1], top], top)];
+        for c in &curves {
+            let (p, q) = (c.start(), c.end());
+            let run = (q[0] - p[0]).hypot(q[1] - p[1]);
+            let n = (run / step).ceil().max(1.);
+            if n > 1e5 || samples.len() > 1_000_000 {
+                return Err(format!(
+                    "{which}: the ramp needs too many moves to follow the part; use a steeper declared angle or rough this area first"
+                ));
+            }
+            for k in 1..=n as usize {
+                if k % 256 == 0 && cancel.is_cancelled() {
+                    return Err("parallel planning cancelled".into());
+                }
+                let f = k as f64 / n;
+                let xy = [p[0] + f * (q[0] - p[0]), p[1] + f * (q[1] - p[1])];
+                let planar = p[2] + f * (q[2] - p[2]);
+                let contact = self.contact_z(xy, work, cancel)? - self.tip_offset;
+                samples.push(([xy[0], xy[1], planar.max(contact)], planar));
+            }
+        }
+        let mut points = Vec::with_capacity(samples.len());
+        let mut previous = ([a[0], a[1], top], top);
+        for next in samples {
+            // Stack of pending moves from `previous`, each with its depth.
+            let mut pending = vec![(next, 0u32)];
+            while let Some((end, depth)) = pending.pop() {
+                let from = [
+                    previous.0[0],
+                    previous.0[1],
+                    previous.0[2] + self.tip_offset,
+                ];
+                let to = [end.0[0], end.0[1], end.0[2] + self.tip_offset];
+                if self.clear(from, to, work, cancel)? {
+                    points.push(end.0);
+                    previous = end;
+                    continue;
+                }
+                let run = (end.0[0] - previous.0[0]).hypot(end.0[1] - previous.0[1]);
+                if depth >= 24 || run <= 16. * self.op.tolerance_mm || points.len() > 1_000_000 {
+                    return Err(format!(
+                        "{which}: the declared ramp down the pass's path is not clear of the part (a move reaches X{:.3} Y{:.3} Z{:.3}). Rough or rest-rough this area first",
+                        end.0[0], end.0[1], end.0[2]
+                    ));
+                }
+                let xy = [
+                    0.5 * (previous.0[0] + end.0[0]),
+                    0.5 * (previous.0[1] + end.0[1]),
+                ];
+                let planar = 0.5 * (previous.1 + end.1);
+                let contact = self.contact_z(xy, work, cancel)? - self.tip_offset;
+                let mid = ([xy[0], xy[1], planar.max(contact)], planar);
+                pending.push((end, depth + 1));
+                pending.push((mid, depth + 1));
+            }
+        }
+        self.entry_target = top;
+        self.ramp = points.into();
+        self.report.ramped_entries += 1;
+        Ok(())
+    }
+    /// `plunge_excess` at `xy` for a plunge to `tip`; a cell counts as at size
+    /// where its upper bound is no higher than the part's highest point
+    /// within the cell (its circumscribed disk) plus the stock to leave and
+    /// a tolerance.
+    fn entry_excess(&self, stock: &Stock, xy: [f64; 2], tip: f64) -> (f64, f64) {
+        let [wx, wy] = stock.cell_widths_mm();
+        let half = 0.5 * wx.hypot(wy);
+        let mut scratch = self.part_scratch.borrow_mut();
+        let (seen, stamp) = &mut *scratch;
+        plunge_excess(
+            stock,
+            xy,
+            tip,
+            self.radius,
+            self.tip_offset,
+            |_, c, upper| {
+                let top = self.part.max_height(c, c, half, seen, stamp);
+                upper <= top + self.op.stock_to_leave_mm + self.op.tolerance_mm
+            },
+        )
+    }
+    /// A point back along the pass's first segment (away from its direction
+    /// of travel), or straight away from the stock's box when the entry lies
+    /// beside it, up to four cutter radii from the air entry, where a plunge to
+    /// the entry height has at most a tolerance of live stock above the
+    /// cutter's face, the machining limits allow the plunge and the lead,
+    /// and the horizontal lead at the entry height to the air entry is
+    /// proven clear of the part. None when no such point exists.
+    fn side_entry(
+        &self,
+        stock: &Stock,
+        line: &[[f64; 2]],
+        entry: f64,
+        work: &mut SurfaceWork,
+        cancel: &impl CancelSignal,
+    ) -> Result<Option<([f64; 2], f64)>, String> {
+        let a = line[0];
+        let Some(&b) = line.iter().find(|q| **q != a) else {
+            return Ok(None);
+        };
+        let d = (b[0] - a[0]).hypot(b[1] - a[1]);
+        let mut directions = vec![[(a[0] - b[0]) / d, (a[1] - b[1]) / d]];
+        // Beside the stock's box: also straight away from it.
+        let near = [
+            a[0].clamp(self.spec.min_mm[0], self.spec.max_mm[0]),
+            a[1].clamp(self.spec.min_mm[1], self.spec.max_mm[1]),
+        ];
+        let out = (a[0] - near[0]).hypot(a[1] - near[1]);
+        if out > 0. {
+            directions.push([(a[0] - near[0]) / out, (a[1] - near[1]) / out]);
+        }
+        let [wx, wy] = stock.cell_widths_mm();
+        let step = (0.5 * wx.min(wy))
+            .min(self.radius / 4.)
+            .max(16. * self.op.tolerance_mm);
+        let limit = 4. * self.radius;
+        let n = (limit / step).ceil().min(4096.) as usize;
+        let reference = self.air_start[2];
+        for back in directions {
+            for k in 1..=n {
+                if cancel.is_cancelled() {
+                    return Err("parallel planning cancelled".into());
+                }
+                let t = (k as f64 * step).min(limit);
+                let c = [a[0] + t * back[0], a[1] + t * back[1]];
+                let (excess, admitted) = self.entry_excess(stock, c, entry);
+                if excess > self.op.tolerance_mm {
+                    continue;
+                }
+                if let Some(l) = &self.limits {
+                    let plunge = Curve::Line {
+                        start: [c[0], c[1], self.heights.feed.max(entry)],
+                        end: [c[0], c[1], entry],
+                    };
+                    let lead = Curve::Line {
+                        start: [c[0], c[1], entry],
+                        end: [a[0], a[1], entry],
+                    };
+                    if !l.allows_curve(&plunge, true)? || !l.allows_curve(&lead, true)? {
+                        continue;
+                    }
+                }
+                if self.clear(
+                    [c[0], c[1], reference],
+                    [a[0], a[1], reference],
+                    work,
+                    cancel,
+                )? {
+                    return Ok(Some((c, admitted)));
+                }
+            }
+        }
+        Ok(None)
+    }
     fn emit(&mut self, end: Vec3, kind: MoveKind) -> Result<Option<Motion>, String> {
+        self.emit_at(end, kind, None)
+    }
+    /// `emit`, with a plunge feed other than the operation's (a ramp's).
+    fn emit_at(
+        &mut self,
+        end: Vec3,
+        kind: MoveKind,
+        plunge_feed: Option<f64>,
+    ) -> Result<Option<Motion>, String> {
         // Shorter than a motion line can be (1e-9 mm): already there. Two
         // passes whose end and start coincide but for rounding (Project
         // paths, flow rows) link without a move.
@@ -1785,7 +2183,7 @@ impl ParallelPlan {
                 None
             } else {
                 Some(if kind == MoveKind::Plunge {
-                    self.op.plunge_mm_min
+                    plunge_feed.unwrap_or(self.op.plunge_mm_min)
                 } else {
                     self.op.feed_mm_min
                 })
@@ -1828,6 +2226,9 @@ impl ParallelPlan {
                 }
                 Phase::Approach => {
                     self.setup_row(cancel)?;
+                    let mut work = self.report.work;
+                    self.plan_entry(stock, &mut work, cancel)?;
+                    self.report.work = work;
                     // Travel at the current rapid height.
                     let result = self.emit(
                         [self.air_start[0], self.air_start[1], self.position[2]],
@@ -1852,17 +2253,34 @@ impl ParallelPlan {
                     result
                 }
                 Phase::Entry => {
-                    let result = self.emit(
-                        [
-                            self.air_start[0],
-                            self.air_start[1],
-                            self.air_start[2] - self.tip_offset,
-                        ],
+                    let xy = [self.air_start[0], self.air_start[1]];
+                    self.phase = if self.ramp.is_empty() {
+                        Phase::Lead
+                    } else {
+                        Phase::Ramp
+                    };
+                    // Down through air to the stock's top (a ramp's start),
+                    // or onto the entry.
+                    self.emit(
+                        [xy[0], xy[1], self.entry_target.min(self.position[2])],
                         MoveKind::Plunge,
-                    )?;
-                    self.phase = Phase::Lead;
-                    result
+                    )?
                 }
+                Phase::Ramp => match self.ramp.pop_front() {
+                    Some(end) => {
+                        let feed = self
+                            .op
+                            .entry
+                            .as_ref()
+                            .and_then(|e| e.feed_mm_min())
+                            .unwrap_or(self.op.plunge_mm_min);
+                        self.emit_at(end, MoveKind::Plunge, Some(feed))?
+                    }
+                    None => {
+                        self.phase = Phase::Lead;
+                        None
+                    }
+                },
                 Phase::Lead => {
                     let result = self.emit(
                         [
@@ -1961,4 +2379,65 @@ fn xy_off_chord(q: Vec3, a: Vec3, b: Vec3) -> f64 {
         0.
     };
     (q[0] - a[0] - t * dx).hypot(q[1] - a[1] - t * dy)
+}
+
+/// How far a vertical plunge to `tip` at `xy` would cut into live stock: the
+/// most any cell (at its nearest point to the axis) stands above the
+/// cutter's lower face there (a ball of `ball` radius, or flat when 0).
+/// A cell whose upper bound is no higher than `at_size` says the part
+/// itself stands there (stock finished to size: the bound's own resolution,
+/// a whole cell's height range of the part) is not counted; the most such a
+/// cell stands above the face is returned as the admitted excess.
+fn plunge_excess(
+    stock: &Stock,
+    xy: [f64; 2],
+    tip: f64,
+    r: f64,
+    ball: f64,
+    mut at_size: impl FnMut(usize, [f64; 2], f64) -> bool,
+) -> (f64, f64) {
+    let spec = stock.spec();
+    let [nx, ny] = stock.dimensions();
+    let [wx, wy] = stock.cell_widths_mm();
+    let reach = r;
+    let range = |c: f64, lo: f64, w: f64, n: usize| {
+        let a = ((c - reach - lo) / w).floor().max(0.) as usize;
+        let b = (((c + reach - lo) / w).ceil().max(0.) as usize).min(n);
+        a..b
+    };
+    let mut excess = 0f64;
+    let mut admitted = 0f64;
+    for j in range(xy[1], spec.min_mm[1], wy, ny) {
+        for i in range(xy[0], spec.min_mm[0], wx, nx) {
+            let k = j * nx + i;
+            let Some(c) = stock.cell_center(k) else {
+                continue;
+            };
+            // `upper_mm` bounds the whole cell, so test the cell's nearest
+            // point to the axis, not its centre: stock anywhere in a cell
+            // the footprint overlaps may stand there, and the cutter's
+            // lower face is lowest at that nearest point.
+            let gx = ((c[0] - xy[0]).abs() - wx / 2.).max(0.);
+            let gy = ((c[1] - xy[1]).abs() - wy / 2.).max(0.);
+            let rho = gx.hypot(gy);
+            if rho > r {
+                continue;
+            }
+            let face = if ball > 0. && rho < ball {
+                tip + ball - (ball * ball - rho * rho).sqrt()
+            } else {
+                tip + ball
+            };
+            let upper = stock.cells()[k].upper_mm;
+            if upper - face <= 0. {
+                continue;
+            }
+            if at_size(k, c, upper) {
+                admitted = admitted.max(upper - face);
+            } else {
+                excess = excess.max(upper - face);
+            }
+        }
+    }
+    (excess, admitted)
 }

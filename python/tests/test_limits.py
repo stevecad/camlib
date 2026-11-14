@@ -161,7 +161,10 @@ class LimitsTest(unittest.TestCase):
         op = config["operations"][0]
         box = (6, 4, 18, 12)
         limits = Limits(contain=square(*box, name="window"))
-        moves = run(config, (limited(op, limits),))
+        # The window's rows start inside the stock, so they are entered by a
+        # declared ramp (a plunge there would cut into the stock).
+        entry = camlib.RampEntry(angle_deg=10, min_length_mm=1).to_dict()
+        moves = run(config, (dict(limited(op, limits), entry=entry),))
         assembly = config["tools"][0]
         r = (assembly.to_dict() if hasattr(assembly, "to_dict") else assembly)["cutter"]["diameter_mm"] / 2
         cuts = [m for m in moves if m["kind"] == "cut"]

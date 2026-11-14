@@ -2066,24 +2066,33 @@ fn run_stock_top(
     r: f64,
     cancel: &impl CancelSignal,
 ) -> Result<f64, String> {
+    segment_stock_top(stock, run.a, run.b, r, cancel)
+}
+
+/// Highest live stock upper bound over the cells a disk of radius `r`
+/// touches anywhere along the segment from `a` to `b` (see `run_stock_top`).
+pub(crate) fn segment_stock_top(
+    stock: &Stock,
+    a: [f64; 2],
+    b: [f64; 2],
+    r: f64,
+    cancel: &impl CancelSignal,
+) -> Result<f64, String> {
     let [wx, wy] = stock.cell_widths_mm();
     let step = 0.5 * wx.min(wy);
-    let length = (run.b[0] - run.a[0]).hypot(run.b[1] - run.a[1]);
+    let length = (b[0] - a[0]).hypot(b[1] - a[1]);
     let n = (length / step).ceil().max(1.) as usize;
     if n > 1_000_000 {
-        return Err("flat-area run too long to read the stock over".into());
+        return Err("path too long to read the stock over".into());
     }
     let wide = r.hypot(0.5 * length / n as f64);
     let mut top = f64::MIN;
     for i in 0..=n {
         if i % 1024 == 0 && cancel.is_cancelled() {
-            return Err("flat-area planning cancelled".into());
+            return Err("planning cancelled while reading the stock".into());
         }
         let f = i as f64 / n as f64;
-        let xy = [
-            run.a[0] + f * (run.b[0] - run.a[0]),
-            run.a[1] + f * (run.b[1] - run.a[1]),
-        ];
+        let xy = [a[0] + f * (b[0] - a[0]), a[1] + f * (b[1] - a[1])];
         top = top.max(stock.top_under_disk(xy, wide));
     }
     Ok(top)

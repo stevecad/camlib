@@ -1,3 +1,4 @@
+import dataclasses
 import importlib.util
 from pathlib import Path
 import unittest
@@ -19,8 +20,19 @@ def roof():
     return load("parallel_support", ROOT / "python/tests/support/parallel.py")
 
 
+def roughed_roof_stock():
+    import cadquery as cq
+    from camlib.cadquery import export_stock_mesh
+
+    envelope = cq.Workplane("XZ").polyline([(0, 0), (24, 0), (24, 4.1), (12, 8.1), (0, 4.1)]).close().extrude(-16)
+    return camlib.StockSpec.from_mesh(export_stock_mesh(envelope), 0.25)
+
+
 def patterns(tool, surface):
-    return {
+    # Passes entered inside the part under the leftover a rough leaves are
+    # ramped in by the declared entry (a plunge would cut into that stock).
+    entry = camlib.RampEntry(angle_deg=10, min_length_mm=1)
+    ops = {
         "spiral": camlib.Spiral(
             "spiral",
             tool,
@@ -84,6 +96,7 @@ def patterns(tool, surface):
             coolant="flood",
         ),
     }
+    return {name: dataclasses.replace(op, entry=entry) for name, op in ops.items()}
 
 
 class SurfacePatternTest(unittest.TestCase):
@@ -92,16 +105,22 @@ class SurfacePatternTest(unittest.TestCase):
         tool, surface = config["tools"][0], config["operations"][0].surface
         for name, op in patterns(tool, surface).items():
             with self.subTest(name):
+                # Stock roughed to 0.1 mm over the roof (a planar envelope),
+                # as a finishing pass meets it after roughing.
                 values = dict(
                     config,
+                    stock=roughed_roof_stock(),
                     operations=(op,),
                     verification=camlib.StreamChecks(stock_contact=camlib.StockContactOptions()),
                 )
-                report = None
+                report, plunges = None, []
                 with Simulation(**values) as sim:
                     for update in sim.run_operations():
                         if isinstance(update, OperationUpdate) and update.stage == "end":
                             report = update.report
+                        motion = getattr(update, "motion", None)
+                        if motion is not None and motion["kind"] == "plunge":
+                            plunges.append(list(motion["curve"]["end"]))
                     self.assertTrue(sim.state.finished)
                     self.assertEqual(report["strategy"], name)
                     self.assertEqual(report["rows_completed"], report["rows"])

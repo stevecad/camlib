@@ -29,7 +29,66 @@ fn operation(m: &StreamManifest, pattern: FinishPattern) -> ParallelOperation {
         op.stepover_mm = 0.;
     }
     op.pattern = pattern;
+    // Passes entered inside the part under stock are ramped in by a
+    // declared entry (a plunge there would cut into the stock).
+    op.entry = Some(
+        serde_json::from_value(serde_json::json!({
+            "kind": "ramp",
+            "angle_rad": 10f64.to_radians(),
+            "min_length_mm": 1.0
+        }))
+        .unwrap(),
+    );
     op
+}
+
+/// The fixture's dome roughed to 0.1 mm over its surface (and its floor at
+/// Z2): the stock a finishing pattern meets after roughing. Each cell is
+/// certain up to the lowest point of the blank over it and may hold material
+/// up to the highest.
+fn roughed_stock(m: &StreamManifest) -> Stock {
+    let mut spec = m.stock.height().unwrap().clone();
+    // Finer cells than the fresh-stock fixture: the dome's edge is steep.
+    spec.cell_size_mm = 0.05;
+    let blank = Stock::new(spec.clone()).unwrap();
+    let [nx, ny] = blank.dimensions();
+    let [sx, sy] = blank.cell_widths_mm();
+    // Dome: 2 + sqrt(16 - r^2) about (8, 8), r <= 4; the blank adds 0.1.
+    let height = |x: f64, y: f64| {
+        let r2 = (x - 8.).powi(2) + (y - 8.).powi(2);
+        2.1 + if r2 < 16. { (16. - r2).sqrt() } else { 0. }
+    };
+    let mut bounds = Vec::with_capacity(nx * ny);
+    for j in 0..ny {
+        for i in 0..nx {
+            let (x0, y0) = (spec.min_mm[0] + i as f64 * sx, spec.min_mm[1] + j as f64 * sy);
+            let mut lo = f64::MAX;
+            let mut hi = f64::MIN;
+            // The dome is monotone in the distance to its axis: its extremes
+            // over a cell lie at the cell's nearest and farthest points.
+            let near = (8f64.clamp(x0, x0 + sx), 8f64.clamp(y0, y0 + sy));
+            let far = (
+                if (8. - x0).abs() > (8. - x0 - sx).abs() { x0 } else { x0 + sx },
+                if (8. - y0).abs() > (8. - y0 - sy).abs() { y0 } else { y0 + sy },
+            );
+            for (x, y) in [near, far] {
+                let h = height(x, y);
+                lo = lo.min(h);
+                hi = hi.max(h);
+            }
+            bounds.push(camlib::stock::HeightBounds { lower_mm: lo, upper_mm: hi });
+        }
+    }
+    let initial = camlib::stock::InitialStock {
+        source_id: "roughed-dome".into(),
+        revision: "1".into(),
+        source_sha256: "0".repeat(64),
+        source_to_setup: camlib::motion::WorkFrame::identity(),
+        uncertainty_mm: 0.,
+        representation: "whole_cell_top_down".into(),
+        bounds,
+    };
+    Stock::from_initial(spec, &initial).unwrap()
 }
 
 /// Run the plan with stock and check, independently, that every feed move
@@ -38,17 +97,17 @@ fn run(m: &StreamManifest, op: ParallelOperation) -> (Vec<Motion>, ParallelPlan,
     let cancel = AtomicBool::new(false);
     let floor = op.floor_z_mm;
     let triangles = op.surface.triangles.clone();
+    let mut stock = roughed_stock(m);
     let mut plan = ParallelPlan::prepare(
         op,
         &m.tools[0],
-        m.stock.height().unwrap(),
+        stock.spec(),
         m.initial_position_mm,
         1,
         &cancel,
     )
     .unwrap();
     let tool = m.tools[0].prepare().unwrap();
-    let mut stock = Stock::new(m.stock.height().unwrap().clone()).unwrap();
     let mut position = m.initial_position_mm;
     let mut motions = vec![];
     while let Some(motion) = plan.next_motion_with_stock(&stock, &cancel).unwrap() {
@@ -99,7 +158,8 @@ fn spiral_covers_the_dome_without_gouging() {
     assert_eq!(report.strategy, "spiral");
     assert_eq!(report.rows_completed, report.rows);
     assert!(report.max_certified_path_excess_mm.unwrap() <= 0.005);
-    assert!(stock.volume().removed_lower_mm3 > 100.);
+    // The 0.1 mm blank over the 100 mm2 dome holds about 10 mm3 (measured 11.7).
+    assert!(stock.volume().removed_lower_mm3 > 8.);
     // Inward: the last cut ends at the center.
     let last = motions
         .iter()
@@ -134,7 +194,7 @@ fn radial_spokes_and_project_curves() {
     let (_, plan, stock) = run(&m, op);
     assert_eq!(plan.report().strategy, "radial");
     assert_eq!(plan.report().rows, 36);
-    assert!(stock.volume().removed_lower_mm3 > 50.);
+    assert!(stock.volume().removed_lower_mm3 > 5.);
 
     // A circle of radius 5 projected onto the dome, cut as one closed pass.
     let op = operation(
@@ -291,7 +351,7 @@ fn scallop_offsets_cover_the_dome_without_gouging() {
     assert!(plan.report().rows > 10, "{}", plan.report().rows);
     assert_eq!(plan.report().rows_completed, plan.report().rows);
     assert!(motions.iter().any(|m| m.kind == MoveKind::Cut));
-    assert!(stock.volume().removed_lower_mm3 > 100.);
+    assert!(stock.volume().removed_lower_mm3 > 8.);
 }
 
 #[test]

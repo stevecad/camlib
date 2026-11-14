@@ -85,6 +85,8 @@ def run(part, seed, mode="contact"):
         length_register=1,
         coolant="flood",
         mode=mode,
+        # Passes that start under the stock are ramped in, not plunged.
+        entry=camlib.RampEntry(angle_deg=10, min_length_mm=0.5),
     )
     target = SurfaceTarget("part", "1", surface, 0)
     config = dict(
