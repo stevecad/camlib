@@ -1855,6 +1855,43 @@ class AvoidCutParts:
 
 
 @dataclass(frozen=True)
+class LeadPlacement:
+    """Where a ``ThermalCut``'s loops may start, and so where their leads go
+    (a lead leaves a small mark where it meets the cut).
+
+    ``keep_off``: TracePath lines and arcs along the drawn edges that must not
+    carry a lead, in the sheet's coordinates (a nest's ``result.no_lead``).
+    ``keep_off_distance_mm``: how far along the outline a start stays from
+    them; there is no default. ``prefer``: ``"as_drawn"`` (the loop's own
+    start, then the middle of its longest straight edges), ``"corner"`` (a
+    corner of the loop, the sharpest first) or a direction ``(dx, dy)`` (the
+    start furthest that way: the side of the part facing it).
+
+    Each loop starts at the first place, in that order, that is off the
+    kept-off edges and whose leads and pierce are proven clear of the parts.
+    A loop with no place off them is refused by name. The report counts the
+    loops moved from their own start (``leads_moved``). Not planned together
+    with ``common_line``."""
+
+    keep_off: tuple = ()
+    keep_off_distance_mm: float = field(kw_only=True)
+    prefer: object = "as_drawn"
+
+    def to_dict(self):
+        if self.prefer in ("as_drawn", "corner"):
+            prefer = dict(kind=self.prefer)
+        elif isinstance(self.prefer, (tuple, list)) and len(self.prefer) == 2:
+            prefer = dict(kind="toward", direction=[float(v) for v in self.prefer])
+        else:
+            raise ValueError('LeadPlacement prefer is "as_drawn", "corner" or a direction (dx, dy)')
+        return dict(
+            keep_off=[path.to_dict() if hasattr(path, "to_dict") else path for path in self.keep_off],
+            keep_off_distance_mm=self.keep_off_distance_mm,
+            prefer=prefer,
+        )
+
+
+@dataclass(frozen=True)
 class CropCut:
     """The last cut of a ``ThermalCut``: it frees the usable offcut from the
     skeleton. ``points_mm``: two (x, y) points for a straight cut or three for
@@ -1911,7 +1948,10 @@ class ThermalCut:
     ``rerouted_rapids``. It is not planned together with ``common_line``.
 
     ``crop=CropCut(points)`` adds a last straight or L-shaped cut that frees
-    the offcut from the skeleton; the report gives its ``crop_length_mm``."""
+    the offcut from the skeleton; the report gives its ``crop_length_mm``.
+
+    ``lead_placement=LeadPlacement(...)`` keeps leads off chosen edges and
+    says where they are preferred (a corner, a side)."""
 
     id: str
     tool: object
@@ -1942,6 +1982,7 @@ class ThermalCut:
     part_order: object = field(default="nearest", kw_only=True)
     avoid_cut_parts: AvoidCutParts | None = field(default=None, kw_only=True)
     crop: CropCut | None = field(default=None, kw_only=True)
+    lead_placement: LeadPlacement | None = field(default=None, kw_only=True)
 
     def common_line_spacing_mm(self):
         """The gap between two parts whose facing edges are a common line:
@@ -1975,6 +2016,10 @@ class ThermalCut:
             }
         if self.common_line is not None:
             result["common_line"] = dict(min_length_mm=self.common_line.min_length_mm)
+        if self.lead_placement is None:
+            result.pop("lead_placement")
+        else:
+            result["lead_placement"] = self.lead_placement.to_dict()
         if self.crop is None:
             result.pop("crop")
         else:

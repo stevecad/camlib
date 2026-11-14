@@ -563,3 +563,87 @@ fn inside(b: &Boundary, p: [f64; 2]) -> bool {
     }
     inside
 }
+
+/// Where each loop starts: the start of the first cutting move after a lead.
+fn loop_starts(events: &[Event]) -> Vec<[f64; 2]> {
+    let mut out = vec![];
+    let mut led = false;
+    for e in events {
+        if let Event::Motion { motion } = e {
+            if motion.kind == MoveKind::Cut && led {
+                let p = motion.curve.start();
+                out.push([p[0], p[1]]);
+            }
+            led = motion.kind == MoveKind::Lead;
+        }
+    }
+    out
+}
+
+/// The distance from p to the segment a-b (the test's own).
+fn to_segment(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (d, v) = ([b[0] - a[0], b[1] - a[1]], [p[0] - a[0], p[1] - a[1]]);
+    let t = ((v[0] * d[0] + v[1] * d[1]) / (d[0] * d[0] + d[1] * d[1])).clamp(0., 1.);
+    (v[0] - t * d[0]).hypot(v[1] - t * d[1])
+}
+
+#[test]
+fn leads_keep_off_declared_edges_and_go_where_preferred() {
+    let outside = |p: &[f64; 2]| p[0] < 20. || p[0] > 120. || p[1] < 20. || p[1] > 100.;
+    let cut = |placement: serde_json::Value| {
+        let (events, plan, _) = run(operation(serde_json::json!({"lead_placement": placement})))?;
+        let report = serde_json::to_value(plan.report()).unwrap();
+        Ok::<_, String>((loop_starts(&events), report["leads_moved"].as_u64().unwrap()))
+    };
+    let (plain_events, plain_plan, _) = run(operation(serde_json::json!({}))).unwrap();
+    let plain = loop_starts(&plain_events);
+    assert_eq!(plain.len(), 6);
+    assert!(serde_json::to_value(plain_plan.report()).unwrap().get("leads_moved").is_none());
+    let plate = *plain.iter().find(|p| outside(p)).unwrap();
+    // The plate's bottom and left edges are to stay free of leads, 5 mm
+    // round them. As drawn, its outline starts on one of them.
+    let (bottom, left) = (([20., 20.], [120., 20.]), ([20., 20.], [20., 100.]));
+    let near = |p: [f64; 2]| to_segment(p, bottom.0, bottom.1).min(to_segment(p, left.0, left.1));
+    assert!(near(plate) < 5., "{plate:?}");
+    let keep_off = serde_json::json!([
+        {"start_mm": bottom.0, "segments": [{"kind": "line", "end_mm": bottom.1}]},
+        {"start_mm": left.0, "segments": [{"kind": "line", "end_mm": left.1}]},
+    ]);
+    let (starts, moved) =
+        cut(serde_json::json!({"keep_off": keep_off, "keep_off_distance_mm": 5.})).unwrap();
+    assert_eq!(starts.len(), 6);
+    // Every start is at least the 5 mm away, along with the kerf's offset
+    // from the drawn edge; only the plate's outline had to move.
+    assert!(starts.iter().all(|p| near(*p) > 5.7), "{starts:?}");
+    assert_eq!(moved, 1);
+    let unchanged = starts.iter().filter(|p| plain.contains(p)).count();
+    assert_eq!(unchanged, 5);
+    // A corner preferred: the one corner off both edges, met in the middle
+    // of the arc the kerf path makes round it.
+    let (starts, _) = cut(serde_json::json!({
+        "keep_off": keep_off, "keep_off_distance_mm": 5., "prefer": {"kind": "corner"}
+    }))
+    .unwrap();
+    let corner = *starts.iter().find(|p| outside(p)).unwrap();
+    let d = (corner[0] - 120.).hypot(corner[1] - 100.);
+    assert!(corner[0] > 120. && corner[1] > 100. && (0.74..0.78).contains(&d), "{corner:?}");
+    assert!(((corner[0] - 120.) - (corner[1] - 100.)).abs() < 1e-9);
+    // A side preferred, nothing kept off: every loop starts at its point
+    // furthest that way.
+    let (starts, _) = cut(serde_json::json!({
+        "keep_off_distance_mm": 0., "prefer": {"kind": "toward", "direction": [-1., 0.]}
+    }))
+    .unwrap();
+    let west = *starts.iter().find(|p| outside(p)).unwrap();
+    assert!(west[0] < 20. && west[0] > 19.2, "{west:?}");
+    // The whole outline kept off: refused by name, not planned anyway.
+    let all = serde_json::json!([{"start_mm": [20., 20.], "segments": [
+        {"kind": "line", "end_mm": [120., 20.]}, {"kind": "line", "end_mm": [120., 100.]},
+        {"kind": "line", "end_mm": [20., 100.]}, {"kind": "line", "end_mm": [20., 20.]}
+    ]}]);
+    let error = cut(serde_json::json!({"keep_off": all, "keep_off_distance_mm": 5.})).unwrap_err();
+    assert!(error.contains("part 0 outline") && error.contains("kept free of leads"), "{error}");
+    // A distance must be declared sensibly.
+    let error = cut(serde_json::json!({"keep_off_distance_mm": -1.})).unwrap_err();
+    assert!(error.contains("keep_off_distance_mm"), "{error}");
+}

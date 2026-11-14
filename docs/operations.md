@@ -1855,6 +1855,23 @@ cut = camlib.ThermalCut("plasma", torch, parts, feed_mm_min=2500, cut_height_mm=
   and fires again after it (no pierce clearance there). Not with wear
   compensation.
 - `power_percent` is the laser power (posted as S).
+- **Lead placement**: `lead_placement=camlib.LeadPlacement(keep_off, keep_off_distance_mm=...,
+  prefer=...)` says where loops may start, and so where their leads go (a
+  lead leaves a small mark where it meets the cut). `keep_off` holds the
+  stretches of outline that must not carry a lead (a seen, sealed or welded
+  edge), as `TracePath` lines and arcs along the drawn edges in the sheet's
+  coordinates; a start stays `keep_off_distance_mm` along the outline from
+  them (no default). `prefer` is `"as_drawn"` (the loop's own start, then the
+  middle of its longest straight edges), `"corner"` (a corner of the loop,
+  the sharpest first; on an outline the lead meets the middle of the arc the
+  kerf path makes round the corner) or a direction `(dx, dy)` (the start
+  furthest that way). Each loop starts at the first place, in that order,
+  that is off the kept-off edges and whose leads and pierce are proven clear
+  of the parts; a loop with no place off them is refused by name. The report
+  counts the loops moved (`leads_moved`). For nested parts declare the edges
+  on the part, `NestPart(no_lead=...)`, and pass the nest's `result.no_lead`
+  as `keep_off` ([nesting](nesting.md)). Not planned together with
+  `common_line`.
 - **Crop cut**: `crop=camlib.CropCut(((x0, y0), (x1, y1)))` (or three points
   for an L) adds a last cut that frees the usable offcut from the skeleton.
   The points are the kerf's centre line in the sheet's coordinates. The beam

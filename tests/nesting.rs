@@ -42,6 +42,7 @@ fn part(region: PlanarRegion, quantity: u32, rotations_deg: &[f64]) -> NestPart 
         priority: 0,
         fill: false,
         marks: vec![],
+        no_lead: vec![],
     }
 }
 /// A plate with a large round hole, a slot with rounded ends and a bolt hole.

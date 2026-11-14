@@ -1,5 +1,5 @@
-"""Part labels placed by the nest, the cut report of a sheet and the crop cut
-(#296 E2, E3, D3). The placed marks are compared with the placements applied
+"""Part labels placed by the nest, the cut report of a sheet, the crop cut and
+lead placement (#296 E2, E3, D3, A4). The placed marks are compared with the placements applied
 in the test, the report's lengths and times with the moves of the run itself,
 and the crop cut with the moves and the remnant's outline."""
 
@@ -238,6 +238,52 @@ class CropCutTest(unittest.TestCase):
             run(result, crop=camlib.CropCut(((x, 0), (x, 120))))
         with self.assertRaisesRegex(Exception, "crop needs two points"):
             run(result, crop=camlib.CropCut(((190, 0),)))
+
+
+class LeadPlacementTest(unittest.TestCase):
+    """Leads kept off declared edges of nested parts (#296 A4)."""
+
+    # The plate's bottom edge, in the plate's own coordinates.
+    EDGE = camlib.TracePath((0, 0), (camlib.TraceLine((70, 0)),))
+
+    def starts(self, out):
+        """Where each loop starts: the first cutting move after a lead."""
+        found, led = [], False
+        for m in out["motions"]:
+            if m["kind"] == "cut" and led:
+                found.append(tuple(m["curve"]["start"][:2]))
+            led = m["kind"] == "lead"
+        return found
+
+    def test_no_lead_edges_travel_with_the_nest_and_the_cut_keeps_off_them(self):
+        parts = (camlib.NestPart(PLATE, 2, (0, 90), no_lead=(self.EDGE,)), camlib.NestPart(WASHER, 3, (0,)))
+        result = nest(parts=parts).run()
+        self.assertEqual(len(result.no_lead), 2)
+        # Each placed edge is the plate's edge under its placement.
+        plates = [p for p in result.placements if p.part == 0]
+        for path, placement in zip(result.no_lead, plates):
+            for p, q in zip(samples(self.EDGE), samples(path)):
+                self.assertLess(math.dist(placed(p, placement), q), 1e-9)
+        kept = [q for path in result.no_lead for q in samples(path, 280)]  # every 0.25 mm
+        plain = self.starts(run(result))
+        self.assertTrue(any(min(math.dist(p, q) for q in kept) < 3 for p in plain))
+        rules = camlib.LeadPlacement(result.no_lead, keep_off_distance_mm=3, prefer="corner")
+        out = run(result, lead_placement=rules)
+        self.assertEqual(out["statuses"], {"clear"})
+        starts = self.starts(out)
+        self.assertEqual(len(starts), len(plain))
+        # 3 mm along the edge, and the kerf path's own half millimetre out.
+        self.assertTrue(all(min(math.dist(p, q) for q in kept) > 3.4 for p in starts), starts)
+        self.assertGreaterEqual(out["reports"]["plasma"]["leads_moved"], 1)
+        self.assertNotIn("leads_moved", run(result)["reports"]["plasma"])
+
+    def test_a_part_with_no_edge_left_for_a_lead_is_refused(self):
+        ring = camlib.TracePath((9, 0), (camlib.TraceArc((0, 0), 360),))
+        result = nest(parts=(camlib.NestPart(WASHER, 1, (0,), no_lead=(ring,)),)).run()
+        with self.assertRaisesRegex(Exception, "kept free of leads"):
+            run(result, lead_placement=camlib.LeadPlacement(result.no_lead, keep_off_distance_mm=1))
+        with self.assertRaisesRegex(ValueError, "prefer"):
+            camlib.LeadPlacement((), keep_off_distance_mm=1, prefer="left").to_dict()
 
 
 if __name__ == "__main__":

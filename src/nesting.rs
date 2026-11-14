@@ -107,6 +107,12 @@ pub struct NestPart {
     /// part at the mark's width.
     #[serde(default)]
     pub marks: Vec<TracePath>,
+    /// Stretches of the part's outline that must not carry a lead (a seen
+    /// or welded edge), in the part's own coordinates: placed with every
+    /// copy and returned as the result's `no_lead`, the `keep_off` of the
+    /// thermal cut's `lead_placement`.
+    #[serde(default)]
+    pub no_lead: Vec<TracePath>,
 }
 
 /// One part mark as placed with a copy of its part.
@@ -341,6 +347,9 @@ pub struct NestResult {
     /// The parts' marks, placed with every copy, in placement order.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub marks: Vec<PlacedMark>,
+    /// The parts' edges kept free of leads, placed with every copy.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub no_lead: Vec<TracePath>,
     pub diagnostics: Vec<String>,
 }
 
@@ -1207,9 +1216,19 @@ pub fn nest(request: &NestRequest, cancel: &impl CancelSignal) -> Result<NestRes
                 })
         })
         .collect();
+    let no_lead = placements
+        .iter()
+        .flat_map(|p| {
+            request.parts[p.part]
+                .no_lead
+                .iter()
+                .map(move |path| placed_mark(path, p))
+        })
+        .collect();
     Ok(NestResult {
         strategy: "bottom_left_fill",
         marks,
+        no_lead,
         placements,
         unplaced,
         region,

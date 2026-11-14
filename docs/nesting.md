@@ -140,6 +140,7 @@ and unplaced copies always add up to the declared quantities.
 | `used_bounds_mm` | The box round the placed parts |
 | `lead_reach_mm` | How far leads and pierce craters may reach beyond a kerf's edge |
 | `check` | The independent check's report |
+| `no_lead` | The parts' edges kept free of leads, as placed (below) |
 | `marks`, `mark_placements` | The parts' marks as placed (below) and, for each, the `(placement, mark)` it came from |
 
 ## Part labels
@@ -160,6 +161,20 @@ result = camlib.Nest.for_cut(cut, sheet, (camlib.NestPart(plate, 4, (0, 90), mar
 marking = camlib.ThermalMark("labels", torch, result.region, result.marks, feed_mm_min=4000,
                              mark_height_mm=2.5, power_percent=15, mark_width_mm=0.8,
                              tool_number=1, length_register=1)
+```
+
+`NestPart(..., no_lead=(...))` declares, the same way, the stretches of a
+part's outline that must not carry a lead (a seen or welded edge): paths
+along the drawn edge in the part's coordinates. They are placed with every
+copy and returned as `result.no_lead`, the `keep_off` of the cut's
+`LeadPlacement` ([operations](operations.md)):
+
+```python
+edge = camlib.TracePath((0, 0), (camlib.TraceLine((70, 0)),))          # the part's bottom edge
+result = camlib.Nest.for_cut(cut, sheet, (camlib.NestPart(plate, 4, (0, 90), no_lead=(edge,)),),
+                             part_spacing_mm=2, edge_margin_mm=5, resolution_mm=1).run()
+cut = dataclasses.replace(cut, parts=result.region,
+                          lead_placement=camlib.LeadPlacement(result.no_lead, keep_off_distance_mm=3, prefer="corner"))
 ```
 
 ## Where the nest starts

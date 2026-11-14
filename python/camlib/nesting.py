@@ -43,7 +43,13 @@ class NestPart:
     number in your own stroke letters, a bend line). The nest places them
     with every copy (turned, and mirrored with a part that is turned over)
     and returns them as the result's ``marks``: the ``paths`` of a
-    ThermalMark, which proves each inside its part at the mark's width."""
+    ThermalMark, which proves each inside its part at the mark's width.
+
+    ``no_lead``: stretches of the part's outline that must not carry a lead
+    (a seen or welded edge), as TracePath lines and arcs along the drawn
+    edge in the part's coordinates. They are placed the same way and
+    returned as the result's ``no_lead``: the ``keep_off`` of the cut's
+    ``LeadPlacement``."""
 
     region: object
     quantity: int
@@ -52,6 +58,7 @@ class NestPart:
     priority: int = 0
     fill: bool = False
     marks: tuple = ()
+    no_lead: tuple = ()
 
     def to_dict(self):
         return dict(
@@ -62,6 +69,7 @@ class NestPart:
             priority=self.priority,
             fill=self.fill,
             marks=[mark.to_dict() if hasattr(mark, "to_dict") else mark for mark in self.marks],
+            no_lead=[path.to_dict() if hasattr(path, "to_dict") else path for path in self.no_lead],
         )
 
 
@@ -114,6 +122,9 @@ class NestResult:
     # (placement, mark of its part) it came from.
     marks: tuple = ()
     mark_placements: tuple = ()
+    # The parts' edges kept free of leads, as placed (TracePath): the
+    # ``keep_off`` of the cut's LeadPlacement.
+    no_lead: tuple = ()
 
 
 def _trace_path(path):
@@ -146,6 +157,7 @@ def _nest_result(report):
         filled=tuple((part, copies) for part, copies in report.get("filled", ())),
         marks=tuple(_trace_path(m["path"]) for m in report.get("marks", ())),
         mark_placements=tuple((m["placement"], m["mark"]) for m in report.get("marks", ())),
+        no_lead=tuple(_trace_path(path) for path in report.get("no_lead", ())),
     )
 
 

@@ -27,8 +27,10 @@ use serde::{Deserialize, Serialize};
 use std::f64::consts::{FRAC_PI_2, PI};
 
 mod common_line;
+mod lead_placement;
 mod tip_up;
 pub use common_line::{CommonLine, CommonLineReport};
+pub use lead_placement::{LeadPlacement, LeadPreference};
 pub use tip_up::AvoidCutParts;
 
 /// How the torch or head height is controlled.
@@ -180,6 +182,10 @@ pub struct ThermalCutOperation {
     /// tip up between the slats (see `thermal/tip_up.rs`). Off unless set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avoid_cut_parts: Option<AvoidCutParts>,
+    /// Edges that must not carry a lead, and where leads are preferred
+    /// (see `thermal/lead_placement.rs`). Off unless set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lead_placement: Option<LeadPlacement>,
     /// A last cut that frees the usable offcut from the skeleton. Off unless
     /// set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -230,6 +236,10 @@ pub struct ThermalCutReport {
     pub min_part_step_mm: Option<f64>,
     /// Travel between cuts with the beam off, in the sheet's plane.
     pub rapid_length_mm: f64,
+    /// Loops started somewhere other than their own start to satisfy
+    /// `lead_placement`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leads_moved: Option<usize>,
     /// The crop cut's length (in `cut_length_mm` too; its pierce is one of
     /// `pierces`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -683,6 +693,9 @@ impl ThermalCutPlan {
                 "thermal cut part_order spread: min_distance_mm {min_distance_mm} must be positive (how far apart the starts of two parts cut one after the other should be)"
             ));
         }
+        if op.lead_placement.is_some() && op.common_line.is_some() {
+            return Err("thermal cut: lead_placement is not planned together with common_line (a common line's leads are placed by the shared cut); use one of them".into());
+        }
         if let Some(avoid) = &op.avoid_cut_parts {
             if !(avoid.clearance_mm.is_finite()
                 && avoid.clearance_mm > 0.
@@ -842,6 +855,13 @@ impl ThermalCutPlan {
         let mut leaving: Option<usize> = None;
         let mut freed_by_loop: Vec<Option<usize>> = vec![];
         let mut rerouted = 0;
+        let mut leads_moved = 0;
+        let lead_rules = op
+            .lead_placement
+            .as_ref()
+            .map(|placement| lead_placement::Prepared::new(placement, offset, guard))
+            .transpose()
+            .map_err(|e| format!("thermal cut {}: {e}", op.id))?;
         // What each pierce cuts, for the refusals of the kerf checks.
         let mut pierced = vec![];
         for &l in &order {
@@ -971,7 +991,36 @@ impl ThermalCutPlan {
                 }
                 Ok(())
             };
-            if clear_at(&strokes).is_err() {
+            if let Some(rules) = &lead_rules {
+                // The first start, in the preferred order, that is off the
+                // kept-off edges and whose leads and pierce are clear; one
+                // that is only off them is taken to the checks below (a
+                // hole's centre pierce, or the refusal that names the lead).
+                let candidates = rules.candidates(&strokes, 1e-6);
+                let mut allowed = candidates
+                    .iter()
+                    .filter(|start| !rules.kept_off(start.point(&strokes)));
+                let Some(first) = allowed.next() else {
+                    return Err(format!(
+                        "thermal cut {}: part {} {}: every place the loop could start is on an edge kept free of leads (lead_placement.keep_off); free part of an edge or reduce keep_off_distance_mm",
+                        op.id,
+                        lp.part,
+                        lp.hole.map_or("outline".into(), |h| format!("hole {h}"))
+                    ));
+                };
+                let mut chosen = first.rotate(&strokes);
+                if clear_at(&chosen).is_err() {
+                    for start in allowed {
+                        let r = start.rotate(&strokes);
+                        if clear_at(&r).is_ok() {
+                            chosen = r;
+                            break;
+                        }
+                    }
+                }
+                leads_moved += usize::from(chosen[0].a != strokes[0].a);
+                strokes = chosen;
+            } else if clear_at(&strokes).is_err() {
                 // Straight strokes only: a hole bounded by arcs keeps the
                 // center pierce below (small round holes).
                 let mut by_length: Vec<usize> = (0..strokes.len())
@@ -1682,6 +1731,7 @@ impl ThermalCutPlan {
             part_order: op.part_order,
             min_part_step_mm,
             rapid_length_mm,
+            leads_moved: op.lead_placement.as_ref().map(|_| leads_moved),
             crop_length_mm,
             feed_seconds,
             dwell_seconds,
