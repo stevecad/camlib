@@ -1872,6 +1872,44 @@ cut = camlib.ThermalCut("plasma", torch, parts, feed_mm_min=2500, cut_height_mm=
   on the part, `NestPart(no_lead=...)`, and pass the nest's `result.no_lead`
   as `keep_off` ([nesting](nesting.md)). Not planned together with
   `common_line`.
+- **Corner loops**: `corner_loops=camlib.CornerLoops(overshoot_mm,
+  min_angle_deg=..., max_angle_deg=...)` cuts a loop into the scrap at the
+  parts' outside corners. A plasma arc trails the torch and a machine slows
+  to turn, so a corner cut in one pass comes out rounded or undercut; with a
+  loop the cut runs `overshoot_mm` straight on past the corner, turns round
+  in the scrap and comes back onto the next edge the same distance before
+  the corner, so both edges are cut straight through it at full feed. With
+  `t` the change of direction at the corner, the loop is a circle of radius
+  `overshoot_mm / tan(t / 2)` tangent to both edges, written as arcs of a
+  quarter turn (a square corner: three quarter arcs of radius
+  `overshoot_mm`). Corners turning by `min_angle_deg` to `max_angle_deg` get
+  one; there are no defaults. Inside corners (and a hole's) get none, nor
+  does the corner a loop starts at: the leads are there. Every loop is
+  proven clear of every part like a lead, and a loop that is not refuses
+  the cut, naming the kerf path; `Nest.for_cut` keeps room for the loops
+  ([nesting](nesting.md)) and `Nest.remnant` counts what they cut. Micro-joints
+  are never placed in a loop. Not planned together with `common_line` or
+  wear compensation. The report counts them (`corner_loops`); their length is
+  in `cut_length_mm`.
+- **Corner slow-down**: `corner_slowdown=camlib.CornerSlowdown(distance_mm,
+  feed_percent=..., min_angle_deg=..., height_control_off=True)` cuts from
+  `distance_mm` before a corner to `distance_mm` after it at `feed_percent`
+  of the feed, so the arc catches up with the torch. A corner is a change of
+  direction of at least `min_angle_deg`: a sharp join (an inside corner), or
+  the tight arc the kerf offset puts round a drawn outside corner. Drawn
+  fillets and circles larger than that are no corners, a small hole keeps
+  its `small_holes` feed, and a corner with a loop needs no slow-down and
+  gets none. There are no defaults. The slow-down is posted as ordinary feed
+  words. With `height_control=True` torch height control is held off over
+  each slowed stretch (the arc voltage rises as the torch slows, and a
+  control that follows it would dive); that is posted only by a post whose
+  controller switches height control from the program (QtPlasmaC's
+  `M62 P2`/`M63 P2`), and refused by the others as `height_control` is. Set
+  `height_control_off=False` where the controller holds it itself (a
+  velocity anti-dive). Not planned together with `common_line`. The report
+  counts the slowed stretches (`corner_slowdowns`), and `feed_seconds`
+  includes them at their feed. A laser's power ramp at corners is not
+  offered: no post here has a controller that documents one.
 - **Crop cut**: `crop=camlib.CropCut(((x0, y0), (x1, y1)))` (or three points
   for an L) adds a last cut that frees the usable offcut from the skeleton.
   The points are the kerf's centre line in the sheet's coordinates. The beam

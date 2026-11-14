@@ -1892,6 +1892,54 @@ class LeadPlacement:
 
 
 @dataclass(frozen=True)
+class CornerLoops:
+    """Loops at the parts' outside corners in a ``ThermalCut``: the cut runs
+    ``overshoot_mm`` straight on past the corner into the scrap, turns round
+    there and comes back onto the next edge the same distance before the
+    corner, so both edges are cut straight through it at full feed and the
+    corner is left sharp. Corners whose direction changes by
+    ``min_angle_deg`` to ``max_angle_deg`` get one (a square corner is 90);
+    there are no defaults. A loop is proven clear of every part like a lead,
+    and ``Nest.for_cut`` keeps room for it. The corner a loop starts at
+    keeps its leads instead. Not planned with ``common_line`` or wear
+    compensation. The report counts them (``corner_loops``)."""
+
+    overshoot_mm: float
+    min_angle_deg: float = field(kw_only=True)
+    max_angle_deg: float = field(kw_only=True)
+
+    def to_dict(self):
+        return dict(overshoot_mm=self.overshoot_mm, min_angle_deg=self.min_angle_deg, max_angle_deg=self.max_angle_deg)
+
+
+@dataclass(frozen=True)
+class CornerSlowdown:
+    """A reduced feed round corners in a ``ThermalCut``: from ``distance_mm``
+    before a corner to ``distance_mm`` after it the cut runs at
+    ``feed_percent`` of its feed, so the arc catches up with the torch. A
+    corner is a change of direction of at least ``min_angle_deg`` (a sharp
+    join, or the tight arc the kerf offset puts round a drawn outside
+    corner). There are no defaults. ``height_control_off`` holds torch
+    height control off over the slowed stretch (the arc voltage rises as the
+    torch slows; a controller that does this itself can leave it on). Small
+    holes keep their own feed. Not planned with ``common_line``. The report
+    counts the slowed stretches (``corner_slowdowns``)."""
+
+    distance_mm: float
+    feed_percent: float = field(kw_only=True)
+    min_angle_deg: float = field(kw_only=True)
+    height_control_off: bool = True
+
+    def to_dict(self):
+        return dict(
+            distance_mm=self.distance_mm,
+            feed_percent=self.feed_percent,
+            min_angle_deg=self.min_angle_deg,
+            height_control_off=self.height_control_off,
+        )
+
+
+@dataclass(frozen=True)
 class CropCut:
     """The last cut of a ``ThermalCut``: it frees the usable offcut from the
     skeleton. ``points_mm``: two (x, y) points for a straight cut or three for
@@ -1951,7 +1999,11 @@ class ThermalCut:
     the offcut from the skeleton; the report gives its ``crop_length_mm``.
 
     ``lead_placement=LeadPlacement(...)`` keeps leads off chosen edges and
-    says where they are preferred (a corner, a side)."""
+    says where they are preferred (a corner, a side).
+
+    ``corner_loops=CornerLoops(...)`` cuts a loop into the scrap at outside
+    corners, and ``corner_slowdown=CornerSlowdown(...)`` reduces the feed
+    round corners."""
 
     id: str
     tool: object
@@ -1983,6 +2035,8 @@ class ThermalCut:
     avoid_cut_parts: AvoidCutParts | None = field(default=None, kw_only=True)
     crop: CropCut | None = field(default=None, kw_only=True)
     lead_placement: LeadPlacement | None = field(default=None, kw_only=True)
+    corner_loops: CornerLoops | None = field(default=None, kw_only=True)
+    corner_slowdown: CornerSlowdown | None = field(default=None, kw_only=True)
 
     def common_line_spacing_mm(self):
         """The gap between two parts whose facing edges are a common line:
@@ -2020,6 +2074,10 @@ class ThermalCut:
             result.pop("lead_placement")
         else:
             result["lead_placement"] = self.lead_placement.to_dict()
+        for name in ("corner_loops", "corner_slowdown"):
+            option = result.pop(name)
+            if option is not None:
+                result[name] = option.to_dict()
         if self.crop is None:
             result.pop("crop")
         else:

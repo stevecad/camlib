@@ -27,9 +27,11 @@ use serde::{Deserialize, Serialize};
 use std::f64::consts::{FRAC_PI_2, PI};
 
 mod common_line;
+mod corners;
 mod lead_placement;
 mod tip_up;
 pub use common_line::{CommonLine, CommonLineReport};
+pub use corners::{CornerLoops, CornerSlowdown, loop_reach_mm};
 pub use lead_placement::{LeadPlacement, LeadPreference};
 pub use tip_up::AvoidCutParts;
 
@@ -186,6 +188,15 @@ pub struct ThermalCutOperation {
     /// (see `thermal/lead_placement.rs`). Off unless set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lead_placement: Option<LeadPlacement>,
+    /// Loops into the scrap at the parts' outside corners, so both edges
+    /// are cut straight through the corner (see `thermal/corners.rs`). Off
+    /// unless set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corner_loops: Option<CornerLoops>,
+    /// A reduced feed either side of corners (see `thermal/corners.rs`).
+    /// Off unless set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corner_slowdown: Option<CornerSlowdown>,
     /// A last cut that frees the usable offcut from the skeleton. Off unless
     /// set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -240,6 +251,13 @@ pub struct ThermalCutReport {
     /// `lead_placement`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub leads_moved: Option<usize>,
+    /// Loops cut at corners (`corner_loops`); their length is in
+    /// `cut_length_mm`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub corner_loops: Option<usize>,
+    /// Stretches cut at the reduced feed (`corner_slowdown`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub corner_slowdowns: Option<usize>,
     /// The crop cut's length (in `cut_length_mm` too; its pierce is one of
     /// `pierces`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -696,6 +714,32 @@ impl ThermalCutPlan {
         if op.lead_placement.is_some() && op.common_line.is_some() {
             return Err("thermal cut: lead_placement is not planned together with common_line (a common line's leads are placed by the shared cut); use one of them".into());
         }
+        if let Some(c) = &op.corner_loops {
+            c.validate()
+                .map_err(|e| format!("thermal cut {}: {e}", op.id))?;
+            if op.common_line.is_some() {
+                return Err(format!(
+                    "thermal cut {}: corner_loops is not planned together with common_line (a shared edge has a part on both sides of its corners); use one of them",
+                    op.id
+                ));
+            }
+            if op.compensation == Compensation::Wear {
+                return Err(format!(
+                    "thermal cut {}: corner_loops is not planned together with wear compensation (a controller's cutter compensation is not proven along a path that crosses itself); use compensation in the program",
+                    op.id
+                ));
+            }
+        }
+        if let Some(c) = &op.corner_slowdown {
+            c.validate()
+                .map_err(|e| format!("thermal cut {}: {e}", op.id))?;
+            if op.common_line.is_some() {
+                return Err(format!(
+                    "thermal cut {}: corner_slowdown is not planned together with common_line; use one of them",
+                    op.id
+                ));
+            }
+        }
         if let Some(avoid) = &op.avoid_cut_parts {
             if !(avoid.clearance_mm.is_finite()
                 && avoid.clearance_mm > 0.
@@ -856,6 +900,7 @@ impl ThermalCutPlan {
         let mut freed_by_loop: Vec<Option<usize>> = vec![];
         let mut rerouted = 0;
         let mut leads_moved = 0;
+        let (mut corner_loops, mut corner_slowdowns) = (0, 0);
         let lead_rules = op
             .lead_placement
             .as_ref()
@@ -1069,6 +1114,14 @@ impl ThermalCutPlan {
                     strokes = r;
                 }
             }
+            // Corner loops, once the start is settled (the corner the loop
+            // starts at keeps its leads instead).
+            let mut in_loop = vec![false; strokes.len()];
+            if let Some(c) = &op.corner_loops {
+                let (with, flags, count) = corners::with_loops(&strokes, c, offset, side, guard);
+                (strokes, in_loop) = (with, flags);
+                corner_loops += count;
+            }
             let s0 = strokes[0];
             let start = s0.a;
             let t = s0.tangent(false);
@@ -1178,6 +1231,11 @@ impl ThermalCutPlan {
             };
             // Lead-in: straight, then the tangent arc onto the loop.
             let mut cuts: Vec<(Curve, MoveKind)> = vec![];
+            // Per move of `cuts` (absent: none): part of a corner loop, and
+            // cut at the corner feed.
+            const LOOP: u8 = 1;
+            const SLOW: u8 = 2;
+            let mut tags: Vec<u8> = vec![];
             if lin.length_mm > 0. {
                 cuts.push((line(at_z(pierce, z_cut), at_z(a, z_cut)), MoveKind::Lead));
             }
@@ -1229,6 +1287,8 @@ impl ThermalCutPlan {
                     cuts.push((s.curve(z_cut), MoveKind::Cut));
                     end = (s.b, s.tangent(true));
                 }
+                tags.resize(cuts.len() - 1, 0);
+                tags.push(if in_loop[k] { LOOP } else { 0 });
             }
             // Overcut: on around the loop from its start.
             let mut left = op.overcut_mm.clamp(0., lp.length);
@@ -1257,6 +1317,32 @@ impl ThermalCutPlan {
                 left -= length * f;
             }
             let mut cut_moves = cuts.len();
+            tags.resize(cut_moves, 0);
+            // The corner feed: the loop's cut moves split where it begins
+            // and ends. A small hole is cut at its own reduced feed.
+            if let Some(slow) = op.corner_slowdown.as_ref().filter(|_| !is_small) {
+                let curves: Vec<Curve> = cuts[lead_in_moves..]
+                    .iter()
+                    .map(|(c, _)| c.clone())
+                    .collect();
+                let (pieces, count) = corners::slow_down(
+                    &curves,
+                    &strokes,
+                    &in_loop,
+                    slow,
+                    offset,
+                    guard,
+                    op.tolerance_mm,
+                )?;
+                corner_slowdowns += count;
+                let old = tags.split_off(lead_in_moves);
+                cuts.truncate(lead_in_moves);
+                for piece in pieces {
+                    cuts.push((piece.curve, MoveKind::Cut));
+                    tags.push(old[piece.source] | if piece.slowed { SLOW } else { 0 });
+                }
+                cut_moves = cuts.len();
+            }
             // Lead-out: the tangent arc, then straight into the scrap.
             let (e, te) = end;
             let ne = scrap(te);
@@ -1299,11 +1385,16 @@ impl ThermalCutPlan {
                     })
                     .collect();
                 let mut split = vec![];
+                let mut split_tags = vec![];
                 let mut along = 0.;
                 let mut touched = vec![false; gaps.len()];
                 for (k, (curve, kind)) in cuts.into_iter().enumerate() {
-                    if kind != MoveKind::Cut || k >= cut_moves {
+                    let tag = tags.get(k).copied().unwrap_or(0);
+                    // A corner loop lies in the scrap: no joint there, and
+                    // its length is not the outline's.
+                    if kind != MoveKind::Cut || k >= cut_moves || tag & LOOP != 0 {
                         split.push((curve, kind));
+                        split_tags.push(tag);
                         continue;
                     }
                     let length = curve.prepare(op.tolerance_mm)?.length_mm();
@@ -1319,10 +1410,12 @@ impl ThermalCutPlan {
                         let b = ((g1 - s0) / length).clamp(0., 1.);
                         if a > t {
                             split.push((part_of(&curve, t, a), MoveKind::Cut));
+                            split_tags.push(tag);
                         }
                         let from = point_at(&curve, a.max(t));
                         let to = point_at(&curve, b);
                         split.push((line(from, to), MoveKind::Rapid));
+                        split_tags.push(0);
                         t = b;
                     }
                     if t < 1. {
@@ -1334,6 +1427,7 @@ impl ThermalCutPlan {
                             },
                             MoveKind::Cut,
                         ));
+                        split_tags.push(tag);
                     }
                 }
                 joints = touched.iter().filter(|t| **t).count();
@@ -1344,12 +1438,67 @@ impl ThermalCutPlan {
                     .find(|(_, (_, k))| *k == MoveKind::Lead)
                     .map_or(split.len(), |(i, _)| i);
                 cuts = split;
+                tags = split_tags;
             }
+            // A loop's run-on continues the edge before it and its run-back
+            // the edge after it: one line each, where the feed is the same.
+            if in_loop.iter().any(|f| *f) {
+                let mut joined: Vec<(Curve, MoveKind)> = Vec::with_capacity(cuts.len());
+                let mut joined_tags: Vec<u8> = Vec::with_capacity(cuts.len());
+                let mut removed_before_leads = 0;
+                for (k, (curve, kind)) in cuts.into_iter().enumerate() {
+                    let tag = tags.get(k).copied().unwrap_or(0);
+                    if k > lead_in_moves
+                        && k < cut_moves
+                        && kind == MoveKind::Cut
+                        && let Some((Curve::Line { start, end }, MoveKind::Cut)) = joined.last()
+                        && let Curve::Line { start: s2, end: e2 } = &curve
+                        && let Some(&last_tag) = joined_tags.last()
+                        && (last_tag | tag) & LOOP != 0
+                        && (last_tag ^ tag) & SLOW == 0
+                        && end == s2
+                    {
+                        let (u, v) = (
+                            [end[0] - start[0], end[1] - start[1]],
+                            [e2[0] - s2[0], e2[1] - s2[1]],
+                        );
+                        let (lu, lv) = (u[0].hypot(u[1]), v[0].hypot(v[1]));
+                        if lu > 0.
+                            && lv > 0.
+                            && (u[0] * v[1] - u[1] * v[0]).abs() <= 1e-12 * lu * lv
+                            && u[0] * v[0] + u[1] * v[1] > 0.
+                        {
+                            let merged = Curve::Line {
+                                start: *start,
+                                end: *e2,
+                            };
+                            *joined.last_mut().unwrap() = (merged, MoveKind::Cut);
+                            *joined_tags.last_mut().unwrap() = last_tag & tag;
+                            removed_before_leads += 1;
+                            continue;
+                        }
+                    }
+                    joined.push((curve, kind));
+                    joined_tags.push(tag);
+                }
+                cut_moves -= removed_before_leads;
+                (cuts, tags) = (joined, joined_tags);
+            }
+            let hold = op
+                .corner_slowdown
+                .is_some_and(|slow| slow.height_control_off);
+            let corner_feed = op
+                .corner_slowdown
+                .map_or(feed, |slow| feed * slow.feed_percent / 100.);
+            // Whether height control is on, as the events so far leave it.
+            let mut thc_on = false;
             for (k, (curve, kind)) in cuts.into_iter().enumerate() {
+                let slowed = tags.get(k).copied().unwrap_or(0) & SLOW != 0;
                 if kind == MoveKind::Rapid {
                     // Over a joint: beam off, across, fire again.
-                    if thc {
+                    if thc_on {
                         steps.push_back(Step::Event(Event::HeightControl { on: false }));
+                        thc_on = false;
                     }
                     steps.push_back(Step::Event(Event::Beam { power_percent: 0. }));
                     pos = curve.end();
@@ -1361,9 +1510,6 @@ impl ThermalCutPlan {
                         steps.push_back(Step::Event(Event::Dwell {
                             seconds: op.pierce_delay_s,
                         }));
-                    }
-                    if thc {
-                        steps.push_back(Step::Event(Event::HeightControl { on: true }));
                     }
                     continue;
                 }
@@ -1389,18 +1535,28 @@ impl ThermalCutPlan {
                     } else {
                         "lead"
                     },
-                )?;
+                )
+                .map_err(|e| {
+                    if kind == MoveKind::Cut && op.corner_loops.is_some() {
+                        format!(
+                            "{e}. With corner_loops the loops need room beside the parts: nest for this cut (Nest.for_cut keeps it) or reduce overshoot_mm"
+                        )
+                    } else {
+                        e
+                    }
+                })?;
                 if wear && k == 0 {
                     steps.push_back(Step::Event(Event::CutterCompensation {
                         side: comp_side,
                         plane: crate::motion::Plane::Xy,
                     }));
                 }
-                if thc && k == lead_in_moves {
-                    steps.push_back(Step::Event(Event::HeightControl { on: true }));
-                }
-                if thc && k == cut_moves {
-                    steps.push_back(Step::Event(Event::HeightControl { on: false }));
+                // Height control: on over the loop's cut, off over the
+                // leads and, where asked, over a corner's reduced feed.
+                let wanted = thc && k >= lead_in_moves && k < cut_moves && !(slowed && hold);
+                if wanted != thc_on {
+                    steps.push_back(Step::Event(Event::HeightControl { on: wanted }));
+                    thc_on = wanted;
                 }
                 if wear
                     && kind == MoveKind::Lead
@@ -1416,14 +1572,13 @@ impl ThermalCutPlan {
                     cut_length += curve.prepare(op.tolerance_mm)?.length_mm();
                 }
                 pos = curve.end();
-                steps.push_back(Step::Move(curve, kind, Some(feed)));
+                steps.push_back(Step::Move(
+                    curve,
+                    kind,
+                    Some(if slowed { corner_feed } else { feed }),
+                ));
             }
-            if thc
-                && steps.iter().rev().find_map(|s| match s {
-                    Step::Event(Event::HeightControl { on }) => Some(*on),
-                    _ => None,
-                }) == Some(true)
-            {
+            if thc_on {
                 steps.push_back(Step::Event(Event::HeightControl { on: false }));
             }
             steps.push_back(Step::Event(Event::Beam { power_percent: 0. }));
@@ -1732,6 +1887,8 @@ impl ThermalCutPlan {
             min_part_step_mm,
             rapid_length_mm,
             leads_moved: op.lead_placement.as_ref().map(|_| leads_moved),
+            corner_loops: op.corner_loops.map(|_| corner_loops),
+            corner_slowdowns: op.corner_slowdown.map(|_| corner_slowdowns),
             crop_length_mm,
             feed_seconds,
             dwell_seconds,

@@ -36,7 +36,7 @@ program = job.post_nc("sheet", machine=machine, post=q.QtPlasmaCPost, decoder=q.
 | Preamble | `G21 G90 G17 G94 G40 G49 G80 G92.1`, `G64 P<blend_mm>`, `M52 P1` | The documentation requires `M52 P1` (paused motion). `G64 P` is written explicitly (the loader would insert `G64 P0.1`); `blend_mm` must be at most half the machine tolerance |
 | Torch | `T0 M6`, `G43 H0` | QtPlasmaC tool 0 is the torch (T1 is the scribe); camlib's table entry is number 1, register 1 |
 | Torch on / off | `M3 $0 S1` / `M5 $0` | |
-| Height control | `M62 P2` off, `M63 P2` on (synchronized with motion) | `ThermalCut(height_control=True)` |
+| Height control | `M62 P2` off, `M63 P2` on (synchronized with motion) | `ThermalCut(height_control=True)`: on over each loop, off over leads, small holes and the slowed stretches of a `CornerSlowdown` |
 | Z | One Z (the cut height) | QtPlasmaC removes Z motion and handles probing, pierce height, pierce delay and cut height from the material file: plan with `height_mode="fixed"`, `pierce_delay_s=0` |
 | Feeds | `F` words | QtPlasmaC warns when they differ from the material's cut feed rate |
 

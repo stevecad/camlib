@@ -220,6 +220,8 @@ class Nest:
     edge_margin_mm: float
     resolution_mm: float
     pierce_clearance_mm: float | None = None
+    # The cut's CornerLoops: room is kept for the loops as for the leads.
+    corner_loops: object | None = None
     part_in_part: bool = True
     allow_unplaced: bool = False
     search_iterations: int = 0
@@ -244,6 +246,7 @@ class Nest:
             edge_margin_mm,
             resolution_mm,
             pierce_clearance_mm=cut.pierce_clearance_mm,
+            corner_loops=cut.corner_loops,
             boundary_tolerance_mm=cut.boundary_tolerance_mm,
             tolerance_mm=cut.tolerance_mm,
             **options,
@@ -270,6 +273,8 @@ class Nest:
         )
         if self.pierce_clearance_mm is not None:
             result["pierce_clearance_mm"] = self.pierce_clearance_mm
+        if self.corner_loops is not None:
+            result["corner_loops"] = self.corner_loops.to_dict()
         return result
 
     def run(self):
@@ -318,6 +323,7 @@ class Nest:
                         "lead_in",
                         "lead_out",
                         "pierce_clearance_mm",
+                        "corner_loops",
                         "boundary_tolerance_mm",
                         "tolerance_mm",
                     )

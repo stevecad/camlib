@@ -81,6 +81,8 @@ _EXPORTS = {
             "SpreadHeat",
             "AvoidCutParts",
             "CropCut",
+            "CornerLoops",
+            "CornerSlowdown",
             "LeadPlacement",
             "MicroJoints",
             "CommonLine",

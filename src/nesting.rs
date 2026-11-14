@@ -268,6 +268,9 @@ pub struct NestRequest {
     /// As in the thermal cut. Default: the kerf width.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pierce_clearance_mm: Option<f64>,
+    /// The thermal cut's corner loops: room is kept for them as for leads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corner_loops: Option<crate::thermal::CornerLoops>,
     /// Material left between what is cut for two parts.
     pub part_spacing_mm: f64,
     /// Material left between what is cut for a part and the sheet's edge.
@@ -383,6 +386,13 @@ fn clearances(request: &NestRequest) -> Result<Clearances, String> {
                 "pierce_clearance_mm must not be negative".into(),
             ),
             (
+                request.corner_loops.is_none_or(|c| c.validate().is_ok()),
+                request
+                    .corner_loops
+                    .and_then(|c| c.validate().err())
+                    .unwrap_or_default(),
+            ),
+            (
                 within(request.part_spacing_mm, 1e4) && within(request.edge_margin_mm, 1e4),
                 "part_spacing_mm and edge_margin_mm must not be negative".into(),
             ),
@@ -448,6 +458,7 @@ fn clearances(request: &NestRequest) -> Result<Clearances, String> {
         &request.lead_in,
         &request.lead_out,
         request.pierce_clearance_mm,
+        request.corner_loops.as_ref(),
     );
     // A lead starts where its loop starts: the pierce point lies its arc
     // radius along the loop's tangent and radius + length along its normal
@@ -464,10 +475,10 @@ fn clearances(request: &NestRequest) -> Result<Clearances, String> {
     })
 }
 
-/// How far leads and pierce craters reach beyond a kerf's edge
-/// (`lead_reach_mm`), and how far from a part its cut can remove material:
-/// the kerf, the allowance (`error`: the boundaries' error; half the cut's
-/// boundary tolerance) and that reach.
+/// How far leads, pierce craters and corner loops reach beyond a kerf's
+/// edge (`lead_reach_mm`), and how far from a part its cut can remove
+/// material: the kerf, the allowance (`error`: the boundaries' error; half
+/// the cut's boundary tolerance) and that reach.
 pub(crate) fn cut_reach(
     kerf: f64,
     error: f64,
@@ -475,10 +486,18 @@ pub(crate) fn cut_reach(
     lead_in: &Lead,
     lead_out: &Lead,
     pierce_clearance: Option<f64>,
+    corner_loops: Option<&crate::thermal::CornerLoops>,
 ) -> (f64, f64) {
     let allowance = error + boundary_tolerance / 2.;
     let reach = |l: &Lead| l.radius_mm.hypot(l.radius_mm + l.length_mm);
-    let lead_reach_mm = (reach(lead_in) + pierce_clearance.unwrap_or(kerf)).max(reach(lead_out));
+    // A corner loop's kerf, from the edge of the kerf of the cut it leaves
+    // (thermal/corners.rs), at the cut's own offset.
+    let loops = corner_loops.map_or(0., |l| {
+        crate::thermal::loop_reach_mm(l, kerf / 2. + allowance)
+    });
+    let lead_reach_mm = (reach(lead_in) + pierce_clearance.unwrap_or(kerf))
+        .max(reach(lead_out))
+        .max(loops);
     (lead_reach_mm, kerf + allowance + lead_reach_mm)
 }
 

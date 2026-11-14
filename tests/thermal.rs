@@ -647,3 +647,231 @@ fn leads_keep_off_declared_edges_and_go_where_preferred() {
     let error = cut(serde_json::json!({"keep_off_distance_mm": -1.})).unwrap_err();
     assert!(error.contains("keep_off_distance_mm"), "{error}");
 }
+
+/// The distance from p to the plate's rectangle (0 inside it).
+fn off_plate(p: [f64; 3]) -> f64 {
+    let dx = (20. - p[0]).max(p[0] - 120.).max(0.);
+    let dy = (20. - p[1]).max(p[1] - 100.).max(0.);
+    dx.hypot(dy)
+}
+/// The plate's outline: the cut moves that run outside its rectangle.
+fn outline_cuts(events: &[Event]) -> Vec<&Motion> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Motion { motion }
+                if motion.kind == MoveKind::Cut
+                    && off_plate(motion.curve.start()) > 0.
+                    && off_plate(motion.curve.end()) > 0. =>
+            {
+                Some(motion)
+            }
+            _ => None,
+        })
+        .collect()
+}
+fn length(c: &Curve) -> f64 {
+    match c {
+        Curve::Line { start, end } => (end[0] - start[0]).hypot(end[1] - start[1]),
+        Curve::Arc {
+            start,
+            center,
+            sweep_rad,
+            ..
+        }
+        | Curve::Helix {
+            start,
+            center,
+            sweep_rad,
+            ..
+        } => (start[0] - center[0]).hypot(start[1] - center[1]) * sweep_rad.abs(),
+    }
+}
+
+#[test]
+fn corner_loops_cut_straight_through_outside_corners_in_the_scrap() {
+    // The kerf path runs 0.755 mm off the drawn edge (half the kerf and half
+    // the boundary tolerance), round each corner of the plate on an arc of
+    // that radius.
+    let offset = KERF / 2. + 0.005;
+    let (plain_events, plain_plan, _) = run(operation(serde_json::json!({}))).unwrap();
+    let plain = serde_json::to_value(plain_plan.report()).unwrap();
+    assert!(plain.get("corner_loops").is_none());
+    let d = 3.;
+    let (events, plan, _) = run(operation(serde_json::json!({
+        "corner_loops": {"overshoot_mm": d, "min_angle_deg": 45., "max_angle_deg": 135.}
+    })))
+    .unwrap();
+    let report = serde_json::to_value(plan.report()).unwrap();
+    // Every corner but the one the outline starts at, if it starts at one.
+    let loops = report["corner_loops"].as_u64().unwrap() as usize;
+    let cuts = outline_cuts(&events);
+    let starts_at_corner = off_plate(outline_cuts(&plain_events)[0].curve.start()) > offset - 1e-9
+        && matches!(outline_cuts(&plain_events)[0].curve, Curve::Arc { .. });
+    assert_eq!(loops, if starts_at_corner { 3 } else { 4 });
+    // A square corner's loop: on past the point where the two edges of the
+    // kerf path meet by d, round 270 degrees at radius d, back on d before
+    // it. That replaces the corner's quarter arc.
+    let each = 2. * (offset + d) + 1.5 * std::f64::consts::PI * d
+        - offset * std::f64::consts::FRAC_PI_2;
+    let grown = report["cut_length_mm"].as_f64().unwrap() - plain["cut_length_mm"].as_f64().unwrap();
+    assert!((grown - loops as f64 * each).abs() < 1e-6, "{grown} {each}");
+    // In the scrap: no cut of the outline comes nearer the plate than the
+    // kerf path does, and the loops reach d / tan(22.5 deg) beyond the
+    // meeting point, which is offset * sqrt(2) from the drawn corner.
+    let mut far = 0f64;
+    for m in &cuts {
+        let middle = m.curve.prepare(1e-6).unwrap().position(0.5).unwrap();
+        for p in [m.curve.start(), middle, m.curve.end()] {
+            assert!(off_plate(p) > offset - 1e-6, "{p:?}");
+            far = far.max(off_plate(p));
+        }
+    }
+    let reach = offset * 2f64.sqrt() + d / 22.5f64.to_radians().tan();
+    assert!((far - reach).abs() < 1e-6, "{far} {reach}");
+    // Straight through: at each looped corner, the meeting point lies on two
+    // straight cuts (one edge running on, the next coming back), and no
+    // quarter arc of the kerf's radius is left there.
+    let mut through = 0;
+    for corner in [[20., 20.], [120., 20.], [120., 100.], [20., 100.]] {
+        let v = [
+            corner[0] + if corner[0] < 70. { -offset } else { offset },
+            corner[1] + if corner[1] < 60. { -offset } else { offset },
+        ];
+        let lines = cuts
+            .iter()
+            .filter(|m| match m.curve {
+                Curve::Line { start, end } => {
+                    to_segment(v, [start[0], start[1]], [end[0], end[1]]) < 1e-9
+                        && (start[0] - v[0]).hypot(start[1] - v[1]) > 1.
+                        && (end[0] - v[0]).hypot(end[1] - v[1]) > 1.
+                }
+                _ => false,
+            })
+            .count();
+        let quarter = cuts.iter().any(|m| match m.curve {
+            Curve::Arc { center, start, .. } => {
+                (center[0] - corner[0]).hypot(center[1] - corner[1]) < 1e-9
+                    && ((start[0] - center[0]).hypot(start[1] - center[1]) - offset).abs() < 1e-9
+            }
+            _ => false,
+        });
+        if lines == 2 {
+            assert!(!quarter, "{corner:?}");
+            through += 1;
+        } else {
+            assert!(quarter && lines == 0, "{corner:?} {lines}");
+        }
+    }
+    assert_eq!(through, loops);
+    // A loop that would cut another part is refused like a lead that would:
+    // nothing is skipped quietly.
+    let mut crowded = parts();
+    crowded.components.push(Component {
+        outer: rect(122., 102., 140., 115.),
+        holes: vec![],
+    });
+    let error = run(operation(serde_json::json!({
+        "parts": crowded,
+        "corner_loops": {"overshoot_mm": d, "min_angle_deg": 45., "max_angle_deg": 135.}
+    })))
+    .map(|_| ())
+    .unwrap_err();
+    assert!(error.contains("kerf path") && error.contains("the loops need room"), "{error}");
+    // Declared values only, and not with the options it is not planned with.
+    for (extra, word) in [
+        (serde_json::json!({"corner_loops": {"overshoot_mm": 0., "min_angle_deg": 45., "max_angle_deg": 135.}}), "overshoot_mm"),
+        (serde_json::json!({"corner_loops": {"overshoot_mm": 3., "min_angle_deg": 100., "max_angle_deg": 90.}}), "min_angle_deg"),
+        (serde_json::json!({"compensation": "wear", "corner_loops": {"overshoot_mm": 3., "min_angle_deg": 45., "max_angle_deg": 135.}}), "wear compensation"),
+    ] {
+        let error = run(operation(extra)).map(|_| ()).unwrap_err();
+        assert!(error.contains(word), "{error}");
+    }
+}
+
+#[test]
+fn corner_slowdown_reduces_the_feed_round_corners_with_height_control_held_off() {
+    let offset = KERF / 2. + 0.005;
+    let (distance, percent) = (4., 50.);
+    let (events, plan, _) = run(operation(serde_json::json!({
+        "corner_slowdown": {"distance_mm": distance, "feed_percent": percent, "min_angle_deg": 60.}
+    })))
+    .unwrap();
+    let report = serde_json::to_value(plan.report()).unwrap();
+    let corner = |p: [f64; 3]| {
+        [[20., 20.], [120., 20.], [120., 100.], [20., 100.]]
+            .iter()
+            .map(|c| (p[0] - c[0]).hypot(p[1] - c[1]))
+            .fold(f64::MAX, f64::min)
+    };
+    // Independently of the plan: a point of the kerf path within the
+    // distance of a corner's arc, along the path, is within
+    // hypot(distance + offset, offset) of the drawn corner, and one further
+    // along a straight edge is at least hypot(distance, offset) from it.
+    let (near, away) = ((distance + offset).hypot(offset), distance.hypot(offset));
+    let (mut slow_length, mut slow_moves, mut thc) = (0., 0, false);
+    for e in &events {
+        match e {
+            Event::HeightControl { on } => thc = *on,
+            Event::Motion { motion } if motion.kind == MoveKind::Cut => {
+                let (a, b) = (motion.curve.start(), motion.curve.end());
+                let feed = motion.feed_mm_min.unwrap();
+                if (feed - 2500. * percent / 100.).abs() < 1e-9 {
+                    assert!(corner(a) < near + 1e-6 && corner(b) < near + 1e-6, "{motion:?}");
+                    // The arc voltage rises as the torch slows: height
+                    // control is off here.
+                    assert!(!thc, "{motion:?}");
+                    slow_length += length(&motion.curve);
+                    slow_moves += 1;
+                } else if off_plate(a) > 0. && off_plate(b) > 0. {
+                    assert_eq!(feed, 2500.);
+                    assert!(corner(a) > away - 1e-6 && corner(b) > away - 1e-6, "{motion:?}");
+                    assert!(thc, "{motion:?}");
+                }
+            }
+            _ => {}
+        }
+    }
+    // Four corners, each slowed from 4 mm before its arc to 4 mm after it,
+    // across the outline's start too; the cut stops 0.5 mm short of closing
+    // (the overcut), inside a slowed stretch if the outline starts there.
+    assert_eq!(report["corner_slowdowns"], 4);
+    let whole = 4. * (2. * distance + offset * std::f64::consts::FRAC_PI_2);
+    assert!(slow_moves >= 12, "{slow_moves}");
+    assert!(
+        (slow_length - whole).abs() < 1e-6 || (slow_length - (whole - 0.5)).abs() < 1e-6,
+        "{slow_length} {whole}"
+    );
+    // The circles are no corners, and the small hole keeps its own feed.
+    assert!(events.iter().any(|e| matches!(e, Event::Motion { motion }
+        if motion.kind == MoveKind::Cut && motion.feed_mm_min == Some(1500.))));
+    // With loops as well, the looped corners need no slow-down: only the
+    // corner the outline starts at, if any, is slowed.
+    let (_, plan, _) = run(operation(serde_json::json!({
+        "corner_loops": {"overshoot_mm": 3., "min_angle_deg": 45., "max_angle_deg": 135.},
+        "corner_slowdown": {"distance_mm": distance, "feed_percent": percent, "min_angle_deg": 60.}
+    })))
+    .unwrap();
+    let both = serde_json::to_value(plan.report()).unwrap();
+    assert_eq!(
+        both["corner_slowdowns"].as_u64().unwrap() + both["corner_loops"].as_u64().unwrap(),
+        4
+    );
+    // Without height control asked for, none is switched.
+    let (events, _, _) = run(operation(serde_json::json!({
+        "height_control": false,
+        "corner_slowdown": {"distance_mm": distance, "feed_percent": percent, "min_angle_deg": 60.}
+    })))
+    .unwrap();
+    assert!(!events.iter().any(|e| matches!(e, Event::HeightControl { .. })));
+    for (extra, word) in [
+        (serde_json::json!({"distance_mm": 0., "feed_percent": 50., "min_angle_deg": 60.}), "distance_mm"),
+        (serde_json::json!({"distance_mm": 4., "feed_percent": 100., "min_angle_deg": 60.}), "feed_percent"),
+        (serde_json::json!({"distance_mm": 4., "feed_percent": 50., "min_angle_deg": 0.}), "min_angle_deg"),
+    ] {
+        let error = run(operation(serde_json::json!({"corner_slowdown": extra})))
+            .map(|_| ())
+            .unwrap_err();
+        assert!(error.contains(word), "{error}");
+    }
+}

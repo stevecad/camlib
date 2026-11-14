@@ -605,6 +605,83 @@ class BeamPostsInInchesTest(unittest.TestCase):
             self.assertTrue({"X5.9055", "Y4.7244"} <= set(fed[-1]), (module, fed[-1]))
             self.assertTrue(any("X5.9055" in words for words in moves[:-1]), module)
 
+    def test_corner_loops_and_slow_downs_post_through_every_plasma_post(self):
+        # Corner loops and a corner slow-down (#296 A3), in inches: the loops
+        # are ordinary arcs and the slow-down an ordinary feed word, decoded
+        # and certified against the plan like the rest. Holding height
+        # control off round a corner is posted where the control switches it
+        # from the program (QtPlasmaC).
+        from dataclasses import replace
+
+        from test_drill_cycles import example
+
+        tool = camlib.Torch("torch", kerf_width=1.5)
+        corners = dict(
+            corner_loops=camlib.CornerLoops(3, min_angle_deg=45, max_angle_deg=135),
+            corner_slowdown=camlib.CornerSlowdown(4, feed_percent=50, min_angle_deg=60),
+        )
+        for module, post, decoder, machine, cut in (
+            ("qtplasmac_post", "QtPlasmaCPost", "QtPlasmaCDecoder", dict(planes=("xy",), max_sweep_rad=math.tau), {}),
+            (
+                "centroid_plasma_post",
+                "CentroidPlasmaPost",
+                "CentroidPlasmaDecoder",
+                dict(max_sweep_rad=math.tau),
+                dict(height_control=False),
+            ),
+            ("wincnc_plasma_post", "WinCNCPlasmaPost", "WinCNCPlasmaDecoder", {}, dict(height_control=False)),
+        ):
+            m = example(module)
+            texts = []
+            for options in ({}, corners):
+                j = job(tool, **{**self.FIXED, **cut, **options})
+                # The torch starts at the cut height (a fixed-height program carries no Z).
+                start = replace(j.setups[0], initial_position_mm=(0, 0, THICKNESS + 1.5))
+                j = camlib.Job("plasma", "1", (start,))
+                header = j.compile().setup("sheet").program_header()
+                setting = ToolSetting.for_tool(
+                    tool, number=1, length_register=1, position_after_mm=header.initial_position_mm
+                )
+                texts.append(
+                    j.post_nc(
+                        "sheet",
+                        machine=m.define_machine(
+                            "table", setting, output_units="inch", decimals=4, helices=False, **self.LIMITS, **machine
+                        ),
+                        post=getattr(m, post),
+                        decoder=getattr(m, decoder),
+                        lowering=camlib.LoweringOptions(native_arcs=True),
+                        accept={"unchecked_machine"},
+                    ).text.splitlines()
+                )
+            plain, treated = texts
+            feeds = lambda lines: {w for line in lines for w in line.split() if w[0] == "F"}  # noqa: E731
+            # 2500 mm/min is 98.4252 in/min; half of it round the corner the
+            # plate's outline starts at (the other three have loops).
+            self.assertEqual(feeds(treated) - feeds(plain), {"F49.2126"}, module)
+            arcs = lambda lines: sum(line[:2] in ("G2", "G3") for line in lines)  # noqa: E731
+            # Three loops of three quarter arcs each replace three quarter
+            # arcs: every one a native arc, in inches too.
+            self.assertEqual(arcs(treated) - arcs(plain), 6, module)
+            xs = lambda lines: max(float(w[1:]) for line in lines for w in line.split() if w[0] == "X")  # noqa: E731
+            # The plate's right edge is cut at 120.755 mm; the loops there run
+            # on 3 mm and turn at 3 mm radius.
+            self.assertEqual(xs(plain), round(120.755 / 25.4, 4))
+            # (an arc's end word may be the neighbouring count: start and end radius agree exactly)
+            self.assertAlmostEqual(xs(treated), 126.755 / 25.4, delta=1.01e-4)
+            if module == "qtplasmac_post":
+                # QtPlasmaC: M62 P2 holds height control off, M63 P2 lets it
+                # run. Every block at the corner feed is cut with it off.
+                held, slow = True, 0
+                for line in treated:
+                    if line in ("M62 P2", "M63 P2"):
+                        held = line == "M62 P2"
+                    elif "F49.2126" in line:
+                        self.assertTrue(held, line)
+                        slow += 1
+                self.assertGreaterEqual(slow, 2)
+                self.assertIn("M63 P2", treated)
+
 
 def polygon(center, radius, n, start_deg=0):
     import math

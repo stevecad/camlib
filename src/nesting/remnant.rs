@@ -40,6 +40,9 @@ pub struct RemnantRequest {
     pub lead_out: Lead,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pierce_clearance_mm: Option<f64>,
+    /// The thermal cut's corner loops: what they cut is removed too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corner_loops: Option<crate::thermal::CornerLoops>,
     #[serde(default = "boundary_tolerance")]
     pub boundary_tolerance_mm: f64,
     pub tolerance_mm: f64,
@@ -208,6 +211,7 @@ pub fn remnant(request: &RemnantRequest) -> Result<Remnant, String> {
         &request.lead_in,
         &request.lead_out,
         request.pierce_clearance_mm,
+        request.corner_loops.as_ref(),
     );
     let required = cut_reach_mm + request.remnant_margin_mm;
     let empty = |components| PlanarRegion {

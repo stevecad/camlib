@@ -781,3 +781,44 @@ fn part_marks_are_placed_with_every_copy_turned_and_mirrored_with_it() {
     // No marks declared: none returned.
     assert!(run(&mixed()).unwrap().marks.is_empty());
 }
+
+#[test]
+fn a_cut_with_corner_loops_gets_room_for_them() {
+    // Loops at corners turning 60 to 120 degrees, running on 4 mm. Worked
+    // here from the geometry: the loop's circle is tangent to both edges of
+    // the kerf path d from their meeting point v, so its centre is d / sin(t/2)
+    // from v and its radius d / tan(t/2): its far side is d / tan(t/4) from
+    // v, the most at 60 degrees. v is offset / cos(t/2) from the drawn
+    // corner, the most at 120. Beyond the kerf's edge that is the reach.
+    let mut request = request(
+        region(rect(0., 0., 400., 250.), vec![]),
+        vec![part(plate(), 2, &[0., 90.])],
+    );
+    let plain = run(&request).unwrap();
+    request.corner_loops = Some(
+        serde_json::from_value(serde_json::json!({
+            "overshoot_mm": 4., "min_angle_deg": 60., "max_angle_deg": 120.
+        }))
+        .unwrap(),
+    );
+    let offset = KERF / 2. + request.boundary_tolerance_mm / 2.;
+    let loops = 4. / 15f64.to_radians().tan() + offset * (1. / 60f64.to_radians().cos() - 1.);
+    assert!(loops > plain.lead_reach_mm);
+    let result = run(&request).unwrap();
+    let check = &result.check;
+    assert_eq!(check.status, "proven");
+    assert!((result.lead_reach_mm - loops).abs() < 1e-12);
+    let reach = KERF + request.boundary_tolerance_mm / 2. + loops;
+    assert!((check.part_distance_mm - (2. * reach + 2.)).abs() < 1e-12);
+    assert!((check.sheet_distance_mm - (reach + 5.)).abs() < 1e-12);
+    assert!(check.min_part_distance_mm.unwrap() >= check.part_distance_mm);
+    assert!(check.min_sheet_distance_mm.unwrap() >= check.sheet_distance_mm);
+    // Values that are not a corner loop's are refused.
+    request.corner_loops = Some(
+        serde_json::from_value(serde_json::json!({
+            "overshoot_mm": -1., "min_angle_deg": 60., "max_angle_deg": 120.
+        }))
+        .unwrap(),
+    );
+    assert!(run(&request).unwrap_err().contains("overshoot_mm"));
+}

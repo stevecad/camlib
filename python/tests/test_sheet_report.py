@@ -1,5 +1,5 @@
 """Part labels placed by the nest, the cut report of a sheet, the crop cut and
-lead placement (#296 E2, E3, D3, A4). The placed marks are compared with the placements applied
+lead placement and corner treatment (#296 E2, E3, D3, A4, A3). The placed marks are compared with the placements applied
 in the test, the report's lengths and times with the moves of the run itself,
 and the crop cut with the moves and the remnant's outline."""
 
@@ -10,7 +10,7 @@ import unittest
 import camlib
 from camlib.simulation import OperationUpdate, VerificationUpdate
 
-from test_nesting import PLATE, WASHER, cut, in_region, nest
+from test_nesting import PLATE, SHEET, WASHER, cut, in_region, nest
 
 MARK_WIDTH = 0.8
 # On the plate: an "L" and a quarter arc, clear of both holes and not
@@ -55,6 +55,16 @@ def length(curve):
     if curve["kind"] == "line":
         return math.dist(curve["start"], curve["end"])
     return math.dist(curve["start"][:2], curve["center"][:2]) * abs(curve["sweep_rad"])
+
+
+def middle(curve):
+    """The point halfway along a line or an arc (the test's own)."""
+    a, b = curve["start"][:2], curve["end"][:2]
+    if curve["kind"] == "line":
+        return ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+    c, half = curve["center"][:2], curve["sweep_rad"] / 2
+    x, y = a[0] - c[0], a[1] - c[1]
+    return (c[0] + math.cos(half) * x - math.sin(half) * y, c[1] + math.sin(half) * x + math.cos(half) * y)
 
 
 def labelled_nest():
@@ -284,6 +294,105 @@ class LeadPlacementTest(unittest.TestCase):
             run(result, lead_placement=camlib.LeadPlacement(result.no_lead, keep_off_distance_mm=1))
         with self.assertRaisesRegex(ValueError, "prefer"):
             camlib.LeadPlacement((), keep_off_distance_mm=1, prefer="left").to_dict()
+
+
+class CornerTest(unittest.TestCase):
+    """Corner loops and corner slow-down on nested parts (#296 A3)."""
+
+    LOOPS = camlib.CornerLoops(3, min_angle_deg=45, max_angle_deg=135)
+    SLOW = camlib.CornerSlowdown(4, feed_percent=50, min_angle_deg=60)
+
+    def looped_nest(self):
+        return camlib.Nest.for_cut(
+            replace(cut(), corner_loops=self.LOOPS),
+            SHEET,
+            (camlib.NestPart(PLATE, 1, (90,)), camlib.NestPart(WASHER, 2, (0,))),
+            part_spacing_mm=1,
+            edge_margin_mm=3,
+            resolution_mm=1,
+        )
+
+    def test_the_nest_keeps_room_for_the_loops_and_the_cut_puts_them_in_the_scrap(self):
+        planned = self.looped_nest()
+        result = planned.run()
+        # The loop of a square corner reaches 3 / tan(22.5 deg) from the
+        # point where the kerf path's edges meet, 0.505 * sqrt(2) from the
+        # drawn corner; beyond the kerf's far edge (1.01 from the part) and
+        # with half a kerf of its own that is the room the nest keeps.
+        offset = 0.505
+        far = offset * math.sqrt(2) + 3 / math.tan(math.radians(22.5))
+        self.assertGreaterEqual(result.lead_reach_mm + 1e-9, far + 0.5 - 2 * offset)
+        self.assertGreater(result.lead_reach_mm, nest().run().lead_reach_mm)
+        out = run(result, corner_loops=self.LOOPS)
+        self.assertEqual(out["statuses"], {"clear"})
+        report = out["reports"]["plasma"]
+        # The plate's four corners, less one if its outline starts there.
+        self.assertIn(report["corner_loops"], (3, 4))
+        plain = run(result)["reports"]["plasma"]
+        self.assertNotIn("corner_loops", plain)
+        each = 2 * (offset + 3) + 1.5 * math.pi * 3 - offset * math.pi / 2
+        self.assertAlmostEqual(report["cut_length_mm"] - plain["cut_length_mm"], report["corner_loops"] * each, 6)
+        # No cut runs inside a part, every cut stays on the sheet, and the
+        # plates' outlines reach just that far from their rectangles.
+        plates = [p for p in result.placements if p.part == 0]
+        washers = [p.translation_mm for p in result.placements if p.part == 1]
+
+        def off_plate(q, placement):
+            a = math.radians(-placement.rotation_deg)
+            x, y = q[0] - placement.translation_mm[0], q[1] - placement.translation_mm[1]
+            x, y = math.cos(a) * x - math.sin(a) * y, math.sin(a) * x + math.cos(a) * y
+            return math.hypot(max(-x, x - 70, 0), max(-y, y - 50, 0))
+
+        reached = 0.0
+        for m in out["motions"]:
+            if m["kind"] != "cut":
+                continue
+            for q in (m["curve"]["start"][:2], middle(m["curve"]), m["curve"]["end"][:2]):
+                self.assertFalse(in_region(q, result.region), q)
+                self.assertTrue(0 < q[0] < 200 and 0 < q[1] < 120, q)
+                if all(math.dist(q, w) > 10 for w in washers):
+                    reached = max(reached, min(off_plate(q, p) for p in plates))
+        self.assertAlmostEqual(reached, far, 6)
+        # What the loops cut is gone from the remnant too.
+        with_loops = planned.remnant(result, remnant_margin_mm=1).area_mm2
+        without = nest().remnant(result, remnant_margin_mm=1).area_mm2
+        self.assertLess(with_loops, without)
+
+    def test_the_feed_drops_round_corners_and_the_time_says_so(self):
+        result = nest().run()
+        plain = run(result, height_control=True)
+        out = run(result, height_control=True, corner_slowdown=self.SLOW)
+        self.assertEqual(out["statuses"], {"clear"})
+        report = out["reports"]["plasma"]
+        # Two plates, four corners each; the circles are no corners.
+        self.assertEqual(report["corner_slowdowns"], 8)
+        slowed = [m for m in out["motions"] if m["kind"] == "cut" and m["feed_mm_min"] == 1250]
+        total = sum(length(m["curve"]) for m in slowed)
+        # 4 mm either side of each corner's quarter arc; a cut stops short of
+        # closing nowhere here (no negative overcut).
+        self.assertAlmostEqual(total, 8 * (8 + 0.505 * math.pi / 2), 6)
+        # The same path at half the feed over those stretches: the report's
+        # time grows by exactly their time at full feed.
+        self.assertAlmostEqual(
+            report["feed_seconds"] - plain["reports"]["plasma"]["feed_seconds"], total / 2500 * 60, 6
+        )
+        self.assertAlmostEqual(report["cut_length_mm"], plain["reports"]["plasma"]["cut_length_mm"], 6)
+        # Height control is held off over each: more switches than without.
+        switches = lambda o: sum(1 for e in o["events"] if e.get("kind") == "height_control")  # noqa: E731
+        self.assertGreater(switches(out), switches(plain))
+        held = replace(self.SLOW, height_control_off=False)
+        self.assertEqual(switches(run(result, height_control=True, corner_slowdown=held)), switches(plain))
+
+    def test_declared_values_only(self):
+        with self.assertRaises(TypeError):
+            camlib.CornerLoops(3)
+        with self.assertRaises(TypeError):
+            camlib.CornerSlowdown(4)
+        result = nest().run()
+        with self.assertRaisesRegex(Exception, "max_angle_deg"):
+            run(result, corner_loops=camlib.CornerLoops(3, min_angle_deg=45, max_angle_deg=180))
+        with self.assertRaisesRegex(Exception, "feed_percent"):
+            run(result, corner_slowdown=replace(self.SLOW, feed_percent=0))
 
 
 if __name__ == "__main__":
