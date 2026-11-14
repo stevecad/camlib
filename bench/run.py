@@ -98,14 +98,20 @@ def _machine(family, program):
     )
 
 
+def _mm3(bounds):
+    """A volume's [lower, upper] bounds to 0.001 mm3, like every other figure here: the last digits of a sum over
+    thousands of cells depend on the CPU and the platform's tessellation of a CAD blank, and say nothing."""
+    return [round(v, 3) for v in bounds]
+
+
 def _material(workload, state):
     """Leftover material and over-cut against the target, from the engine's own
     material verifier (a lathe run's own material check for turning)."""
     if workload.family == "lathe":
         report = state.material()
         return dict(
-            leftover_mm3=report["residual"]["volume_mm3"],
-            overcut_mm3=report["gouge"]["volume_mm3"],
+            leftover_mm3=_mm3(report["residual"]["volume_mm3"]),
+            overcut_mm3=_mm3(report["gouge"]["volume_mm3"]),
             leftover_cells=[report["residual"]["definite_cells"], report["residual"]["possible_only_cells"]],
         )
     if workload.target is None:
@@ -126,11 +132,11 @@ def _material(workload, state):
     report = Verifier(target).check(state)
     heights = [f["residual_height_mm"][1] for f in report.get("findings", ())]
     return dict(
-        leftover_mm3=report["residual"]["volume_mm3"],
-        overcut_mm3=report["gouge"]["volume_mm3"],
+        leftover_mm3=_mm3(report["residual"]["volume_mm3"]),
+        overcut_mm3=_mm3(report["gouge"]["volume_mm3"]),
         leftover_cells=[report["residual"]["definite_cells"], report["residual"]["possible_only_cells"]],
         overcut_cells=[report["gouge"]["definite_cells"], report["gouge"]["possible_only_cells"]],
-        max_residual_height_mm=max(heights) if heights else 0.0,
+        max_residual_height_mm=round(max(heights), 6) if heights else 0.0,
         complete=report["complete"],
     )
 
