@@ -148,6 +148,7 @@ class IndexableTest(unittest.TestCase):
             (RampEntry(angle_deg=5), 'max_ramp_angle_deg'),
             (HelicalEntry(angle_deg=5, radius_mm=3), 'max_ramp_angle_deg'),
             (HelicalEntry(angle_deg=2, radius_mm=0.5), 'helical_hole_diameter_mm'),
+            (HelicalEntry(angle_deg=2, radius_mm=1), 'helical_hole_diameter_mm'),
         ]:
             with self.subTest(entry=entry), self.assertRaisesRegex((ValueError, SimulationError), reason):
                 with Simulation(**dict(config, operations=(replace(op, entry=entry),))) as sim:

@@ -198,7 +198,9 @@ fn supplied_moves_cannot_bypass_depth_plunge_or_body_limits() {
 fn helical_entry_checks_machined_hole_diameter_and_actual_stock() {
     let stock = Stock::new(spec()).unwrap();
     let t = tool(false).prepare().unwrap();
-    for (radius, allowed) in [(3., true), (0.5, false), (4., false)] {
+    // Radius 1 would pass if the minimum were checked with the maximum
+    // 12 mm cutter diameter. Its floor-cutting diameter is only 8 mm.
+    for (radius, allowed) in [(3., true), (0.5, false), (1., false), (4., false)] {
         let m = Motion {
             curve: Curve::Helix {
                 start: [radius,0.,6.01], end: [radius,0.,5.5], center: [0.,0.,6.01],

@@ -82,8 +82,15 @@ contact above the limit is refused, with its location and stock/limit heights.
 The source profiles and limits must describe the same assembled combination.
 
 `helical_hole_diameter_mm` is the inclusive **machined hole diameter** range,
-not the tool-center orbit diameter. The engine checks orbit diameter plus
-declared cutting diameter. Set it to `None` to prohibit helical cutting entry.
+not the tool-center orbit diameter. A shaped cutter can leave different hole
+diameters at different heights. The engine checks an enclosing diameter range:
+orbit diameter plus twice a lower bound on every occupied section's outer
+radius, through orbit diameter plus the declared maximum cutting diameter.
+For a frustum the lower bound is its smaller outer endpoint radius; for a
+circular region it is its center radius. Unions use the smallest such bound.
+This is conservative for clipped arcs and overlapping insert groups. Using
+only the largest cutter diameter could falsely accept a too-small hole at
+the tip. Set the range to `None` to prohibit helical cutting entry.
 A zero maximum ramp angle prohibits cutting descent. Declaring helical limits
 does not prove clearance: stock and the body are checked along the entry.
 

@@ -157,13 +157,26 @@ pub(crate) fn check_cutting_descent(
             ..
         } => {
             let radius = (a[0] - center[0]).hypot(a[1] - center[1]);
-            let hole = 2. * radius + tool.cutter().definition().diameter_mm;
+            // A shaped cutter does not bore one cylindrical diameter: its
+            // tip may cut a narrower hole than its largest section. Check
+            // the enclosing diameter RANGE, so the maximum tool diameter
+            // cannot falsely satisfy the manufacturer's minimum hole size.
+            let minimum_cutting_radius = tool
+                .cutter()
+                .indexable()
+                .unwrap()
+                .cutting()
+                .minimum_outer_radius_bound();
+            let hole = [
+                2. * (radius + minimum_cutting_radius),
+                2. * radius + tool.cutter().definition().diameter_mm,
+            ];
             if !limits
                 .helical_hole_diameter_mm
-                .is_some_and(|d| d[0] <= hole && hole <= d[1])
+                .is_some_and(|d| d[0] <= hole[0] && hole[1] <= d[1])
             {
                 return Err(format!(
-                    "indexable helical entry makes hole diameter {hole} mm outside the declared helical_hole_diameter_mm; change the entry diameter or use an exterior entry"
+                    "indexable helical entry has hole diameter bounds {hole:?} mm outside the declared helical_hole_diameter_mm; change the entry diameter or use an exterior entry"
                 ));
             }
             radius * sweep_rad.abs()
@@ -423,6 +436,21 @@ impl RotationalProfile {
 }
 
 impl PreparedProfile {
+    /// Lower bound on the outer radius at every occupied profile height.
+    /// A union's outer radius is at least that of any present primitive.
+    /// A clipped circular meridian's outer branch is always >= its center R.
+    pub(crate) fn minimum_outer_radius_bound(&self) -> f64 {
+        self.definition
+            .regions
+            .iter()
+            .map(|region| match *region {
+                ProfileRegion::AnnularFrustum {
+                    outer_radius_mm, ..
+                } => outer_radius_mm[0].min(outer_radius_mm[1]),
+                ProfileRegion::CircularRing { center_rz_mm, .. } => center_rz_mm[0],
+            })
+            .fold(f64::INFINITY, f64::min)
+    }
     pub(crate) fn floor_radius(&self) -> Option<f64> {
         let mut radius: f64 = 0.;
         for region in &self.definition.regions {
