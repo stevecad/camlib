@@ -65,6 +65,9 @@ and writes G-code through a postprocessor you can read and change.
 | Probing, tool setting | Work-offset probing of surfaces, corners, bores, bosses, pockets and webs, tool length and diameter on a tool setter; LinuxCNC G38 or Renishaw Inspection Plus macros, decoded back and checked |
 | Turning (lathe) | Facing, outside and inside roughing and finishing (boring), grooving, parting off, external and internal threading, drilling on the axis, constant surface speed and feed per revolution; finishing follows fillets, ball ends and corner rounding with native G2/G3 arcs; insert, holder and boring-bar checks against the part, bore, stock and chuck, solid (one-piece) boring bars checked as their ground round head, the holder also from its maker's model (a mesh with a declared placement; STEP through the CadQuery adapter); a lathe setup is an ordinary `Setup` (`turning=TurningSetup(...)`), streamed, played back and posted like any other, with a material check after each operation |
 
+Turning catalogue inserts require confirmation of the installed nose radius, side directions and size measurement model.
+See the [turning insert premises](docs/operations.md#turning-insert-premises).
+
 Every setup (milling, plasma/laser and lathe) runs as one stream: each move
 arrives with the stock it removes, and playback can pause, seek (also
 partway through a move), cancel, and save and reopen a run. While it plans, a

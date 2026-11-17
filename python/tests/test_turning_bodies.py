@@ -81,11 +81,11 @@ class BoringBodyTest(unittest.TestCase):
 
 class DeclaredBodyTest(unittest.TestCase):
     def test_iso_codes_give_their_worst_case(self):
-        insert = camlib.TurningInsert.iso_code("CCMT09T304", approach_angle_deg=95)
+        insert = camlib.TurningInsert.iso_code("CCMT09T304", confirm_insert_geometry=True, approach_angle_deg=95)
         # T3: [3, 4) mm by the symbol rule, plus class M's 0.13 mm.
         self.assertEqual((insert.thickness_mm, insert.clearance_deg, insert.edge_deg), (4.13, 7.0, 5.0))
         with self.assertRaisesRegex(ValueError, "special clearance"):
-            camlib.TurningInsert.iso_code("COMT09T304", approach_angle_deg=95)
+            camlib.TurningInsert.iso_code("COMT09T304", confirm_insert_geometry=True, approach_angle_deg=95)
 
     def test_a_curved_face_grooving_blade_serves_its_range_only(self):
         blade = tool(

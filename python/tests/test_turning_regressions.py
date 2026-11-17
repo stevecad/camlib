@@ -50,7 +50,7 @@ def turning_tool(id, *, insert, side, **values):
     return camlib.TurningTool(id, insert=insert, side=side, **{**declared, **values})
 
 
-CNMG_I = camlib.TurningInsert.iso_code("CNMG120408", holder="PCLNR2525M12")
+CNMG_I = camlib.TurningInsert.iso_code("CNMG120408", confirm_insert_geometry=True, holder="PCLNR2525M12")
 CNMG = turning_tool("cnmg", insert=CNMG_I, side="outer", hand="right", holder=holder(CNMG_I, 0.8, width=25, length=150))
 
 

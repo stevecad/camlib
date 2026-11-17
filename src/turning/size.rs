@@ -386,6 +386,20 @@ struct Form {
 const NOT_ISO_FORM: &str = "a size tolerance applies to an outline of the ISO 1832 form: straight sides, each tangent to the insert's inscribed circle, joined by rounded corners (a rhombic, square, triangular or 80 degree hexagonal insert); for any other outline, state the largest outline the insert can have and give no size tolerance";
 
 fn form(outline: &Outline, corner: usize) -> Result<Form, String> {
+    // A closed outline made of arcs on one circle has d = 2 * cutting radius.
+    if let Some(Segment::Arc {
+        center_mm,
+        radius_mm,
+        ..
+    }) = outline.segments.first()
+        && outline.segments.iter().all(|s| {
+            matches!(s, Segment::Arc {
+            center_mm: c, radius_mm: r, ..
+        } if c == center_mm && r == radius_mm)
+        })
+    {
+        return Err("round insert: a diameter tolerance changes the cutting nose radius; declare the measured round outline and radius without a size tolerance".into());
+    }
     let count = outline.segments.len();
     let n = count / 2;
     if !count.is_multiple_of(2) || n < 3 || corner >= count {
@@ -1477,7 +1491,10 @@ mod tests {
         let e = envelope(outline, *corner, cutting, &tolerance)
             .err()
             .unwrap();
-        assert!(e.contains("ISO 1832 form"), "{e}");
+        assert!(
+            e.contains("round insert") && e.contains("nose radius"),
+            "{e}"
+        );
         // A far side that cuts.
         let (insert, _) = Insert::iso_code("CNMG120408", 95.).unwrap();
         let Insert::Outline {

@@ -23,7 +23,7 @@ CODE = "CCMT060204"
 def bar(size_tolerance_mm=None, **declared):
     """A CCMT0602 boring insert on a thin bar; its size tolerance from its
     code (class M: d ±0.05, m ±0.08 mm) unless given."""
-    insert = camlib.TurningInsert.iso_code(CODE, approach_angle_deg=95)
+    insert = camlib.TurningInsert.iso_code(CODE, confirm_insert_geometry=True, approach_angle_deg=95)
     if size_tolerance_mm is not None:
         declared["insert_size_tolerance_mm"] = size_tolerance_mm
     return tool(
@@ -52,6 +52,27 @@ def bore(radius, bar_tool):
 
 
 class CodeTest(unittest.TestCase):
+    def test_catalogue_geometry_requires_an_explicit_declaration(self):
+        for code in (CODE, "RCMT10T3M0"):
+            with self.subTest(code=code):
+                with self.assertRaisesRegex(ValueError, "confirm_insert_geometry"):
+                    camlib.TurningInsert.iso_code(code, approach_angle_deg=95)
+                with self.assertRaisesRegex(ValueError, "confirm_insert_geometry"):
+                    camlib.TurningInsert.iso_code(code, approach_angle_deg=95, confirm_insert_geometry="yes")
+
+    def test_round_diameter_range_changes_the_cutting_radius(self):
+        insert = camlib.TurningInsert.iso_code("RCMT10T3M0", approach_angle_deg=95, confirm_insert_geometry=True)
+        t = tool(
+            "round",
+            insert,
+            nose_radius_mm=insert.nose_radius_mm,
+            width_mm=20,
+            length_mm=100,
+            insert_size_tolerance_mm=(0.02, 0),
+        )
+        with self.assertRaisesRegex(ValueError, "round insert.*cutting nose radius"):
+            t.validate()
+
     def test_the_class_gives_the_tolerance(self):
         for code, expected in (
             ("CNMG120408", (0.08, 0.13)),  # class M, 12.7 mm (table 4)
@@ -62,18 +83,22 @@ class CodeTest(unittest.TestCase):
             ("SNUN120408", (0.13, 0.2)),  # class U
             ("RCMT10T3M0", None),  # round: d is the nose
         ):
-            insert = camlib.TurningInsert.iso_code(code, approach_angle_deg=62.5)
+            insert = camlib.TurningInsert.iso_code(code, confirm_insert_geometry=True, approach_angle_deg=62.5)
             self.assertEqual(insert.size_tolerance_mm, expected, code)
 
     def test_a_code_without_a_standard_value_is_refused_until_declared(self):
         # Class U of shape D, and a V insert of 4.76 mm: not in tables 4, 5.
         for code in ("DNUG150608", "VBMT080204"):
             with self.assertRaisesRegex(ValueError, r"gives no tolerance.*size_tolerance_mm"):
-                camlib.TurningInsert.iso_code(code, approach_angle_deg=93)
-            insert = camlib.TurningInsert.iso_code(code, approach_angle_deg=93, size_tolerance_mm=(0.1, 0.2))
+                camlib.TurningInsert.iso_code(code, confirm_insert_geometry=True, approach_angle_deg=93)
+            insert = camlib.TurningInsert.iso_code(
+                code, confirm_insert_geometry=True, approach_angle_deg=93, size_tolerance_mm=(0.1, 0.2)
+            )
             self.assertEqual(insert.size_tolerance_mm, (0.1, 0.2))
         with self.assertRaisesRegex(ValueError, r"\(d, m\)"):
-            camlib.TurningInsert.iso_code("CNMG120408", approach_angle_deg=95, size_tolerance_mm=(0.1,))
+            camlib.TurningInsert.iso_code(
+                "CNMG120408", confirm_insert_geometry=True, approach_angle_deg=95, size_tolerance_mm=(0.1,)
+            )
 
     def test_the_tool_declares_it(self):
         self.assertEqual(bar().insert_size_tolerance_mm, (0.05, 0.08))
@@ -109,7 +134,7 @@ class PlanTest(unittest.TestCase):
         # Rough and finish the shaft with a CNMG: the edge along the
         # profile, the nose on it. The tolerance moves neither.
         def plan(**declared):
-            insert = camlib.TurningInsert.iso_code("CNMG120408", holder="PCLNR2525M12")
+            insert = camlib.TurningInsert.iso_code("CNMG120408", confirm_insert_geometry=True, holder="PCLNR2525M12")
             self.assertEqual(insert.size_tolerance_mm, (0.08, 0.13))
             t = tool(
                 "cnmg",

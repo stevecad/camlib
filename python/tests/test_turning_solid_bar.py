@@ -164,7 +164,7 @@ class DeclarationTest(unittest.TestCase):
                 solid_bar(solid_bar=head(), **{name: value})
 
     def test_other_tools_are_unchanged(self):
-        insert = camlib.TurningInsert.iso_code("CCMT060204", approach_angle_deg=95)
+        insert = camlib.TurningInsert.iso_code("CCMT060204", confirm_insert_geometry=True, approach_angle_deg=95)
         holder = camlib.TurningHolder.rectangle(
             insert=insert, nose_radius_mm=0.4, side="inner", width_mm=10, length_mm=80, offset_mm=1, y_mm=(-5, 5)
         )

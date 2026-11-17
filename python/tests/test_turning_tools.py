@@ -93,7 +93,7 @@ class NoDefaultsTest(unittest.TestCase):
             )
 
     def test_a_nose_radius_that_contradicts_the_outline_is_refused(self):
-        insert = camlib.TurningInsert.iso_code("CNMG120408", approach_angle_deg=95)
+        insert = camlib.TurningInsert.iso_code("CNMG120408", confirm_insert_geometry=True, approach_angle_deg=95)
         self.assertEqual(insert.nose_radius_mm, 0.8)
         holder = camlib.TurningHolder.rectangle(
             insert=insert, nose_radius_mm=0.8, side="outer", width_mm=25, length_mm=150, offset_mm=0, y_mm=(-25, 3)
@@ -122,20 +122,20 @@ class NoDefaultsTest(unittest.TestCase):
 class OutlineTest(unittest.TestCase):
     def test_iso_codes_and_holder_styles(self):
         self.assertEqual(
-            camlib.TurningInsert.iso_code("CNMG120408", holder="PCLNR2525M12"),
-            camlib.TurningInsert.iso_code("CNMG120408", approach_angle_deg=95),
+            camlib.TurningInsert.iso_code("CNMG120408", confirm_insert_geometry=True, holder="PCLNR2525M12"),
+            camlib.TurningInsert.iso_code("CNMG120408", confirm_insert_geometry=True, approach_angle_deg=95),
         )
-        round_insert = camlib.TurningInsert.iso_code("RCMT10T3M0", approach_angle_deg=95)
+        round_insert = camlib.TurningInsert.iso_code("RCMT10T3M0", confirm_insert_geometry=True, approach_angle_deg=95)
         self.assertEqual(round_insert.nose_radius_mm, 5)
         with self.assertRaisesRegex(ValueError, "give an Outline insert"):
-            camlib.TurningInsert.iso_code("KNUX160405", approach_angle_deg=95)
+            camlib.TurningInsert.iso_code("KNUX160405", confirm_insert_geometry=True, approach_angle_deg=95)
         with self.assertRaisesRegex(ValueError, "tool style"):
-            camlib.TurningInsert.iso_code("CNMG120408", holder="PCXNR2525M12")
+            camlib.TurningInsert.iso_code("CNMG120408", confirm_insert_geometry=True, holder="PCXNR2525M12")
 
     def test_round_and_trigon_inserts_turn_the_shaft(self):
         # A round insert of 8 mm: its 4 mm nose fits the shaft's 5 mm shoulder.
         for code in ("RCMT0803M0", "WNMG080408"):
-            insert = camlib.TurningInsert.iso_code(code, approach_angle_deg=95)
+            insert = camlib.TurningInsert.iso_code(code, confirm_insert_geometry=True, approach_angle_deg=95)
             t = tool("cnmg", insert, nose_radius_mm=insert.nose_radius_mm, width_mm=20, length_mm=100)
             # The passes end the clearance short of the chuck (for the nose
             # center): a 4 mm nose needs more than the default 2 mm.
@@ -153,7 +153,10 @@ class OutlineTest(unittest.TestCase):
         )
         # The same geometry (the ISO one also knows its body: thickness,
         # clearance and edge, which a drawn outline declares on the tool).
-        self.assertEqual(drawn.to_dict(), camlib.TurningInsert.iso_code("RCMT10T3M0", approach_angle_deg=95).to_dict())
+        self.assertEqual(
+            drawn.to_dict(),
+            camlib.TurningInsert.iso_code("RCMT10T3M0", confirm_insert_geometry=True, approach_angle_deg=95).to_dict(),
+        )
         with self.assertRaisesRegex(TypeError, "edge_deg"):
             tool("r10", drawn, nose_radius_mm=5, width_mm=20, length_mm=100)
         t = tool("r10", drawn, nose_radius_mm=5, width_mm=20, length_mm=100, edge_deg=5)

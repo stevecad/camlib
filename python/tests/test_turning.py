@@ -321,7 +321,7 @@ class TurningTest(unittest.TestCase):
         # inclination applied the wrong way round the body below the nose
         # reached toward the axis and every cut was refused as a rub
         # ("the insert's body below its cutting face would rub the stock").
-        insert = camlib.TurningInsert.iso_code("CNMG120408", holder="PCLNR2525M12")
+        insert = camlib.TurningInsert.iso_code("CNMG120408", confirm_insert_geometry=True, holder="PCLNR2525M12")
         holder = camlib.TurningHolder.rectangle(
             insert=insert,
             nose_radius_mm=insert.nose_radius_mm,
@@ -377,7 +377,7 @@ class TurningTest(unittest.TestCase):
         )
 
         def cutter(id, code, holder_code, width, length, y):
-            insert = camlib.TurningInsert.iso_code(code, holder=holder_code)
+            insert = camlib.TurningInsert.iso_code(code, confirm_insert_geometry=True, holder=holder_code)
             holder = camlib.TurningHolder.rectangle(
                 insert=insert,
                 nose_radius_mm=insert.nose_radius_mm,
