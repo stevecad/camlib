@@ -293,6 +293,40 @@ impl PocketOperation {
         initial: Vec3,
         radius: f64,
     ) -> Result<(), String> {
+        if let Some(m) = cutter.shape.indexable() {
+            if self.stepdown_mm > m.max_depth_of_cut_mm {
+                return Err(format!(
+                    "pocket stepdown_mm exceeds max_depth_of_cut_mm {}; reduce stepdown",
+                    m.max_depth_of_cut_mm
+                ));
+            }
+            match &self.entry {
+                None => {
+                    return Err(
+                        "indexable pocket cannot plunge; declare StockEdgeEntry or HelicalEntry"
+                            .into(),
+                    );
+                }
+                Some(PocketEntry::Ramp(r)) => {
+                    if r.angle_rad.to_degrees() > m.max_ramp_angle_deg {
+                        return Err("indexable RampEntry exceeds max_ramp_angle_deg; reduce the entry angle".into());
+                    }
+                    return Err("indexable RampEntry reversal/exit transitions are unsupported; use StockEdgeEntry or HelicalEntry".into());
+                }
+                Some(PocketEntry::Helix(h)) => {
+                    if h.angle_rad.to_degrees() > m.max_ramp_angle_deg {
+                        return Err("indexable HelicalEntry exceeds max_ramp_angle_deg; reduce the entry angle".into());
+                    }
+                    if m.helical_hole_diameter_mm.is_none() {
+                        return Err(
+                            "indexable HelicalEntry needs declared helical_hole_diameter_mm limits"
+                                .into(),
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
         if !cutter.center_cutting
             && matches!(self.entry, Some(PocketEntry::Ramp(_)))
             && valid_id(&self.id)
@@ -319,8 +353,8 @@ impl PocketOperation {
         }
         if !valid_id(&self.id)
             || self.tool != assembly.id
-            || !matches!(cutter.shape, CutterShape::Flat)
-            || !cutter.center_cutting
+            || (!matches!(cutter.shape, CutterShape::Flat) && cutter.shape.indexable().is_none())
+            || (!cutter.center_cutting && cutter.shape.indexable().is_none())
         {
             return Err("baseline pocket requires stable operation/tool IDs and a flat center-cutting end mill".into());
         }
@@ -1536,7 +1570,8 @@ impl PocketPlan {
                 ),
             ),
             (
-                op.top_z_mm - target <= cutter.cutting_length_mm,
+                cutter.shape.indexable().is_some()
+                    || op.top_z_mm - target <= cutter.cutting_length_mm,
                 crate::reach::ReachRefusal::cutting_length(
                     &op.id,
                     &op.tool,
@@ -1670,6 +1705,9 @@ impl PocketPlan {
             diagnostics.push(format!("collapsed exact collinear subdivisions: {original_segments} -> {simplified_segments} source segments; original manifest/source retained"));
         }
         diagnostics.push("geometric residual includes inaccessible corners/channels and numerical guards; actual remaining stock is a separate sweep/verification result".into());
+        if cutter.shape.indexable().is_some() {
+            diagnostics.push("indexable cutter: planar disk coverage does not describe the shoulder or curved floor; geometric residual is unknown, use the material report from the actual swept stock".into());
+        }
         diagnostics.push(if op.entry.as_ref().is_some_and(|e| e.ramp().is_some()) {
             "ramp entry descends along source-admitted cutting strokes from the level above; assembly, fixture and machine verification is separate".into()
         } else if op.entry.as_ref().is_some_and(|e|e.policy()!=crate::entry::EntryPolicy::Helix) {
@@ -1713,7 +1751,11 @@ impl PocketPlan {
             boundary_strokes: strokes.len() - raster_strokes,
             center_components: construction.after_components,
             applied_clearance_mm: construction.applied_offset_mm.unwrap(),
-            geometric_residual_status: ResidualStatus::Pending,
+            geometric_residual_status: if cutter.shape.indexable().is_some() {
+                ResidualStatus::Unknown
+            } else {
+                ResidualStatus::Pending
+            },
             geometric_residual_area_mm2: None,
             geometric_residual: None,
             diagnostics,
@@ -2025,11 +2067,25 @@ impl PocketPlan {
         } else {
             let entry = &entries.locations[component];
             let c = entry.center;
-            let (entry_top, opposite) = if entry.stock_edge {
+            let (mut entry_top, opposite) = if entry.stock_edge {
                 (self.operation.top_z_mm, false)
             } else {
                 self.cleared_entry_start(c, entry.radius, z, stock, cancel)?
             };
+            if !entry.stock_edge
+                && self
+                    .rest_tool
+                    .as_ref()
+                    .is_some_and(|t| t.cutter.shape.indexable().is_some())
+            {
+                // Begin the helix above the stock enclosure: a straight
+                // approach ending on its boundary cannot prove no contact
+                // for a cutter that must not plunge.
+                entry_top += 16. * self.operation.tolerance_mm;
+                if entry_top >= self.operation.feed_z() {
+                    return Err("indexable helix needs feed_z_mm above its stock entry height plus the numerical clearance reserve".into());
+                }
+            }
             // Leave at feed to the feed height, rapid to the retract height,
             // travel, then rapid down to the feed height. With default heights
             // (feed = retract = clearance) the extra lines have zero length.

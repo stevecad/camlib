@@ -13,6 +13,7 @@ use std::sync::{
     Arc, OnceLock,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
+mod indexable;
 
 static NEXT_STOCK_IDENTITY: AtomicU64 = AtomicU64::new(1);
 fn new_identity() -> u64 {
@@ -170,6 +171,10 @@ pub struct StockDelta {
     // A wire delta can reproduce heights, never native geometric authority.
     #[serde(skip)]
     pub(crate) native_identity: Option<u64>,
+    /// The sweep does not prove stock remains top-down (finite annular tools).
+    /// Separate from measured undercut cells: uncertainty is not a finding.
+    #[serde(skip)]
+    pub(crate) invalidates_heightfield: bool,
     #[serde(skip)]
     pub(crate) cleared_column: Option<CommittedColumn>,
     #[serde(skip)]
@@ -201,6 +206,7 @@ impl AxialColumn {
             return None;
         };
         (motion.kind.cuts()
+            && tool.cutter().indexable().is_none()
             && start[0] == end[0]
             && start[1] == end[1]
             && end[2] < start[2]
@@ -1554,10 +1560,15 @@ impl Stock {
         // Runtime binding only, after certificate checks. State and history
         // still change only when the complete delta passes commit validation.
         delta.native_identity = Some(self.identity);
+        if tool.cutter().indexable().is_some() && motion.kind.cuts() {
+            // Wire heights cannot prove the absence of cavities left by a
+            // finite annular sweep. Restore the conservative replay premise.
+            delta.invalidates_heightfield = true;
+        }
         delta.cleared_column = column;
         delta.axial_column = AxialColumn::from_motion(tool, motion, self.spec.max_mm[2]);
-        delta.departure =
-            (motion.kind.cuts() && !undercut).then(|| (motion.tool.clone(), motion.curve.end()));
+        delta.departure = (motion.kind.cuts() && !undercut && tool.cutter().indexable().is_none())
+            .then(|| (motion.tool.clone(), motion.curve.end()));
         delta.shift = motion.kind == MoveKind::Shift;
         delta.receipt = None;
         Ok(stats)
@@ -1599,6 +1610,7 @@ impl Stock {
             changes: vec![],
             stats: SweepStats::default(),
             native_identity: Some(self.identity),
+            invalidates_heightfield: false,
             cleared_column: None,
             axial_column: None,
             departure: None,
@@ -1613,6 +1625,10 @@ impl Stock {
                 })
             }),
         };
+        if tool.cutter().indexable().is_some() {
+            self.indexable_sweep(&mut delta, tool, motion, fraction, options, cancel)?;
+            return Ok(delta);
+        }
         // Rapids, oriented shifts, proven air, probing and beam marking moves
         // never remove stock.
         if fraction == 0. || !motion.kind.cuts() {
@@ -2132,6 +2148,7 @@ impl Stock {
             changes,
             stats,
             native_identity: Some(self.identity),
+            invalidates_heightfield: tool.cutter().indexable().is_some() && motion.kind.cuts(),
             cleared_column: None,
             axial_column: None,
             departure: None,
@@ -2148,7 +2165,12 @@ impl Stock {
                 })
             }),
         };
-        if records && fraction == 1. && !motion.kind.is_rapid() && motion.kind != MoveKind::Air {
+        if records
+            && tool.cutter().indexable().is_none()
+            && fraction == 1.
+            && !motion.kind.is_rapid()
+            && motion.kind != MoveKind::Air
+        {
             delta.axial_column = AxialColumn::from_motion(tool, motion, self.spec.max_mm[2]);
             delta.departure = Some((motion.tool.clone(), motion.curve.end()));
             if analytic {
@@ -2184,6 +2206,7 @@ impl Stock {
             },
             changes,
             native_identity: None,
+            invalidates_heightfield: false,
             cleared_column: None,
             axial_column: None,
             departure: None,
@@ -2232,7 +2255,7 @@ impl Stock {
             if let Some(column) = &delta.cleared_column {
                 self.committed_columns.append(column.clone());
             }
-            if delta.stats.undercut_cells > 0 {
+            if delta.stats.undercut_cells > 0 || delta.invalidates_heightfield {
                 self.heightfield_unproven = true;
             }
             self.bore = if delta.shift {

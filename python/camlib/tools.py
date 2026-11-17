@@ -83,6 +83,120 @@ def BullEndMill(id, *, corner_radius, **dimensions):
     return _cutter(id, {"kind": "bull", "corner_radius_mm": corner_radius}, **dimensions)
 
 
+@dataclass(frozen=True)
+class AnnularFrustum:
+    """Mounted meridian trapezoid: inner/outer radii at the two Z planes."""
+
+    z_mm: tuple[float, float]
+    inner_radius_mm: tuple[float, float]
+    outer_radius_mm: tuple[float, float]
+
+    def to_dict(self):
+        return {"kind": "annular_frustum", **asdict(self)}
+
+
+@dataclass(frozen=True)
+class CircularRing:
+    """Circular mounted meridian region, clipped axially. This radius must
+    describe the actual assembled profile, not a CAM programming radius."""
+
+    center_rz_mm: tuple[float, float]
+    radius_mm: float
+    z_mm: tuple[float, float]
+
+    def to_dict(self):
+        return {"kind": "circular_ring", **asdict(self)}
+
+
+@dataclass(frozen=True)
+class RotationalProfile:
+    """Union of actual mounted meridian regions; holes remain uncut."""
+
+    regions: tuple[AnnularFrustum | CircularRing, ...]
+
+    def to_dict(self):
+        return {"regions": [r.to_dict() for r in self.regions]}
+
+
+@dataclass(frozen=True)
+class MountedInsertGroup:
+    """Identically set inserts, with their assembled rotational cutting profile."""
+
+    id: str
+    count: int
+    cutting: RotationalProfile
+
+    def to_dict(self):
+        return {"id": self.id, "count": self.count, "cutting": self.cutting.to_dict()}
+
+
+@dataclass(frozen=True)
+class IndexableGeometry:
+    """Cutting inserts and the separate noncutting body/insert-back envelope.
+
+    All coordinates are mounted radius/height in mm, relative to the cutter
+    tip. Body sections are filled cylindrical/conical AnnularFrustum regions.
+    Shank and holder geometry is supplied by Cutter and ToolAssembly.
+    """
+
+    inserts: tuple[MountedInsertGroup, ...]
+    noncutting: RotationalProfile
+
+    def to_dict(self):
+        return {"inserts": [i.to_dict() for i in self.inserts], "noncutting": self.noncutting.to_dict()}
+
+
+def _indexable_mill(
+    id,
+    family,
+    *,
+    geometry,
+    diameter,
+    cutting_height,
+    overall_length,
+    shank_diameter,
+    max_depth_of_cut_mm,
+    max_ramp_angle_deg,
+    helical_hole_diameter_mm,
+    material,
+    name=None,
+):
+    if not isinstance(geometry, IndexableGeometry):
+        raise TypeError("geometry must be an IndexableGeometry with mounted insert and body profiles")
+    return _cutter(
+        id,
+        {
+            "kind": "indexable",
+            "milling": {
+                "family": family,
+                "geometry": geometry.to_dict(),
+                "max_depth_of_cut_mm": max_depth_of_cut_mm,
+                "max_ramp_angle_deg": max_ramp_angle_deg,
+                "helical_hole_diameter_mm": helical_hole_diameter_mm,
+            },
+        },
+        diameter=diameter,
+        flute_length=cutting_height,
+        overall_length=overall_length,
+        shank_diameter=shank_diameter,
+        flutes=sum(i.count for i in geometry.inserts),
+        center_cutting=False,
+        material=material,
+        name=name,
+    )
+
+
+def FaceMill(id, **declarations):
+    """Indexable face mill. Declare mounted profiles and assembly cutting limits;
+    see docs/indexable-geometry.md. No tool or cutting-data defaults."""
+    return _indexable_mill(id, "face", **declarations)
+
+
+def HighFeedMill(id, **declarations):
+    """Indexable high-feed mill using its real mounted cutting profile."""
+    return _indexable_mill(id, "high_feed", **declarations)
+
+
 def Drill(id, *, point_angle=118, **dimensions):
     dimensions.setdefault("flutes", 2)
     return _cutter(id, {"kind": "drill", "point_angle_rad": math.radians(point_angle)}, **dimensions)

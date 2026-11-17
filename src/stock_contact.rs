@@ -400,6 +400,7 @@ impl<C: CancelSignal> Search<'_, C> {
             return None;
         }
         Some(match c.shape {
+            CutterShape::Indexable { .. } => return None,
             CutterShape::Flat | CutterShape::Beam | CutterShape::Dovetail { .. } => 0.,
             CutterShape::Ball | CutterShape::Probe | CutterShape::Lollipop => {
                 radius - (radius * radius - r * r).max(0.).sqrt()
@@ -503,10 +504,10 @@ impl<C: CancelSignal> Search<'_, C> {
             (low + high) / 2.,
             high - 4. * self.guard,
         ] {
-            let r = part
-                .radius
-                .at(height - self.guard)
-                .min(part.radius.at(height + self.guard));
+            let Some([inner, r]) = part.certain_band(height - self.guard, height + self.guard)
+            else {
+                continue;
+            };
             let clamp = |x: f64, k: usize| {
                 x.clamp(rect[k] + 4. * self.guard, rect[k + 2] - 4. * self.guard)
             };
@@ -519,7 +520,14 @@ impl<C: CancelSignal> Search<'_, C> {
                 [near[0], clamp(p[1] - r * 0.8, 1)],
             ];
             for xy in points {
-                let margin = (r - (xy[0] - p[0]).hypot(xy[1] - p[1]))
+                let distance = (xy[0] - p[0]).hypot(xy[1] - p[1]);
+                let inner_clearance = if inner == 0. {
+                    f64::INFINITY
+                } else {
+                    distance - inner
+                };
+                let margin = (r - distance)
+                    .min(inner_clearance)
                     .min(signed_rect(xy, rect))
                     .min(height - low)
                     .min(high - height)
@@ -668,6 +676,17 @@ impl<C: CancelSignal> Search<'_, C> {
                 continue;
             }
             let radius = part.radius.at(low).max(part.radius.at(high));
+            let hole = part.inner_min(low, high);
+            let far_x = (rect[0] - bounds.max[0])
+                .abs()
+                .max((rect[2] - bounds.min[0]).abs());
+            let far_y = (rect[1] - bounds.max[1])
+                .abs()
+                .max((rect[3] - bounds.min[1]).abs());
+            if far_x.hypot(far_y) + 2. * self.guard < hole {
+                self.stats.pruned_nodes += 1;
+                continue;
+            }
             let dx = (rect[0] - bounds.max[0])
                 .max(bounds.min[0] - rect[2])
                 .max(0.);

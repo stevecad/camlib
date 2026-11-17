@@ -334,6 +334,27 @@ fn sections_of(
     tool: &crate::tool::PreparedAssembly,
     enclose_curved: bool,
 ) -> Result<Vec<Section>, String> {
+    if let Some(g) = tool.cutter().indexable() {
+        // Enclosing cylinders are sufficient for these separation proofs,
+        // never for stock removal. Keep each region's own bottom height.
+        return Ok(g
+            .cutting()
+            .definition()
+            .regions
+            .iter()
+            .chain(&tool.indexable_noncutting().unwrap().definition().regions)
+            .map(|region| {
+                let [r, z] = region.bounds();
+                Section {
+                    z0: z[0],
+                    r0: r[1],
+                    r1: r[1],
+                    rise: 0.,
+                    arc: 0.,
+                }
+            })
+            .collect());
+    }
     let def = tool.definition();
     let cutter = tool.cutter();
     let c = cutter.definition();

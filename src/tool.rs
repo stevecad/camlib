@@ -2,6 +2,8 @@
 //! Validate/prepare once, then query analytic radii without allocation.
 use serde::{Deserialize, Serialize};
 
+pub mod rotational;
+
 pub(crate) fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
@@ -53,8 +55,20 @@ pub enum CutterShape {
     Dovetail {
         flank_angle_rad: f64,
     },
+    /// Mounted insert geometry and operating limits. Filled-disk cutter
+    /// queries do not describe this shape; use the prepared indexable profile.
+    Indexable {
+        milling: Box<rotational::IndexableMilling>,
+    },
 }
 impl CutterShape {
+    pub fn indexable(&self) -> Option<&rotational::IndexableMilling> {
+        if let Self::Indexable { milling } = self {
+            Some(milling)
+        } else {
+            None
+        }
+    }
     /// Whether the cutting part narrows toward the spindle: it then cuts
     /// under material above its widest section, which only tri-dexel stock
     /// represents.
@@ -101,6 +115,7 @@ pub struct PreparedCutter {
     tip_height: f64,
     slope: f64,
     shoulder: f64,
+    indexable: Option<rotational::PreparedIndexableGeometry>,
 }
 
 impl Cutter {
@@ -139,11 +154,39 @@ impl Cutter {
         } else {
             0.0
         };
-        let shoulder = self.cutting_length_mm + neck_length;
+        let indexable = self.shape.indexable().map(|m| m.validate()).transpose()?;
+        let shoulder = indexable
+            .as_ref()
+            .map_or(self.cutting_length_mm + neck_length, |g| {
+                self.cutting_length_mm.max(g.noncutting().bounds()[1][1])
+            });
         if shoulder >= self.overall_length_mm {
             return Err("cutting length plus neck must leave a positive shank length".into());
         }
         let radius = self.diameter_mm / 2.;
+        if let Some(g) = &indexable {
+            let bounds = g.cutting().bounds();
+            let guard = 128. * f64::EPSILON * (1. + radius + self.cutting_length_mm);
+            if self.center_cutting
+                || self.neck.is_some()
+                || bounds[0][1] > radius + guard
+                || bounds[1][1] > self.cutting_length_mm + guard
+                || self.shape.indexable().unwrap().max_depth_of_cut_mm > self.cutting_length_mm
+            {
+                return Err("indexable cutter must be non-center-cutting, have no neck, enclose its cutting profile within diameter/cutting length, and keep maximum depth of cut within cutting height".into());
+            }
+            let count: u64 = g
+                .definition()
+                .inserts
+                .iter()
+                .map(|i| u64::from(i.count))
+                .sum();
+            if count != u64::from(self.flutes) {
+                return Err(
+                    "indexable cutter flutes must equal the declared mounted insert count".into(),
+                );
+            }
+        }
         let angle_slope = |angle: f64| -> Result<f64, String> {
             if !angle.is_finite() || !(0.001..std::f64::consts::PI - 0.001).contains(&angle) {
                 return Err("tool included angle must be finite and strictly between 0.001 and pi-0.001 radians".into());
@@ -162,6 +205,7 @@ impl Cutter {
             ));
         }
         let (tip_height, slope) = match self.shape {
+            CutterShape::Indexable { .. } => (0., 0.),
             CutterShape::Flat | CutterShape::Beam => (0., 0.),
             CutterShape::Lollipop => {
                 let neck = self.neck.as_ref().ok_or(
@@ -229,11 +273,15 @@ impl Cutter {
             tip_height,
             slope,
             shoulder,
+            indexable,
         })
     }
 }
 
 impl PreparedCutter {
+    pub fn indexable(&self) -> Option<&rotational::PreparedIndexableGeometry> {
+        self.indexable.as_ref()
+    }
     pub fn definition(&self) -> &Cutter {
         &self.definition
     }
@@ -244,6 +292,7 @@ impl PreparedCutter {
             return None;
         }
         Some(match self.definition.shape {
+            CutterShape::Indexable { .. } => return None,
             CutterShape::Flat | CutterShape::Beam | CutterShape::Dovetail { .. } => 0.,
             CutterShape::Ball | CutterShape::Probe | CutterShape::Lollipop => {
                 self.radius
@@ -285,6 +334,11 @@ impl PreparedCutter {
         self.tip_height
     }
     pub fn radius_at(&self, z_mm: f64) -> Option<ProfileSlice> {
+        // A single radius cannot state which annular regions cut. Refuse this
+        // query instead of silently filling the center of an indexable cutter.
+        if self.indexable.is_some() {
+            return None;
+        }
         if !z_mm.is_finite() || z_mm < 0. || z_mm > self.definition.overall_length_mm {
             return None;
         }
@@ -297,6 +351,7 @@ impl PreparedCutter {
                 self.radius
             } else {
                 match self.definition.shape {
+                    CutterShape::Indexable { .. } => return None,
                     CutterShape::Flat
                     | CutterShape::Beam
                     | CutterShape::Lollipop
@@ -357,6 +412,7 @@ pub struct ToolAssembly {
 pub struct PreparedAssembly {
     definition: ToolAssembly,
     cutter: PreparedCutter,
+    indexable_noncutting: Option<rotational::PreparedProfile>,
 }
 
 impl ToolAssembly {
@@ -411,14 +467,39 @@ impl ToolAssembly {
                 }
             }
         }
+        let indexable_noncutting = if let Some(g) = cutter.indexable() {
+            let mut regions = g.noncutting().definition().regions.clone();
+            let body_top = g.noncutting().bounds()[1][1];
+            if body_top < self.stickout_mm {
+                regions.push(rotational::ProfileRegion::AnnularFrustum {
+                    z_mm: [body_top, self.stickout_mm],
+                    inner_radius_mm: [0.; 2],
+                    outer_radius_mm: [self.cutter.shank_diameter_mm / 2.; 2],
+                });
+            }
+            for h in &self.holders {
+                regions.push(rotational::ProfileRegion::AnnularFrustum {
+                    z_mm: [h.z_min_mm, h.z_max_mm],
+                    inner_radius_mm: [0.; 2],
+                    outer_radius_mm: [h.radius_min_mm, h.radius_max_mm],
+                });
+            }
+            Some(rotational::RotationalProfile { regions }.prepare()?)
+        } else {
+            None
+        };
         Ok(PreparedAssembly {
             definition: self.clone(),
             cutter,
+            indexable_noncutting,
         })
     }
 }
 
 impl PreparedAssembly {
+    pub(crate) fn indexable_noncutting(&self) -> Option<&rotational::PreparedProfile> {
+        self.indexable_noncutting.as_ref()
+    }
     pub fn cutter(&self) -> &PreparedCutter {
         &self.cutter
     }

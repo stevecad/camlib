@@ -800,6 +800,22 @@ def _lathe_face_groove():
 
 WORKLOADS = (
     Workload(
+        "indexable-facing",
+        "mill",
+        "Synthetic 45-degree face mill, six insert-depth layers",
+        {"face": ("Facing", 24)},
+        lambda: _support("indexable").facing_job(),
+        lambda: ("surface", _support("indexable").target(), 0),
+    ),
+    Workload(
+        "indexable-roughing",
+        "mill",
+        "Synthetic curved high-feed insert, layered raster roughing",
+        {"rough": ("Roughing", 27)},
+        lambda: _support("indexable").roughing_job(),
+        lambda: ("surface", _support("indexable").roughing_target(), 0),
+    ),
+    Workload(
         "drilling-data-manual",
         "holes",
         "Synthetic declared drill rates written explicitly",

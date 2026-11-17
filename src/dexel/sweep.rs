@@ -129,6 +129,30 @@ impl<'a> Profile<'a> {
             );
         }
         let mut pieces = vec![];
+        if let Some(body) = tool.indexable_noncutting() {
+            for region in &body.definition().regions {
+                let crate::tool::rotational::ProfileRegion::AnnularFrustum {
+                    z_mm,
+                    outer_radius_mm,
+                    ..
+                } = region
+                else {
+                    return Err("unsupported indexable body envelope".into());
+                };
+                pieces.push(Piece {
+                    h: *z_mm,
+                    r: *outer_radius_mm,
+                });
+            }
+            let reach = pieces.iter().map(|p| p.r[0].max(p.r[1])).fold(0., f64::max);
+            return Ok(Self {
+                tool,
+                radius: c.diameter_mm / 2.,
+                cutting: c.cutting_length_mm,
+                pieces,
+                reach,
+            });
+        }
         let mut h = c.cutting_length_mm;
         if let Some(n) = &c.neck {
             pieces.push(Piece {
@@ -423,6 +447,17 @@ impl DexelStock {
         }
         let prepared = motion.curve.prepare(options.tolerance_mm)?;
         motion.validate_feed(None)?;
+        if tool.cutter().indexable().is_some() {
+            if axis != Axis::PosZ {
+                return Err(
+                    "indexable milling currently requires the tool axis along stock +Z".into(),
+                );
+            }
+            // Shared mandatory body, actual-depth and entry admission. The
+            // height view encloses the tri-dexel stock; uncertainty refuses.
+            self.view
+                .preview_sweep(tool, motion, fraction, options, cancel)?;
+        }
         let profile = Profile::new(tool)?;
         let mut stats = DexelSweepStats::default();
         let empty = |stats: DexelSweepStats| DexelDelta {
@@ -873,6 +908,19 @@ impl DexelStock {
             let r = ray.half[0].hypot(ray.half[1]);
             let centre = [ray.center[0], ray.center[1]];
             let (d, t) = segment_distance(a2, b2, centre);
+            if let Some(g) = profile.tool.cutter().indexable() {
+                let cut =
+                    g.cutting()
+                        .sweep_column(c.a, c.b, centre, [ray.half[0], ray.half[1]], c.e);
+                let entry = hits.entry(ray.index).or_default();
+                entry
+                    .outer
+                    .extend(cut.possible.into_iter().map(|s| k.local_interval(2, s)));
+                entry
+                    .inner
+                    .extend(cut.certain.into_iter().map(|s| k.local_interval(2, s)));
+                return Ok(());
+            }
             let Some(h) = profile.covered(d - r - c.e) else {
                 return Ok(());
             };
@@ -941,6 +989,26 @@ impl DexelStock {
             let (yc, hy) = (ray.center[o], ray.half[o]);
             let (zc, hz) = (ray.center[2], ray.half[2]);
             let w = [zc - hz - z_hi - c.e, zc + hz - z_lo + c.e];
+            if let Some(g) = profile.tool.cutter().indexable() {
+                let entry = hits.entry(ray.index).or_default();
+                for band in g.cutting().radial_bands(w) {
+                    for radial in band.possible {
+                        let spans =
+                            annular_strip(a2, b2, radial, [yc - hy, yc + hy], c.e + guard, false);
+                        entry
+                            .outer
+                            .extend(spans.into_iter().map(|s| k.local_interval(la, s)));
+                    }
+                    for radial in band.certain {
+                        let spans =
+                            annular_strip(a2, b2, radial, [yc - hy, yc + hy], c.e + guard, true);
+                        entry
+                            .inner
+                            .extend(spans.into_iter().map(|s| k.local_interval(la, s)));
+                    }
+                }
+                return Ok(());
+            }
             let Some(rmax) = profile.cut_max(w[0], w[1]) else {
                 return Ok(());
             };
@@ -972,6 +1040,69 @@ impl DexelStock {
             Ok(())
         })
     }
+}
+
+/// A swept annulus is the outer stadium minus the intersection of the inner
+/// disks at the chord's two ends. Distance along a segment is continuous;
+/// its maximum is at an end, so the center hole survives exactly where both
+/// end disks contain the point. Across the ray's Y width use enclosing vs
+/// contained projections in the opposite sense for the subtracted hole.
+fn annular_strip(
+    a: [f64; 2],
+    b: [f64; 2],
+    radial: [f64; 2],
+    y: [f64; 2],
+    error: f64,
+    certain: bool,
+) -> Vec<[f64; 2]> {
+    let (inner, outer) = if certain {
+        (radial[0] + error, radial[1] - error)
+    } else {
+        ((radial[0] - error).max(0.), radial[1] + error)
+    };
+    if outer <= 0. || inner > outer {
+        return vec![];
+    }
+    let base = if certain {
+        match (
+            stadium_strip(a, b, outer, y[0], y[0]),
+            stadium_strip(a, b, outer, y[1], y[1]),
+        ) {
+            (Some(p), Some(q)) => [p[0].max(q[0]) + error, p[1].min(q[1]) - error],
+            _ => return vec![],
+        }
+    } else {
+        let Some(p) = stadium_strip(a, b, outer, y[0], y[1]) else {
+            return vec![];
+        };
+        [p[0] - error, p[1] + error]
+    };
+    if base[0] >= base[1] {
+        return vec![];
+    }
+    if inner == 0. {
+        return vec![base];
+    }
+    let hole = |p: [f64; 2]| {
+        if certain {
+            disk_strip(p, inner, y[0], y[1]).map(|s| [s[0] - error, s[1] + error])
+        } else {
+            let far = (p[1] - y[0]).abs().max((p[1] - y[1]).abs());
+            if far > inner {
+                return None;
+            }
+            let h = ((inner - far) * (inner + far)).max(0.).sqrt();
+            let s = [p[0] - h + error, p[0] + h - error];
+            (s[0] < s[1]).then_some(s)
+        }
+    };
+    if let (Some(p), Some(q)) = (hole(a), hole(b)) {
+        let overlap = [p[0].max(q[0]), p[1].min(q[1])];
+        if overlap[0] < overlap[1] {
+            return subtract(&[base], &[overlap]);
+        }
+    }
+    vec![base]
 }
 
 /// Where an envelope (tip-relative pieces) may meet a ray's cross-section

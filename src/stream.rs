@@ -2599,6 +2599,7 @@ fn decode_chunk_prepared(
         changes,
         receipt: None,
         native_identity: None,
+        invalidates_heightfield: false,
         cleared_column: None,
         axial_column: None,
         departure: None,

@@ -236,6 +236,21 @@ fn hole_limits(op: Operation, tool: &ToolAssembly) -> Result<Operation, String> 
 }
 /// A probe never cuts: only probing operations use it.
 fn probe_only_probes(op: &Operation, tool: &ToolAssembly) -> Result<(), String> {
+    if tool.cutter.shape.indexable().is_some()
+        && !matches!(
+            op,
+            Operation::Facing(_)
+                | Operation::Pocket(_)
+                | Operation::Roughing(_)
+                | Operation::Contour(_)
+                | Operation::SuppliedToolpath(_)
+        )
+    {
+        return Err(format!(
+            "operation {}: indexable milling supports Facing, Pocket, raster/offset Roughing, exterior-entry Contour and checked supplied toolpaths; this strategy does not support the insert profile",
+            op.id()
+        ));
+    }
     if matches!(tool.cutter.shape, crate::tool::CutterShape::Probe)
         && !matches!(op, Operation::Probe(_))
     {

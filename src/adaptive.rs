@@ -577,6 +577,9 @@ impl AdaptivePlan {
             )?;
         }
         let prepared = tool.prepare()?;
+        if tool.cutter.shape.indexable().is_some() {
+            return Err("AdaptivePocket does not support indexable insert engagement; use Pocket or raster/offset Roughing".into());
+        }
         let r = prepared.cutter().definition().diameter_mm / 2.;
         let (radius, min_radius, bound) = op.validate_parameters(r)?;
         let guard = 16. * op.pocket.tolerance_mm;

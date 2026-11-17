@@ -129,6 +129,13 @@ fn execute(session: &mut Session, request: Request) -> Result<Value, String> {
         Request::Stats => Ok(json!(session.counters)),
         Request::InspectTool { tool, heights_mm } => {
             let prepared = tool.prepare()?;
+            if let Some(g) = prepared.cutter().indexable() {
+                let profiles = heights_mm.iter().map(|&z| -> Result<_, String> {
+                    Ok(json!({"cutting":g.cutting().radial_intervals_at(z)?,
+                        "noncutting":prepared.indexable_noncutting().unwrap().radial_intervals_at(z)?}))
+                }).collect::<Result<Vec<_>, _>>()?;
+                return Ok(json!({"tool":prepared.definition(),"annular_profile":profiles}));
+            }
             Ok(
                 json!({"tool":prepared.definition(),"profile":heights_mm.iter().map(|&z|prepared.radius_at(z)).collect::<Vec<_>>()}),
             )

@@ -21,7 +21,7 @@ See [Operations](operations.md) for parameters. Summary:
 
 | Operation | Scope |
 | --- | --- |
-| Facing | Rectangular stock top; flat mills; zig-zag or one-way |
+| Facing | Rectangular stock top; flat mills and declared indexable face/high-feed mills; zig-zag or one-way |
 | Pocket / rest pocket | Line/arc regions with islands; plunge, helical, ramp (zigzag along the path) or stock-edge entry; rest pocket cuts only what the simulated stock still holds |
 | Adaptive pocket | Engagement-limited clearing of the same regions; helical or ramp entry into enclosed material |
 | 3D roughing / rest roughing | Layered clearing above a mesh part: raster, offset, adaptive (stock-edge, helical or ramp entry); air passes can be omitted |
@@ -50,6 +50,12 @@ See [Operations](operations.md) for parameters. Summary:
 | Plasma and laser cutting | Sheet parts with holes: kerf compensation (computed or G41/G42 wear), arc/line leads from the scrap, overcut or negative overburn, pierce clearance (center pierce in small holes), inner features and nested parts first, small-hole feed and THC off, micro-joints, common-line cutting of parts one kerf path apart (pairs and rows, opt-in), fixed or programmed pierce/cut heights; every lead, kerf path and pierce proven clear of the parts; sheet simulated cut through |
 | Sheet nesting ([nesting](nesting.md)) | Copies of parts with holes and arcs placed on a sheet or remnant by bottom-left fill, with declared kerf, leads, part spacing, edge margin, rotations, mirror and quantities; parts in holes of other parts; optional seeded search of the order; deterministic; the distances between parts and to the sheet edge proven by an independent closed-form check; parts that do not fit refused or listed. A heuristic: no claim of the densest nest |
 | Turning (lathe) | Facing, outside roughing (axial passes, every diameter left at its allowance), finishing, external, internal and face grooving, parting off, external and internal single-point threading, drilling on the axis (pecks), inside roughing and finishing (boring bars) of a turned profile and bore with insert/holder/bar geometry, the holder's body also from a supplied model (`TurningToolModel`: a mesh with its error, a declared placement and a cross-check against the declared insert); every move checked against the part, its bore, the stock and the chuck; axisymmetric stock with outer and inner bounds; constant surface speed (G96 with its G50/D limit) and feed per revolution (G95/G99); G18 output, finishing arcs (fillets, ball ends, the nose rolling round corners) as native G2/G3, radius or diameter X, T0101 words; a lathe setup is an ordinary `Setup` streamed like every run (per-move stock, playback with partial moves, cancellation, posted replay on the stock) with a material check (leftover material against the part) after each operation |
+
+[Indexable mills](indexable-geometry.md) use mounted annular cutting profiles,
+separate noncutting bodies and declared depth/entry limits. They support Facing,
+Pocket, raster/offset Roughing, exterior-entry Contour without tabs and supplied
+paths. Their actual shoulder and curved-floor residual reaches the stock and
+material checks. Adaptive clearing and linear cutting ramps refuse these tools.
 
 Not supported: undercuts,
 4th/5th axis. Unsupported tool/operation

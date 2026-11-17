@@ -126,6 +126,21 @@ impl FacingPlan {
         let prepared = assembly.prepare()?;
         let cutter = prepared.cutter().definition();
         let r = cutter.diameter_mm / 2.;
+        let floor_r = if let Some(g) = prepared.cutter().indexable() {
+            g.cutting()
+                .floor_radius()
+                .ok_or("facing: mounted inserts must reach the declared tip plane Z=0")?
+        } else {
+            r
+        };
+        if let Some(m) = cutter.shape.indexable()
+            && op.stepdown_mm > m.max_depth_of_cut_mm
+        {
+            return Err(format!(
+                "facing stepdown_mm exceeds max_depth_of_cut_mm {}; reduce stepdown",
+                m.max_depth_of_cut_mm
+            ));
+        }
         let guard = 16. * op.tolerance_mm;
         let overlap = op.edge_overlap_mm.unwrap_or(cutter.diameter_mm * 0.1);
         let numbers = [
@@ -155,8 +170,11 @@ impl FacingPlan {
                     ),
                 ),
                 (
-                    matches!(cutter.shape, CutterShape::Flat),
-                    "facing needs a flat end mill".into(),
+                    matches!(
+                        cutter.shape,
+                        CutterShape::Flat | CutterShape::Indexable { .. }
+                    ),
+                    "facing needs a flat end mill or a declared indexable milling cutter".into(),
                 ),
                 (
                     numbers.iter().all(|n| n.is_finite()),
@@ -174,7 +192,8 @@ impl FacingPlan {
                     ),
                 ),
                 (
-                    spec.max_mm[2] - op.floor_z_mm <= cutter.cutting_length_mm - guard,
+                    cutter.shape.indexable().is_some()
+                        || spec.max_mm[2] - op.floor_z_mm <= cutter.cutting_length_mm - guard,
                     crate::reach::ReachRefusal::cutting_length(
                         &op.id,
                         &op.tool,
@@ -196,14 +215,15 @@ impl FacingPlan {
                     ),
                 ),
                 (
-                    op.stepover_mm > guard && op.stepover_mm <= 2. * (r - guard),
+                    op.stepover_mm > guard && op.stepover_mm <= 2. * (floor_r - guard),
                     format!(
-                        "stepover_mm {} must be positive and less than the cutter diameter {}",
-                        op.stepover_mm, cutter.diameter_mm
+                        "stepover_mm {} must be positive and less than the floor-cutting diameter {}",
+                        op.stepover_mm,
+                        2. * floor_r
                     ),
                 ),
                 (
-                    (0. ..=r - guard).contains(&overlap),
+                    (0. ..=floor_r - guard).contains(&overlap),
                     format!(
                         "edge_overlap_mm {overlap} must be between 0 and the cutter radius {r}"
                     ),
@@ -251,8 +271,8 @@ impl FacingPlan {
         let cross = 1 - axis;
         let low = spec.min_mm[axis] - r - op.entry_air_gap_mm - guard;
         let high = spec.max_mm[axis] + r + op.entry_air_gap_mm + guard;
-        let first_row = spec.min_mm[cross] + r - overlap - guard;
-        let last_row = spec.max_mm[cross] - r + overlap + guard;
+        let first_row = spec.min_mm[cross] + floor_r - overlap - guard;
+        let last_row = spec.max_mm[cross] - floor_r + overlap + guard;
         let (first_row, last_row, rows, pitch) = if first_row >= last_row {
             let midpoint = (spec.min_mm[cross] + spec.max_mm[cross]) / 2.;
             (midpoint, midpoint, 1, 0.)

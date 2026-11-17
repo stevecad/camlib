@@ -177,7 +177,7 @@ fn all_rotational_profiles_and_conical_holder_witnesses_match_analytic_sections(
             } => 0.8 + (z.min(c) * (2. * c - z.min(c))).sqrt(),
             CutterShape::Drill { .. } => z.min(1.),
             CutterShape::Chamfer { .. } => (0.1 + z).min(1.),
-            CutterShape::Lollipop | CutterShape::Dovetail { .. } => {
+            CutterShape::Lollipop | CutterShape::Dovetail { .. } | CutterShape::Indexable { .. } => {
                 unreachable!("not among the shapes above")
             }
         };

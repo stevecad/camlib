@@ -84,7 +84,10 @@ Required: `floor_z_mm`, `stepdown_mm`, `stepover_mm`, `clearance_z_mm`.
 Faces the whole rectangular stock top down to `floor_z_mm`, entering from
 outside the stock. Options: `axis` (`"x"`/`"y"`), `mode` (`"zigzag"` or
 `"one_way"`), `entry_air_gap_mm` (1), `edge_overlap_mm` (default 10% of the
-tool diameter), `reverse`. Flat end mills.
+tool diameter), `reverse`. Flat end mills and declared indexable face/high-feed
+mills. Indexable rows use the profile's floor-cutting width, and each stepdown
+must respect the assembly's maximum depth of cut. See
+[indexable geometry and limits](indexable-geometry.md).
 
 The Rust planner refuses exhausted motion IDs before emitting another move or
 changing its position; IDs never wrap to zero during facing.
@@ -97,6 +100,13 @@ Required: `region`, `top_z_mm`, `floor_z_mm`, `stepdown_mm`, `stepover_mm`
 `region` is a `PlanarRegion`: outer boundaries with holes. **Holes are islands
 that are kept.** Boundaries are polygons (`Boundary.polygon`) or line/arc loops
 (`Boundary.circle`, or bulge vertices). Flat, center-cutting end mills.
+
+Declared [indexable mills](indexable-geometry.md) also support Pocket and
+raster/offset Roughing with exterior air entry or a permitted helix. Their
+noncutting center prohibits plunging into stock. The material check uses their
+actual swept profile, including shoulder and curved-floor residual; planar
+guide coverage cannot establish a flat floor. Adaptive clearing refuses
+these tools. Contour supports exterior air entry without tabs.
 
 - Allowances: `radial_allowance_mm`, `bottom_allowance_mm` leave stock on walls/floor.
 - Direction: wall passes are climb milled with a clockwise spindle (pocket walls

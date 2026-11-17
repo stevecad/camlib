@@ -38,6 +38,7 @@ modules! {
     geometry,
     helical_entry,
     holes,
+    indexable,
     machine,
     material,
     material_budgets,

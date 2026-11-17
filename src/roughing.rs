@@ -1050,6 +1050,11 @@ impl RoughingPlan {
         check(cancel)?;
         spec.grid()?;
         let prepared_tool = tool.prepare()?;
+        if tool.cutter.shape.indexable().is_some()
+            && matches!(op.clearing, RoughingClearing::Adaptive { .. })
+        {
+            return Err("indexable roughing supports RasterClearing and OffsetClearing; adaptive engagement planning requires its own profile-aware model".into());
+        }
         let r = prepared_tool.cutter().definition().diameter_mm / 2.;
         // The shadow simplification: a quarter of the radial allowance unless
         // stated, at most the allowance (it adds at most twice this).
@@ -1456,7 +1461,9 @@ impl RoughingPlan {
                 // full layer above them (a step-up's band cut clears less),
                 // with a reserve for that sweep's conservative height bound.
                 let mut layer_spec = material_spec.clone();
-                if material_spec.max_mm[2] - z > tool.cutter.cutting_length_mm {
+                if tool.cutter.shape.indexable().is_some()
+                    || material_spec.max_mm[2] - z > tool.cutter.cutting_length_mm
+                {
                     layer_spec.max_mm[2] = match cleared_above {
                         None => material_spec.max_mm[2],
                         Some(above) => above + 16. * op.tolerance_mm,

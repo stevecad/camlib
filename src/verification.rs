@@ -909,15 +909,52 @@ pub(crate) struct Part {
     pub(crate) min: f64,
     pub(crate) max: f64,
     pub(crate) radius: Radius,
+    pub(crate) profile: Option<crate::tool::rotational::ProfileRegion>,
+}
+impl Part {
+    pub(crate) fn certain_band(&self, lo: f64, hi: f64) -> Option<[f64; 2]> {
+        if let Some(p) = &self.profile {
+            p.radial_band([lo, hi]).certain.first().copied()
+        } else {
+            Some([0., self.radius.at(lo).min(self.radius.at(hi))])
+        }
+    }
+    pub(crate) fn inner_min(&self, lo: f64, hi: f64) -> f64 {
+        self.profile
+            .as_ref()
+            .and_then(|p| p.radial_band([lo, hi]).possible.first().copied())
+            .map_or(0., |s| s[0])
+    }
 }
 pub(crate) fn parts(tool: &PreparedAssembly) -> Result<Vec<Part>, String> {
     let t = tool.definition();
     if t.holders.len() > 1024 {
         return Err("verification tool exceeds 1024 holder sections".into());
     }
+    if let Some(g) = tool.cutter().indexable() {
+        let mut result = vec![];
+        for (profile, kind) in [
+            (g.cutting(), ToolPart::Cutter),
+            (tool.indexable_noncutting().unwrap(), ToolPart::Holder),
+        ] {
+            for region in &profile.definition().regions {
+                let [r, z] = region.bounds();
+                result.push(Part {
+                    kind,
+                    holder: None,
+                    min: z[0],
+                    max: z[1],
+                    radius: Radius::Constant(r[1]),
+                    profile: Some(region.clone()),
+                });
+            }
+        }
+        return Ok(result);
+    }
     let c = &t.cutter;
     let r = c.diameter_mm / 2.;
     let radius = match c.shape {
+        CutterShape::Indexable { .. } => unreachable!("indexable parts handled above"),
         CutterShape::Flat | CutterShape::Beam => Radius::Constant(r),
         CutterShape::Ball | CutterShape::Probe => Radius::Ball(r),
         CutterShape::Lollipop => Radius::Sphere(r),
@@ -947,6 +984,7 @@ pub(crate) fn parts(tool: &PreparedAssembly) -> Result<Vec<Part>, String> {
         min: 0.,
         max: c.cutting_length_mm,
         radius,
+        profile: None,
     }];
     let shoulder = c.cutting_length_mm + c.neck.as_ref().map_or(0., |n| n.length_mm);
     if let Some(n) = &c.neck {
@@ -956,6 +994,7 @@ pub(crate) fn parts(tool: &PreparedAssembly) -> Result<Vec<Part>, String> {
             min: c.cutting_length_mm,
             max: shoulder,
             radius: Radius::Constant(n.diameter_mm / 2.),
+            profile: None,
         });
     }
     if shoulder < t.stickout_mm {
@@ -965,6 +1004,7 @@ pub(crate) fn parts(tool: &PreparedAssembly) -> Result<Vec<Part>, String> {
             min: shoulder,
             max: t.stickout_mm,
             radius: Radius::Constant(c.shank_diameter_mm / 2.),
+            profile: None,
         });
     }
     for (i, h) in t.holders.iter().enumerate() {
@@ -978,6 +1018,7 @@ pub(crate) fn parts(tool: &PreparedAssembly) -> Result<Vec<Part>, String> {
                 radius: h.radius_min_mm,
                 slope: (h.radius_max_mm - h.radius_min_mm) / (h.z_max_mm - h.z_min_mm),
             },
+            profile: None,
         });
     }
     Ok(result)
@@ -1096,6 +1137,24 @@ fn check_body<C: CancelSignal>(
             continue;
         }
         let radius = part.radius.max_over(lo, hi);
+        let hole = part.inner_min(lo, hi);
+        if hole > 0.
+            && let Some(rect) = body.region.bounds()
+        {
+            let dx = (rect[0] - p[0]).abs().max((rect[2] - p[0]).abs());
+            let dy = (rect[1] - p[1]).abs().max((rect[3] - p[1]).abs());
+            if dx.hypot(dy) + reach + body.guard < hole {
+                work.stats.pruned_intervals += 1;
+                continue;
+            }
+        }
+        if let Some((center, body_radius)) = body.outer_circle
+            && circle_axis_max_enclosure(motion, path, [a, z], center)
+                .is_some_and(|d| d + body_radius + guard < hole)
+        {
+            work.stats.pruned_intervals += 1;
+            continue;
+        }
         if let Some((center, body_radius)) = body.outer_circle
             && let Some(distance) = circle_axis_distance(motion, path, [a, z], center)
             && distance > body_radius + radius + guard
@@ -1125,11 +1184,31 @@ fn check_body<C: CancelSignal>(
                 .into_iter()
                 .max_by(|a, b| part.radius.at(*a).total_cmp(&part.radius.at(*b)))
                 .unwrap();
-            let inner_radius = part
-                .radius
-                .at(height - guard)
-                .min(part.radius.at(height + guard));
-            let margin = (d + inner_radius).min((height - low).min(high - height)) - guard;
+            let band = part.certain_band(height - guard, height + guard);
+            let margin = if let Some([hole, outer]) = band {
+                let radial_margin = if hole == 0. {
+                    d + outer
+                } else {
+                    // Explicit interior witnesses in the real annulus. Failure
+                    // to find one never proves clearance.
+                    let r = (hole + outer) / 2.;
+                    let mut best: f64 = 0.;
+                    for k in 0..16 {
+                        let angle = k as f64 * std::f64::consts::TAU / 16.;
+                        let xy = [p[0] + r * angle.cos(), p[1] + r * angle.sin()];
+                        let inside = body
+                            .region
+                            .query(xy)?
+                            .signed_clearance_mm
+                            .unwrap_or(f64::NEG_INFINITY);
+                        best = best.max(inside.min(r - hole).min(outer - r));
+                    }
+                    best
+                };
+                radial_margin.min((height - low).min(high - height)) - guard
+            } else {
+                0.
+            };
             if margin > 0. {
                 if b.representation == Representation::OuterEnvelope {
                     return Ok(Some(Finding {

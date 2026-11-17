@@ -43,7 +43,7 @@ and writes G-code through a postprocessor you can read and change.
 
 | Operation | Notes |
 | --- | --- |
-| Facing | Rectangular stock, zig-zag or one-way passes |
+| Facing | Rectangular stock, zig-zag or one-way passes; end mills and [indexable face/high-feed mills](docs/indexable-geometry.md) |
 | Pocket, rest pocket | Line/arc regions with islands; plunge, helical, ramp or stock-edge entry; links kept at depth only through cleared stock |
 | Adaptive pocket | Engagement-limited clearing; helical or ramp entry |
 | 3D roughing, rest roughing | Layered clearing above a triangle-mesh part (raster, offset or adaptive) |

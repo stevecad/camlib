@@ -296,6 +296,9 @@ fn profile_height(shape: &CutterShape, d: f64) -> f64 {
             included_angle_rad: a,
             tip_diameter_mm: td,
         } => (d - td / 2.).max(0.) / (a / 2.).tan(),
+        CutterShape::Indexable { .. } => {
+            unreachable!("annular profiles have their own independent stock oracle")
+        }
         CutterShape::Lollipop | CutterShape::Dovetail { .. } => {
             unreachable!("the height field refuses narrowing cutters")
         }

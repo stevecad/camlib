@@ -155,6 +155,14 @@ impl ContourPlan {
         spec.grid()?;
         let tool = assembly.prepare()?;
         let cutter = tool.cutter().definition();
+        if let Some(m) = cutter.shape.indexable() {
+            if op.stepdown_mm > m.max_depth_of_cut_mm {
+                return Err("indexable contour stepdown_mm exceeds max_depth_of_cut_mm".into());
+            }
+            if op.entry.is_some() || op.tabs.is_some() {
+                return Err("indexable Contour requires exterior air entry and no tabs; ramped/tab transitions are unsupported".into());
+            }
+        }
         let target = op.floor_z_mm + op.bottom_allowance_mm;
         let values = [
             target,
@@ -187,7 +195,7 @@ impl ContourPlan {
                     ),
                 ),
                 (
-                    matches!(cutter.shape, CutterShape::Flat) && cutter.center_cutting,
+                    (matches!(cutter.shape, CutterShape::Flat) && cutter.center_cutting) || cutter.shape.indexable().is_some(),
                     "contour needs a flat, center-cutting end mill".into(),
                 ),
                 (
@@ -225,7 +233,7 @@ impl ContourPlan {
                     ),
                 ),
                 (
-                    spec.max_mm[2] - target <= cutter.cutting_length_mm - guard,
+                    cutter.shape.indexable().is_some() || spec.max_mm[2] - target <= cutter.cutting_length_mm - guard,
                     crate::reach::ReachRefusal::cutting_length(&op.id, &op.tool, spec.max_mm[2], target, cutter.cutting_length_mm).error(format_args!(
                         "contour depth {} below the stock top exceeds the cutting length {}",
                         spec.max_mm[2] - target,
