@@ -1,6 +1,6 @@
-"""Render bench/results/<label>.json as docs/benchmarks.md.
+"""Render bench/results/<label>.json as Markdown.
 
-python bench/report.py bench/results/<label>.json [--out docs/benchmarks.md]
+python bench/report.py bench/results/<label>.json [--out REPORT.md]
 """
 
 from __future__ import annotations
@@ -86,7 +86,8 @@ def render(data):
         "",
         "## Environment",
         "",
-        f"- Commit `{(env['commit'] or '?')[:12]}`" + (" (with uncommitted changes)" if env.get("dirty") else ""),
+        f"- Measured at {env.get('measured_at', 'unrecorded')}",
+        f"- Commit `{(env['commit'] or '?')}`" + (" (with uncommitted changes)" if env.get("dirty") else ""),
         f"- {env['cpu']} ({env['cpus']} threads), {env['os']}",
         f"- {env['rustc']}, Python {env['python']}",
         "",
@@ -218,9 +219,10 @@ def _repeats(data):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("results", type=Path)
-    parser.add_argument("--out", type=Path, default=ROOT / "docs" / "benchmarks.md")
+    parser.add_argument("--out", type=Path, help="default: beside the measured JSON")
     args = parser.parse_args()
-    args.out.write_text(render(json.loads(args.results.read_text())))
+    args.out = args.out or args.results.with_suffix(".md")
+    args.out.write_text(render(json.loads(args.results.read_text(encoding="utf-8"))), encoding="utf-8")
     print(f"wrote {args.out}")
 
 

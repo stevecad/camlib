@@ -1,0 +1,25 @@
+{
+  "name": "drilling-clearance-pecks",
+  "operations": {
+    "holes": {
+      "air_cut_mm": 109.46,
+      "cut_mm": 126.0,
+      "cycle_seconds_exact_stop": 18.625,
+      "cycle_seconds_tangent": 18.591,
+      "link_mm": 37.46,
+      "moves": 38,
+      "plunges": 12,
+      "rapid_mm": 41.314,
+      "removed_mm3": 183.922,
+      "retracts": 12
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 18.625,
+    "cycle_seconds_tangent": 18.591,
+    "material": null,
+    "moves": 38,
+    "post_error": null,
+    "posted_blocks": 61
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "name": "indexable-roughing",
+  "operations": {
+    "rough": {
+      "air_cut_mm": 24118.968,
+      "cut_mm": 28887.869,
+      "cycle_seconds_exact_stop": 8604.708,
+      "cycle_seconds_tangent": 8604.228,
+      "link_mm": 11147.776,
+      "moves": 918,
+      "plunges": 6,
+      "rapid_mm": 313.393,
+      "removed_mm3": 828.912,
+      "retracts": 6
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 8604.708,
+    "cycle_seconds_tangent": 8604.228,
+    "material": {
+      "leftover_mm3": [
+        0.853,
+        129.588
+      ],
+      "overcut_mm3": [
+        0.0,
+        30.596
+      ]
+    },
+    "moves": 918,
+    "post_error": null,
+    "posted_blocks": 941
+  }
+}

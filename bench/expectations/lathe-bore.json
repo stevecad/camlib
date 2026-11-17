@@ -1,0 +1,58 @@
+{
+  "name": "lathe-bore",
+  "operations": {
+    "bore_finish": {
+      "air_cut_mm": 2.828,
+      "cut_mm": 28.828,
+      "cycle_seconds_exact_stop": 19.403,
+      "cycle_seconds_tangent": 19.402,
+      "link_mm": 0.0,
+      "moves": 8,
+      "plunges": 1,
+      "rapid_mm": 87.7,
+      "removed_mm3": 332.133,
+      "retracts": 3
+    },
+    "bore_rough": {
+      "air_cut_mm": 1.414,
+      "cut_mm": 53.414,
+      "cycle_seconds_exact_stop": 22.765,
+      "cycle_seconds_tangent": 22.765,
+      "link_mm": 0.0,
+      "moves": 9,
+      "plunges": 0,
+      "rapid_mm": 91.7,
+      "removed_mm3": 4008.823,
+      "retracts": 4
+    },
+    "drill": {
+      "air_cut_mm": 0.0,
+      "cut_mm": 33.807,
+      "cycle_seconds_exact_stop": 21.636,
+      "cycle_seconds_tangent": 21.636,
+      "link_mm": 0.0,
+      "moves": 12,
+      "plunges": 3,
+      "rapid_mm": 193.807,
+      "removed_mm3": 5324.01,
+      "retracts": 4
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 63.804,
+    "cycle_seconds_tangent": 63.802,
+    "material": {
+      "leftover_mm3": [
+        9596.72,
+        10035.757
+      ],
+      "overcut_mm3": [
+        0.0,
+        0.0
+      ]
+    },
+    "moves": 29,
+    "post_error": null,
+    "posted_blocks": 61
+  }
+}

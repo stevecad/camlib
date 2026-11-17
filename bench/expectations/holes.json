@@ -1,0 +1,46 @@
+{
+  "name": "holes",
+  "operations": {
+    "finish-holes": {
+      "air_cut_mm": 43.98,
+      "cut_mm": 370.293,
+      "cycle_seconds_exact_stop": 39.176,
+      "cycle_seconds_tangent": 39.176,
+      "link_mm": 35.97,
+      "moves": 42,
+      "plunges": 2,
+      "rapid_mm": 36.0,
+      "removed_mm3": 1177.365,
+      "retracts": 2
+    },
+    "pilot": {
+      "air_cut_mm": 46.0,
+      "cut_mm": 62.0,
+      "cycle_seconds_exact_stop": 11.779,
+      "cycle_seconds_tangent": 11.765,
+      "link_mm": 14.0,
+      "moves": 20,
+      "plunges": 6,
+      "rapid_mm": 35.62,
+      "removed_mm3": 110.953,
+      "retracts": 6
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 50.955,
+    "cycle_seconds_tangent": 50.941,
+    "material": {
+      "leftover_mm3": [
+        0.0,
+        413.138
+      ],
+      "overcut_mm3": [
+        0.0,
+        125.054
+      ]
+    },
+    "moves": 62,
+    "post_error": null,
+    "posted_blocks": 93
+  }
+}

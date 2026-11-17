@@ -1,0 +1,49 @@
+{
+  "name": "drilling-preparation-manual",
+  "operations": {
+    "holes": {
+      "air_cut_mm": 16.0,
+      "cut_mm": 30.0,
+      "cycle_seconds_exact_stop": 7.792,
+      "cycle_seconds_tangent": 7.792,
+      "link_mm": 0.0,
+      "moves": 8,
+      "plunges": 2,
+      "rapid_mm": 26.0,
+      "removed_mm3": 175.271,
+      "retracts": 2
+    },
+    "pilot": {
+      "air_cut_mm": 7.728,
+      "cut_mm": 13.456,
+      "cycle_seconds_exact_stop": 3.656,
+      "cycle_seconds_tangent": 3.656,
+      "link_mm": 0.0,
+      "moves": 8,
+      "plunges": 2,
+      "rapid_mm": 26.0,
+      "removed_mm3": 8.201,
+      "retracts": 2
+    },
+    "spot": {
+      "air_cut_mm": 4.536,
+      "cut_mm": 7.072,
+      "cycle_seconds_exact_stop": 2.053,
+      "cycle_seconds_tangent": 2.053,
+      "link_mm": 0.0,
+      "moves": 8,
+      "plunges": 2,
+      "rapid_mm": 25.314,
+      "removed_mm3": 0.45,
+      "retracts": 2
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 13.501,
+    "cycle_seconds_tangent": 13.501,
+    "material": null,
+    "moves": 24,
+    "post_error": null,
+    "posted_blocks": 63
+  }
+}

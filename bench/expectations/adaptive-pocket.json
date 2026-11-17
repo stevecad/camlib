@@ -1,0 +1,49 @@
+{
+  "name": "adaptive-pocket",
+  "operations": {
+    "adaptive": {
+      "air_cut_mm": 519.012,
+      "cut_mm": 1122.34,
+      "cycle_seconds_exact_stop": 144.295,
+      "cycle_seconds_tangent": 143.979,
+      "engagement": {
+        "cut_mm": 539.664,
+        "entry_feed_mean_deg": 103.9,
+        "entry_feed_mm": 15.991,
+        "limit_deg": 75.52,
+        "link_mm": 497.379,
+        "link_none_share": 0.9538,
+        "max_deg": 75.0,
+        "mean_deg": 49.21,
+        "none_share": 0.0277,
+        "over_share": 0.0,
+        "under_10_20_share": 0.3038,
+        "under_20_share": 0.3684,
+        "within_10_share": 0.3001
+      },
+      "link_mm": 497.379,
+      "moves": 528,
+      "plunges": 6,
+      "rapid_mm": 50.739,
+      "removed_mm3": 472.318,
+      "retracts": 6
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 144.295,
+    "cycle_seconds_tangent": 143.979,
+    "material": {
+      "leftover_mm3": [
+        0.0,
+        481.602
+      ],
+      "overcut_mm3": [
+        0.0,
+        56.037
+      ]
+    },
+    "moves": 528,
+    "post_error": null,
+    "posted_blocks": 551
+  }
+}

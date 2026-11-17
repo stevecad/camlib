@@ -1,0 +1,37 @@
+{
+  "name": "reaming",
+  "operations": {
+    "bore": {
+      "air_cut_mm": 14.0,
+      "cut_mm": 28.0,
+      "cycle_seconds_exact_stop": 17.374,
+      "cycle_seconds_tangent": 17.374,
+      "link_mm": 0.0,
+      "moves": 8,
+      "plunges": 2,
+      "rapid_mm": 26.0,
+      "removed_mm3": 18.72,
+      "retracts": 3
+    },
+    "drill": {
+      "air_cut_mm": 23.0,
+      "cut_mm": 44.0,
+      "cycle_seconds_exact_stop": 11.285,
+      "cycle_seconds_tangent": 11.285,
+      "link_mm": 0.0,
+      "moves": 8,
+      "plunges": 2,
+      "rapid_mm": 25.314,
+      "removed_mm3": 313.002,
+      "retracts": 2
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 28.659,
+    "cycle_seconds_tangent": 28.659,
+    "material": null,
+    "moves": 16,
+    "post_error": null,
+    "posted_blocks": 46
+  }
+}

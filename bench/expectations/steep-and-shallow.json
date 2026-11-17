@@ -1,0 +1,46 @@
+{
+  "name": "steep-and-shallow",
+  "operations": {
+    "finish-shallow": {
+      "air_cut_mm": 234.187,
+      "cut_mm": 856.33,
+      "cycle_seconds_exact_stop": 157.827,
+      "cycle_seconds_tangent": 154.127,
+      "link_mm": 0.0,
+      "moves": 804,
+      "plunges": 24,
+      "rapid_mm": 217.78,
+      "removed_mm3": 23.086,
+      "retracts": 24
+    },
+    "finish-steep": {
+      "air_cut_mm": 239.786,
+      "cut_mm": 1074.45,
+      "cycle_seconds_exact_stop": 176.078,
+      "cycle_seconds_tangent": 172.658,
+      "link_mm": 0.0,
+      "moves": 892,
+      "plunges": 23,
+      "rapid_mm": 505.254,
+      "removed_mm3": 0.0,
+      "retracts": 23
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 333.905,
+    "cycle_seconds_tangent": 326.785,
+    "material": {
+      "leftover_mm3": [
+        0.0,
+        149.82
+      ],
+      "overcut_mm3": [
+        0.0,
+        151.979
+      ]
+    },
+    "moves": 1696,
+    "post_error": null,
+    "posted_blocks": 1727
+  }
+}

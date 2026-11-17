@@ -1,0 +1,25 @@
+{
+  "name": "plasma-common-line",
+  "operations": {
+    "plasma": {
+      "air_cut_mm": 0.0,
+      "cut_mm": 518.388,
+      "cycle_seconds_exact_stop": 18.345,
+      "cycle_seconds_tangent": 17.978,
+      "link_mm": 0.0,
+      "moves": 34,
+      "plunges": 4,
+      "rapid_mm": 355.392,
+      "removed_mm3": 3034.875,
+      "retracts": 4
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 18.345,
+    "cycle_seconds_tangent": 17.978,
+    "material": null,
+    "moves": 34,
+    "post_error": null,
+    "posted_blocks": 73
+  }
+}

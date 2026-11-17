@@ -1,0 +1,34 @@
+{
+  "name": "spiral",
+  "operations": {
+    "spiral": {
+      "air_cut_mm": 122.759,
+      "cut_mm": 1059.715,
+      "cycle_seconds_exact_stop": 225.916,
+      "cycle_seconds_tangent": 225.546,
+      "link_mm": 0.0,
+      "moves": 2552,
+      "plunges": 30,
+      "rapid_mm": 740.44,
+      "removed_mm3": 22.971,
+      "retracts": 31
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 225.916,
+    "cycle_seconds_tangent": 225.546,
+    "material": {
+      "leftover_mm3": [
+        0.0,
+        149.935
+      ],
+      "overcut_mm3": [
+        0.0,
+        78.955
+      ]
+    },
+    "moves": 2552,
+    "post_error": null,
+    "posted_blocks": 2575
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "name": "rest-pocket",
+  "operations": {
+    "face": {
+      "air_cut_mm": 15.8,
+      "cut_mm": 255.803,
+      "cycle_seconds_exact_stop": 26.859,
+      "cycle_seconds_tangent": 26.859,
+      "link_mm": 12.8,
+      "moves": 18,
+      "plunges": 1,
+      "rapid_mm": 6.4,
+      "removed_mm3": 383.996,
+      "retracts": 1
+    },
+    "pocket": {
+      "air_cut_mm": 7.999,
+      "cut_mm": 99.328,
+      "cycle_seconds_exact_stop": 16.66,
+      "cycle_seconds_tangent": 16.66,
+      "link_mm": 5.333,
+      "moves": 30,
+      "plunges": 4,
+      "rapid_mm": 44.26,
+      "removed_mm3": 124.0,
+      "retracts": 4
+    },
+    "rest": {
+      "air_cut_mm": 116.994,
+      "cut_mm": 206.49,
+      "cycle_seconds_exact_stop": 26.343,
+      "cycle_seconds_tangent": 26.103,
+      "link_mm": 82.496,
+      "moves": 82,
+      "plunges": 4,
+      "rapid_mm": 36.804,
+      "removed_mm3": 2.0,
+      "retracts": 8
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 69.862,
+    "cycle_seconds_tangent": 69.622,
+    "material": {
+      "leftover_mm3": [
+        0.0,
+        267.004
+      ],
+      "overcut_mm3": [
+        0.0,
+        66.004
+      ]
+    },
+    "moves": 130,
+    "post_error": null,
+    "posted_blocks": 169
+  }
+}

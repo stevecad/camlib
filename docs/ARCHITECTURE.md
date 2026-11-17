@@ -331,7 +331,7 @@ work refuses the move, independent of optional verification settings.
   revision binds a digest of its content.
 - The same inputs give the same toolpaths. The benchmark (`bench/`) runs from
   frozen geometry, and CI fails when a run's toolpath data differs from the
-  committed baseline (`bench/results/baseline.json`), on any machine.
+  per-workload expectations (`bench/expectations/`), on any machine.
 - The shared guide graph orders bridge distances with separately rounded
   products, sum and square root; its lazy search uses the same calculation
   for box bounds. This avoids platform-dependent `hypot` results deciding

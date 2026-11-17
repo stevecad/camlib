@@ -1,0 +1,34 @@
+{
+  "name": "contour",
+  "operations": {
+    "profile": {
+      "air_cut_mm": 0.0,
+      "cut_mm": 357.593,
+      "cycle_seconds_exact_stop": 55.776,
+      "cycle_seconds_tangent": 55.696,
+      "link_mm": 0.0,
+      "moves": 40,
+      "plunges": 8,
+      "rapid_mm": 148.13,
+      "removed_mm3": 2191.997,
+      "retracts": 8
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 55.776,
+    "cycle_seconds_tangent": 55.696,
+    "material": {
+      "leftover_mm3": [
+        0.0,
+        825.62
+      ],
+      "overcut_mm3": [
+        0.0,
+        430.247
+      ]
+    },
+    "moves": 40,
+    "post_error": null,
+    "posted_blocks": 63
+  }
+}

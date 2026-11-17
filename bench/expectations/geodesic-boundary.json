@@ -1,0 +1,34 @@
+{
+  "name": "geodesic-boundary",
+  "operations": {
+    "geodesic": {
+      "air_cut_mm": 36.608,
+      "cut_mm": 726.909,
+      "cycle_seconds_exact_stop": 90.196,
+      "cycle_seconds_tangent": 86.939,
+      "link_mm": 0.0,
+      "moves": 801,
+      "plunges": 90,
+      "rapid_mm": 51.986,
+      "removed_mm3": 22.712,
+      "retracts": 3
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 90.196,
+    "cycle_seconds_tangent": 86.939,
+    "material": {
+      "leftover_mm3": [
+        0.0,
+        150.194
+      ],
+      "overcut_mm3": [
+        0.0,
+        81.862
+      ]
+    },
+    "moves": 801,
+    "post_error": null,
+    "posted_blocks": 824
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "name": "roughing-offset",
+  "operations": {
+    "rough": {
+      "air_cut_mm": 6089.311,
+      "cut_mm": 10665.257,
+      "cycle_seconds_exact_stop": 1439.817,
+      "cycle_seconds_tangent": 1436.824,
+      "link_mm": 1102.218,
+      "moves": 924,
+      "plunges": 5,
+      "rapid_mm": 250.41,
+      "removed_mm3": 5776.189,
+      "retracts": 8
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 1439.817,
+    "cycle_seconds_tangent": 1436.824,
+    "material": {
+      "leftover_mm3": [
+        930.823,
+        1495.242
+      ],
+      "overcut_mm3": [
+        0.0,
+        83.073
+      ]
+    },
+    "moves": 924,
+    "post_error": null,
+    "posted_blocks": 947
+  }
+}

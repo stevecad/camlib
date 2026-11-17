@@ -1,0 +1,25 @@
+{
+  "name": "facing-large",
+  "operations": {
+    "face": {
+      "air_cut_mm": 394.201,
+      "cut_mm": 21474.222,
+      "cycle_seconds_exact_stop": 2153.312,
+      "cycle_seconds_tangent": 2153.312,
+      "link_mm": 387.201,
+      "moves": 140,
+      "plunges": 2,
+      "rapid_mm": 206.537,
+      "removed_mm3": 119999.4,
+      "retracts": 2
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 2153.312,
+    "cycle_seconds_tangent": 2153.312,
+    "material": null,
+    "moves": 140,
+    "post_error": null,
+    "posted_blocks": 163
+  }
+}

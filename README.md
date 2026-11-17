@@ -180,7 +180,8 @@ PYTHONPATH=python python -m unittest discover -s python/tests -v   # needs CadQu
 
 Toolpath benchmarks (toolpath quality and planning time per toolpath, needs
 CadQuery): `python bench/run.py --label <name>`, then
-`python bench/report.py bench/results/<name>.json`.
+`python bench/compare.py bench/expectations bench/results/<name>.json`. See the
+[benchmark guide](docs/benchmarks.md) for reports and expectation updates.
 
 Tests use synthetic inputs. The Python suite includes CAD-adapter tests and
 therefore needs CadQuery/OCP. CI (`.github/workflows/ci.yml`) runs all of the

@@ -1,0 +1,25 @@
+{
+  "name": "drilling-decreasing-pecks",
+  "operations": {
+    "holes": {
+      "air_cut_mm": 61.984,
+      "cut_mm": 77.0,
+      "cycle_seconds_exact_stop": 12.943,
+      "cycle_seconds_tangent": 12.929,
+      "link_mm": 18.984,
+      "moves": 19,
+      "plunges": 6,
+      "rapid_mm": 32.314,
+      "removed_mm3": 183.922,
+      "retracts": 6
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 12.943,
+    "cycle_seconds_tangent": 12.929,
+    "material": null,
+    "moves": 19,
+    "post_error": null,
+    "posted_blocks": 42
+  }
+}

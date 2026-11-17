@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+from datetime import UTC, datetime
 import json
 import os
 import platform
@@ -385,6 +386,7 @@ def _environment():
     except ImportError:
         cad = None
     return dict(
+        measured_at=datetime.now(UTC).isoformat(),
         cad=cad,
         commit=run("git", "rev-parse", "HEAD"),
         # Uncommitted changes to the engine itself (docs and benchmark files do

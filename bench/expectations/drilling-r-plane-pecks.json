@@ -1,0 +1,25 @@
+{
+  "name": "drilling-r-plane-pecks",
+  "operations": {
+    "holes": {
+      "air_cut_mm": 100.46,
+      "cut_mm": 117.0,
+      "cycle_seconds_exact_stop": 17.535,
+      "cycle_seconds_tangent": 17.501,
+      "link_mm": 37.46,
+      "moves": 37,
+      "plunges": 12,
+      "rapid_mm": 32.314,
+      "removed_mm3": 183.922,
+      "retracts": 12
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 17.535,
+    "cycle_seconds_tangent": 17.501,
+    "material": null,
+    "moves": 37,
+    "post_error": null,
+    "posted_blocks": 60
+  }
+}

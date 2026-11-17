@@ -1,0 +1,64 @@
+name: Publish benchmark report
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', LICENSE]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      checks: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Find successful merge queue validation for the main commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run=$(gh run list --workflow ci.yml --event merge_group --commit "$GITHUB_SHA" --json databaseId --jq '.[0].databaseId // empty')
+          test -n "$run"
+          gh run watch "$run" --exit-status
+          gh run download "$run" --name "benchmarks-$GITHUB_SHA" --dir measured
+      - name: Publish the measured report
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          data = json.loads(Path('measured/bench/results/github-ubuntu-latest.json').read_text())
+          if data['failures'] or data['environment']['commit'] != os.environ['GITHUB_SHA'] or data['environment']['dirty']:
+              raise SystemExit('measurement does not match the validated main commit')
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          cp measured/bench-report.md "$RUNNER_TEMP/report.md"
+          # An ordinary fast-forward push handles concurrent publishers. On a
+          # collision, read the winning publication and check ancestry again.
+          for attempt in 1 2 3; do
+            if git ls-remote --exit-code --heads origin benchmark-report; then
+              git fetch origin refs/heads/benchmark-report
+              git switch --detach FETCH_HEAD
+              previous=$(cat measured-commit)
+              if git merge-base --is-ancestor "$GITHUB_SHA" "$previous"; then exit 0; fi
+              git merge-base --is-ancestor "$previous" "$GITHUB_SHA"
+            else
+              test "$?" -eq 2
+              git switch --orphan "publication-$attempt"
+            fi
+            cp "$RUNNER_TEMP/report.md" README.md
+            echo "$GITHUB_SHA" > measured-commit
+            git add README.md measured-commit
+            git commit -m "Benchmark results for $GITHUB_SHA"
+            if git push origin HEAD:refs/heads/benchmark-report; then exit 0; fi
+          done
+          exit 1

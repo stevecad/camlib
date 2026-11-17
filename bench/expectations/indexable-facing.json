@@ -1,0 +1,34 @@
+{
+  "name": "indexable-facing",
+  "operations": {
+    "face": {
+      "air_cut_mm": 153.002,
+      "cut_mm": 969.01,
+      "cycle_seconds_exact_stop": 140.289,
+      "cycle_seconds_tangent": 140.289,
+      "link_mm": 60.002,
+      "moves": 60,
+      "plunges": 6,
+      "rapid_mm": 67.722,
+      "removed_mm3": 959.997,
+      "retracts": 6
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 140.289,
+    "cycle_seconds_tangent": 140.289,
+    "material": {
+      "leftover_mm3": [
+        0.0,
+        53.253
+      ],
+      "overcut_mm3": [
+        0.0,
+        0.003
+      ]
+    },
+    "moves": 60,
+    "post_error": null,
+    "posted_blocks": 83
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "name": "facing",
+  "operations": {
+    "face": {
+      "air_cut_mm": 42.201,
+      "cut_mm": 442.203,
+      "cycle_seconds_exact_stop": 47.132,
+      "cycle_seconds_tangent": 47.132,
+      "link_mm": 35.201,
+      "moves": 20,
+      "plunges": 2,
+      "rapid_mm": 30.537,
+      "removed_mm3": 1919.99,
+      "retracts": 2
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 47.132,
+    "cycle_seconds_tangent": 47.132,
+    "material": {
+      "leftover_mm3": [
+        0.0,
+        254.01
+      ],
+      "overcut_mm3": [
+        0.0,
+        0.01
+      ]
+    },
+    "moves": 20,
+    "post_error": null,
+    "posted_blocks": 43
+  }
+}

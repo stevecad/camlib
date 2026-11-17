@@ -1,0 +1,25 @@
+{
+  "name": "vcarve",
+  "operations": {
+    "carve": {
+      "air_cut_mm": 20.844,
+      "cut_mm": 96.806,
+      "cycle_seconds_exact_stop": 28.837,
+      "cycle_seconds_tangent": 20.505,
+      "link_mm": 0.0,
+      "moves": 1986,
+      "plunges": 1,
+      "rapid_mm": 17.071,
+      "removed_mm3": 107.0,
+      "retracts": 1
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 28.837,
+    "cycle_seconds_tangent": 20.505,
+    "material": null,
+    "moves": 1986,
+    "post_error": null,
+    "posted_blocks": 2009
+  }
+}

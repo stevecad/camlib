@@ -1,0 +1,25 @@
+{
+  "name": "trace",
+  "operations": {
+    "engrave": {
+      "air_cut_mm": 0.0,
+      "cut_mm": 107.85,
+      "cycle_seconds_exact_stop": 15.517,
+      "cycle_seconds_tangent": 15.517,
+      "link_mm": 0.0,
+      "moves": 24,
+      "plunges": 4,
+      "rapid_mm": 59.745,
+      "removed_mm3": 169.686,
+      "retracts": 4
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 15.517,
+    "cycle_seconds_tangent": 15.517,
+    "material": null,
+    "moves": 24,
+    "post_error": null,
+    "posted_blocks": 47
+  }
+}

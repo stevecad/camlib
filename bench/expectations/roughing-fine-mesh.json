@@ -1,0 +1,34 @@
+{
+  "name": "roughing-fine-mesh",
+  "operations": {
+    "rough": {
+      "air_cut_mm": 6439.412,
+      "cut_mm": 7854.987,
+      "cycle_seconds_exact_stop": 550.196,
+      "cycle_seconds_tangent": 527.268,
+      "link_mm": 853.432,
+      "moves": 3278,
+      "plunges": 3,
+      "rapid_mm": 200.239,
+      "removed_mm3": 5422.985,
+      "retracts": 3
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 550.196,
+    "cycle_seconds_tangent": 527.268,
+    "material": {
+      "leftover_mm3": [
+        816.332,
+        1380.078
+      ],
+      "overcut_mm3": [
+        0.0,
+        0.439
+      ]
+    },
+    "moves": 3278,
+    "post_error": null,
+    "posted_blocks": 3301
+  }
+}

@@ -23,12 +23,12 @@ class PlatformTest(unittest.TestCase):
         self.assertEqual(json.loads(output.getvalue())['engine']['peak_rss_kib'], {'python': None, 'native': None})
 
     def test_report_accepts_windows_measurements(self):
-        data = json.loads((Path(__file__).parent / 'results' / 'baseline.json').read_text(encoding='utf-8'))
+        data = json.loads((Path(__file__).parent / 'fixtures' / 'report-sample.json').read_text(encoding='utf-8'))
         for workload in data['workloads']:
             workload['engine']['peak_rss_kib'] = {'python': None, 'native': None}
         self.assertIn('unavailable', report.render(data))
 
     def test_report_retains_additional_baseline_provenance(self):
-        data = json.loads((Path(__file__).parent / 'results' / 'baseline.json').read_text(encoding='utf-8'))
+        data = json.loads((Path(__file__).parent / 'fixtures' / 'report-sample.json').read_text(encoding='utf-8'))
         data['baseline_notes'] = ['New workload measured on a separate declared host.']
         self.assertIn('New workload measured on a separate declared host.', report.render(data))

@@ -152,7 +152,7 @@ class PublishedRecordTest(unittest.TestCase):
         import json
         from pathlib import Path
 
-        old = json.loads((Path(__file__).parent / "results" / "baseline.json").read_text(encoding="utf-8"))
+        old = json.loads((Path(__file__).parent / "fixtures" / "report-sample.json").read_text(encoding="utf-8"))
         new = copy.deepcopy(old)
         operation = next(w for w in new["workloads"] if w["name"] == "adaptive-pocket")["operations"]["adaptive"]
         operation.update(link_mm=464.0, engagement=dict(self.RECORD))

@@ -1,0 +1,25 @@
+{
+  "name": "plasma",
+  "operations": {
+    "plasma": {
+      "air_cut_mm": 0.0,
+      "cut_mm": 757.079,
+      "cycle_seconds_exact_stop": 26.47,
+      "cycle_seconds_tangent": 25.487,
+      "link_mm": 0.0,
+      "moves": 66,
+      "plunges": 6,
+      "rapid_mm": 397.183,
+      "removed_mm3": 4689.375,
+      "retracts": 6
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 26.47,
+    "cycle_seconds_tangent": 25.487,
+    "material": null,
+    "moves": 66,
+    "post_error": null,
+    "posted_blocks": 270
+  }
+}

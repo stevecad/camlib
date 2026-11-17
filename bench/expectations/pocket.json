@@ -1,0 +1,34 @@
+{
+  "name": "pocket",
+  "operations": {
+    "clear-pocket": {
+      "air_cut_mm": 0.0,
+      "cut_mm": 3412.095,
+      "cycle_seconds_exact_stop": 508.314,
+      "cycle_seconds_tangent": 508.274,
+      "link_mm": 101.11,
+      "moves": 352,
+      "plunges": 48,
+      "rapid_mm": 1137.431,
+      "removed_mm3": 8697.589,
+      "retracts": 48
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 508.314,
+    "cycle_seconds_tangent": 508.274,
+    "material": {
+      "leftover_mm3": [
+        3.84,
+        537.611
+      ],
+      "overcut_mm3": [
+        0.0,
+        489.611
+      ]
+    },
+    "moves": 352,
+    "post_error": null,
+    "posted_blocks": 375
+  }
+}

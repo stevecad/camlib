@@ -1,0 +1,70 @@
+{
+  "name": "lathe-groove",
+  "operations": {
+    "face": {
+      "air_cut_mm": 4.0,
+      "cut_mm": 49.6,
+      "cycle_seconds_exact_stop": 20.759,
+      "cycle_seconds_tangent": 20.759,
+      "link_mm": 0.0,
+      "moves": 8,
+      "plunges": 0,
+      "rapid_mm": 52.8,
+      "removed_mm3": 2513.274,
+      "retracts": 2
+    },
+    "groove": {
+      "air_cut_mm": 26.0,
+      "cut_mm": 38.0,
+      "cycle_seconds_exact_stop": 58.251,
+      "cycle_seconds_tangent": 58.251,
+      "link_mm": 0.0,
+      "moves": 43,
+      "plunges": 20,
+      "rapid_mm": 77.0,
+      "removed_mm3": 841.476,
+      "retracts": 1
+    },
+    "part": {
+      "air_cut_mm": 0.0,
+      "cut_mm": 22.2,
+      "cycle_seconds_exact_stop": 34.779,
+      "cycle_seconds_tangent": 34.779,
+      "link_mm": 0.0,
+      "moves": 5,
+      "plunges": 1,
+      "rapid_mm": 107.2,
+      "removed_mm3": 1286.977,
+      "retracts": 1
+    },
+    "rough": {
+      "air_cut_mm": 4.243,
+      "cut_mm": 228.943,
+      "cycle_seconds_exact_stop": 59.363,
+      "cycle_seconds_tangent": 59.363,
+      "link_mm": 0.0,
+      "moves": 28,
+      "plunges": 0,
+      "rapid_mm": 295.9,
+      "removed_mm3": 33227.163,
+      "retracts": 14
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 173.152,
+    "cycle_seconds_tangent": 173.152,
+    "material": {
+      "leftover_mm3": [
+        857.262,
+        1386.581
+      ],
+      "overcut_mm3": [
+        0.0,
+        0.0
+      ]
+    },
+    "moves": 84,
+    "post_error": null,
+    "posted_blocks": 115
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "drilling-ordered",
+  "operations": {
+    "holes": {
+      "air_cut_mm": 140.952,
+      "cut_mm": 186.0,
+      "cycle_seconds_exact_stop": 34.23,
+      "cycle_seconds_tangent": 34.188,
+      "link_mm": 44.952,
+      "moves": 60,
+      "plunges": 18,
+      "rapid_mm": 84.924,
+      "removed_mm3": 524.502,
+      "retracts": 18
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 34.23,
+    "cycle_seconds_tangent": 34.188,
+    "material": null,
+    "moves": 60,
+    "post_error": null,
+    "posted_blocks": 83
+  }
+}

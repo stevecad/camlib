@@ -1,0 +1,105 @@
+{
+  "label": "report-test",
+  "environment": {
+    "cad": null,
+    "commit": "0000000000000000000000000000000000000000",
+    "dirty": false,
+    "rustc": "rustc test",
+    "python": "3.12",
+    "os": "test platform",
+    "cpu": "synthetic",
+    "cpus": 1,
+    "machine": {
+      "accel_mm_s2": 1000.0,
+      "rapid_mm_min": 6000.0
+    },
+    "measured_at": "2000-01-01T00:00:00+00:00"
+  },
+  "workloads": [
+    {
+      "name": "adaptive-pocket",
+      "family": "mill",
+      "description": "Adaptive clearing of an L pocket",
+      "operations": {
+        "adaptive": {
+          "toolpath": "AdaptivePocket",
+          "issue": 26,
+          "moves": 528,
+          "cut_mm": 1122.34,
+          "rapid_mm": 50.739,
+          "air_cut_mm": 519.012,
+          "link_mm": 497.379,
+          "plunges": 6,
+          "retracts": 6,
+          "removed_mm3": 472.318,
+          "cycle_seconds_exact_stop": 144.295,
+          "cycle_seconds_tangent": 143.979,
+          "engine_seconds": 0.8,
+          "engagement": {
+            "cut_mm": 539.664,
+            "mean_deg": 49.21,
+            "max_deg": 75.0,
+            "none_share": 0.0277,
+            "limit_deg": 75.52,
+            "over_share": 0.0,
+            "within_10_share": 0.3001,
+            "under_10_20_share": 0.3038,
+            "under_20_share": 0.3684,
+            "link_mm": 497.379,
+            "link_none_share": 0.9538,
+            "entry_feed_mm": 15.991,
+            "entry_feed_mean_deg": 103.9
+          }
+        }
+      },
+      "toolpath": {
+        "moves": 528,
+        "cycle_seconds_exact_stop": 144.295,
+        "cycle_seconds_tangent": 143.979,
+        "posted_blocks": 551,
+        "post_error": null,
+        "removed_mm3": [
+          472.318,
+          536.357
+        ],
+        "material": {
+          "leftover_mm3": [
+            0.0,
+            481.602
+          ],
+          "overcut_mm3": [
+            0.0,
+            56.037
+          ],
+          "leftover_cells": [
+            0,
+            481
+          ],
+          "overcut_cells": [
+            0,
+            281
+          ],
+          "max_residual_height_mm": 10.0,
+          "complete": true
+        }
+      },
+      "engine": {
+        "run_seconds": 1,
+        "first_move_seconds": 0.01,
+        "post_seconds": 0.1,
+        "repeats": 1,
+        "engagement_measure_seconds": 0.1,
+        "peak_rss_kib": {
+          "python": 1024,
+          "native": 1024
+        }
+      }
+    }
+  ],
+  "failures": {},
+  "engagement_method": {
+    "sample_deg": 0.5,
+    "over_deg": 1.0,
+    "step_per_radius": 0.1
+  }
+}

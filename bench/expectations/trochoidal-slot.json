@@ -1,0 +1,34 @@
+{
+  "name": "trochoidal-slot",
+  "operations": {
+    "slot": {
+      "air_cut_mm": 18.253,
+      "cut_mm": 1152.664,
+      "cycle_seconds_exact_stop": 125.416,
+      "cycle_seconds_tangent": 121.949,
+      "link_mm": 40.0,
+      "moves": 356,
+      "plunges": 2,
+      "rapid_mm": 42.264,
+      "removed_mm3": 268.999,
+      "retracts": 2
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 125.416,
+    "cycle_seconds_tangent": 121.949,
+    "material": {
+      "leftover_mm3": [
+        0.0,
+        407.817
+      ],
+      "overcut_mm3": [
+        0.0,
+        53.62
+      ]
+    },
+    "moves": 356,
+    "post_error": null,
+    "posted_blocks": 379
+  }
+}

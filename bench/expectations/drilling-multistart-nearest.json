@@ -1,0 +1,25 @@
+{
+  "name": "drilling-multistart-nearest",
+  "operations": {
+    "holes": {
+      "air_cut_mm": 211.428,
+      "cut_mm": 279.0,
+      "cycle_seconds_exact_stop": 52.116,
+      "cycle_seconds_tangent": 52.055,
+      "link_mm": 67.428,
+      "moves": 90,
+      "plunges": 27,
+      "rapid_mm": 203.88,
+      "removed_mm3": 582.121,
+      "retracts": 27
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 52.116,
+    "cycle_seconds_tangent": 52.055,
+    "material": null,
+    "moves": 90,
+    "post_error": null,
+    "posted_blocks": 113
+  }
+}

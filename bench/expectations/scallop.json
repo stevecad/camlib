@@ -1,0 +1,34 @@
+{
+  "name": "scallop",
+  "operations": {
+    "scallop": {
+      "air_cut_mm": 389.156,
+      "cut_mm": 1171.63,
+      "cycle_seconds_exact_stop": 243.844,
+      "cycle_seconds_tangent": 224.606,
+      "link_mm": 0.0,
+      "moves": 3481,
+      "plunges": 606,
+      "rapid_mm": 450.552,
+      "removed_mm3": 23.015,
+      "retracts": 34
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 243.844,
+    "cycle_seconds_tangent": 224.606,
+    "material": {
+      "leftover_mm3": [
+        0.0,
+        149.892
+      ],
+      "overcut_mm3": [
+        0.0,
+        79.144
+      ]
+    },
+    "moves": 3481,
+    "post_error": null,
+    "posted_blocks": 3504
+  }
+}

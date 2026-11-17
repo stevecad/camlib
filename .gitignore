@@ -13,3 +13,5 @@ __pycache__/
 /python/camlib/_native*.pyd
 
 /CLAUDE.local.md
+/bench/results/*.json
+/bench/results/*.md

@@ -1,0 +1,25 @@
+{
+  "name": "drilling-data-recommended",
+  "operations": {
+    "holes": {
+      "air_cut_mm": 0.0,
+      "cut_mm": 14.0,
+      "cycle_seconds_exact_stop": 6.173,
+      "cycle_seconds_tangent": 6.173,
+      "link_mm": 0.0,
+      "moves": 8,
+      "plunges": 2,
+      "rapid_mm": 41.314,
+      "removed_mm3": 183.922,
+      "retracts": 2
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 6.173,
+    "cycle_seconds_tangent": 6.173,
+    "material": null,
+    "moves": 8,
+    "post_error": null,
+    "posted_blocks": 27
+  }
+}

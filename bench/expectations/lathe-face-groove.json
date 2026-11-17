@@ -1,0 +1,46 @@
+{
+  "name": "lathe-face-groove",
+  "operations": {
+    "face": {
+      "air_cut_mm": 2.0,
+      "cut_mm": 17.8,
+      "cycle_seconds_exact_stop": 8.367,
+      "cycle_seconds_tangent": 8.367,
+      "link_mm": 0.0,
+      "moves": 6,
+      "plunges": 0,
+      "rapid_mm": 83.8,
+      "removed_mm3": 530.929,
+      "retracts": 2
+    },
+    "fg": {
+      "air_cut_mm": 22.0,
+      "cut_mm": 22.0,
+      "cycle_seconds_exact_stop": 74.968,
+      "cycle_seconds_tangent": 74.968,
+      "link_mm": 0.0,
+      "moves": 29,
+      "plunges": 12,
+      "rapid_mm": 98.0,
+      "removed_mm3": 308.253,
+      "retracts": 13
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 83.335,
+    "cycle_seconds_tangent": 83.335,
+    "material": {
+      "leftover_mm3": [
+        3121.958,
+        3254.69
+      ],
+      "overcut_mm3": [
+        0.0,
+        0.0
+      ]
+    },
+    "moves": 35,
+    "post_error": null,
+    "posted_blocks": 66
+  }
+}

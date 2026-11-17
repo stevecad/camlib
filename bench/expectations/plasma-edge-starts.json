@@ -1,0 +1,25 @@
+{
+  "name": "plasma-edge-starts",
+  "operations": {
+    "plasma": {
+      "air_cut_mm": 0.0,
+      "cut_mm": 247.441,
+      "cycle_seconds_exact_stop": 8.307,
+      "cycle_seconds_tangent": 7.572,
+      "link_mm": 0.0,
+      "moves": 26,
+      "plunges": 0,
+      "rapid_mm": 117.351,
+      "removed_mm3": 1462.5,
+      "retracts": 0
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 8.307,
+    "cycle_seconds_tangent": 7.572,
+    "material": null,
+    "moves": 26,
+    "post_error": null,
+    "posted_blocks": 46
+  }
+}

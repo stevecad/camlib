@@ -99,11 +99,14 @@ jobs:
 
   msrv:
     name: Rust 1.88 (minimum supported version) builds
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
+    needs: [changes, bench]
+    if: always() && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
+      - name: Require successful benchmark validation
+        if: needs.bench.result != 'success'
+        run: exit 1
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
@@ -161,7 +164,7 @@ jobs:
         run: python -m unittest discover -s bench -p "test_*.py"
 
   bench:
-    name: Benchmarks (informational)
+    name: Benchmark expectations
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
@@ -184,11 +187,14 @@ jobs:
       - name: Render the report
         if: always()
         run: python bench/report.py bench/results/github-ubuntu-latest.json --out bench-report.md
-      # Toolpath data is host-independent: any difference from the committed
-      # baseline is a real toolpath change (update the baseline in the PR).
-      - name: Compare toolpaths with the baseline
+      - name: Compare measured toolpaths with expectations
+        if: ${{ !cancelled() && hashFiles('bench/results/github-ubuntu-latest.json') != '' }}
         shell: bash
-        run: python bench/compare.py bench/results/baseline.json bench/results/github-ubuntu-latest.json | tee bench-compare.md
+        run: |
+          python bench/compare.py bench/expectations bench/results/github-ubuntu-latest.json | tee bench-compare.md
+      - name: Show benchmark comparison
+        if: ${{ !cancelled() && hashFiles('bench-compare.md') != '' }}
+        run: cat bench-compare.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

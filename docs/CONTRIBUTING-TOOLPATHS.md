@@ -91,9 +91,9 @@ exact stock change. Never bypass them.
   toolpath name and optimization issue, built from a test part. If it uses CAD
   geometry, regenerate the frozen fixtures (`CAMLIB_BENCH_REFRESH=1`) and commit
   them.
-- Run `python bench/run.py --label <name>` and `bench/compare.py` against
-  `bench/results/baseline.json`. Update the baseline and `docs/benchmarks.md`
-  (`bench/report.py`) in the same PR, and explain the change.
+- Run the release benchmarks and compare with `bench/expectations`. Update only
+  the affected expectations from measured results and explain why in the PR.
+  See the [benchmark guide](benchmarks.md) for commands and reports.
 
 ## 8. Documentation and roadmap
 

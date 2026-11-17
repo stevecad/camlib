@@ -1,0 +1,25 @@
+{
+  "name": "drilling-g99",
+  "operations": {
+    "holes": {
+      "air_cut_mm": 0.0,
+      "cut_mm": 17.048,
+      "cycle_seconds_exact_stop": 10.682,
+      "cycle_seconds_tangent": 10.682,
+      "link_mm": 0.0,
+      "moves": 44,
+      "plunges": 14,
+      "rapid_mm": 136.266,
+      "removed_mm3": 183.922,
+      "retracts": 15
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 10.682,
+    "cycle_seconds_tangent": 10.682,
+    "material": null,
+    "moves": 44,
+    "post_error": null,
+    "posted_blocks": 28
+  }
+}

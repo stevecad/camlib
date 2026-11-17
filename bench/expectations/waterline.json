@@ -1,0 +1,34 @@
+{
+  "name": "waterline",
+  "operations": {
+    "finish-levels": {
+      "air_cut_mm": 27.875,
+      "cut_mm": 233.365,
+      "cycle_seconds_exact_stop": 34.047,
+      "cycle_seconds_tangent": 34.047,
+      "link_mm": 0.0,
+      "moves": 116,
+      "plunges": 4,
+      "rapid_mm": 67.463,
+      "removed_mm3": 51.675,
+      "retracts": 4
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 34.047,
+    "cycle_seconds_tangent": 34.047,
+    "material": {
+      "leftover_mm3": [
+        33.23,
+        256.397
+      ],
+      "overcut_mm3": [
+        0.0,
+        91.427
+      ]
+    },
+    "moves": 116,
+    "post_error": null,
+    "posted_blocks": 139
+  }
+}

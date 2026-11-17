@@ -1,0 +1,34 @@
+{
+  "name": "project",
+  "operations": {
+    "project": {
+      "air_cut_mm": 24.997,
+      "cut_mm": 77.688,
+      "cycle_seconds_exact_stop": 17.939,
+      "cycle_seconds_tangent": 17.814,
+      "link_mm": 0.0,
+      "moves": 184,
+      "plunges": 88,
+      "rapid_mm": 23.789,
+      "removed_mm3": 2.077,
+      "retracts": 2
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 17.939,
+    "cycle_seconds_tangent": 17.814,
+    "material": {
+      "leftover_mm3": [
+        5.026,
+        170.829
+      ],
+      "overcut_mm3": [
+        0.0,
+        30.9
+      ]
+    },
+    "moves": 184,
+    "post_error": null,
+    "posted_blocks": 207
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "name": "rough-parallel",
+  "operations": {
+    "parallel": {
+      "air_cut_mm": 625.126,
+      "cut_mm": 1805.027,
+      "cycle_seconds_exact_stop": 368.389,
+      "cycle_seconds_tangent": 350.549,
+      "link_mm": 0.0,
+      "moves": 3321,
+      "plunges": 41,
+      "rapid_mm": 508.205,
+      "removed_mm3": 292.384,
+      "retracts": 41
+    },
+    "rough": {
+      "air_cut_mm": 33811.312,
+      "cut_mm": 37871.592,
+      "cycle_seconds_exact_stop": 8900.337,
+      "cycle_seconds_tangent": 8898.918,
+      "link_mm": 17412.99,
+      "moves": 2927,
+      "plunges": 12,
+      "rapid_mm": 212.137,
+      "removed_mm3": 1983.996,
+      "retracts": 12
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 9268.726,
+    "cycle_seconds_tangent": 9249.467,
+    "material": {
+      "leftover_mm3": [
+        0.0,
+        146.126
+      ],
+      "overcut_mm3": [
+        0.0,
+        99.569
+      ]
+    },
+    "moves": 6248,
+    "post_error": null,
+    "posted_blocks": 6279
+  }
+}

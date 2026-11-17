@@ -1,0 +1,34 @@
+{
+  "name": "parallel-dense",
+  "operations": {
+    "finish-roof": {
+      "air_cut_mm": 3169.925,
+      "cut_mm": 8456.616,
+      "cycle_seconds_exact_stop": 1617.954,
+      "cycle_seconds_tangent": 1555.854,
+      "link_mm": 0.0,
+      "moves": 14023,
+      "plunges": 201,
+      "rapid_mm": 2004.746,
+      "removed_mm3": 1510.585,
+      "retracts": 201
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 1617.954,
+    "cycle_seconds_tangent": 1555.854,
+    "material": {
+      "leftover_mm3": [
+        0.0,
+        143.921
+      ],
+      "overcut_mm3": [
+        0.0,
+        100.996
+      ]
+    },
+    "moves": 14023,
+    "post_error": null,
+    "posted_blocks": 14046
+  }
+}

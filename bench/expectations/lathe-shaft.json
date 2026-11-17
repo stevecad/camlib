@@ -1,0 +1,58 @@
+{
+  "name": "lathe-shaft",
+  "operations": {
+    "face": {
+      "air_cut_mm": 4.0,
+      "cut_mm": 49.6,
+      "cycle_seconds_exact_stop": 20.759,
+      "cycle_seconds_tangent": 20.759,
+      "link_mm": 0.0,
+      "moves": 8,
+      "plunges": 0,
+      "rapid_mm": 52.8,
+      "removed_mm3": 2513.274,
+      "retracts": 2
+    },
+    "finish": {
+      "air_cut_mm": 15.2,
+      "cut_mm": 61.113,
+      "cycle_seconds_exact_stop": 32.058,
+      "cycle_seconds_tangent": 32.05,
+      "link_mm": 0.0,
+      "moves": 12,
+      "plunges": 1,
+      "rapid_mm": 107.8,
+      "removed_mm3": 1152.382,
+      "retracts": 1
+    },
+    "rough": {
+      "air_cut_mm": 4.243,
+      "cut_mm": 228.943,
+      "cycle_seconds_exact_stop": 58.801,
+      "cycle_seconds_tangent": 58.801,
+      "link_mm": 0.0,
+      "moves": 26,
+      "plunges": 0,
+      "rapid_mm": 259.9,
+      "removed_mm3": 33227.163,
+      "retracts": 13
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 111.618,
+    "cycle_seconds_tangent": 111.61,
+    "material": {
+      "leftover_mm3": [
+        0.944,
+        194.206
+      ],
+      "overcut_mm3": [
+        0.0,
+        0.0
+      ]
+    },
+    "moves": 46,
+    "post_error": null,
+    "posted_blocks": 71
+  }
+}

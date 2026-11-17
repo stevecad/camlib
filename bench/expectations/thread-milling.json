@@ -1,0 +1,37 @@
+{
+  "name": "thread-milling",
+  "operations": {
+    "bore": {
+      "air_cut_mm": 12.0,
+      "cut_mm": 185.147,
+      "cycle_seconds_exact_stop": 19.564,
+      "cycle_seconds_tangent": 19.564,
+      "link_mm": 17.985,
+      "moves": 21,
+      "plunges": 1,
+      "rapid_mm": 15.62,
+      "removed_mm3": 660.719,
+      "retracts": 1
+    },
+    "thread": {
+      "air_cut_mm": 97.017,
+      "cut_mm": 140.344,
+      "cycle_seconds_exact_stop": 28.139,
+      "cycle_seconds_tangent": 28.119,
+      "link_mm": 0.0,
+      "moves": 14,
+      "plunges": 2,
+      "rapid_mm": 0.0,
+      "removed_mm3": 23.063,
+      "retracts": 2
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 47.703,
+    "cycle_seconds_tangent": 47.683,
+    "material": null,
+    "moves": 35,
+    "post_error": null,
+    "posted_blocks": 66
+  }
+}

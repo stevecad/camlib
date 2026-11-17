@@ -1,0 +1,34 @@
+{
+  "name": "parallel",
+  "operations": {
+    "finish-roof": {
+      "air_cut_mm": 543.126,
+      "cut_mm": 1723.027,
+      "cycle_seconds_exact_stop": 334.784,
+      "cycle_seconds_tangent": 316.944,
+      "link_mm": 0.0,
+      "moves": 3321,
+      "plunges": 41,
+      "rapid_mm": 427.388,
+      "removed_mm3": 1508.38,
+      "retracts": 41
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 334.784,
+    "cycle_seconds_tangent": 316.944,
+    "material": {
+      "leftover_mm3": [
+        0.0,
+        146.126
+      ],
+      "overcut_mm3": [
+        0.0,
+        99.569
+      ]
+    },
+    "moves": 3321,
+    "post_error": null,
+    "posted_blocks": 3344
+  }
+}

@@ -109,12 +109,10 @@ at a time.
    Rust (`tests/`, or unit tests next to the code) and in Python (`python/tests/`)
    where the API changes. Never delete or weaken an existing test to make a change
    pass; if a test was wrong, explain why in the PR.
-5. **Benchmark toolpath changes.** Run `python bench/run.py --label <name>` and
-   `python bench/compare.py bench/results/baseline.json
-   bench/results/<name>.json`. CI fails the benchmark job when toolpaths differ
-   from the committed baseline. If a change is meant to change toolpaths, update
-   the baseline in the same PR, regenerate `docs/benchmarks.md` with
-   `bench/report.py`, and explain in the PR what changed and why it is better.
+5. **Benchmark toolpath changes.** Run the release benchmarks and compare with
+   `bench/expectations`. Update only intentionally changed workload expectations
+   from measurements and explain the differences in the PR. Follow
+   [the benchmark guide](docs/benchmarks.md) for commands and CI reports.
 6. **Update the docs** (`docs/`, `README.md`) for any user-visible change.
 7. **Keep PRs focused**: one issue, or a tightly related group. Note anything
    left undone in the issue rather than half-finishing it silently. Anything a
@@ -150,7 +148,7 @@ PYTHONPATH=python python examples/cadquery_job.py out-cad --accept-unchecked-mac
 
 # Toolpath benchmarks (need CadQuery for target parts).
 python bench/run.py --label <name>
-python bench/compare.py bench/results/baseline.json bench/results/<name>.json
+python bench/compare.py bench/expectations bench/results/<name>.json
 python bench/report.py bench/results/<name>.json
 ```
 
@@ -198,7 +196,7 @@ check or silently add an acceptance to obtain a pass.
 | `fixtures/` | Synthetic regression inputs |
 | `examples/` | API examples and controller postprocessors (`*_post.py`) |
 | `bench/` | Toolpath benchmark: workloads, runner, report, results, frozen geometry |
-| `docs/` | User documentation, per-controller post notes, `benchmarks.md` |
+| `docs/` | User documentation, per-controller post notes, benchmark guide |
 
 ## What does not belong in a commit
 

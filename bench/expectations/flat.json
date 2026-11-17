@@ -1,0 +1,34 @@
+{
+  "name": "flat",
+  "operations": {
+    "flats": {
+      "air_cut_mm": 426.794,
+      "cut_mm": 964.771,
+      "cycle_seconds_exact_stop": 190.983,
+      "cycle_seconds_tangent": 190.983,
+      "link_mm": 0.0,
+      "moves": 222,
+      "plunges": 105,
+      "rapid_mm": 458.843,
+      "removed_mm3": 36.021,
+      "retracts": 39
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 190.983,
+    "cycle_seconds_tangent": 190.983,
+    "material": {
+      "leftover_mm3": [
+        0.95,
+        104.629
+      ],
+      "overcut_mm3": [
+        0.0,
+        24.404
+      ]
+    },
+    "moves": 222,
+    "post_error": null,
+    "posted_blocks": 245
+  }
+}

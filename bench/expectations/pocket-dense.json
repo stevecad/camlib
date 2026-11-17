@@ -1,0 +1,34 @@
+{
+  "name": "pocket-dense",
+  "operations": {
+    "clear-pocket": {
+      "air_cut_mm": 292.0,
+      "cut_mm": 79835.535,
+      "cycle_seconds_exact_stop": 11873.766,
+      "cycle_seconds_tangent": 11873.446,
+      "link_mm": 819.189,
+      "moves": 9088,
+      "plunges": 1216,
+      "rapid_mm": 26382.501,
+      "removed_mm3": 8698.869,
+      "retracts": 1216
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 11873.766,
+    "cycle_seconds_tangent": 11873.446,
+    "material": {
+      "leftover_mm3": [
+        3.84,
+        536.331
+      ],
+      "overcut_mm3": [
+        0.0,
+        489.611
+      ]
+    },
+    "moves": 9088,
+    "post_error": null,
+    "posted_blocks": 9111
+  }
+}

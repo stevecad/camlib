@@ -1,6 +1,6 @@
 """Compare two benchmark results: what changed in the toolpaths, and how fast.
 
-    python bench/compare.py BASELINE.json NEW.json [--toolpath-only] [--markdown]
+    python bench/compare.py EXPECTATIONS_OR_BASELINE NEW.json [--toolpath-only]
 
 Toolpath data (moves, lengths, removal, cycle time, blocks, material) is
 deterministic and independent of the host, so any difference is a real
@@ -60,6 +60,8 @@ def toolpath_changes(base, new):
         for field, value in _material(w["toolpath"]).items():
             if _material(b["toolpath"])[field] != value:
                 changes.append((w["name"], None, field, _material(b["toolpath"])[field], value))
+        for op_id in sorted(b["operations"].keys() - w["operations"].keys()):
+            changes.append((w["name"], op_id, "operation", "present", "removed"))
         for op_id, o in w["operations"].items():
             p = b["operations"].get(op_id)
             if p is None:
@@ -120,7 +122,19 @@ def main():
     parser.add_argument("new", type=Path)
     parser.add_argument("--toolpath-only", action="store_true")
     args = parser.parse_args()
-    base, new = json.loads(args.baseline.read_text()), json.loads(args.new.read_text())
+    new = json.loads(args.new.read_text(encoding="utf-8"))
+    if args.baseline.is_dir():
+        workloads = []
+        for path in sorted(args.baseline.glob("*.json")):
+            record = json.loads(path.read_text(encoding="utf-8"))
+            if record["name"] != path.stem:
+                parser.error(f"{path}: workload name must match the filename")
+            workloads.append(record)
+        if not workloads:
+            parser.error("empty expectations directory")
+        base = {"workloads": workloads}
+    else:
+        base = json.loads(args.baseline.read_text(encoding="utf-8"))
     changes = toolpath_changes(base, new)
     print(f"# Toolpath changes ({args.baseline.name} -> {args.new.name})\n")
     if changes:
@@ -135,7 +149,7 @@ def main():
         print("| Workload | Operation | Field | Baseline | New |\n|---|---|---|---:|---:|")
         for name, op, field, a, b in engagement:
             print(f"| `{name}` | {op} | {field} | {a} | {b} |")
-    if not args.toolpath_only:
+    if not args.toolpath_only and not args.baseline.is_dir():
         same_host = base["environment"].get("cpu") == new["environment"].get("cpu")
         print("\n# Engine time (new / baseline)\n")
         if not same_host:
@@ -147,7 +161,9 @@ def main():
             print("| Workload | Operation | Baseline s | New s | Ratio |\n|---|---|---:|---:|---:|")
             for name, op, a, b in engine_ratios(base, new):
                 print(f"| `{name}` | {op} | {a:.4f} | {b:.4f} | {b / a:.2f}× |")
-    return 1 if changes else 0
+    if new.get("failures"):
+        print("\nFailed workloads:", ", ".join(sorted(new["failures"])))
+    return int(bool(changes or new.get("failures")))
 
 
 if __name__ == "__main__":

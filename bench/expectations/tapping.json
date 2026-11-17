@@ -1,0 +1,37 @@
+{
+  "name": "tapping",
+  "operations": {
+    "drill": {
+      "air_cut_mm": 23.0,
+      "cut_mm": 44.0,
+      "cycle_seconds_exact_stop": 11.285,
+      "cycle_seconds_tangent": 11.285,
+      "link_mm": 0.0,
+      "moves": 8,
+      "plunges": 2,
+      "rapid_mm": 25.314,
+      "removed_mm3": 313.002,
+      "retracts": 2
+    },
+    "tap": {
+      "air_cut_mm": 28.0,
+      "cut_mm": 28.0,
+      "cycle_seconds_exact_stop": 3.533,
+      "cycle_seconds_tangent": 3.533,
+      "link_mm": 0.0,
+      "moves": 10,
+      "plunges": 0,
+      "rapid_mm": 28.0,
+      "removed_mm3": 0.0,
+      "retracts": 2
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 14.818,
+    "cycle_seconds_tangent": 14.818,
+    "material": null,
+    "moves": 18,
+    "post_error": null,
+    "posted_blocks": 49
+  }
+}

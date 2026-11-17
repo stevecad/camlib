@@ -1,0 +1,34 @@
+{
+  "name": "radial",
+  "operations": {
+    "radial": {
+      "air_cut_mm": 76.663,
+      "cut_mm": 503.87,
+      "cycle_seconds_exact_stop": 115.708,
+      "cycle_seconds_tangent": 114.69,
+      "link_mm": 0.0,
+      "moves": 745,
+      "plunges": 159,
+      "rapid_mm": 214.62,
+      "removed_mm3": 10.228,
+      "retracts": 24
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 115.708,
+    "cycle_seconds_tangent": 114.69,
+    "material": {
+      "leftover_mm3": [
+        1.096,
+        162.678
+      ],
+      "overcut_mm3": [
+        0.0,
+        67.258
+      ]
+    },
+    "moves": 745,
+    "post_error": null,
+    "posted_blocks": 768
+  }
+}

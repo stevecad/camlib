@@ -1,0 +1,34 @@
+{
+  "name": "pencil",
+  "operations": {
+    "pencil": {
+      "air_cut_mm": 0.0,
+      "cut_mm": 59.385,
+      "cycle_seconds_exact_stop": 9.383,
+      "cycle_seconds_tangent": 9.353,
+      "link_mm": 0.0,
+      "moves": 68,
+      "plunges": 1,
+      "rapid_mm": 21.493,
+      "removed_mm3": 3.438,
+      "retracts": 1
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 9.383,
+    "cycle_seconds_tangent": 9.353,
+    "material": {
+      "leftover_mm3": [
+        34.163,
+        55.692
+      ],
+      "overcut_mm3": [
+        0.0,
+        4.669
+      ]
+    },
+    "moves": 68,
+    "post_error": null,
+    "posted_blocks": 91
+  }
+}
