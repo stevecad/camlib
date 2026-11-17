@@ -206,7 +206,7 @@ class TurningInsert:
         return replace(insert, edge_deg=float(approach_angle_deg) - 90)
 
     @staticmethod
-    def iso_code(code, *, approach_angle_deg=None, holder=None, size_tolerance_mm=None, confirm_insert_geometry=False):
+    def iso_code(code, *, approach_angle_deg=None, holder=None, size_tolerance_mm=None):
         """The whole insert from its ISO 1832 designation (e.g.
         ``"CNMG120408"``): shape C, D, V, S, T, W (negative) or R, size and
         nose radius; every corner rounded, the cutting corner at the nose.
@@ -226,13 +226,7 @@ class TurningInsert:
         shape and size, the code is refused: give
         ``size_tolerance_mm=(d, m)``, the ± tolerances from the insert
         maker's data (also to use a maker's closer tolerances). A round
-        insert (R) has none: its d is its nose diameter.
-
-        Set ``confirm_insert_geometry=True`` to declare that the installed
-        nose radius and side directions match this outline, and that the
-        insert is covered by the d/m measurement model in docs/operations.md.
-        For R this declares the installed cutting radius. Use an explicitly
-        drawn InsertOutline for a different known profile."""
+        insert (R) has none: its d is its nose diameter."""
         if (approach_angle_deg is None) == (holder is None):
             raise ValueError(
                 "TurningInsert.iso_code needs the holder's approach angle: approach_angle_deg= or holder= (an ISO 5608 code)"
@@ -245,11 +239,6 @@ class TurningInsert:
             size_tolerance_mm = native.turning_iso_size_tolerance(str(code))
         else:
             size_tolerance_mm = _size_tolerance(size_tolerance_mm, "size_tolerance_mm")
-        if confirm_insert_geometry is not True:
-            raise ValueError(
-                "TurningInsert.iso_code: confirm the installed nose radius, side directions and applicable d/m "
-                "measurement model with confirm_insert_geometry=True, or supply the installed InsertOutline"
-            )
         return replace(
             InsertOutline.from_dict(json.loads(data)),
             edge_deg=float(approach_angle_deg) - 90,

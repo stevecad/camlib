@@ -2407,7 +2407,7 @@ with the exact stock change it makes (`Simulation`, `RecordedRun`/`Player`,
 # off the centre plane: the shank's height (25 mm below the cutting face, its
 # clamp 3 mm above) and the seat's rake and inclination from the holder's
 # catalogue page (-6/-6 for a typical negative P-clamp holder: check yours).
-insert = camlib.TurningInsert.iso_code("CNMG120408", holder="PCLNR2525M12", confirm_insert_geometry=True)
+insert = camlib.TurningInsert.iso_code("CNMG120408", holder="PCLNR2525M12")  # style L: 95 degrees
 holder = camlib.TurningHolder.rectangle(insert=insert, nose_radius_mm=insert.nose_radius_mm, side="outer",
                                         width_mm=25, length_mm=150, offset_mm=0, y_mm=(-25, 3))
 tool = camlib.TurningTool("cnmg", insert=insert, side="outer", hand="right", holder=holder,
@@ -2559,7 +2559,7 @@ roughing setup its allowance.
     are touched off with (the imaginary tip). Constructors:
     `TurningInsert.iso(included_angle_deg=, approach_angle_deg=,
     edge_length_mm=, nose_radius_mm=)` (camlib's wedge: nose, two edges,
-    straight back) and `TurningInsert.iso_code(code, confirm_insert_geometry=True, approach_angle_deg= |
+    straight back) and `TurningInsert.iso_code(code, approach_angle_deg= |
     holder=)` (the whole insert, every corner rounded, from an ISO 1832
     designation: shapes C, D, V, S, T, W negative, R; the approach angle from
     an ISO 5608 holder style letter). `GrooveInsert(width, depth)`,
@@ -2675,35 +2675,24 @@ roughing setup its allowance.
     (`cell_mm`), the most material the bin can still hold: where an
     earlier move ended inside a bin, a part of the tool beside the face
     there is still checked against that bin's material.
-  - <a id="turning-insert-premises"></a>**Declaring the installed insert.**
-    Catalogue geometry requires `confirm_insert_geometry=True`. Confirm the
-    following for the installed cutting corner and its orientation. A drawn
-    `InsertOutline` or a serialized outline declares the supplied geometry
-    directly and relies on the same premises when it has a size tolerance.
-    - The cutting nose has the declared radius at the declared programming
-      point. X and Z touch-off locate the tool. Two circles of different
-      radii can touch the same two perpendicular gauge lines while reaching
-      different points on a taper or fillet. Establish the cutting radius
-      separately. camlib plans the path using that radius. Finishing in wear
-      mode additionally applies the controller's wear offset to that path.
-      See the [LinuxCNC lathe guide, sections 4 and 7](https://linuxcnc.org/docs/stable/html/lathe/lathe-user.html).
-    - The sides retain their declared directions. Moving a side out parallel
-      to itself and rotating it about a corner give different clearances at
-      its far end. The size envelope below covers the parallel displacements.
-    - For a size tolerance, the installed outline must satisfy one of the
-      three geometric readings of d and m described below. For rhombic and
-      trigon inserts the vee-block construction is a model premise. Check
-      its applicability against the insert measurement or supplier definition.
-      A designation by itself does not establish which measurement was made.
-    - For a round insert, changing diameter by Δd changes the cutting radius
-      by Δd/2. Confirm its installed radius to use the exact round outline.
-      A nonzero diameter range is outside the supported cutting model.
-    If an installed profile differs, declare its established cutting outline
-    and programming point explicitly. If only a range of nose radii or side
-    directions is known, camlib cannot verify cuts across that range. A
-    larger nominal outline can overstate stock removal as well as clearance
-    requirements. A new radius or an indexed cutting corner requires a new
-    check of these premises.
+  - <a id="turning-insert-premises"></a>**Cutting radius and side directions.**
+    The catalogue code supplies the nominal outline. The planner uses its
+    nose radius to offset the path around tapers and fillets. To plan with
+    a measured profile, supply its `InsertOutline` and programming point.
+    X and Z touch-off locate the tool. Circles with different radii can touch
+    the same two gauge lines and still cut a taper differently.
+    See the [LinuxCNC lathe guide, sections 4 and 7](https://linuxcnc.org/docs/stable/html/lathe/lathe-user.html).
+    Finishing in wear mode applies the controller's wear offset to the planned path.
+
+    The size envelope below assumes fixed side directions and a fixed cutting
+    radius. It covers the stated d/m measurement models. For rhombic and
+    trigon inserts, the vee-block reading is a geometric assumption. Rotating
+    a side about a corner changes clearance at the far end. The model only
+    bounds parallel side displacements. On a round insert, varying the diameter
+    changes the cutting radius by half that amount. camlib supports a declared
+    round outline and refuses a nonzero size tolerance on it. Verification
+    across a range of nose radii or corner angles remains open in
+    [#336](https://github.com/stevecad/camlib/issues/336).
   - The insert's in-plane size tolerance (#113). An insert is not exactly
     its nominal size: its ISO 1832 tolerance class (the code's third
     letter) bounds its inscribed circle d and its corner dimension m, as

@@ -5484,7 +5484,11 @@ test_tool("groove_in".into(), Insert::Groove { width_mm: 3.,
         let (round, r) = Insert::iso_code("RCMT0803M0", 95.).unwrap();
         let mut j = shaft_with(round, r);
         size(&mut j.tools[0].tool);
-        assert!(plan_err(&j).contains("ISO 1832 form"));
+        let error = plan_err(&j);
+        assert!(
+            error.contains("round insert") && error.contains("cutting nose radius"),
+            "{error}"
+        );
         // Zero tolerances: the insert as measured, exactly its outline.
         let (insert, rn) = Insert::iso_code("CNMG120408", 95.).unwrap();
         let mut j = shaft_with(insert, rn);
