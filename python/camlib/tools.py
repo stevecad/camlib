@@ -5,6 +5,7 @@ Feeds/speeds belong to the program, not this geometry definition.
 """
 
 from dataclasses import dataclass, asdict
+from copy import deepcopy
 import math
 
 
@@ -30,12 +31,12 @@ class Cutter:
 
     def to_dict(self):
         result = asdict(self)
-        result["shape"] = dict(self.shape)
+        result["shape"] = dict(result["shape"])
         return result
 
     @classmethod
     def from_dict(cls, data):
-        data = dict(data)
+        data = deepcopy(dict(data))
         data["shape"] = tuple(data["shape"].items())
         if data.get("neck") is not None:
             data["neck"] = Neck(**data["neck"])

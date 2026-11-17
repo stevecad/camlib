@@ -45,6 +45,13 @@ class IndexableTest(unittest.TestCase):
                 mill = tool(rounded)
                 serialized = json.loads(json.dumps(mill.to_dict()))
                 self.assertEqual(ToolAssembly.from_dict(serialized).to_dict(), serialized)
+                incoming = json.loads(json.dumps(serialized))
+                restored = ToolAssembly.from_dict(incoming)
+                incoming['cutter']['shape']['milling']['max_depth_of_cut_mm'] = 999
+                exported = restored.to_dict()
+                exported['cutter']['shape']['milling']['geometry']['inserts'][0]['count'] = 99
+                self.assertEqual(restored.to_dict(), serialized)
+                self.assertEqual(mill.to_dict(), serialized)
                 response = engine.inspect_tool(mill, (0.5, 2.75))
                 self.assertEqual(response['tool'], serialized)
                 section = response['annular_profile'][0]['cutting']
