@@ -51,7 +51,9 @@ class IndexableTest(unittest.TestCase):
                 exported = restored.to_dict()
                 exported['cutter']['shape']['milling']['geometry']['inserts'][0]['count'] = 99
                 self.assertEqual(restored.to_dict(), serialized)
-                self.assertEqual(mill.to_dict(), serialized)
+                # Public declarations retain tuples; JSON represents them as
+                # arrays. Compare the same serialized representation here.
+                self.assertEqual(json.loads(json.dumps(mill.to_dict())), serialized)
                 response = engine.inspect_tool(mill, (0.5, 2.75))
                 self.assertEqual(response['tool'], serialized)
                 section = response['annular_profile'][0]['cutting']
