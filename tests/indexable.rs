@@ -230,3 +230,26 @@ fn annular_sweeps_do_not_establish_global_heightfield_departure_proofs() {
     sweep(&mut stock,&flat,&m);
     assert!(!stock.departs_clear("mill",m.curve.end()));
 }
+
+#[test]
+fn annular_quarter_arc_at_a_previously_cut_cell_boundary() {
+    // Isolate the one cell affected on the fifth level of indexable-roughing.
+    let stock = Stock::from_snapshot(StockSnapshot {
+        spec: StockSpec {
+            min_mm: [-0.25, -3.75, 0.],
+            max_mm: [0., -3.5, 6.],
+            ..spec()
+        },
+        generation: 0,
+        cells: vec![HeightBounds { lower_mm: 3.5149039258643247, upper_mm: 3.6608631225419495 }],
+    }).unwrap();
+    let start = [-0.00032, -8.001282548341209, 3.5];
+    let end = [-5.0012825483412096, -3.0003200000000003, 3.5];
+    let m = Motion {
+        curve: Curve::Arc { start, end, center: [-0.0003200000000012082, -3.0003200000000003, 3.5],
+            plane: Plane::Xy, sweep_rad: -1.5707963267948968 },
+        ..motion(start, end)
+    };
+    let delta = stock.preview_sweep(&tool(true).prepare().unwrap(), &m, 1., SweepOptions::default(), &|| false).unwrap();
+    assert!(delta.changes().is_empty(), "{:?}", delta.changes());
+}

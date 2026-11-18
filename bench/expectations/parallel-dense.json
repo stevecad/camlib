@@ -5,7 +5,7 @@
       "air_cut_mm": 3169.925,
       "cut_mm": 8456.616,
       "cycle_seconds_exact_stop": 1617.954,
-      "cycle_seconds_tangent": 1555.854,
+      "cycle_seconds_tangent": 1555.834,
       "link_mm": 0.0,
       "moves": 14023,
       "plunges": 201,
@@ -16,7 +16,7 @@
   },
   "toolpath": {
     "cycle_seconds_exact_stop": 1617.954,
-    "cycle_seconds_tangent": 1555.854,
+    "cycle_seconds_tangent": 1555.834,
     "material": {
       "leftover_mm3": [
         0.0,

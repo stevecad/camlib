@@ -36,6 +36,7 @@ dependencies = [
  "cavalier_contours",
  "clipper2-rust",
  "crc32fast",
+ "metallic",
  "robust",
  "serde",
  "serde_json",
@@ -120,6 +121,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fast_polynomial"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0a0db42615e971ab610b46ff2865e6edee7eb447ce867dbfb3f79f292c4cd54"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -169,6 +179,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "metallic"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a1a3552801ca7288dcc07b5ce0fee57eac4adbad97598e330f6d34965c7bd57"
+dependencies = [
+ "fast_polynomial",
 ]
 
 [[package]]

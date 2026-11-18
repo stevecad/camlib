@@ -122,9 +122,11 @@ pub(crate) struct TabPlan {
     pub centers: Vec<Vec<f64>>,
 }
 pub(crate) fn stroke_length(s: &Stroke) -> f64 {
+    // Ramp Z is interpolated by accumulated stroke length. A host-libm
+    // rounding difference here can create a different downstream junction.
     match s.arc {
-        None => (s.b[0] - s.a[0]).hypot(s.b[1] - s.a[1]),
-        Some((c, sweep)) => (s.a[0] - c[0]).hypot(s.a[1] - c[1]) * sweep.abs(),
+        None => metallic::hypot(s.b[0] - s.a[0], s.b[1] - s.a[1]),
+        Some((c, sweep)) => metallic::hypot(s.a[0] - c[0], s.a[1] - c[1]) * sweep.abs(),
     }
 }
 /// The nearest point of a stroke to p, as (distance, stroke parameter). A
@@ -1074,6 +1076,14 @@ pub(crate) fn offset_profiles(
 mod tab_position_tests {
     use super::*;
     use std::f64::consts::FRAC_PI_2;
+    #[test]
+    fn ramp_stroke_length_is_reproducible_at_a_rounding_boundary() {
+        let stroke = Stroke::line([0., 0.], [-0.02337152543241429, 0.033528152684929466]);
+        // Exact-input length starts 0.04087010182886667180738. Two Linux
+        // libm builds rounded to adjacent values, changing the ramp height.
+        assert_eq!(stroke_length(&stroke), 0.04087010182886667);
+    }
+
     /// A 10 mm square part and its tool-center loop 2 mm outside (corner
     /// arcs), both counter-clockwise from the bottom left.
     fn square() -> (Vec<Stroke>, Vec<Stroke>) {

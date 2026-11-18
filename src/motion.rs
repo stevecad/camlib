@@ -113,7 +113,12 @@ impl Curve {
         let mut bounds = Bounds3::endpoints(start, end);
         let (radius, angle, length_mm) = match *self {
             Self::Line { .. } => {
-                let length = distance(start, end);
+                // The scheduler normalizes tangents by this length. Host hypot
+                // differs by an ulp across libm builds and can flip a junction
+                // at the existing threshold. Coordinates are bounded above and
+                // sub-nanometre lines are refused, so squared deltas fit here.
+                let [dx, dy, dz] = std::array::from_fn(|k| end[k] - start[k]);
+                let length = (dx * dx + dy * dy + dz * dz).sqrt();
                 if length < 1e-9 {
                     return Err("line must have nonzero length >=1e-9 mm".into());
                 }

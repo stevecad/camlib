@@ -21,6 +21,7 @@ profile-planning = []
 
 [dependencies]
 robust = "=1.2.0"
+metallic = "=0.3.2"
 cavalier_contours = "=0.9.0"
 clipper2-rust = "=1.2.0"
 serde = { version = "1", features = ["derive", "rc"] }

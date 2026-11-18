@@ -2091,14 +2091,14 @@ impl ParallelPlan {
         let Some(&b) = line.iter().find(|q| **q != a) else {
             return Ok(None);
         };
-        let d = (b[0] - a[0]).hypot(b[1] - a[1]);
+        let d = metallic::hypot(b[0] - a[0], b[1] - a[1]);
         let mut directions = vec![[(a[0] - b[0]) / d, (a[1] - b[1]) / d]];
         // Beside the stock's box: also straight away from it.
         let near = [
             a[0].clamp(self.spec.min_mm[0], self.spec.max_mm[0]),
             a[1].clamp(self.spec.min_mm[1], self.spec.max_mm[1]),
         ];
-        let out = (a[0] - near[0]).hypot(a[1] - near[1]);
+        let out = metallic::hypot(a[0] - near[0], a[1] - near[1]);
         if out > 0. {
             directions.push([(a[0] - near[0]) / out, (a[1] - near[1]) / out]);
         }
