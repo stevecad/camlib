@@ -231,6 +231,35 @@ class CompiledSetup:
             frame=self.frame,
         )
 
+    def taper_section(self, chunk, *, motion_index, profile_segment, nose_radius_range_mm, z_mm):
+        """Radial reach of one decoded round-insert finishing cut at drawing station Z.
+
+        Indices are zero based: motion_index within chunk.motions, profile_segment
+        within this operation's outside or bore profile. Errors are radial mm
+        relative to the straight drawing segment at Z. The query covers only
+        the interior flank of this move. See docs/operations.md.
+        """
+        from ._buffers import native
+
+        config = self.config
+        if "turning" not in config:
+            raise ValueError("taper sections require a turning setup")
+        identity = chunk.data["identity"]
+        if identity["program_id"] != self.id or identity["revision"] != config["revision"]:
+            raise ValueError("decoded chunk belongs to a different setup or revision")
+        motions = chunk.motions
+        if not isinstance(motion_index, int) or not 0 <= motion_index < len(motions):
+            raise ValueError("motion_index must select a decoded motion in this chunk")
+        motion = motions[motion_index]
+        radius, error = native.turning_taper_section(
+            json.dumps(config["turning"]),
+            json.dumps(motion.to_dict()["motion"]),
+            profile_segment,
+            nose_radius_range_mm,
+            z_mm,
+        )
+        return dict(motion_id=motion.id, z_mm=z_mm, radius_mm=tuple(radius), radial_error_mm=tuple(error))
+
     def post(self, *, machine, cache=None, **options):
         """Post this immutable snapshot through the ordinary checked run."""
         from .posted import PostedRun, OperationEvents, check_tool_change_pose

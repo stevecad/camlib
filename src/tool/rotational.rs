@@ -10,6 +10,7 @@
 //! binary64 operations are rounded outward individually; circles are intersected
 //! analytically, never tessellated. The bounds concern the declared geometry,
 //! not manufacturing tolerances, tooth marks, deflection or a swept motion.
+use crate::interval::Bounds as B;
 use serde::{Deserialize, Serialize};
 
 /// A closed interval in mm. Section results are sorted and disjoint.
@@ -647,77 +648,6 @@ impl PreparedIndexableGeometry {
     }
     pub fn noncutting(&self) -> &PreparedProfile {
         &self.noncutting
-    }
-}
-
-// Outward binary64 arithmetic for the small analytic expressions above.
-// Keep this private: it is not a general interval solver. Undefined division
-// loses all information; subsequent intersection with the finite primitive
-// domain yields possible occupancy and no false certain occupancy.
-#[derive(Clone, Copy, Debug)]
-struct B {
-    lo: f64,
-    hi: f64,
-}
-impl B {
-    fn point(x: f64) -> Self {
-        Self { lo: x, hi: x }
-    }
-    fn add(self, b: Self) -> Self {
-        Self {
-            lo: (self.lo + b.lo).next_down(),
-            hi: (self.hi + b.hi).next_up(),
-        }
-    }
-    fn sub(self, b: Self) -> Self {
-        Self {
-            lo: (self.lo - b.hi).next_down(),
-            hi: (self.hi - b.lo).next_up(),
-        }
-    }
-    fn mul(self, b: Self) -> Self {
-        let products = [
-            self.lo * b.lo,
-            self.lo * b.hi,
-            self.hi * b.lo,
-            self.hi * b.hi,
-        ];
-        Self {
-            lo: products
-                .iter()
-                .copied()
-                .fold(f64::INFINITY, f64::min)
-                .next_down(),
-            hi: products
-                .iter()
-                .copied()
-                .fold(f64::NEG_INFINITY, f64::max)
-                .next_up(),
-        }
-    }
-    fn div(self, b: Self) -> Self {
-        if b.lo <= 0. && b.hi >= 0. {
-            return Self {
-                lo: f64::NEG_INFINITY,
-                hi: f64::INFINITY,
-            };
-        }
-        self.mul(Self {
-            lo: (1. / b.hi).next_down(),
-            hi: (1. / b.lo).next_up(),
-        })
-    }
-    fn square(self) -> Self {
-        let min = if self.lo <= 0. && self.hi >= 0. {
-            0.
-        } else {
-            self.lo.abs().min(self.hi.abs())
-        };
-        let max = self.lo.abs().max(self.hi.abs());
-        Self {
-            lo: (min * min).next_down().max(0.),
-            hi: (max * max).next_up(),
-        }
     }
 }
 

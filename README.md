@@ -66,6 +66,7 @@ and writes G-code through a postprocessor you can read and change.
 | Turning (lathe) | Facing, outside and inside roughing and finishing (boring), grooving, parting off, external and internal threading, drilling on the axis, constant surface speed and feed per revolution; finishing follows fillets, ball ends and corner rounding with native G2/G3 arcs; insert, holder and boring-bar checks against the part, bore, stock and chuck, solid (one-piece) boring bars checked as their ground round head, the holder also from its maker's model (a mesh with a declared placement; STEP through the CadQuery adapter); a lathe setup is an ordinary `Setup` (`turning=TurningSetup(...)`), streamed, played back and posted like any other, with a material check after each operation |
 
 Turning uses the supplied insert profile for cutting and clearance checks.
+For a straight round-insert cut, a decoded move can also report the taper radius range at a drawing station.
 See the [turning insert premises](docs/operations.md#turning-insert-premises).
 
 Every setup (milling, plasma/laser and lathe) runs as one stream: each move

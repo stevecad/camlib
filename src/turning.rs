@@ -7,4 +7,5 @@ pub mod profile;
 mod rub;
 pub mod size;
 pub mod stock;
+pub mod taper;
 pub mod tool;

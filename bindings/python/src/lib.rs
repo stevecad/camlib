@@ -546,6 +546,23 @@ fn turning_iso_code(code: &str, approach_angle_deg: f64) -> PyResult<(String, f6
     ))
 }
 
+/// Replay the circular edge of a straight turning cut at an axial station.
+#[pyfunction]
+fn turning_taper_section(
+    setup: &str,
+    motion: &str,
+    profile_segment: usize,
+    radii: [f64; 2],
+    z_mm: f64,
+) -> PyResult<[[f64; 2]; 2]> {
+    let setup = serde_json::from_str(setup)
+        .map_err(|e| PyValueError::new_err(format!("invalid turning setup: {e}")))?;
+    let motion = serde_json::from_str(motion)
+        .map_err(|e| PyValueError::new_err(format!("invalid cutting motion: {e}")))?;
+    camlib::turning::taper::section(&setup, &motion, profile_segment, radii, z_mm)
+        .map_err(PyValueError::new_err)
+}
+
 /// An ISO 1832 insert's worst-case thickness and clearance (#103).
 #[pyfunction]
 fn turning_iso_insert_body(code: &str) -> PyResult<(f64, f64)> {
@@ -2820,6 +2837,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(apply_delta, module)?)?;
     module.add_function(wrap_pyfunction!(turn_proxy_tools, module)?)?;
     module.add_function(wrap_pyfunction!(turning_iso_insert, module)?)?;
+    module.add_function(wrap_pyfunction!(turning_taper_section, module)?)?;
     module.add_function(wrap_pyfunction!(turning_iso_code, module)?)?;
     module.add_function(wrap_pyfunction!(turning_holder_approach, module)?)?;
     module.add_function(wrap_pyfunction!(turning_iso_insert_body, module)?)?;
