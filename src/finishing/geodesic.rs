@@ -3244,7 +3244,11 @@ fn smooth(path: &[[f64; 2]], tol: f64) -> Vec<[f64; 2]> {
     if n < 3 || tol <= 0. {
         return path.to_vec();
     }
-    let closed = (path[0][0] - path[n - 1][0]).hypot(path[0][1] - path[n - 1][1]) < 1e-12;
+    // These lengths feed the next relaxation round. A host-libm difference
+    // in a chord weight can shift the ramp vertices and change which joins
+    // carry speed (#349). Use the same Euclidean norm on every platform.
+    let distance = |a: [f64; 2], b: [f64; 2]| metallic::hypot(a[0] - b[0], a[1] - b[1]);
+    let closed = distance(path[0], path[n - 1]) < 1e-12;
     let mut q = path.to_vec();
     let m = if closed { n - 1 } else { n };
     for _ in 0..64 {
@@ -3258,10 +3262,7 @@ fn smooth(path: &[[f64; 2]], tol: f64) -> Vec<[f64; 2]> {
                 (prev[i - 1], prev[i + 1])
             };
             let p = prev[i];
-            let (la, lb) = (
-                (p[0] - a[0]).hypot(p[1] - a[1]),
-                (b[0] - p[0]).hypot(b[1] - p[1]),
-            );
+            let (la, lb) = (distance(p, a), distance(b, p));
             if la + lb <= 0. {
                 continue;
             }
@@ -3269,7 +3270,7 @@ fn smooth(path: &[[f64; 2]], tol: f64) -> Vec<[f64; 2]> {
             let target = [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
             let mut x = [(p[0] + target[0]) / 2., (p[1] + target[1]) / 2.];
             let (dx, dy) = (x[0] - path[i][0], x[1] - path[i][1]);
-            let d = dx.hypot(dy);
+            let d = metallic::hypot(dx, dy);
             if d > tol {
                 x = [path[i][0] + dx * tol / d, path[i][1] + dy * tol / d];
             }
@@ -3847,6 +3848,20 @@ impl Checked<'_> {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn smoothing_chord_weights_are_reproducible() {
+        // One interior point, two fixed endpoints, and a 1/8 mm displacement
+        // limit. Reference: 64 relaxation rounds with each Euclidean norm
+        // evaluated in 80-digit decimal arithmetic then rounded to binary64.
+        // A host hypot in the chord weights moves the final Y by one ulp on
+        // glibc 2.39, even with a reproducible norm for the displacement cap.
+        let path = [[0., 0.], [2.1875, 0.8125], [8., 4.]];
+        assert_eq!(
+            smooth(&path, 0.125),
+            [path[0], [2.1335826766212467, 0.925273765742175], path[2]]
+        );
+    }
 
     fn peaks_of(drive: &Drive, field: &Field) -> Vec<Vec<(Vec3, f64)>> {
         (0..drive.t.len() as u32)

@@ -1661,7 +1661,9 @@ How it is computed:
   within a quarter of `path_error_mm` of the curve (the cutter path's
   smoothing takes another quarter: each pass within half the path error of
   its level, so neighbouring passes are the stepover apart within the path
-  error). Where an iso-curve turns back
+  error). Smoothing uses the same distance calculation on each platform so
+  its chord weights and displacement limit give reproducible vertices for
+  the same input polyline. Where an iso-curve turns back
   inside one triangle (it rounds a corner where the nearest source changes)
   the triangle is split until each piece is a simple arc.
 - **Coverage** is certified, not estimated: every point of the drive surface
