@@ -125,8 +125,8 @@ pub(crate) fn stroke_length(s: &Stroke) -> f64 {
     // Ramp Z is interpolated by accumulated stroke length. A host-libm
     // rounding difference here can create a different downstream junction.
     match s.arc {
-        None => libm::hypot(s.b[0] - s.a[0], s.b[1] - s.a[1]),
-        Some((c, sweep)) => libm::hypot(s.a[0] - c[0], s.a[1] - c[1]) * sweep.abs(),
+        None => metallic::hypot(s.b[0] - s.a[0], s.b[1] - s.a[1]),
+        Some((c, sweep)) => metallic::hypot(s.a[0] - c[0], s.a[1] - c[1]) * sweep.abs(),
     }
 }
 /// The nearest point of a stroke to p, as (distance, stroke parameter). A
