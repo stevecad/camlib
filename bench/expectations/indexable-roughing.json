@@ -2,7 +2,7 @@
   "name": "indexable-roughing",
   "operations": {
     "rough": {
-      "air_cut_mm": 24118.968,
+      "air_cut_mm": 24106.967,
       "cut_mm": 28887.869,
       "cycle_seconds_exact_stop": 8604.708,
       "cycle_seconds_tangent": 8604.228,
