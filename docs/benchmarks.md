@@ -22,6 +22,12 @@ only between sequential release runs on the same machine, using
 `python bench/compare.py OLD.json NEW.json`. Modeled cycle times and material bounds are
 reviewed toolpath expectations. Sampled engagement differences are informational.
 
+Two measurements can change even when the number of moves and total cut length agree.
+A feed move counts toward `air_cut_mm` when it changes zero stock cells. A single
+cell-bound update changes that count. Tangent cycle time includes the stops selected
+by the motion scheduler. To investigate a difference, compare the changed-cell count
+and entry/exit speeds by motion ID on the same input.
+
 For an intentional change, measure and update just the affected workloads:
 
 ```sh

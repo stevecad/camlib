@@ -275,3 +275,19 @@ fn cancellation_invalid_source_identity_and_check_only_have_no_partial_result() 
     };
     assert!(schedule(&changed, settings(JunctionMode::Tangent), &|| false).is_err());
 }
+
+#[test]
+fn dense_finish_junction_uses_the_same_unit_directions_on_every_host() {
+    // The largest component difference between the exact unit tangents is
+    // 63.95651 epsilons, just inside the existing 64-epsilon join threshold.
+    let a = [16.91277459536761, -1.1, 6.129397685938713];
+    let b = [16.699175699916843, -1.1, 6.2005973177556335];
+    let c = [16.485576804466078, -1.1, 6.271796949572558];
+    let p = program(
+        vec![Curve::Line { start: a, end: b }, Curve::Line { start: b, end: c }],
+        vec![600.; 2],
+    );
+    let report = schedule(&p, settings(JunctionMode::Tangent), &|| false).unwrap();
+    assert!(report.segments[0].exit_mm_s > 0.);
+    assert_eq!(report.segments[0].exit_mm_s, report.segments[1].entry_mm_s);
+}

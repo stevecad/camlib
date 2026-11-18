@@ -555,10 +555,14 @@ impl PreparedProfile {
         } else {
             (((center[0] - a[0]) * dx + (center[1] - a[1]) * dy) / length2).clamp(0., 1.)
         };
-        let distance = |t: f64| (center[0] - a[0] - t * dx).hypot(center[1] - a[1] - t * dy);
+        // Motion and stock coordinates are bounded by 1e6 mm. Use explicit
+        // squares and sqrt here: a platform hypot differing by one ulp can
+        // turn a repeat of a cut into a new height change in a boundary cell.
+        let norm = |x: f64, y: f64| (x * x + y * y).sqrt();
+        let distance = |t: f64| norm(center[0] - a[0] - t * dx, center[1] - a[1] - t * dy);
         let near = distance(t);
         let far = distance(0.).max(distance(1.));
-        let pad = half[0].hypot(half[1]) + error;
+        let pad = norm(half[0], half[1]) + error;
         let zlo = a[2].min(b[2]);
         let zhi = a[2].max(b[2]);
         let outer = self.axial_band([(near - pad).max(0.), far + pad], false);
