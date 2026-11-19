@@ -45,6 +45,21 @@ def angles(motions, index=None):
 
 
 class ContactAngleTest(unittest.TestCase):
+    def test_exact_engagement_band_boundaries(self):
+        class AdaptivePocket:
+            path_strategy = "engagement_front"
+            stepover_mm = 3.0
+            max_engagement_deg = 90.0
+
+        op = AdaptivePocket()
+        limit = engagement.declared_limit_deg(op, 6.0)
+        self.assertEqual((limit - 20, limit - 10), (40.0, 50.0))
+        for op.stepover_mm, side in ((2.999999, -1), (3.000001, 1)):
+            self.assertGreater(side * (engagement.declared_limit_deg(op, 6.0) - 60), 0)
+        op.stepover_mm = 5.5
+        op.max_engagement_deg = 47.5
+        self.assertEqual(engagement.declared_limit_deg(op, 6.0), 47.5)
+
     def test_a_slot_and_side_passes_read_their_textbook_angles(self):
         # A full slot is 180 degrees; a pass w beside it, acos(1 - w/r).
         motions = [line((20, 20, 5), (80, 20, 5))]

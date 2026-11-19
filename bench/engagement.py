@@ -56,11 +56,12 @@ def declared_limit_deg(operation, radius):
     """The contact-angle limit an operation declares, acos(1 - w/r) for its
     radial width w, or None when it declares none this measure applies to
     (only stock-following adaptive clearing does)."""
+    angle_cap = None
     kind = type(operation).__name__
     if kind == "AdaptivePocket" and operation.path_strategy == "engagement_front":
         width = operation.stepover_mm
         if operation.max_engagement_deg < 90:
-            width = min(width, radius * (1 - math.cos(math.radians(operation.max_engagement_deg))))
+            angle_cap = operation.max_engagement_deg
     elif kind in ("Roughing", "RestRoughing"):
         clearing = operation.clearing
         if (
@@ -71,7 +72,12 @@ def declared_limit_deg(operation, radius):
         width = clearing.max_radial_engagement_mm
     else:
         return None
-    return math.degrees(math.acos(1 - width / radius))
+    # At half radius the contact triangle is equilateral. acos(0.5)
+    # converted from radians can exceed 60 by one ulp and misclassify
+    # every measured 40° and 50° sample. Keep an authored degree cap in
+    # its original units for the same reason.
+    angle = 60.0 if width == radius / 2 else math.degrees(math.acos(1 - width / radius))
+    return angle if angle_cap is None else min(angle_cap, angle)
 
 
 class _Moves:
