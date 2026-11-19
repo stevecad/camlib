@@ -92,13 +92,13 @@ impl Grid {
         Some((lo, [hi[0] as usize, hi[1] as usize]))
     }
     /// Whether a cell centre `dx`, `dy` from a point is within `rad` of it,
-    /// as `dx.hypot(dy) <= rad` decides. The squared distance settles all
+    /// using the same portable distance as the nearest-cell search. The squared distance settles all
     /// but the cells within `DISTANCE_SLACK` of the rim (`sure` and `rim`
     /// from `rim_bounds`); only those need the root.
     #[inline]
     fn within(dx: f64, dy: f64, rad: f64, sure: f64, rim: f64) -> bool {
         let d2 = dx * dx + dy * dy;
-        d2 <= sure || (d2 <= rim && dx.hypot(dy) <= rad)
+        d2 <= sure || (d2 <= rim && metallic::hypot(dx, dy) <= rad)
     }
     /// Squared distances surely within `rad`, and the largest that can be.
     /// Nothing is within a negative radius.
@@ -140,7 +140,7 @@ impl Grid {
             let cy = self.y0 + (j as f64 + 0.5) * self.c;
             for i in lo[0]..=hi[0] {
                 let cx = self.x0 + (i as f64 + 0.5) * self.c;
-                let d = (cx - p[0]).hypot(cy - p[1]);
+                let d = metallic::hypot(cx - p[0], cy - p[1]);
                 if d <= rad {
                     f(self.idx(i, j), [cx, cy], d);
                 }
@@ -1794,7 +1794,7 @@ fn fresh_cells(cells: &[Point], prev: Point, p: Point, r: f64, c: f64) -> f64 {
 fn fresh_cells_plain(cells: &[Point], prev: Point, p: Point, r: f64, c: f64) -> f64 {
     let mut new = 0.;
     for q in cells {
-        if (q[0] - prev[0]).hypot(q[1] - prev[1]) > r {
+        if metallic::hypot(q[0] - prev[0], q[1] - prev[1]) > r {
             new += ((r - (q[0] - p[0]).hypot(q[1] - p[1])) / c + 0.5).clamp(0., 1.);
         }
     }
@@ -6704,6 +6704,20 @@ mod tests {
     /// the bit, with the scan's choice between cells at equal distance
     /// (queries from cell centres make many), at the edge of the disk and
     /// of the grid, and after cuts and their undoing.
+    #[test]
+    fn disk_rim_excludes_a_center_just_outside_the_radius() {
+        // sqrt(1171² + 1176²) / 1024 is strictly greater than this radius.
+        let radius = 1.620686895951674;
+        let (sure, rim) = Grid::rim_bounds(radius);
+        assert!(!Grid::within(
+            1171. / 1024.,
+            1176. / 1024.,
+            radius,
+            sure,
+            rim
+        ));
+    }
+
     #[test]
     fn bit_searches_match_a_scan_of_the_disk() {
         let mut random = Random(202);

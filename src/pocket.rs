@@ -3491,6 +3491,15 @@ mod admission_tests;
 mod tests {
     use super::*;
     #[test]
+    fn side_entry_uses_the_unit_tangent_of_the_cut() {
+        let stroke = Stroke::line([0., 0.], [34., 54.]);
+        // Components of (34, 54) / sqrt(34² + 54²), rounded to binary64.
+        let tangent = [0.5328132696861393, 0.8462328400897506];
+        assert_eq!(stroke.tangent(false), tangent);
+        assert_eq!(stroke.reversed().tangent(true), tangent.map(|v| -v));
+    }
+
+    #[test]
     fn a_bulge_produces_the_same_signed_sweep_in_both_directions() {
         // bulge = tan(sweep / 4). Reference: 4 * atan(5057 / 65536)
         // evaluated to 100 decimal digits then rounded to binary64.
