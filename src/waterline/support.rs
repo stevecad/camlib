@@ -173,7 +173,7 @@ fn clean(poly: &mut Vec<Point>, tol: f64) -> Result<f64, String> {
     loop {
         let short = (0..poly.len()).find_map(|i| {
             let j = (i + 1) % poly.len();
-            let d = metallic::hypot(poly[i][0] - poly[j][0], poly[i][1] - poly[j][1]);
+            let d = (poly[i][0] - poly[j][0]).hypot(poly[i][1] - poly[j][1]);
             (d < threshold).then_some((j, d))
         });
         let Some((j, d)) = short else { break };
@@ -298,7 +298,7 @@ impl Builder {
             let mut refinements = vec![];
             for p in &outer {
                 let close = q.nearest(*p, &mut self.tests, &mut self.nodes)?;
-                let distance = metallic::hypot(p[0] - close[0], p[1] - close[1]);
+                let distance = (p[0] - close[0]).hypot(p[1] - close[1]);
                 worst = worst.max(distance);
                 if distance > budget {
                     refinements.push([(p[0] - close[0]) / distance, (p[1] - close[1]) / distance]);
@@ -323,7 +323,7 @@ impl Builder {
             for witness in refinements {
                 if directions
                     .iter()
-                    .any(|n| metallic::hypot(n[0] - witness[0], n[1] - witness[1]) < 1e-12)
+                    .any(|n| (n[0] - witness[0]).hypot(n[1] - witness[1]) < 1e-12)
                 {
                     continue;
                 }

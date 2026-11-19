@@ -1360,7 +1360,7 @@ impl Layer {
             let mut from = i0;
             while let Some(i) = bit_at_or_above(row(j), from, i1) {
                 let x = cx(i);
-                let d = (x - p[0]).hypot(y - p[1]);
+                let d = metallic::hypot(x - p[0], y - p[1]);
                 if d <= rad && best.is_none_or(|(_, _, b)| d < b) {
                     best = Some((g.idx(i, j), [x, y], d));
                 }
@@ -1398,7 +1398,7 @@ impl Layer {
             let mut from = i0;
             while let Some(i) = bit_at_or_above(row, from, i1) {
                 let x = g.x0 + (i as f64 + 0.5) * g.c;
-                let d = (x - p[0]).hypot(y - p[1]);
+                let d = metallic::hypot(x - p[0], y - p[1]);
                 if d <= rad && d <= limit {
                     return true;
                 }
@@ -1725,7 +1725,7 @@ fn area_of(cells: &[LoadCell], p: Point, r: f64, c: f64) -> f64 {
             n += 1.;
             continue;
         }
-        n += ((r - metallic::hypot(dx, dy)) / c + 0.5).clamp(0., 1.);
+        n += ((r - dx.hypot(dy)) / c + 0.5).clamp(0., 1.);
     }
     n * c * c
 }
@@ -1751,7 +1751,7 @@ fn step_load_of(cells: &[LoadCell], p: Point, u: Point, r: f64, c: f64) -> (f64,
             inside += 1.;
             continue;
         }
-        let d = metallic::hypot(v[0], v[1]);
+        let d = v[0].hypot(v[1]);
         let within = ((r - d) / c + 0.5).clamp(0., 1.);
         inside += within;
         if v[0] * u[0] + v[1] * u[1] >= 0. {
@@ -1778,7 +1778,7 @@ fn fresh_cells(cells: &[Point], prev: Point, p: Point, r: f64, c: f64) -> f64 {
         new += if d2 <= full {
             1.
         } else {
-            ((r - metallic::hypot(dx, dy)) / c + 0.5).clamp(0., 1.)
+            ((r - dx.hypot(dy)) / c + 0.5).clamp(0., 1.)
         };
     }
     #[cfg(test)]
@@ -2148,12 +2148,12 @@ fn wall_piece_is_clear(
     let (chords, sagitta) = match s.arc {
         None => (1, 0.),
         Some((centre, sweep)) => {
-            let radius = metallic::hypot(s.a[0] - centre[0], s.a[1] - centre[1]);
-            let most = 2. * metallic::acos(1. - (skin / 2. / radius).min(1.));
+            let radius = (s.a[0] - centre[0]).hypot(s.a[1] - centre[1]);
+            let most = 2. * (1. - (skin / 2. / radius).min(1.)).acos();
             let chords = ((sweep.abs() / most).ceil() as usize).max(1);
             (
                 chords,
-                radius * (1. - metallic::cos(sweep.abs() / chords as f64 / 2.)),
+                radius * (1. - (sweep.abs() / chords as f64 / 2.).cos()),
             )
         }
     };
@@ -2185,10 +2185,8 @@ const WALL_PIECE_WORK: u64 = 200_000;
 /// The length of a stroke.
 fn stroke_length(s: Stroke) -> f64 {
     match s.arc {
-        Some((centre, sweep)) => {
-            metallic::hypot(s.a[0] - centre[0], s.a[1] - centre[1]) * sweep.abs()
-        }
-        None => metallic::hypot(s.b[0] - s.a[0], s.b[1] - s.a[1]),
+        Some((centre, sweep)) => (s.a[0] - centre[0]).hypot(s.a[1] - centre[1]) * sweep.abs(),
+        None => (s.b[0] - s.a[0]).hypot(s.b[1] - s.a[1]),
     }
 }
 /// The part of a stroke from the fraction `f0` of its length to `f1`. The
@@ -2204,11 +2202,11 @@ fn stroke_part(s: Stroke, f0: f64, f1: f64) -> Stroke {
         }
         match s.arc {
             Some((centre, sweep)) => {
-                let radius = metallic::hypot(s.a[0] - centre[0], s.a[1] - centre[1]);
-                let angle = metallic::atan2(s.a[1] - centre[1], s.a[0] - centre[0]) + sweep * f;
+                let radius = (s.a[0] - centre[0]).hypot(s.a[1] - centre[1]);
+                let angle = (s.a[1] - centre[1]).atan2(s.a[0] - centre[0]) + sweep * f;
                 [
-                    centre[0] + radius * metallic::cos(angle),
-                    centre[1] + radius * metallic::sin(angle),
+                    centre[0] + radius * angle.cos(),
+                    centre[1] + radius * angle.sin(),
                 ]
             }
             None => [

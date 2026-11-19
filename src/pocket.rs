@@ -986,7 +986,7 @@ impl Stroke {
         } else {
             [self.b[0] - self.a[0], self.b[1] - self.a[1]]
         };
-        let n = v[0].hypot(v[1]);
+        let n = metallic::hypot(v[0], v[1]);
         [v[0] / n, v[1] / n]
     }
 }
