@@ -1600,7 +1600,9 @@ continuous clearance), along other XY patterns:
 - `Spiral(..., stepover_mm, clearance_z_mm, center_mm)`: one Archimedean
   spiral, ring pitch `stepover_mm`, inward by default (`outward=True`,
   `clockwise=True` to change). `inner_radius_mm` (0) and `outer_radius_mm`
-  (default: reach the whole stock) bound it. Suits round, domed areas.
+  (default: reach the whole stock) bound it. The planner uses portable math
+  for the radius, angle increments and XY vertices before clipping the spiral
+  to the stock. Suits round, domed areas.
 - `Radial(..., clearance_z_mm, center_mm, angular_step_deg)`: straight spokes
   from the center; the step is rounded down so spokes divide 360 evenly,
   starting at `start_angle_deg` (0).
