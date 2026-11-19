@@ -92,9 +92,9 @@ impl Grid {
         Some((lo, [hi[0] as usize, hi[1] as usize]))
     }
     /// Whether a cell centre `dx`, `dy` from a point is within `rad` of it,
-    /// using the same portable distance as the nearest-cell search. The squared distance settles all
-    /// but the cells within `DISTANCE_SLACK` of the rim (`sure` and `rim`
-    /// from `rim_bounds`); only those need the root.
+    /// using the same portable distance as the nearest-cell search. Only cells
+    /// within `DISTANCE_SLACK` of the rim need the root. For the others, the
+    /// squared distance and the bounds from `rim_bounds` decide membership.
     #[inline]
     fn within(dx: f64, dy: f64, rad: f64, sure: f64, rim: f64) -> bool {
         let d2 = dx * dx + dy * dy;
@@ -6699,11 +6699,6 @@ mod tests {
         }
     }
 
-    /// #202: the searches that read the material bits return exactly what
-    /// a scan of the disk returns: the same cell, centre and distance to
-    /// the bit, with the scan's choice between cells at equal distance
-    /// (queries from cell centres make many), at the edge of the disk and
-    /// of the grid, and after cuts and their undoing.
     #[test]
     fn disk_rim_excludes_a_center_just_outside_the_radius() {
         // sqrt(1171² + 1176²) / 1024 is strictly greater than this radius.
@@ -6718,6 +6713,11 @@ mod tests {
         ));
     }
 
+    /// #202: the searches that read the material bits return exactly what
+    /// a scan of the disk returns: the same cell, centre and distance to
+    /// the bit, with the scan's choice between cells at equal distance
+    /// (queries from cell centres make many), at the edge of the disk and
+    /// of the grid, and after cuts and their undoing.
     #[test]
     fn bit_searches_match_a_scan_of_the_disk() {
         let mut random = Random(202);
