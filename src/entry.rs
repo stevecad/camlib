@@ -3,7 +3,7 @@ use crate::{
     Point,
     motion::{Curve, MoveKind, Plane, Vec3},
     navigation::Guide,
-    pocket::{PocketPlan, Stroke},
+    pocket::{PocketPlan, Stroke, norm},
     stock::CancelSignal,
 };
 use serde::{Deserialize, Serialize};
@@ -401,9 +401,6 @@ impl HelicalEntry {
         Ok(curves)
     }
 }
-fn dist(a: Point, b: Point) -> f64 {
-    metallic::hypot(a[0] - b[0], a[1] - b[1])
-}
 pub(crate) fn point_key(p: Point) -> [u64; 2] {
     p.map(|x| if x == 0. { 0 } else { x.to_bits() })
 }
@@ -624,7 +621,7 @@ pub(crate) fn fit_entries(
                 };
                 let mut candidates = candidates.clone();
                 candidates
-                    .sort_by(|a, b| dist(*a, first.stroke.a).total_cmp(&dist(*b, first.stroke.a)));
+                    .sort_by(|a, b| norm(*a, first.stroke.a).total_cmp(&norm(*b, first.stroke.a)));
                 'candidate: for center in candidates {
                     if stock_edge
                         && !pocket.outside_stock_disk(center, cutter + radius.max(minimum))
@@ -658,7 +655,7 @@ pub(crate) fn fit_entries(
                     let mut nodes: Vec<_> = tour
                         .iter()
                         .enumerate()
-                        .map(|(i, g)| (dist(center, g.stroke.a), i))
+                        .map(|(i, g)| (norm(center, g.stroke.a), i))
                         .collect();
                     nodes.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
                     for (_, attachment) in nodes {
@@ -668,7 +665,7 @@ pub(crate) fn fit_entries(
                         work += pocket.link_work_per_query();
                         let mut center = center;
                         let node = tour[attachment].stroke.a;
-                        if dist(center, node) < 1e-9 && center != node {
+                        if norm(center, node) < 1e-9 && center != node {
                             work += pocket.link_work_per_query();
                             if !pocket.link_geometry_fits_radius(
                                 node,

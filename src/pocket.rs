@@ -1070,7 +1070,8 @@ fn simplify_boundary(b: &mut Boundary) {
     b.vertices = vertices;
 }
 
-fn norm(a: Point, b: Point) -> f64 {
+/// Shared distance for choosing pocket entries, guides and links at cutting depth.
+pub(crate) fn norm(a: Point, b: Point) -> f64 {
     metallic::hypot(a[0] - b[0], a[1] - b[1])
 }
 fn point_segment(p: Point, a: Point, b: Point) -> f64 {
