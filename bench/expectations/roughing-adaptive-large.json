@@ -17,9 +17,9 @@
         "mean_deg": 52.6,
         "none_share": 0.004,
         "over_share": 0.0,
-        "under_10_20_share": 0.0962,
-        "under_20_share": 0.0666,
-        "within_10_share": 0.8332
+        "under_10_20_share": 0.0903,
+        "under_20_share": 0.0641,
+        "within_10_share": 0.8415
       },
       "link_mm": 6394.859,
       "moves": 3994,
