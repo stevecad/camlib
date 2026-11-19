@@ -237,15 +237,14 @@ fn simplify_ring(ring: &[Point], tolerance: f64) -> Vec<Point> {
         } else {
             0.
         };
-        (p[0] - a[0] - t * d[0]).hypot(p[1] - a[1] - t * d[1])
+        metallic::hypot(p[0] - a[0] - t * d[0], p[1] - a[1] - t * d[1])
     };
     // Split at the vertex farthest from the first: two open chains.
     let far = (1..n)
         .max_by(|&i, &j| {
             let (a, b) = (ring[0], [ring[i], ring[j]]);
-            (b[0][0] - a[0])
-                .hypot(b[0][1] - a[1])
-                .total_cmp(&(b[1][0] - a[0]).hypot(b[1][1] - a[1]))
+            metallic::hypot(b[0][0] - a[0], b[0][1] - a[1])
+                .total_cmp(&metallic::hypot(b[1][0] - a[0], b[1][1] - a[1]))
         })
         .unwrap();
     let mut keep = vec![false; n];
@@ -2018,6 +2017,15 @@ mod simplify_tests {
         Boundary {
             vertices: vec![[x0, y0, 0.], [x1, y0, 0.], [x1, y1, 0.], [x0, y1, 0.]],
         }
+    }
+
+    #[test]
+    fn simplify_ring_keeps_the_vertex_just_beyond_the_chord_tolerance() {
+        // The projection of vertex 1 lies behind the start of the chord
+        // to vertex 2. Its distance is sqrt(1171² + 1176²) / 1024,
+        // strictly above the given tolerance (one ulp when rounded).
+        let ring = [[0., 0.], [-1.1435546875, 1.1484375], [10., 0.], [5., -5.]];
+        assert_eq!(simplify_ring(&ring, 1.620686895951674), ring);
     }
 
     #[test]

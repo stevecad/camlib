@@ -964,7 +964,7 @@ impl Stroke {
                             (a[0] + end[0]) / 2. - factor * (end[1] - a[1]),
                             (a[1] + end[1]) / 2. + factor * (end[0] - a[0]),
                         ],
-                        4. * a[2].atan(),
+                        4. * metallic::atan(a[2]),
                     ));
                 }
                 s
@@ -1071,7 +1071,7 @@ fn simplify_boundary(b: &mut Boundary) {
 }
 
 fn norm(a: Point, b: Point) -> f64 {
-    (a[0] - b[0]).hypot(a[1] - b[1])
+    metallic::hypot(a[0] - b[0], a[1] - b[1])
 }
 fn point_segment(p: Point, a: Point, b: Point) -> f64 {
     let d = [b[0] - a[0], b[1] - a[1]];
@@ -1159,9 +1159,12 @@ pub(crate) fn cutter_fits_nowhere(operation: &str, radius: f64, allowance: f64) 
 }
 fn stroke_point(s: Stroke, fraction: f64) -> Point {
     if let Some((c, sweep)) = s.arc {
-        let angle = (s.a[1] - c[1]).atan2(s.a[0] - c[0]) + fraction * sweep;
+        let angle = metallic::atan2(s.a[1] - c[1], s.a[0] - c[0]) + fraction * sweep;
         let r = norm(s.a, c);
-        [c[0] + r * angle.cos(), c[1] + r * angle.sin()]
+        [
+            c[0] + r * metallic::cos(angle),
+            c[1] + r * metallic::sin(angle),
+        ]
     } else {
         [
             s.a[0] + fraction * (s.b[0] - s.a[0]),
@@ -3486,6 +3489,20 @@ mod admission_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_bulge_produces_the_same_signed_sweep_in_both_directions() {
+        // bulge = tan(sweep / 4). Reference: 4 * atan(5057 / 65536)
+        // evaluated to 100 decimal digits then rounded to binary64.
+        let bulge = 0.0771636962890625;
+        for sign in [-1., 1.] {
+            let boundary = Boundary {
+                vertices: vec![[0., 0., sign * bulge], [2., 0., 0.], [1., 2., 0.]],
+            };
+            let arcs = Stroke::from_boundary(&boundary);
+            assert_eq!(arcs[0].arc.unwrap().1, sign * 0.30804436328728674);
+        }
+    }
+
     #[test]
     fn continuous_link_distance_considers_arc_intersections_and_stationary_points() {
         let upper = Stroke {

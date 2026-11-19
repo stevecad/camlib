@@ -191,7 +191,7 @@ impl Cutter {
             if !angle.is_finite() || !(0.001..std::f64::consts::PI - 0.001).contains(&angle) {
                 return Err("tool included angle must be finite and strictly between 0.001 and pi-0.001 radians".into());
             }
-            Ok((angle / 2.).tan())
+            Ok(metallic::tan(angle / 2.))
         };
         if self.shape == CutterShape::Probe
             && (self.neck.is_some()
@@ -226,7 +226,7 @@ impl Cutter {
                 {
                     return Err("a dovetail cutter's flank angle must be finite and between 0.01 rad and just under 90 degrees".into());
                 }
-                let slope = flank_angle_rad.tan();
+                let slope = metallic::tan(flank_angle_rad);
                 let top = radius - self.cutting_length_mm / slope;
                 let waist = self
                     .neck

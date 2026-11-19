@@ -156,17 +156,17 @@ impl Curve {
                 if matches!(self, Self::Helix { .. }) && axial == 0. {
                     return Err("helix must have nonzero axial displacement; use arc".into());
                 }
-                let radius = (start[u] - center[u]).hypot(start[v] - center[v]);
+                let radius = metallic::hypot(start[u] - center[u], start[v] - center[v]);
                 if radius < 1e-6 {
                     return Err("circular motion radius must be at least 1e-6 mm".into());
                 }
-                let angle = (start[v] - center[v]).atan2(start[u] - center[u]);
+                let angle = metallic::atan2(start[v] - center[v], start[u] - center[u]);
                 let final_angle = angle + sweep_rad;
                 let predicted = [
-                    center[u] + radius * final_angle.cos(),
-                    center[v] + radius * final_angle.sin(),
+                    center[u] + radius * metallic::cos(final_angle),
+                    center[v] + radius * metallic::sin(final_angle),
                 ];
-                if (predicted[0] - end[u]).hypot(predicted[1] - end[v]) > tolerance_mm {
+                if metallic::hypot(predicted[0] - end[u], predicted[1] - end[v]) > tolerance_mm {
                     return Err("circular endpoint disagrees with center, radius, direction or sweep beyond tolerance".into());
                 }
                 // A tolerated endpoint gap must not hide the nominal path's
@@ -194,7 +194,7 @@ impl Curve {
                 if !point_ok(bounds.min) || !point_ok(bounds.max) {
                     return Err("circular motion leaves supported coordinate range".into());
                 }
-                (radius, angle, (radius * sweep_rad).hypot(axial))
+                (radius, angle, metallic::hypot(radius * sweep_rad, axial))
             }
         };
         Ok(PreparedCurve {
@@ -448,7 +448,7 @@ impl PreparedCurve {
                 ..
             } => {
                 let [u, v, w] = plane.axes();
-                let (sin, cos) = (self.angle + fraction * sweep_rad).sin_cos();
+                let (sin, cos) = metallic::sincos(self.angle + fraction * sweep_rad);
                 let mut p = start;
                 p[u] = center[u] + self.radius * cos;
                 p[v] = center[v] + self.radius * sin;

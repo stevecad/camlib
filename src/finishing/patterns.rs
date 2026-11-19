@@ -206,7 +206,7 @@ pub(crate) fn radial(
     (0..spokes)
         .map(|k| {
             let angle = start_rad + k as f64 * step;
-            let (s, c) = angle.sin_cos();
+            let (s, c) = metallic::sincos(angle);
             let a = [center[0] + inner * c, center[1] + inner * s];
             let b = [center[0] + outer * c, center[1] + outer * s];
             if alternate && k % 2 == 1 {
@@ -237,7 +237,7 @@ pub(crate) fn flatten(
         match *segment {
             TraceSegment::Line { end_mm } => {
                 if !end_mm.iter().all(|v| v.is_finite())
-                    || (end_mm[0] - at[0]).hypot(end_mm[1] - at[1]) <= guard
+                    || metallic::hypot(end_mm[0] - at[0], end_mm[1] - at[1]) <= guard
                 {
                     return Err(format!(
                         "path {index}, segment {i}: line needs a finite end away from its start"
@@ -250,7 +250,7 @@ pub(crate) fn flatten(
                 center_mm,
                 sweep_rad,
             } => {
-                let radius = (at[0] - center_mm[0]).hypot(at[1] - center_mm[1]);
+                let radius = metallic::hypot(at[0] - center_mm[0], at[1] - center_mm[1]);
                 if !center_mm.iter().all(|v| v.is_finite())
                     || !sweep_rad.is_finite()
                     || sweep_rad == 0.
@@ -263,12 +263,12 @@ pub(crate) fn flatten(
                 }
                 let count = (sweep_rad.abs() / arc_step(radius, sagitta)).ceil();
                 check_points(count, "projected arc")?;
-                let start = (at[1] - center_mm[1]).atan2(at[0] - center_mm[0]);
+                let start = metallic::atan2(at[1] - center_mm[1], at[0] - center_mm[0]);
                 for k in 1..=count as usize {
                     let angle = start + sweep_rad * k as f64 / count;
                     points.push([
-                        center_mm[0] + radius * angle.cos(),
-                        center_mm[1] + radius * angle.sin(),
+                        center_mm[0] + radius * metallic::cos(angle),
+                        center_mm[1] + radius * metallic::sin(angle),
                     ]);
                 }
                 at = *points.last().unwrap();

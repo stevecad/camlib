@@ -87,7 +87,7 @@ fn sample(s: &Stroke, t: f64) -> (Point, Point) {
             [-(p[1] - c[1]) * sign, (p[0] - c[0]) * sign]
         }
     };
-    let n = d[0].hypot(d[1]);
+    let n = metallic::hypot(d[0], d[1]);
     (p, [-d[1] / n, d[0] / n])
 }
 
@@ -109,7 +109,7 @@ impl VCarvePlan {
         else {
             return Err("v-carve needs a V (chamfer) bit".into());
         };
-        let slope = (included_angle_rad / 2.).tan();
+        let slope = metallic::tan(included_angle_rad / 2.);
         let tip = tip_diameter_mm / 2.;
         let guard = 16. * op.tolerance_mm;
         crate::heights::require(
@@ -232,18 +232,20 @@ impl VCarvePlan {
                     let prev = strokes[(k + strokes.len() - 1) % strokes.len()];
                     let (_, n_in) = sample(&prev, 1.);
                     let (p0, n_out) = sample(s, 0.);
-                    let turn = (n_in[0] * n_out[1] - n_in[1] * n_out[0])
-                        .atan2(n_in[0] * n_out[0] + n_in[1] * n_out[1]);
+                    let turn = metallic::atan2(
+                        n_in[0] * n_out[1] - n_in[1] * n_out[0],
+                        n_in[0] * n_out[0] + n_in[1] * n_out[1],
+                    );
                     if turn > 1e-9 {
                         // Convex corner: the bit runs out to the surface.
                         outline.push((p0, [0., 0.]));
                     } else if turn < -1e-9 {
                         // Concave corner: sweep around it.
                         let steps = (turn.abs() / 5f64.to_radians()).ceil() as usize;
-                        let a0 = n_in[1].atan2(n_in[0]);
+                        let a0 = metallic::atan2(n_in[1], n_in[0]);
                         for j in 0..steps {
                             let a = a0 + turn * j as f64 / steps as f64;
-                            outline.push((p0, [a.cos(), a.sin()]));
+                            outline.push((p0, [metallic::cos(a), metallic::sin(a)]));
                         }
                     }
                     let length = crate::profiles::stroke_length(s);
@@ -293,7 +295,7 @@ impl VCarvePlan {
                     }
                     // Order the refinements along the chord.
                     extra.sort_by(|x, y| {
-                        let d = |p: Point| (p[0] - c0[0]).hypot(p[1] - c0[1]);
+                        let d = |p: Point| metallic::hypot(p[0] - c0[0], p[1] - c0[1]);
                         d(x.0).total_cmp(&d(y.0))
                     });
                     for (m, r) in extra {

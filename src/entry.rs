@@ -129,7 +129,7 @@ impl RampEntry {
     /// depth of cut: a lap cuts what the lap above left).
     pub(crate) fn laps(&self, length: f64, depth: f64, max_drop: f64) -> Result<usize, String> {
         let exact = 1. - 128. * f64::EPSILON;
-        let count = (depth / (length * self.angle_rad.tan()) * exact)
+        let count = (depth / (length * metallic::tan(self.angle_rad)) * exact)
             .max(depth / max_drop * exact)
             .ceil()
             .max(1.);
@@ -148,7 +148,7 @@ impl RampEntry {
             return Err("the ramp has no depth or no path to follow".into());
         }
         // Horizontal travel the angle needs for this depth.
-        let needed = depth / self.angle_rad.tan();
+        let needed = depth / metallic::tan(self.angle_rad);
         let legs = (needed / total * (1. - 128. * f64::EPSILON)).ceil().max(1.);
         let span = if legs == 1. { needed.min(total) } else { total };
         if legs > 1. {
@@ -345,7 +345,7 @@ impl HelicalEntry {
         radii
     }
     pub(crate) fn turns(&self, h: f64, depth: f64) -> Result<usize, String> {
-        let advance = TAU * h * self.angle_rad.tan() * (1. - 128. * f64::EPSILON);
+        let advance = TAU * h * metallic::tan(self.angle_rad) * (1. - 128. * f64::EPSILON);
         let count = (depth / advance).ceil().max(1.);
         if !count.is_finite() || count > 1000. {
             return Err(
@@ -402,7 +402,7 @@ impl HelicalEntry {
     }
 }
 fn dist(a: Point, b: Point) -> f64 {
-    (a[0] - b[0]).hypot(a[1] - b[1])
+    metallic::hypot(a[0] - b[0], a[1] - b[1])
 }
 pub(crate) fn point_key(p: Point) -> [u64; 2] {
     p.map(|x| if x == 0. { 0 } else { x.to_bits() })

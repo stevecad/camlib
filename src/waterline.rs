@@ -284,7 +284,7 @@ fn level_contact_angles(
         };
         range = Some(contact.cos_axis);
         let off = radius - contact.distance_mm;
-        let horizontal = contact.normal[0].hypot(contact.normal[1]);
+        let horizontal = metallic::hypot(contact.normal[0], contact.normal[1]);
         // On the surface, or resting on a flat (no horizontal move changes
         // the distance there).
         if off.abs() <= tie || horizontal < 1e-6 {
@@ -297,14 +297,17 @@ fn level_contact_angles(
             center[2],
         ];
         // Never further from the sample than a sample can be from the surface.
-        if (next[0] - sample[0]).hypot(next[1] - sample[1]) > band + tie {
+        if metallic::hypot(next[0] - sample[0], next[1] - sample[1]) > band + tie {
             break;
         }
         center = next;
     }
     // Nothing of the part within reach of the level: as on the base.
     let [low, high] = range.unwrap_or([1., 1.]);
-    Ok((high.clamp(-1., 1.).acos(), low.clamp(-1., 1.).acos()))
+    Ok((
+        metallic::acos(high.clamp(-1., 1.)),
+        metallic::acos(low.clamp(-1., 1.)),
+    ))
 }
 pub fn prepare_contours(
     surface: &PreparedSurface,

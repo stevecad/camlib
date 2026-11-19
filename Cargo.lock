@@ -37,6 +37,7 @@ dependencies = [
  "clipper2-rust",
  "crc32fast",
  "metallic",
+ "num-traits",
  "robust",
  "serde",
  "serde_json",

@@ -3451,8 +3451,8 @@ impl Solver<'_> {
         if let (Some(a), Some(b)) = (prev, next)
             && let (Some(na), Some(nb)) = (along(a), along(b))
         {
-            let angle = dot(na, nb).clamp(-1., 1.).acos();
-            let step = 2. * (1. - self.eps / self.r).clamp(-1., 1.).acos();
+            let angle = metallic::acos(dot(na, nb).clamp(-1., 1.));
+            let step = 2. * metallic::acos((1. - self.eps / self.r).clamp(-1., 1.));
             // Convex: the next contact lies below the incoming face's
             // tangent plane (a concave crease folds instead; trim).
             if angle > step
@@ -3470,8 +3470,8 @@ impl Solver<'_> {
                 for j in 0..=k {
                     // The normals' great-circle arc (slerp).
                     let t = j as f64 / k as f64;
-                    let (sa, sb) = (((1. - t) * angle).sin(), (t * angle).sin());
-                    let m = scale(axpy(scale(na, sa), sb, nb), 1. / angle.sin());
+                    let (sa, sb) = (metallic::sin((1. - t) * angle), metallic::sin(t * angle));
+                    let m = scale(axpy(scale(na, sa), sb, nb), 1. / metallic::sin(angle));
                     out.push((cc, self.place(cc, m, level, w, stop)?));
                 }
                 return Ok(out);

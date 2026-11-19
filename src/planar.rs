@@ -15,6 +15,7 @@ mod components;
 mod constructed;
 mod difference;
 mod envelope;
+mod offset;
 
 /// Each vertex is [x_mm, y_mm, bulge_to_next], bulge=tan(signed_sweep/4).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -791,22 +792,12 @@ impl PreparedRegion {
                 0.,
             );
         }
-        let options = ShapeOffsetOptions {
-            pos_equal_eps: self.epsilon,
-            offset_dist_eps: 4. * self.epsilon,
-            slice_join_eps: 4. * self.epsilon,
-        };
         let envelope = (delta_mm > 0.).then(|| self.erosion_envelope()).flatten();
         let (shape, envelope_error, envelope_vertices) = match &envelope {
             Some((prepared, error, removed)) => (&prepared.shape, *error, *removed),
             None => (&self.shape, 0., 0),
         };
-        let output = shape.parallel_offset(delta_mm, &options);
-        let components = group_loops(
-            output.ccw_plines.into_iter().map(|p| p.polyline).collect(),
-            output.cw_plines.into_iter().map(|p| p.polyline).collect(),
-            self.origin,
-        )?;
+        let components = offset::offset_components(shape, delta_mm, self.epsilon, self.origin)?;
         let mut result = self.finish(
             components,
             "cavalier_contours_0.9.0",
@@ -1413,20 +1404,20 @@ fn flatten(p: &Polyline<f64>, error: f64) -> Result<Vec<Point>, String> {
         points.push([a.x, a.y]);
         if a.bulge != 0. {
             let (radius, center) = seg_arc_radius_and_center(a, b);
-            let sweep = 4. * a.bulge.atan();
-            let max_angle = 4. * (error / (2. * radius)).min(0.5).sqrt().asin();
+            let sweep = 4. * metallic::atan(a.bulge);
+            let max_angle = 4. * metallic::asin((error / (2. * radius)).min(0.5).sqrt());
             let count = (sweep.abs() / max_angle).ceil().max(1.) as usize;
             if points.len().saturating_add(count) > 1_000_000 {
                 return Err(
                     "curve flattening exceeds one million points; use a looser tolerance".into(),
                 );
             }
-            let start = (a.y - center.y).atan2(a.x - center.x);
+            let start = metallic::atan2(a.y - center.y, a.x - center.x);
             for i in 1..count {
                 let angle = start + sweep * i as f64 / count as f64;
                 points.push([
-                    center.x + radius * angle.cos(),
-                    center.y + radius * angle.sin(),
+                    center.x + radius * metallic::cos(angle),
+                    center.y + radius * metallic::sin(angle),
                 ]);
             }
         }

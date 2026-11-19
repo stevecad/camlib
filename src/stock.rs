@@ -2568,12 +2568,9 @@ fn segment_layout(curve: &Curve, options: SweepOptions) -> Result<(usize, f64), 
             sweep_rad,
         } => {
             let [u, v, w] = plane.axes();
-            let radius = (start[u] - center[u]).hypot(start[v] - center[v]);
+            let radius = metallic::hypot(start[u] - center[u], start[v] - center[v]);
             let max_angle = (4.
-                * (options.chord_error_mm / (2. * radius))
-                    .min(0.5)
-                    .sqrt()
-                    .asin())
+                * metallic::asin((options.chord_error_mm / (2. * radius)).min(0.5).sqrt()))
             .min(std::f64::consts::FRAC_PI_2);
             let z_travel = if w == 2 {
                 (end[2] - start[2]).abs()

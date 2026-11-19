@@ -17,7 +17,7 @@ def cadquery_target():
 def hole_job():
     target = cadquery_target()
     edges = target.faces(">Z").edges("%CIRCLE").vals()
-    centers = tuple(sorted((edge.Center().x, edge.Center().y) for edge in edges))
+    centers = tuple(sorted(edge.arcCenter().toTuple()[:2] for edge in edges))
     radii = [edge.radius() for edge in edges]
     assert len(centers) == 2 and all(abs(r - 6) < 1e-7 for r in radii)
     drill = ToolAssembly(

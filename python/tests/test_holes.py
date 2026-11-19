@@ -91,7 +91,7 @@ class HoleOperationsTest(unittest.TestCase):
         controls = []
         pilot_removed = None
         helices = 0
-        self.assertAlmostEqual(config["operations"][0].centers_mm[0][0], 10)
+        self.assertEqual(config["operations"][0].centers_mm, ((10.0, 12.0), (28.0, 12.0)))
         with Simulation(**config) as sim:
             for update in sim.run_operations():
                 if isinstance(update, OperationUpdate):
