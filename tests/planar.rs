@@ -34,6 +34,24 @@ fn close(a: f64, b: f64) {
 }
 
 #[test]
+fn offset_half_disk_preserves_the_trimmed_arcs_bulge() {
+    let half_disk = single(Boundary {
+        vertices: vec![[-117., 0., 1.], [117., 0., 0.], [0., 0., 0.]],
+    });
+    let result = prepared(&half_disk).offset(48.).unwrap();
+    let vertices = &result.region.components[0].outer.vertices;
+    let arcs: Vec<_> = vertices.iter().filter(|v| v[2] != 0.).collect();
+    assert_eq!(arcs.len(), 1);
+    // The circle now has radius 69 and the diameter line moved to y = -48.
+    // Its half-chord is sqrt(69² - 48²), and the sagitta is 69 - 48.
+    // Their ratio, the bulge, is sqrt(21 / 117).
+    let [x, y, bulge] = *arcs[0];
+    close(x, -(69_f64.powi(2) - 48_f64.powi(2)).sqrt());
+    close(y, -48.);
+    assert_eq!(bulge, (21_f64 / 117.).sqrt());
+}
+
+#[test]
 fn generated_short_boolean_steps_have_bounded_cleanup_without_relaxing_input_resolution() {
     let a = prepared(&single(rect(0., 0., 10., 10.)));
     let shift = 5e-7;

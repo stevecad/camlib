@@ -22,6 +22,10 @@ only between sequential release runs on the same machine, using
 `python bench/compare.py OLD.json NEW.json`. Modeled cycle times and material bounds are
 reviewed toolpath expectations. Sampled engagement differences are informational.
 
+The stepped and tapered blanks use frozen stock meshes because CAD kernels can
+triangulate an identical planar face differently. The 48-sided boss uses stored
+vertices so platform trigonometry cannot change its input mesh.
+
 Two measurements can change even when the number of moves and total cut length agree.
 A feed move counts toward `air_cut_mm` when it changes zero stock cells. A single
 cell-bound update changes that count. Tangent cycle time includes the stops selected

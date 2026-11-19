@@ -340,8 +340,16 @@ work refuses the move, independent of optional verification settings.
   products, sum and square root; its lazy search uses the same calculation
   for box bounds. This avoids platform-dependent `hypot` results deciding
   which passes are linked. It is an ordering convention, not an accuracy
-  improvement. Other platform-dependent planning comparisons and material
-  interval differences remain tracked in #245.
+  improvement.
+- For cutter positions and stock bounds, a last-bit difference can change
+  which side of a tolerance a point falls on. Milling uses the pinned
+  `metallic` routines for distances and angles in these calculations,
+  including when the planar offset library trims an arc. Keep the same
+  precision from planning through stock replay. Rounding the output can
+  conceal a different cut or a different stock bound.
+- When investigating a platform difference, compare the input geometry first,
+  then the individual motions, stock changes and posted blocks. Aggregate
+  lengths and material volumes can agree even when those records differ.
 
 ## What is proven and what is not
 
