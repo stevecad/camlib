@@ -21,6 +21,9 @@ The Markdown report is written beside the measured JSON. Compare wall-clock perf
 only between sequential release runs on the same machine, using
 `python bench/compare.py OLD.json NEW.json`. Modeled cycle times and material bounds are
 reviewed toolpath expectations. Sampled engagement differences are informational.
+The engagement bands include their lower endpoint. For example, a radial cut
+width of half the cutter radius gives a 60° limit, so a 50° sample counts
+toward the length within 10° of the limit.
 
 The stepped and tapered blanks use frozen stock meshes because CAD kernels can
 triangulate an identical planar face differently. The 48-sided boss uses stored
