@@ -123,7 +123,11 @@ can say clear, violation or uncertain honestly.
 - **Height field** (`src/stock.rs`, `Stock`): an XY grid of `HeightBounds`
   (lower: material certainly up to here; upper: no material above here). Used by
   milling and thermal runs. Moves are swept with the full tool assembly
-  (cutter and holder). A flat end mill's constant-height line or XY arc
+  (cutter and holder). In a segmented sweep, the distance from each cell
+  center to the segment and the cell's half-diagonal determine the radial
+  bounds passed to the cutter profile. Both distances use a portable
+  Euclidean norm so host math-library rounding does not alter those bounds.
+  A flat end mill's constant-height line or XY arc
   lowers a cell's upper bound when the whole cell lies in its swept disk, or
   when the cell, split into sub-squares down to 1/32 of a cell, has every
   sub-square entirely inside this move's disk or inside one committed

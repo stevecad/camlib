@@ -424,6 +424,48 @@ fn horizontal_capsule_sweep_encloses_whole_cells_and_analytic_volume() {
 }
 
 #[test]
+fn ball_sweep_cell_bounds_are_reproducible_and_enclose_the_spherical_cap() {
+    let mut stock = Stock::new(spec(0.5)).unwrap();
+    let end = [9.1064453125, 9.1015625, 0.];
+    let sweep = line([8., end[1], 0.], end);
+    let delta = preview(&stock, &tool(CutterShape::Ball), &sweep, 1.);
+    stock.apply_delta(&delta).unwrap();
+    let h = height_at(&stock, [10.25, 10.25]);
+
+    // The whole square [10, 10.5]^2 lies beyond the endpoint. Its exact
+    // lowest and highest cuts are therefore at its near and far corners.
+    // Evaluate the sphere there independently of the stock kernel.
+    let height = |xy: f64| {
+        let r2 = (xy - end[0]).powi(2) + (xy - end[1]).powi(2);
+        2. - (4. - r2).sqrt()
+    };
+    assert!(h.lower_mm <= height(10.));
+    assert!(h.upper_mm >= height(10.5));
+
+    // Reference for the cell-center enclosure: evaluate each norm at
+    // 90 decimal digits and round to binary64 before applying the ball
+    // profile and the default sweep guard. Host hypot on glibc 2.39
+    // rounds the endpoint distance one ulp lower for this dyadic input.
+    assert_eq!(h.lower_mm, 0.45260574837785056);
+    assert_eq!(h.upper_mm, 1.6801103187291515);
+}
+
+#[test]
+fn ball_sweep_uses_a_reproducible_half_diagonal_for_rectangular_cells() {
+    let mut blank = spec(1.);
+    blank.max_mm = [0.4599609375, 0.2822265625, 10.];
+    let mut stock = Stock::new(blank).unwrap();
+    let [x, y] = stock.cell_center(0).unwrap();
+    // The segment passes through the cell center, so its distance there
+    // is exactly zero. Only the half-diagonal supplies radial uncertainty.
+    let sweep = line([0., y, 0.], [x, y, 0.]);
+    let delta = preview(&stock, &tool(CutterShape::Ball), &sweep, 1.);
+    stock.apply_delta(&delta).unwrap();
+    // Same high-precision reference as the endpoint test above.
+    assert_eq!(stock.cells()[0].upper_mm, 0.018295936542288716);
+}
+
+#[test]
 fn ramps_plunges_and_clipped_sweeps_enclose_independent_quadratic_oracle() {
     for (a, b, f) in [
         ([3., 3., 9.], [17., 17., 4.], 1.),
