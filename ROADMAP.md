@@ -11,10 +11,6 @@ engineering and contribution rules. The first-release checklist is
 - Correctness defects in the release scope take priority. Respect existing
   claims, explicit parked status and each issue's dependencies. Independent
   release/workflow tasks may proceed while an owned fix is in progress.
-- **Next feature task: #288, face mills and high-feed mills.** It is the
-  remaining Phase 2 issue and already has the maintainer's claim. Resume its
-  recorded design from current main; confirm the manufacturer sources before
-  implementation. The remaining #245 work stays with its current owner.
 - Phase milestones describe the backlog. Closed work is omitted; refresh
   this file in roadmap-only PRs, never alongside toolpath implementation.
 - New evidence of unsafe output or a broken advertised workflow promotes an
@@ -27,42 +23,28 @@ Scope: three-axis milling, turning and the implemented plasma/laser operations,
 with the Python `camlib` API distributed as `cam-engine`. Multi-axis and the
 broad optimization round follow the first release.
 
-1. **Correctness closure:** merge #330 after its checks, retaining the explicit
-   nonconvex-insert refusal; complete #245's remaining numerical-decision and
-   platform-evidence work with its owner. Document causes of remaining
-   differences; do not round output to hide them.
-2. **Complete milling tools (#288):** profiles and independent geometry tests;
-   entry, depth and body limits; Facing and layered Pocket/Roughing; Python,
-   documentation and measured benchmarks. This independent feature work can
-   proceed while the owned correctness work finishes.
-3. **Benchmark workflow (#329):** per-workload reviewed expectations,
-   per-PR CI reports and a permanent report from successful main builds.
-   Contributors do not commit generated tables or machine-specific timings.
-   This independent workflow change may run alongside steps 1–2.
-4. **Release contracts (#188, #222):** settle retract/offset semantics and
-   insert-tolerance premises for the advertised scope. Proposal C in #188 was
-   withdrawn; it is not an implemented interval guarantee. Use sourced models,
-   explicit premises or named refusals, and update the capability/post docs.
-5. **Candidate and package qualification (#21):** select the exact main commit;
-   pass required CI and benchmarks; rehearse clean installed-package tests for
-   Linux x86_64/aarch64, Windows x64 and the sdist without publishing. Verify
-   publishing configuration. Existing `v*` tags trigger publication, not a dry run.
-6. **Machine proving (#20):** document the existing SYIL/LNC milling evidence
-   with its limited coverage and complete the lathe/plasma family reports.
-   Prepare fixtures and operator coordination earlier; final proving uses the
-   qualified candidate. Record interpreter, air-run and measured-cut evidence
-   separately, and requalify changed behavior.
-7. **Publication (#21):** reconcile the final changelog, capability matrix and
-   installation docs with that evidence, then publish the maintainer-selected
-   `v0.1.0` commit and verify a clean public-package installation.
+The tool-body and cross-platform correctness work (#330, #245), face and
+high-feed mills (#288), and the benchmark workflow (#329) are complete.
+For v0.1, retract verification uses declared setup values (#188), and
+turning uses the declared installed insert geometry (#222).
 
-The detailed completion gates live in #21. This work list does not tag or
-publish a release. #20 remains broader than validation of one controller.
+1. **Qualify a candidate under #21.** Select an exact main commit. Check the
+   capability matrix and setup premises. Pass required CI, engine verification,
+   posted-program decoding and replay, interpreter tests, and benchmark
+   expectations. Rehearse clean installation and example export/refusal tests
+   from the Linux x86_64/aarch64 wheels, Windows x64 wheel and sdist without
+   publishing. Verify the publication configuration.
+2. **Publish under #21.** Reconcile the changelog, capabilities and installation
+   docs with the evidence, then publish the maintainer-selected `v0.1.0`
+   commit and verify a clean public-package installation.
+
+Voluntary machine runs belong in #20 and can follow publication. Record
+controller previews, air runs and measured cuts separately for the post,
+controller version and setup tested. Mark missing hardware coverage as
+untested. A demonstrated correctness defect in the release scope blocks
+release regardless of how it was found.
 
 ## Phase 1: Correctness
-
-- #245 Cross-platform numerical decisions: remaining entry, pocket-routing,
-  simplification and material-bound differences after #308 (claimed).
 
 Parked, as recorded in the issue:
 
@@ -72,17 +54,13 @@ Parked, as recorded in the issue:
 
 ## Phase 2: Complete milling
 
-- #288 Face mills and high-feed mills: declared profiles, depth-of-cut and
-  entry limits, body checks and independent material verification (next feature).
+Face and high-feed milling shipped on main under #288.
 
 ## Phase 3: Complete turning
 
 Follow-ups to the completed turning feature issues:
 
-- #221 Supplied tool bodies: bounded hulls and model checks (PR #330 in flight).
-- #222 Insert nose-radius and corner-angle tolerance: resolve the release
-  contract under step 4; geometry extensions may follow if premises/refusals
-  accurately delimit v0.1.0. Its parked branch is not qualified for merging.
+- #336 extends verification to a declared range of insert geometries.
 - #331 Nonconvex supplied-insert comparison: subsequent work; #330 refuses
   unsupported comparisons rather than certifying a convex hull as the outline.
 
@@ -166,9 +144,5 @@ use: 2D, holes, 3D), turning and thermal.
 
 Independent release and developer-workflow tasks:
 
-- #20 Controller validation evidence: LinuxCNC interpreter checks are in CI;
-  hardware coverage and documented reports remain.
-- #21 First-release work list, package qualification and publication.
-- #188 Retract/offset contract decision: see release step 4 and the issue's
-  latest discussion, including withdrawal of the proposed interval design.
-- #329 Per-workload expectations, permanent benchmark page and CI reports.
+- #20 Voluntary controller-specific reports from physical machine runs.
+- #21 First-release candidate qualification and publication.
