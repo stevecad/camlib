@@ -767,7 +767,7 @@ impl PreparedSurface {
             || radius > 1e6
             || height <= self.floor + radius
             || normal.iter().any(|x| !x.is_finite())
-            || (metallic::hypot(normal[0], normal[1]) - 1.).abs() > 1e-9
+            || (normal[0].hypot(normal[1]) - 1.).abs() > 1e-9
         {
             return Err("invalid convex-slice height/radius/unit normal".into());
         }
@@ -837,7 +837,7 @@ impl PreparedSurface {
                 let ratio = if slope.is_infinite() {
                     -1.
                 } else {
-                    slope / metallic::hypot(slope, 1.)
+                    slope / slope.hypot(1.)
                 };
                 let z = (height + radius * ratio).clamp(low, high);
                 evaluate((z - a[2]) / d[2]);
@@ -1783,7 +1783,7 @@ fn point_segment_sq_2d(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
 /// returns it unchanged (the caller takes the minimum).
 fn point_wall_sq(p: Vec3, a: Vec3, b: Vec3, floor: f64, known: f64) -> f64 {
     let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-    let length = metallic::hypot(dx, dy);
+    let length = dx.hypot(dy);
     if length == 0. {
         // Degenerate wall: both triangles collapse to vertical segments.
         let af = [a[0], a[1], floor];

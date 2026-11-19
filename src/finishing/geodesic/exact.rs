@@ -154,7 +154,7 @@ impl Topology {
                     sub(v[tri[(k + 1) % 3] as usize], p),
                     sub(v[tri[(k + 2) % 3] as usize], p),
                 );
-                angle[tri[k] as usize] += metallic::atan2(norm(cross(x, y)), dot(x, y));
+                angle[tri[k] as usize] += norm(cross(x, y)).atan2(dot(x, y));
                 vertex_faces[tri[k] as usize].push(fi as u32);
             }
         }
@@ -207,14 +207,14 @@ pub(super) enum Src {
 impl Src {
     fn edge(&self, x: f64) -> f64 {
         match *self {
-            Src::Point { x: sx, y: sy, s } => metallic::hypot(x - sx, sy) + s,
+            Src::Point { x: sx, y: sy, s } => (x - sx).hypot(sy) + s,
             Src::Line { ux, c, .. } => c + ux * x,
         }
     }
     /// The distance at (x, y >= 0) along the window's pencil, unrestricted.
     fn free(&self, x: f64, y: f64) -> f64 {
         match *self {
-            Src::Point { x: sx, y: sy, s } => metallic::hypot(x - sx, y - sy) + s,
+            Src::Point { x: sx, y: sy, s } => (x - sx).hypot(y - sy) + s,
             Src::Line { ux, uy, c } => c + ux * x + uy * y,
         }
     }
@@ -320,7 +320,7 @@ impl Win {
             self.src.free(x, y)
         } else {
             let q = f.clamp(self.b0, self.b1);
-            metallic::hypot(x - q, y) + self.src.edge(q)
+            (x - q).hypot(y) + self.src.edge(q)
         }
     }
 }
@@ -774,7 +774,7 @@ impl<'a> Field<'a> {
                 return None;
             }
             let e_out = if es[0] == e_in { es[1] } else { es[0] };
-            let th = metallic::acos(dot(dir(e_in), dir(e_out)).clamp(-1., 1.));
+            let th = dot(dir(e_in), dir(e_out)).clamp(-1., 1.).acos();
             fan.push((g, e_in, e_out, total, th));
             total += th;
             let next = topo.other(e_out, g);
@@ -797,7 +797,7 @@ impl<'a> Field<'a> {
                 let (u, o) = (dir(e_in), dir(e_out));
                 let w = sub(o, scale(u, dot(o, u)));
                 let w = scale(w, 1. / norm(w));
-                let a = metallic::atan2(dot(*d, w), dot(*d, u)).clamp(0., th);
+                let a = dot(*d, w).atan2(dot(*d, u)).clamp(0., th);
                 phis.push(from + a);
             }
         }
@@ -858,7 +858,7 @@ impl<'a> Field<'a> {
             // Where the ray at fan angle phi meets A -> B, as the edge's
             // parameter from its first vertex.
             let hit = |phi: f64| -> f64 {
-                let (c, sn) = (metallic::cos(phi - from), metallic::sin(phi - from));
+                let (c, sn) = ((phi - from).cos(), (phi - from).sin());
                 let (ex, ey) = (b2[0] - a2[0], b2[1] - a2[1]);
                 let den = c * ey - sn * ex;
                 let sp = if den.abs() > 0. {
@@ -1649,7 +1649,7 @@ fn clip_cell(
 fn dist_to_polygon(c: [f64; 2], poly: &[[f64; 2]]) -> f64 {
     let n = poly.len();
     if n == 1 {
-        return metallic::hypot(c[0] - poly[0][0], c[1] - poly[0][1]);
+        return (c[0] - poly[0][0]).hypot(c[1] - poly[0][1]);
     }
     // Inside: on the same side of every edge (either orientation).
     let cross =
@@ -1668,7 +1668,7 @@ fn dist_to_polygon(c: [f64; 2], poly: &[[f64; 2]]) -> f64 {
             } else {
                 0.
             };
-            metallic::hypot(c[0] - a[0] - t * ab[0], c[1] - a[1] - t * ab[1])
+            (c[0] - a[0] - t * ab[0]).hypot(c[1] - a[1] - t * ab[1])
         })
         .fold(f64::INFINITY, f64::min)
 }
@@ -1862,7 +1862,7 @@ impl<'f> FaceEval<'f> {
             let i = ids.partition_point(|&id| field.wins[id as usize].b0 <= x);
             for &id in ids[..i].iter().rev() {
                 let w = &field.wins[id as usize];
-                let gap = metallic::hypot((x - w.b1).max(0.), y);
+                let gap = (x - w.b1).max(0.).hypot(y);
                 if gap >= d {
                     break;
                 }
@@ -1872,7 +1872,7 @@ impl<'f> FaceEval<'f> {
             }
             for &id in &ids[i..] {
                 let w = &field.wins[id as usize];
-                let gap = metallic::hypot((w.b0 - x).max(0.), y);
+                let gap = (w.b0 - x).max(0.).hypot(y);
                 if gap >= d {
                     break;
                 }
@@ -2475,7 +2475,7 @@ pub(super) fn walk(
         // next (none: it leaves the mesh there).
         let through = |vx: u32, g: u32| -> Option<u32> {
             let q = v[vx as usize];
-            let dl = metallic::hypot(d[0], d[1]);
+            let dl = d[0].hypot(d[1]);
             let reach = topo.vertex_faces[vx as usize]
                 .iter()
                 .map(|&h| {
@@ -2494,7 +2494,7 @@ pub(super) fn walk(
             let inside = |h: u32| {
                 let w = t[h as usize].map(|k| v[k as usize]);
                 let cr = |a: Vec3, b: Vec3| {
-                    let l = metallic::hypot(b[0] - a[0], b[1] - a[1]);
+                    let l = (b[0] - a[0]).hypot(b[1] - a[1]);
                     ((b[0] - a[0]) * (ahead[1] - a[1]) - (b[1] - a[1]) * (ahead[0] - a[0])) / l
                 };
                 cr(w[0], w[1]).min(cr(w[1], w[2])).min(cr(w[2], w[0]))
@@ -2528,7 +2528,7 @@ pub(super) fn walk(
                 let ed = [e1[0] - e0[0], e1[1] - e0[1]];
                 let w = [p[0] - e0[0], p[1] - e0[1]];
                 // On the edge (XY), with the segment heading out across it.
-                (ed[0] * w[1] - ed[1] * w[0]).abs() <= 1e-9 * scale * metallic::hypot(ed[0], ed[1])
+                (ed[0] * w[1] - ed[1] * w[0]).abs() <= 1e-9 * scale * ed[0].hypot(ed[1])
                     && ed[0] * d[1] - ed[1] * d[0] < 0.
                     && topo.tri_edges[g as usize][k] != entry
             })?;
