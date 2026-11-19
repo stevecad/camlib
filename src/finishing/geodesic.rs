@@ -2626,11 +2626,11 @@ fn link(
     let stays_on =
         |path: &[[f64; 2]], limit: bool, work: &mut SurfaceWork| -> Result<bool, String> {
             let (a, b) = (path[0], path[path.len() - 1]);
-            if limit && (b[0] - a[0]).hypot(b[1] - a[1]) > 2. * stepover {
+            if limit && metallic::hypot(b[0] - a[0], b[1] - a[1]) > 2. * stepover {
                 return Ok(false);
             }
             for w in path.windows(2) {
-                let len = (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]);
+                let len = metallic::hypot(w[1][0] - w[0][0], w[1][1] - w[0][1]);
                 let n = (len / (stepover / 4.)).ceil().max(1.) as usize;
                 for i in 0..=n {
                     let t = i as f64 / n as f64;
@@ -2659,7 +2659,9 @@ fn link(
         .map(|rim| {
             let mut acc = vec![0.];
             for w in rim.windows(2) {
-                acc.push(acc[acc.len() - 1] + (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]));
+                acc.push(
+                    acc[acc.len() - 1] + metallic::hypot(w[1][0] - w[0][0], w[1][1] - w[0][1]),
+                );
             }
             acc
         })
@@ -2678,7 +2680,7 @@ fn link(
                 } else {
                     0.
                 };
-                let d = (v[0] - t * u[0]).hypot(v[1] - t * u[1]);
+                let d = metallic::hypot(v[0] - t * u[0], v[1] - t * u[1]);
                 if best.is_none_or(|b| d < b.0) {
                     best = Some((d, ri, lengths[ri][j] + t * uu.sqrt()));
                 }
@@ -2692,7 +2694,10 @@ fn link(
         let (rim, acc) = (&rims[ri], &lengths[ri]);
         let total = acc[acc.len() - 1];
         let closed = rim.len() > 2
-            && (rim[0][0] - rim[rim.len() - 1][0]).hypot(rim[0][1] - rim[rim.len() - 1][1]) < 1e-9;
+            && metallic::hypot(
+                rim[0][0] - rim[rim.len() - 1][0],
+                rim[0][1] - rim[rim.len() - 1][1],
+            ) < 1e-9;
         let at = |x: f64| -> [f64; 2] {
             let j = acc.partition_point(|&a| a <= x).clamp(1, acc.len() - 1);
             let t = ((x - acc[j - 1]) / (acc[j] - acc[j - 1]).max(1e-300)).clamp(0., 1.);
@@ -2742,9 +2747,9 @@ fn link(
         let f = path
             .iter()
             .rev()
-            .find(|p| (e[0] - p[0]).hypot(e[1] - p[1]) >= stepover / 4.)?;
+            .find(|p| metallic::hypot(e[0] - p[0], e[1] - p[1]) >= stepover / 4.)?;
         let (x, y) = (e[0] - f[0], e[1] - f[1]);
-        let l = x.hypot(y);
+        let l = metallic::hypot(x, y);
         Some([x / l, y / l])
     };
     // A lane change from the end of one pass into the start of the next
@@ -2757,7 +2762,7 @@ fn link(
         let rev: Vec<[f64; 2]> = to.iter().rev().copied().collect();
         let tb = heading(&rev).map(|t| [-t[0], -t[1]])?;
         let (a, b) = (from[from.len() - 1], to[0]);
-        let m = (b[0] - a[0]).hypot(b[1] - a[1]);
+        let m = metallic::hypot(b[0] - a[0], b[1] - a[1]);
         // A lane change only: both headings, and the chord, forward (a
         // reversal is no lane change: its loop would swing off the part).
         let ahead = |t: [f64; 2]| t[0] * (b[0] - a[0]) + t[1] * (b[1] - a[1]) > 0.;
@@ -3071,7 +3076,7 @@ fn link(
                 // Re-tracing farther than the way along the edge: take that.
                 let retrace: f64 = t[..=j]
                     .windows(2)
-                    .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+                    .map(|w| metallic::hypot(w[1][0] - w[0][0], w[1][1] - w[0][1]))
                     .sum();
                 if retrace > rim_len {
                     continue;
@@ -3123,7 +3128,7 @@ fn link(
         let mut kept: Vec<[f64; 2]> = Vec::with_capacity(n);
         for (i, &p) in path.iter().enumerate() {
             match kept.last() {
-                Some(&q) if (p[0] - q[0]).hypot(p[1] - q[1]) < tiny => {
+                Some(&q) if metallic::hypot(p[0] - q[0], p[1] - q[1]) < tiny => {
                     if i + 1 == n {
                         *kept.last_mut().unwrap() = p;
                     }
@@ -3175,7 +3180,7 @@ fn uncut(
                         } else {
                             0.
                         };
-                        (v[0] - t * u[0]).hypot(v[1] - t * u[1]) <= near
+                        metallic::hypot(v[0] - t * u[0], v[1] - t * u[1]) <= near
                     })
                 })
             })
@@ -3196,7 +3201,7 @@ fn uncut(
             *last = None;
             let len: f64 = run
                 .windows(2)
-                .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+                .map(|w| metallic::hypot(w[1][0] - w[0][0], w[1][1] - w[0][1]))
                 .sum();
             if run.len() >= 2 && len >= stepover / 4. {
                 out.push(std::mem::take(run));
@@ -3208,7 +3213,8 @@ fn uncut(
             let mut samples = vec![];
             if i > 0 {
                 let p = path[i - 1];
-                let n = ((q[0] - p[0]).hypot(q[1] - p[1]) / (stepover / 8.)).ceil() as usize;
+                let n =
+                    (metallic::hypot(q[0] - p[0], q[1] - p[1]) / (stepover / 8.)).ceil() as usize;
                 for j in 1..n {
                     let t = j as f64 / n as f64;
                     samples.push(([p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])], false));
@@ -3580,7 +3586,10 @@ impl Solver<'_> {
             if e < order.len() {
                 let after = edge(order[e], order[e - 1], w)?;
                 match before {
-                    Some(b) if (b.0[0] - after.0[0]).hypot(b.0[1] - after.0[1]) <= 2. * self.r => {
+                    Some(b)
+                        if metallic::hypot(b.0[0] - after.0[0], b.0[1] - after.0[1])
+                            <= 2. * self.r =>
+                    {
                         pieces.last_mut().unwrap().push(after);
                         bridged += 1;
                     }

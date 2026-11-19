@@ -82,3 +82,14 @@ def install():
     adapter.export_surface_mesh = _cached("mesh", adapter.export_surface_mesh, _encode_mesh, _decode_mesh)
     adapter.export_floor_region = _cached("region", adapter.export_floor_region, lambda r: r.to_dict(), _decode_region)
     adapter._bench_frozen = True
+
+
+def stock_mesh(shape, name):
+    """Freeze the triangulation of a named planar blank just like the target mesh."""
+    from camlib.cadquery import export_stock_mesh
+    from camlib.simulation import StockMesh
+
+    cached = _cached(
+        "stock", lambda shape, **_: export_stock_mesh(shape), StockMesh.to_dict, lambda data: StockMesh(**data)
+    )
+    return cached(shape, name=name)

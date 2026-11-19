@@ -9,6 +9,7 @@ number always describes a toolpath whose correctness is tested.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+import json
 import math
 from pathlib import Path
 import sys
@@ -20,7 +21,7 @@ for path in (ROOT / "python", ROOT / "python" / "tests"):
 
 # CAD-derived meshes and regions come from committed fixtures (identical
 # inputs on every machine, whatever CadQuery/OCP version is installed).
-from geometry import install as _freeze_geometry  # noqa: E402
+from geometry import FIXTURES, install as _freeze_geometry, stock_mesh  # noqa: E402
 
 _freeze_geometry()
 
@@ -269,7 +270,7 @@ def _box(x0, y0, x1, y1, z0, z1):
 def _large_plate():
     """A 420 x 300 mm plate, 4 mm thick, with 20 mm bosses on it: two blocks,
     a round boss (a 48-sided prism) and a rectangular frame around an
-    enclosed pocket. Built here, so the benchmark needs no fixture for it."""
+    enclosed pocket. The prism vertices are frozen to give every host the same part."""
     from camlib.surface import SurfaceMesh
 
     floor, top = 4.0, 24.0
@@ -283,10 +284,10 @@ def _large_plate():
         (370, 170, 390, 270),
     ):
         triangles += _box(x0, y0, x1, y1, 0, top)
-    n, (cx, cy, radius) = 48, (300.0, 90.0, 40.0)
-    ring = [(cx + radius * math.cos(math.tau * i / n), cy + radius * math.sin(math.tau * i / n)) for i in range(n)]
-    for i in range(n):
-        (ax, ay), (bx, by) = ring[i], ring[(i + 1) % n]
+    cx, cy = 300.0, 90.0
+    ring = json.loads((FIXTURES / "large-plate-boss.json").read_text())
+    for i, (ax, ay) in enumerate(ring):
+        bx, by = ring[(i + 1) % len(ring)]
         triangles += [
             ((ax, ay, 0.0), (bx, by, 0.0), (bx, by, top)),
             ((ax, ay, 0.0), (bx, by, top), (ax, ay, top)),
@@ -465,7 +466,6 @@ def _flat():
     # Flat finishing follows roughing: the blank is the part with 0.1 mm left
     # on the flats, so runs are not entered through solid stock.
     import cadquery as cq
-    from camlib.cadquery import export_stock_mesh
 
     blank = (
         cq.Workplane("XY")
@@ -473,7 +473,7 @@ def _flat():
         .union(cq.Workplane("XY").box(8, 8, 3, centered=False).translate((8, 4, 4.1)))
     )
     return dict(
-        stock=camlib.StockSpec.from_mesh(export_stock_mesh(blank), 0.25),
+        stock=camlib.StockSpec.from_mesh(stock_mesh(blank, "stepped"), 0.25),
         tools=(tool,),
         operations=(op,),
         revision="bench",
@@ -488,7 +488,6 @@ def _stepped_target():
 def _pencil():
     import camlib
     import cadquery as cq
-    from camlib.cadquery import export_stock_mesh
 
     tool = _ball4()
     op = camlib.Pencil(
@@ -509,7 +508,7 @@ def _pencil():
         .union(cq.Workplane("XY").box(8, 8, 3, centered=False).translate((8, 4, 4.1)))
     )
     return dict(
-        stock=camlib.StockSpec.from_mesh(export_stock_mesh(blank), 0.05),
+        stock=camlib.StockSpec.from_mesh(stock_mesh(blank, "stepped"), 0.05),
         tools=(tool,),
         operations=(op,),
         revision="bench",
@@ -623,7 +622,6 @@ def _rough_finish_target():
 def _waterline():
     import camlib
     import cadquery as cq
-    from camlib.cadquery import export_stock_mesh
 
     config = _options(_support("waterline").waterline_job())
     # Waterline finishing follows roughing: the blank leaves 0.3 mm on the
@@ -631,7 +629,7 @@ def _waterline():
     # down into stock.
     base = cq.Workplane("XY").box(24, 16, 2.1, centered=(False, False, False))
     island = cq.Workplane("XY").workplane(offset=2).center(12, 8).rect(16.7, 10.7).extrude(6.3, taper=20)
-    stock = camlib.StockSpec.from_mesh(export_stock_mesh(base.union(island)), 0.4)
+    stock = camlib.StockSpec.from_mesh(stock_mesh(base.union(island), "tapered-island"), 0.4)
     return dict(config, stock=stock)
 
 

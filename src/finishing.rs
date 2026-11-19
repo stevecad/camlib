@@ -197,7 +197,7 @@ impl RestMap {
     ) -> Result<Self, String> {
         let [nx, ny] = stock.dimensions();
         let step = stock.cell_widths_mm();
-        let reach = step[0].hypot(step[1]) / 2.;
+        let reach = metallic::hypot(step[0], step[1]) / 2.;
         let cells = stock.cells();
         let workers = std::thread::available_parallelism().map_or(1, usize::from);
         let rows = crate::roughing::parallel::ordered(
@@ -235,7 +235,7 @@ impl RestMap {
     /// deliberately retains uncertain strokes; selection is not a removal
     /// certificate, and the full stock/material replay still decides completion.
     fn engaged(&self, p: [f64; 2], tip_z: f64, radius: f64, corner: f64, threshold: f64) -> bool {
-        let half = self.step[0].hypot(self.step[1]) / 2.;
+        let half = metallic::hypot(self.step[0], self.step[1]) / 2.;
         let range = |k: usize, n: usize| {
             let lo = ((p[k] - radius - half - self.min[k]) / self.step[k])
                 .floor()
@@ -256,7 +256,7 @@ impl RestMap {
                     self.min[0] + (i as f64 + 0.5) * self.step[0],
                     self.min[1] + (j as f64 + 0.5) * self.step[1],
                 ];
-                let near = ((c[0] - p[0]).hypot(c[1] - p[1]) - half).max(0.);
+                let near = (metallic::hypot(c[0] - p[0], c[1] - p[1]) - half).max(0.);
                 if near <= radius {
                     let arc = (near - (radius - corner)).max(0.);
                     let bottom = tip_z + corner - (corner * corner - arc * arc).max(0.).sqrt();
@@ -305,7 +305,8 @@ pub(crate) fn filter_runs(
     let mut samples = 0f64;
     for pass in &passes {
         for w in pass.windows(2) {
-            samples += ((w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]) / spacing).ceil() + 1.;
+            samples +=
+                (metallic::hypot(w[1][0] - w[0][0], w[1][1] - w[0][1]) / spacing).ceil() + 1.;
         }
     }
     if !samples.is_finite() || samples > u32::MAX as f64 {
@@ -329,7 +330,9 @@ pub(crate) fn filter_runs(
         };
         for w in pass.windows(2) {
             let (a, b) = (w[0], w[1]);
-            let n = ((b[0] - a[0]).hypot(b[1] - a[1]) / spacing).ceil().max(1.) as usize;
+            let n = (metallic::hypot(b[0] - a[0], b[1] - a[1]) / spacing)
+                .ceil()
+                .max(1.) as usize;
             for k in 0..n {
                 let t = k as f64 / n as f64;
                 visit(
@@ -1031,7 +1034,7 @@ impl ParallelPlan {
             // Shorter than the tool radius: a corner point, not a crease.
             .filter(|c| {
                 c.windows(2)
-                    .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+                    .map(|w| metallic::hypot(w[1][0] - w[0][0], w[1][1] - w[0][1]))
                     .sum::<f64>()
                     >= radius
             })
@@ -1787,7 +1790,7 @@ impl ParallelPlan {
                 return Ok(Some((s, Some(error))));
             }
             if s.depth >= 48
-                || (s.a[0] - s.b[0]).hypot(s.a[1] - s.b[1]) <= 32. * self.op.tolerance_mm
+                || metallic::hypot(s.a[0] - s.b[0], s.a[1] - s.b[1]) <= 32. * self.op.tolerance_mm
             {
                 let corner = Self::transition_corner(s);
                 if (s.b[2] - s.a[2]).abs() > self.op.path_error_mm
@@ -1870,14 +1873,14 @@ impl ParallelPlan {
             .as_ref()
             .and_then(|e| e.ramp())
             .map_or(0., |r| {
-                (self.heights.feed - entry).max(0.) / r.angle_rad.tan()
+                (self.heights.feed - entry).max(0.) / metallic::tan(r.angle_rad)
             });
         // The path, up to the length a ramp from the feed height would need.
         let mut segments = vec![];
         let mut length = 0.;
         for w in line.windows(2) {
             let (p, q) = (w[0], w[1]);
-            let d = (q[0] - p[0]).hypot(q[1] - p[1]);
+            let d = metallic::hypot(q[0] - p[0], q[1] - p[1]);
             if d <= 0. {
                 continue;
             }
@@ -1904,7 +1907,7 @@ impl ParallelPlan {
             let mut top = f64::MIN;
             let mut walked = 0.;
             for &(p, q) in &segments {
-                let d = (q[0] - p[0]).hypot(q[1] - p[1]);
+                let d = metallic::hypot(q[0] - p[0], q[1] - p[1]);
                 let f = if walked + d > span {
                     ((span - walked) / d).clamp(0., 1.)
                 } else {
@@ -1929,7 +1932,7 @@ impl ParallelPlan {
         if let Some(ramp) = self.op.entry.as_ref().and_then(|e| e.ramp())
             && !segments.is_empty()
         {
-            let tan = ramp.angle_rad.tan();
+            let tan = metallic::tan(ramp.angle_rad);
             let mut settled = false;
             for _ in 0..32 {
                 let span = ((top - entry) / tan).min(length);
@@ -1993,7 +1996,7 @@ impl ParallelPlan {
         let mut samples: Vec<(Vec3, f64)> = vec![([first[0], first[1], top], top)];
         for c in &curves {
             let (p, q) = (c.start(), c.end());
-            let run = (q[0] - p[0]).hypot(q[1] - p[1]);
+            let run = metallic::hypot(q[0] - p[0], q[1] - p[1]);
             let n = (run / step).ceil().max(1.);
             if n > 1e5 || samples.len() > 1_000_000 {
                 return Err(format!(
@@ -2028,7 +2031,7 @@ impl ParallelPlan {
                     previous = end;
                     continue;
                 }
-                let run = (end.0[0] - previous.0[0]).hypot(end.0[1] - previous.0[1]);
+                let run = metallic::hypot(end.0[0] - previous.0[0], end.0[1] - previous.0[1]);
                 if depth >= 24 || run <= 16. * self.op.tolerance_mm || points.len() > 1_000_000 {
                     return Err(format!(
                         "{which}: the declared ramp down the pass's path is not clear of the part (a move reaches X{:.3} Y{:.3} Z{:.3}). Rough or rest-rough this area first",
@@ -2057,7 +2060,7 @@ impl ParallelPlan {
     /// a tolerance.
     fn entry_excess(&self, stock: &Stock, xy: [f64; 2], tip: f64) -> (f64, f64) {
         let [wx, wy] = stock.cell_widths_mm();
-        let half = 0.5 * wx.hypot(wy);
+        let half = 0.5 * metallic::hypot(wx, wy);
         let mut scratch = self.part_scratch.borrow_mut();
         let (seen, stamp) = &mut *scratch;
         plunge_excess(
@@ -2378,7 +2381,7 @@ fn xy_off_chord(q: Vec3, a: Vec3, b: Vec3) -> f64 {
     } else {
         0.
     };
-    (q[0] - a[0] - t * dx).hypot(q[1] - a[1] - t * dy)
+    metallic::hypot(q[0] - a[0] - t * dx, q[1] - a[1] - t * dy)
 }
 
 /// How far a vertical plunge to `tip` at `xy` would cut into live stock: the
@@ -2419,7 +2422,7 @@ fn plunge_excess(
             // lower face is lowest at that nearest point.
             let gx = ((c[0] - xy[0]).abs() - wx / 2.).max(0.);
             let gy = ((c[1] - xy[1]).abs() - wy / 2.).max(0.);
-            let rho = gx.hypot(gy);
+            let rho = metallic::hypot(gx, gy);
             if rho > r {
                 continue;
             }
