@@ -68,6 +68,16 @@
 //! each, bounded like the others. Without an interval the three cases are
 //! the two of the rule above: a position is inside or a violation.
 //!
+//! The calibration error is an unknown constant between commanded work
+//! coordinates and machine axes, so it is on a machine axis only once a
+//! work coordinate has commanded that axis. A machine axis last set by a
+//! declared machine-axis position (the model's start pose, a route
+//! waypoint) that no posted block has commanded since is at that position
+//! exactly, at the start of a move and, when the move does not command it
+//! either, all along it (`curve_calibrated_exact`): it is compared as a
+//! declared machine-axis position, without interval. Which axes a block
+//! commands is the machine model's to establish (`machine::Session::chunk`).
+//!
 //! A machine coordinate of a move is extreme at an end or where it is
 //! stationary, so a move is inside exactly when those points are: a line has
 //! its two ends (a rigid transform keeps it a segment and the box is convex),
@@ -194,7 +204,11 @@ struct Nominal {
 }
 
 /// `point` (work coordinates) against the travel: `None` when it is inside.
-/// `nominal` is `None` for a declared position.
+/// `nominal` is `None` for a declared position. A machine axis with an
+/// `exact` value is at that declared machine-axis position (no work
+/// coordinate has commanded it since, see `curve_calibrated_exact`): it is
+/// compared exactly, as `axes_outside` compares it, and the work point and
+/// the calibration play no part on it.
 fn decide(
     frame: &WorkFrame,
     travel: &Travel,
@@ -202,11 +216,36 @@ fn decide(
     fraction: f64,
     point: Vec3,
     nominal: Option<Nominal>,
+    exact: [Option<f64>; 3],
 ) -> Option<Outside> {
     let transformed = frame.to_design(point);
-    let machine: Vec3 = std::array::from_fn(|k| transformed[k] + calibration.offset_mm[k]);
+    let machine: Vec3 =
+        std::array::from_fn(|k| exact[k].unwrap_or(transformed[k] + calibration.offset_mm[k]));
     let mut worst: Option<Outside> = None;
     for axis in 0..3 {
+        if let Some(at) = exact[axis] {
+            for (low, limit) in [(true, travel.min[axis]), (false, travel.max[axis])] {
+                let beyond = if low { limit - at } else { at - limit };
+                if (if low { at < limit } else { at > limit })
+                    && worst.is_none_or(|w| (true, beyond) > (w.certain, w.beyond_mm))
+                {
+                    worst = Some(Outside {
+                        certain: true,
+                        fraction,
+                        point_mm: point,
+                        machine_mm: machine,
+                        axis,
+                        low,
+                        limit_mm: limit,
+                        interval_mm: [at; 2],
+                        beyond_mm: beyond,
+                        guard_mm: 0.,
+                        nominal_gap_mm: None,
+                    });
+                }
+            }
+            continue;
+        }
         let row = [frame.x[axis], frame.y[axis], frame.z[axis]];
         // T of the module documentation, and the length of this machine
         // axis in work coordinates (1 for a rotation): a displacement d of
@@ -281,7 +320,28 @@ fn decide(
 
 /// A declared position (exact) against the travel.
 pub(crate) fn point_outside(frame: &WorkFrame, travel: &Travel, point: Vec3) -> Option<Outside> {
-    decide(frame, travel, &Calibration::NONE, 0., point, None)
+    decide(
+        frame,
+        travel,
+        &Calibration::NONE,
+        0.,
+        point,
+        None,
+        [None; 3],
+    )
+}
+
+/// A position commanded in work coordinates without a move (a block whose
+/// words equal the decoded position), with its calibration interval, on the
+/// axes not `exact` (see `curve_calibrated_exact`).
+pub(crate) fn point_calibrated_exact(
+    frame: &WorkFrame,
+    travel: &Travel,
+    calibration: &Calibration,
+    point: Vec3,
+    exact: [Option<f64>; 3],
+) -> Option<Outside> {
+    decide(frame, travel, calibration, 0., point, None, exact)
 }
 
 /// A declared machine-axis position (a route waypoint, a start position of
@@ -394,8 +454,34 @@ pub(crate) fn curve_calibrated(
     path: &PreparedCurve,
     arcs: ArcGap,
 ) -> Result<Option<Outside>, String> {
+    curve_calibrated_exact(frame, travel, calibration, path, arcs, [None; 3], [None; 3])
+}
+
+/// `curve_calibrated` for a move some of whose machine axes are at declared
+/// machine-axis positions (the kinematic machine model's start pose, a
+/// route waypoint) that no work coordinate has commanded since. The
+/// calibration interval is an unknown constant between commanded work
+/// coordinates and machine axes, so it is on an axis only once a work
+/// coordinate has commanded it; until then the axis is where it was
+/// declared, exactly.
+///
+/// `exact_start[k]` is machine axis `k` at the start of the move, when it is
+/// still at a declared position; `exact_rest[k]` the same for the rest of the
+/// move (its arc extremes and its end), `Some` only when the move does not
+/// command that axis either (the machine axis then stays where it is: a
+/// rigid work frame moves it only through the work axes it depends on). A
+/// `None` axis carries the calibration interval as in `curve_calibrated`.
+pub(crate) fn curve_calibrated_exact(
+    frame: &WorkFrame,
+    travel: &Travel,
+    calibration: &Calibration,
+    path: &PreparedCurve,
+    arcs: ArcGap,
+    exact_start: [Option<f64>; 3],
+    exact_rest: [Option<f64>; 3],
+) -> Result<Option<Outside>, String> {
     let curve = path.curve();
-    let mut points = vec![(0., curve.start(), None)];
+    let mut points = vec![(0., curve.start(), None, exact_start)];
     if !matches!(curve, Curve::Line { .. }) {
         let (gap, evaluation) = nominal_gap_and_evaluation(path);
         let nominal = Some(Nominal {
@@ -418,14 +504,14 @@ pub(crate) fn curve_calibrated(
         for fraction in fractions {
             // At fraction 0 or 1 `position` returns the declared end.
             let nominal = nominal.filter(|_| fraction > 0. && fraction < 1.);
-            points.push((fraction, path.position(fraction)?, nominal));
+            points.push((fraction, path.position(fraction)?, nominal, exact_rest));
         }
-        points.push((1., path.nominal_end(), nominal));
+        points.push((1., path.nominal_end(), nominal, exact_rest));
     }
-    points.push((1., curve.end(), None));
+    points.push((1., curve.end(), None, exact_rest));
     let mut uncertain = None;
-    for (fraction, point, nominal) in points {
-        match decide(frame, travel, calibration, fraction, point, nominal) {
+    for (fraction, point, nominal, exact) in points {
+        match decide(frame, travel, calibration, fraction, point, nominal, exact) {
             Some(found) if found.certain => return Ok(Some(found)),
             Some(found) => {
                 uncertain.get_or_insert(found);

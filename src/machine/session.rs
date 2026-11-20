@@ -21,6 +21,12 @@ struct Path {
     dogleg: bool,
     absolute: bool,
     error: Vec3,
+    /// For a decoded move, the machine axes still at a declared machine-axis
+    /// position at its start, and those still there for the rest of it
+    /// (`travel::curve_calibrated_exact`); the travel rule holds them
+    /// exactly, without the calibration interval.
+    exact_start: [Option<f64>; 3],
+    exact_rest: [Option<f64>; 3],
 }
 impl Path {
     fn absolute(from: Vec3, to: Vec3, dogleg: bool) -> Self {
@@ -35,6 +41,8 @@ impl Path {
             dogleg,
             absolute: true,
             error: [0.; 3],
+            exact_start: [None; 3],
+            exact_rest: [None; 3],
         }
     }
     fn position(&self, t: f64) -> Result<Vec3, String> {
@@ -62,6 +70,17 @@ pub struct Session {
     tool_shapes: BTreeMap<String, Vec<Shape>>,
     active: Option<String>,
     axes: Vec3,
+    /// Each machine axis still at the declared machine-axis position that
+    /// last set it (the start pose, a route waypoint), because no posted
+    /// block has commanded it in work coordinates since: `None` once one may
+    /// have (see `Session::chunk`).
+    exact: [Option<f64>; 3],
+    /// The bound post's axis word addresses (`Dialect.axes`) and whether
+    /// parentheses are comments, to find which axes a posted block commands.
+    /// `None` when the definition does not state them: then every block is
+    /// taken to command every axis.
+    axis_letters: Option<[u8; 3]>,
+    parentheses_comments: bool,
     report: Report,
     failed: bool,
     finished: bool,
@@ -240,8 +259,29 @@ impl Session {
             "Indexing is covered only by caller-certified complete swept envelopes; rotary kinematics (#2), overhang stock (#1), actual setup mistakes and servo/blending deviations are not inferred".into(),
             "G28/G30/G53 and controller homing blocks are rejected by the independent decoder; controller-internal tool-change/end motion must be fully declared in the bound routes".into(),
         ]};
+        let dialect = machine.get("dialect");
+        let axis_letters = dialect
+            .and_then(|d| d.get("axes"))
+            .and_then(|a| a.as_array())
+            .and_then(|a| {
+                let letters: Vec<u8> = a
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .filter(|v| v.len() == 1 && v.as_bytes()[0].is_ascii_uppercase())
+                    .map(|v| v.as_bytes()[0])
+                    .collect();
+                <[u8; 3]>::try_from(letters).ok()
+            })
+            .filter(|l| l[0] != l[1] && l[1] != l[2] && l[0] != l[2]);
+        let parentheses_comments = dialect
+            .and_then(|d| d.get("parentheses_comments"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let mut s = Self {
             axes: model.initial_axes_mm,
+            exact: model.initial_axes_mm.map(Some),
+            axis_letters,
+            parentheses_comments,
             active: model.initial_tool.clone(),
             prepared,
             replay,
@@ -435,7 +475,9 @@ impl Session {
     /// tool's expected gauge offset, known to the declared calibration
     /// interval (work frame and gauge offset): inside only if the whole
     /// interval is inside, a violation only if the whole interval is beyond
-    /// a limit, uncertain otherwise. A route between declared machine-axis
+    /// a limit, uncertain otherwise. An axis no posted block has commanded
+    /// since a declared machine-axis position is still there exactly, with
+    /// no interval (`Path::exact_start`, `Session::chunk`). A route between declared machine-axis
     /// positions has no interval, so it is inside or a violation. A decoded
     /// arc's nominal circle is known to its endpoint gap either side, as in
     /// the posted-output check.
@@ -466,12 +508,18 @@ impl Session {
                 low_mm: e[0],
                 high_mm: e[1],
             };
-            crate::travel::curve_calibrated(
+            // An axis no block has commanded since a declared machine-axis
+            // position is still there exactly: the interval is between
+            // commanded work coordinates and the axes, so it enters an axis
+            // only with a command (`travel::curve_calibrated_exact`).
+            crate::travel::curve_calibrated_exact(
                 &path.frame,
                 &travel,
                 &calibration,
                 curve,
                 ArcGap::Executed,
+                path.exact_start,
+                path.exact_rest,
             )?
         } else {
             // Declared machine-axis positions: exact, no calibration.
@@ -484,6 +532,48 @@ impl Session {
                     })
                 })
         };
+        self.travel_finding(found, at)
+    }
+    /// The machine axes the active tool's position commands to the decoded
+    /// work position without moving (a block whose words equal it): as a
+    /// decoded move's end, the interval on every axis not still `exact`.
+    fn travel_point(
+        &mut self,
+        at: &Attribution,
+        work: &mut Budget<'_, impl CancelSignal>,
+    ) -> Result<(), String> {
+        use crate::travel::{Calibration, Travel};
+        let Some(t) = self.active.clone() else {
+            return Ok(());
+        };
+        let m = &self.prepared.model;
+        let travel = Travel::tip(
+            std::array::from_fn(|k| m.axes[k].min_mm),
+            std::array::from_fn(|k| m.axes[k].max_mm),
+        );
+        work.tick()?;
+        let c = self.calibration(&t)?;
+        let e = interval_add([m.work_error_min_mm, m.work_error_max_mm], gauge_error(c));
+        let calibration = Calibration {
+            offset_mm: gauge(c),
+            low_mm: e[0],
+            high_mm: e[1],
+        };
+        let found = crate::travel::point_calibrated_exact(
+            &m.work_to_machine,
+            &travel,
+            &calibration,
+            self.replay.position(),
+            self.exact,
+        );
+        self.travel_finding(found, at)
+    }
+    fn travel_finding(
+        &mut self,
+        found: Option<crate::travel::Outside>,
+        at: &Attribution,
+    ) -> Result<(), String> {
+        let m = &self.prepared.model;
         let Some(found) = found else {
             return Ok(());
         };
@@ -712,10 +802,203 @@ impl Session {
         }
         Ok(())
     }
+    /// One decoded event, without the posted blocks it came from. Which axes
+    /// the blocks commanded is then unknown: every axis is taken to carry
+    /// the calibration interval from here on, at both ends of every move
+    /// (`chunk` holds axes no block commanded exactly).
     pub fn event(
         &mut self,
         event: Event,
         event_index: usize,
+        cancel: &impl CancelSignal,
+    ) -> Result<(), String> {
+        if !(self.failed || self.finished) {
+            self.exact = [None; 3];
+        }
+        self.dispatch(event, event_index, [true; 3], cancel)
+    }
+    /// The work axes a posted block may command: those whose word address
+    /// appears in it outside a comment. Every decoder reads a block only
+    /// before its first `;` and, where the dialect makes them comments,
+    /// outside parentheses (`Decoder::read_full`, the Haas and Carvera
+    /// readers, `post_decode`), and an axis moves to a work position only by
+    /// its own word or by a decoded move along it. An address anywhere else
+    /// (in a keyword, an unrelated word) only counts an axis as commanded,
+    /// which is never less safe. Unbalanced parentheses, which no decoder
+    /// accepts, or an undeclared dialect count every axis.
+    fn axis_words(&self, text: &str) -> [bool; 3] {
+        let Some(letters) = self.axis_letters else {
+            return [!text.trim().is_empty(); 3];
+        };
+        let body = text.split(';').next().unwrap_or("");
+        let mut depth = 0usize;
+        let mut words = [false; 3];
+        for b in body.bytes() {
+            match b {
+                b'(' if self.parentheses_comments => depth += 1,
+                b')' if self.parentheses_comments => {
+                    if depth == 0 {
+                        return [true; 3];
+                    }
+                    depth -= 1;
+                }
+                _ if depth == 0 => {
+                    let b = b.to_ascii_uppercase();
+                    for k in 0..3 {
+                        words[k] |= b == letters[k];
+                    }
+                }
+                _ => {}
+            }
+        }
+        if depth != 0 { [true; 3] } else { words }
+    }
+    /// The machine axes a command of the `work` axes may move: those whose
+    /// row of the rigid work-to-machine frame depends on one of them.
+    fn affected(&self, work: [bool; 3]) -> [bool; 3] {
+        let f = &self.prepared.model.work_to_machine;
+        std::array::from_fn(|k| {
+            let row = [f.x[k], f.y[k], f.z[k]];
+            (0..3).any(|j| work[j] && row[j] != 0.)
+        })
+    }
+    /// Blocks that may command the `work` axes: the machine axes they may
+    /// move are no longer at a declared position. Without a decoded move the
+    /// machine still goes to the commanded work position, the decoded one:
+    /// with `check`, an axis that leaves its declared position there is held
+    /// to travel with its interval (a following move's start would hold the
+    /// same point, so a block before a move in its own record skips it).
+    fn commanded(
+        &mut self,
+        work: [bool; 3],
+        check: bool,
+        at: &Attribution,
+        cancel: &impl CancelSignal,
+    ) -> Result<(), String> {
+        let moved = self.affected(work);
+        let mut left = false;
+        for (exact, moved) in self.exact.iter_mut().zip(moved) {
+            if moved && exact.is_some() {
+                *exact = None;
+                left = true;
+            }
+        }
+        if left && check {
+            let mut budget = Budget {
+                remaining: self.prepared.model.options.max_axis_tests,
+                cancel,
+            };
+            if let Err(e) = self.travel_point(at, &mut budget) {
+                self.failed = true;
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+    /// One retained posted chunk: its decoded records in order, with the
+    /// posted blocks they came from (`Chunk.lines`, by `line_interval`).
+    ///
+    /// The calibration interval is an unknown constant between commanded
+    /// work coordinates and machine axes. A machine axis last set by a
+    /// declared machine-axis position (the start pose, a route waypoint)
+    /// that no block has since commanded is at that position exactly; a
+    /// block that writes an axis word commands that axis to a work position,
+    /// even one equal to the decoded current position (that block decodes
+    /// to no move, yet the machine goes to the commanded position, which the
+    /// interval places), so it is held with the interval from then on.
+    ///
+    /// For a decoded move: its start is exact on every axis still exact
+    /// before its record's blocks (except the last one, which may be the
+    /// move's own block, its words reaching only the end) and its control
+    /// effects; the rest of it carries the interval on every axis its
+    /// record's blocks name or the move changes in work coordinates (an arc
+    /// or helix always its plane's two axes), mapped to machine axes through
+    /// the frame. A record whose lines are not all in `lines` counts every
+    /// axis. A block between records, or a record without a decoded move,
+    /// commands the axes it names at the decoded position, which is then
+    /// held to travel with the interval on them.
+    pub fn chunk(
+        &mut self,
+        lines: &[crate::post::Line],
+        checked: &[crate::post::Checked],
+        cancel: &impl CancelSignal,
+    ) -> Result<(), String> {
+        if self.failed || self.finished {
+            return Err("machine session is failed or finished".into());
+        }
+        let mut next = 0;
+        for check in checked {
+            let at = Attribution {
+                event: Some(check.event_index),
+                ..Default::default()
+            };
+            let [start, end] = check.line_interval;
+            let (before, all) = if check.cycle_event_index.is_some() || end < start {
+                ([false; 3], [false; 3])
+            } else {
+                while next < lines.len() && lines[next].number < start {
+                    let words = self.axis_words(&lines[next].text);
+                    let between = Attribution {
+                        event: self.last_event,
+                        ..Default::default()
+                    };
+                    self.commanded(words, true, &between, cancel)?;
+                    next += 1;
+                }
+                let mut own = vec![];
+                let mut complete = true;
+                while next < lines.len() && lines[next].number <= end {
+                    complete &= lines[next].number == start + own.len();
+                    own.push(self.axis_words(&lines[next].text));
+                    next += 1;
+                }
+                if !complete || own.len() != end - start + 1 {
+                    ([true; 3], [true; 3])
+                } else {
+                    let union = |words: &[[bool; 3]]| {
+                        words
+                            .iter()
+                            .fold([false; 3], |a, w| std::array::from_fn(|k| a[k] | w[k]))
+                    };
+                    (union(&own[..own.len() - 1]), union(&own))
+                }
+            };
+            for event in check.control_effects.clone().unwrap_or_default() {
+                self.dispatch(event, check.event_index, all, cancel)?;
+            }
+            match &check.motion {
+                Some(motion) => {
+                    self.commanded(before, false, &at, cancel)?;
+                    self.dispatch(
+                        Event::Motion {
+                            motion: motion.clone(),
+                        },
+                        check.event_index,
+                        all,
+                        cancel,
+                    )?
+                }
+                None => self.commanded(all, true, &at, cancel)?,
+            }
+        }
+        while next < lines.len() {
+            let words = self.axis_words(&lines[next].text);
+            let between = Attribution {
+                event: self.last_event,
+                ..Default::default()
+            };
+            self.commanded(words, true, &between, cancel)?;
+            next += 1;
+        }
+        Ok(())
+    }
+    /// `commanded`: the work axes the event's posted blocks may command
+    /// (for a move, besides those it changes).
+    fn dispatch(
+        &mut self,
+        event: Event,
+        event_index: usize,
+        commanded: [bool; 3],
         cancel: &impl CancelSignal,
     ) -> Result<(), String> {
         if self.failed || self.finished {
@@ -732,7 +1015,7 @@ impl Session {
             ..Default::default()
         };
         match event {
-            Event::Motion { motion } => self.motion(motion, at, cancel)?,
+            Event::Motion { motion } => self.motion(motion, at, commanded, cancel)?,
             Event::ToolChange {
                 tool,
                 length_register,
@@ -773,8 +1056,23 @@ impl Session {
         &mut self,
         motion: Motion,
         mut at: Attribution,
+        commanded: [bool; 3],
         cancel: &impl CancelSignal,
     ) -> Result<(), String> {
+        // The work axes this move commands: those its blocks name, those it
+        // changes, and an arc's or helix's plane axes (its extremes are on
+        // commanded coordinates even where an end coincides).
+        let (start, end) = (motion.curve.start(), motion.curve.end());
+        let mut command: [bool; 3] = std::array::from_fn(|j| commanded[j] || start[j] != end[j]);
+        if let Curve::Arc { plane, .. } | Curve::Helix { plane, .. } = &motion.curve {
+            let [u, v, _] = plane.axes();
+            command[u] = true;
+            command[v] = true;
+        }
+        let moved = self.affected(command);
+        let exact_start = self.exact;
+        let exact_rest: [Option<f64>; 3] =
+            std::array::from_fn(|k| exact_start[k].filter(|_| !moved[k]));
         if self.active.as_deref() != Some(&motion.tool) {
             return Err("decoded motion has no matching active machine tool".into());
         }
@@ -837,6 +1135,8 @@ impl Session {
             dogleg,
             absolute: false,
             error: coordinate_error,
+            exact_start,
+            exact_rest,
         };
         // The native rotational assembly/stock checker handles exact cutter
         // engagement rules. A dogleg rapid instead checks its full XYZ envelope.
@@ -878,6 +1178,7 @@ impl Session {
             self.replay.push_turn_replayed(motion, LIMIT, cancel)?;
         }
         self.axes = to;
+        self.exact = exact_rest;
         self.report.decoded_motions += 1;
         Ok(())
     }
@@ -896,6 +1197,13 @@ impl Session {
             );
             self.check_path(&path, at.clone(), false, cancel)?;
             self.axes = to;
+            // A declared waypoint puts an axis at that machine position; an
+            // axis it retains stays as it was.
+            for (exact, declared) in self.exact.iter_mut().zip(p) {
+                if declared.is_some() {
+                    *exact = *declared;
+                }
+            }
         }
         Ok(())
     }

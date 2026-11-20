@@ -232,6 +232,32 @@ and route waypoints.
   beyond the limit by more than the gap. Positions declared in machine
   coordinates (the model's start position and route waypoints) involve no
   arithmetic and are compared exactly.
+- **An axis carries the interval only once a block commands it.** The
+  calibration error is an unknown constant between commanded work
+  coordinates and machine axes. A machine axis last set by a declared
+  machine-axis position (the start pose, a route waypoint) stays exactly
+  there until a posted block commands it in work coordinates, so a mill
+  that starts at home on its limits starts its first moves exactly there:
+  - a decoded move's **start** is exact on every axis no earlier block has
+    commanded;
+  - its **end**, and the extremes of an arc or helix, carry the interval on
+    every machine axis that depends (through the work frame) on a work axis
+    the move commands, and stay exact on the others. A move commands the work
+    axes it changes, the plane axes of an arc or helix, and every axis whose
+    word its blocks write, **even a word equal to the current position**: the
+    controller then goes to that work position, which the interval places,
+    and an absent word is the only way to leave an axis where it is;
+  - a block that writes an axis word and decodes to no move (its words equal
+    the decoded position) commands that axis all the same, for the next move;
+  - a route waypoint makes the axes it names exact again; an axis it retains
+    stays as it was.
+
+  Axis words are found in the posted blocks themselves, outside comments
+  (after `;`, and inside parentheses where the dialect makes them comments),
+  using the bound post's `Dialect.axes`. Where that is not known (a decoded
+  event replayed without its blocks, a record whose blocks are missing, a
+  definition without the dialect), every axis carries the interval, as
+  before.
 
 A rotated work frame is decided on the move itself, not on a box around it.
 Through a general rotation the machine coordinate of a position is a rounded

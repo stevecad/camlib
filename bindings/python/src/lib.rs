@@ -2735,6 +2735,10 @@ struct MachineCrashSession {
 }
 #[derive(serde::Deserialize)]
 struct MachineDecodedChunk {
+    /// The posted blocks: which axes they command decides where the
+    /// calibration interval applies. Absent, every axis carries it.
+    #[serde(default)]
+    lines: Vec<camlib::post::Line>,
     checked: Vec<camlib::post::Checked>,
 }
 #[pymethods]
@@ -2782,19 +2786,7 @@ impl MachineCrashSession {
             // Consume actual decoded controls, never normalized source controls.
             let chunk: MachineDecodedChunk =
                 serde_json::from_str(chunk).map_err(|e| e.to_string())?;
-            for check in chunk.checked {
-                for event in check.control_effects.unwrap_or_default() {
-                    self.inner.event(event, check.event_index, &*flag)?;
-                }
-                if let Some(motion) = check.motion {
-                    self.inner.event(
-                        camlib::motion::Event::Motion { motion },
-                        check.event_index,
-                        &*flag,
-                    )?;
-                }
-            }
-            Ok::<_, String>(())
+            self.inner.chunk(&chunk.lines, &chunk.checked, &*flag)
         })
         .map_err(PyValueError::new_err)?;
         self.failed = false;

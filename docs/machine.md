@@ -108,7 +108,15 @@ only if the whole interval is inside, a `violation` only if the whole interval
 is beyond a limit, `uncertain` while it straddles one; the finding states the
 interval and the limit. With no calibration interval a position is inside or
 a violation, never uncertain. The initial position and route waypoints are
-declared machine-axis positions: no interval, compared exactly. A decoded arc
+declared machine-axis positions: no interval, compared exactly. The interval
+is between commanded work coordinates and the axes, so it enters an axis only
+once a posted block commands it: an axis no block has commanded since the
+start pose or a waypoint set it is still exactly there, at the start of every
+move and along any move that does not command it. A mill homed on its limits
+(X 0 of travel [0, 508], say) therefore starts its first moves inside. A block
+commands an axis by writing its word, even one equal to the current position,
+or by moving along it; the exact rule is in
+[the travel rule](python.md#the-travel-rule). A decoded arc
 whose words leave an endpoint gap is known to that gap either side of its
 nominal circle.
 

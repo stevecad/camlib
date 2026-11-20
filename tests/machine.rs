@@ -532,3 +532,300 @@ fn convex_mesh_fixture_and_arc_helix_interiors_are_checked() {
         );
     }
 }
+
+/// A mill at home on its X and Y minimums and its Z maximum (axis X 0 of
+/// [0, 508], as real mills home), the work frame known to +-0.02 mm on every
+/// axis. The tool (gauge 25) starts at tip [0, 0, 35] in work coordinates.
+fn homed(frame: WorkFrame) -> Model {
+    let mut m = model();
+    m.axes[0].min_mm = 0.;
+    m.axes[0].max_mm = 508.;
+    m.axes[1].min_mm = 0.;
+    m.axes[1].max_mm = 400.;
+    m.axes[2].max_mm = 60.;
+    m.work_to_machine = frame;
+    m.work_error_min_mm = [-0.02; 3];
+    m.work_error_max_mm = [0.02; 3];
+    m.initial_axes_mm = [0., 0., 60.];
+    m
+}
+
+/// A posted program for the session: `header` blocks belong to no decoded
+/// record; each block of `blocks` is one record, with its decoded move (or
+/// none: a control block, or words that decode to no move).
+type Block<'a> = (&'a str, Option<(Vec3, Vec3)>);
+
+fn posted(header: &[&str], blocks: &[Block]) -> (Vec<camlib::post::Line>, Vec<camlib::post::Checked>) {
+    let mut lines = vec![];
+    let mut checked = vec![];
+    for text in header {
+        lines.push(camlib::post::Line {
+            number: lines.len() + 1,
+            event_index: None,
+            operation: None,
+            motion_id: None,
+            text: text.to_string(),
+        });
+    }
+    for (index, (text, curve)) in blocks.iter().enumerate() {
+        let number = lines.len() + 1;
+        let id = index as u64 + 1;
+        lines.push(camlib::post::Line {
+            number,
+            event_index: Some(index),
+            operation: Some("op".into()),
+            motion_id: curve.map(|_| id),
+            text: text.to_string(),
+        });
+        checked.push(camlib::post::Checked {
+            event_index: index,
+            line_interval: [number, number],
+            motion: curve.map(|(start, end)| Motion {
+                id,
+                operation: "op".into(),
+                tool: "t1".into(),
+                kind: MoveKind::Rapid,
+                curve: Curve::Line { start, end },
+                feed_mm_min: None,
+            }),
+            deviation_bound_mm: None,
+            control_effects: Some(vec![]),
+            cycle_event_index: None,
+        });
+    }
+    (lines, checked)
+}
+
+fn dialect_definition(m: &Model) -> serde_json::Value {
+    let mut d = definition(m);
+    d["machine"]["dialect"] = json!({"axes": ["X", "Y", "Z"], "parentheses_comments": true});
+    d
+}
+
+/// The machine-travel findings of `blocks` posted to the homed mill.
+fn exact_axes_travel(m: Model, header: &[&str], blocks: &[Block]) -> Vec<Finding> {
+    let (lines, checked) = posted(header, blocks);
+    let mut s = Session::new(m.clone(), manifest(), &dialect_definition(&m), &|| false).unwrap();
+    s.chunk(&lines, &checked, &|| false).unwrap();
+    let motions = checked.iter().filter(|c| c.motion.is_some()).count() as u64;
+    s.finish(motions, &|| false)
+        .unwrap()
+        .findings
+        .iter()
+        .filter(|f| f.kind == "machine_travel")
+        .cloned()
+        .collect()
+}
+
+const HOME_TIP: Vec3 = [0., 0., 35.];
+
+#[test]
+fn axes_at_home_are_exact_until_a_block_commands_them() {
+    // The first moves from home: Z down, then the first XY rapid. Each
+    // starts where the machine is, at home on the X and Y minimums.
+    let first = [
+        ("G0 Z10", Some((HOME_TIP, [0., 0., 10.]))),
+        ("G0 X50 Y40", Some(([0., 0., 10.], [50., 40., 10.]))),
+    ];
+    let header = ["%", "(T1 FLAT 6MM - X Y Z HOME)", "G21 G90 G17 G54"];
+    // Replayed as bare decoded events (which blocks commanded what is
+    // unknown), every position carries the calibration interval: the start
+    // at home straddles the X minimum, as the refused job reported.
+    let m = homed(WorkFrame::identity());
+    let mut s = Session::new(m.clone(), manifest(), &dialect_definition(&m), &|| false).unwrap();
+    let (_, checked) = posted(&[], &first);
+    for check in &checked {
+        let motion = check.motion.clone().unwrap();
+        s.event(Event::Motion { motion }, check.event_index, &|| false)
+            .unwrap();
+    }
+    let report = s.finish(2, &|| false).unwrap().clone();
+    assert_eq!(report.status, Status::Uncertain);
+    // Both moves start at home, where the interval straddles the limits: X
+    // and Y on their minimums (and Z on its maximum, for the first).
+    for motion in [1, 2] {
+        let found = report
+            .findings
+            .iter()
+            .find(|f| f.kind == "machine_travel" && f.motion_id == Some(motion))
+            .unwrap();
+        assert_eq!((found.status, found.fraction), (Status::Uncertain, 0.));
+    }
+    let x = "axis X calibration interval -0.020000 to 0.020000 mm (expected position 0.000000 mm) straddles the minimum 0.000000 mm of declared [0, 508] machine travel";
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|f| f.motion_id == Some(2) && f.detail.contains(x)),
+        "{:?}",
+        report.findings
+    );
+    // With the posted blocks: no block has commanded X or Y yet when each
+    // move starts, so the machine is exactly at home there, on its limits,
+    // inside. The interval enters an axis with its word: Z 10 and X 50 Y 40
+    // are well inside with it. Comments name no axis.
+    let found = exact_axes_travel(m.clone(), &header, &first);
+    assert!(found.is_empty(), "{found:?}");
+    // The same in a frame turned a quarter about Z: work X drives machine Y
+    // and work Y machine X. A move along work X leaves machine X exactly at
+    // home; one naming work Y commands machine X, at its minimum.
+    let quarter = WorkFrame {
+        origin_mm: [0., 0., 0.],
+        x: [0., 1., 0.],
+        y: [-1., 0., 0.],
+        z: [0., 0., 1.],
+    };
+    let m = homed(quarter);
+    let found = exact_axes_travel(
+        m.clone(),
+        &[],
+        &[
+            ("G0 Z10", Some((HOME_TIP, [0., 0., 10.]))),
+            ("G0 X50", Some(([0., 0., 10.], [50., 0., 10.]))),
+        ],
+    );
+    assert!(found.is_empty(), "{found:?}");
+    let found = exact_axes_travel(
+        m,
+        &[],
+        &[
+            ("G0 Z10", Some((HOME_TIP, [0., 0., 10.]))),
+            ("G0 X50 Y0", Some(([0., 0., 10.], [50., 0., 10.]))),
+        ],
+    );
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(
+        (found[0].status, found[0].bodies[0].as_str(), found[0].fraction),
+        (Status::Uncertain, "axis_x", 1.)
+    );
+}
+
+#[test]
+fn a_commanded_axis_carries_the_interval_and_real_overtravel_is_caught() {
+    let m = homed(WorkFrame::identity());
+    let down = ("G0 Z10", Some((HOME_TIP, [0., 0., 10.])));
+    let one = |found: Vec<Finding>| {
+        assert_eq!(found.len(), 1, "{found:?}");
+        found[0].clone()
+    };
+    // A work-coordinate move ending beyond the X minimum by more than the
+    // interval: a violation.
+    let found = one(exact_axes_travel(
+        m.clone(),
+        &[],
+        &[down, ("G0 X-0.03", Some(([0., 0., 10.], [-0.03, 0., 10.])))],
+    ));
+    assert_eq!(found.status, Status::Violation);
+    assert_eq!((found.bodies[0].as_str(), found.fraction), ("axis_x", 1.));
+    assert!(found.detail.contains("whole interval is beyond the minimum"), "{}", found.detail);
+    // Ending within the interval of the limit: straddling, uncertain.
+    let found = one(exact_axes_travel(
+        m.clone(),
+        &[],
+        &[down, ("G0 X-0.01", Some(([0., 0., 10.], [-0.01, 0., 10.])))],
+    ));
+    assert_eq!(found.status, Status::Uncertain);
+    // Back on the limit after a work move: the axis is at a commanded work
+    // position now, known only to the interval, so it straddles the limit.
+    let found = one(exact_axes_travel(
+        m.clone(),
+        &[],
+        &[
+            down,
+            ("G0 X50", Some(([0., 0., 10.], [50., 0., 10.]))),
+            ("G0 X0", Some(([50., 0., 10.], [0., 0., 10.]))),
+        ],
+    ));
+    assert_eq!(found.status, Status::Uncertain);
+    assert_eq!((found.motion_id, found.fraction), (Some(3), 1.));
+    // A word equal to the decoded position still commands its axis: the
+    // controller goes to that work position, which the interval places.
+    // In a move's block it reaches the move's end ...
+    let found = one(exact_axes_travel(
+        m.clone(),
+        &[],
+        &[("G0 X0 Z10", Some((HOME_TIP, [0., 0., 10.])))],
+    ));
+    assert_eq!(found.status, Status::Uncertain);
+    assert_eq!((found.bodies[0].as_str(), found.fraction), ("axis_x", 1.));
+    // ... and a block that decodes to no move at all sends the axis there
+    // too: held to travel where it stands, and at the next move's start.
+    let found = exact_axes_travel(m.clone(), &[], &[("G0 X0", None), down]);
+    assert_eq!(found.len(), 2, "{found:?}");
+    for (f, motion) in found.iter().zip([None, Some(2)]) {
+        assert_eq!(
+            (f.status, f.bodies[0].as_str(), f.motion_id, f.fraction),
+            (Status::Uncertain, "axis_x", motion, 0.)
+        );
+    }
+    // Words in a block outside the decoded records count too, and so do a
+    // record's blocks the chunk does not carry.
+    let found = exact_axes_travel(m.clone(), &["G0 Y0"], &[down]);
+    assert_eq!(found.len(), 2, "{found:?}");
+    for (f, motion) in found.iter().zip([None, Some(1)]) {
+        assert_eq!(
+            (f.bodies[0].as_str(), f.motion_id, f.fraction),
+            ("axis_y", motion, 0.)
+        );
+    }
+    let (lines, checked) = posted(&[], &[down]);
+    let mut s = Session::new(m.clone(), manifest(), &dialect_definition(&m), &|| false).unwrap();
+    s.chunk(&lines[..0], &checked, &|| false).unwrap();
+    assert_eq!(travel_finding(&mut s, 1).unwrap().status, Status::Uncertain);
+    // A definition without the dialect's axis words: every block commands
+    // every axis.
+    let (lines, checked) = posted(&["G21"], &[down]);
+    let mut s = Session::new(m.clone(), manifest(), &definition(&m), &|| false).unwrap();
+    s.chunk(&lines, &checked, &|| false).unwrap();
+    assert_eq!(travel_finding(&mut s, 1).unwrap().status, Status::Uncertain);
+    // A declared route waypoint puts its axes back at a machine position:
+    // after a tool change whose route homes Z, then X and Y, the next move
+    // starts exactly at home again, on the limits, inside. Without those
+    // waypoints the axes keep the interval their last work command gave them.
+    let change = |home_xy: bool| {
+        let mut m = m.clone();
+        let route = m.tool_change_routes.get_mut("t1").unwrap();
+        route.before_index_mm = vec![[None, None, Some(60.)]];
+        if home_xy {
+            route.before_index_mm.push([Some(0.), Some(0.), None]);
+        }
+        let mut stock = manifest();
+        stock.tool_change = Some(ToolChangePose::Gauge(GaugePose {
+            gauge_z_mm: 60.,
+            xy_mm: home_xy.then_some([0., 0.]),
+        }));
+        let after = if home_xy { [0., 0., 35.] } else { [0., 0.01, 35.] };
+        let (mut lines, mut checked) = posted(
+            &[],
+            &[
+                down,
+                ("G0 X0 Y0.01", Some(([0., 0., 10.], [0., 0.01, 10.]))),
+                ("T1 M6", None),
+                ("G0 Z10", Some((after, [after[0], after[1], 10.]))),
+            ],
+        );
+        checked[2].control_effects = Some(vec![Event::ToolChange {
+            tool: "t1".into(),
+            number: 1,
+            length_register: 1,
+            position_after_mm: after,
+        }]);
+        lines[2].motion_id = None;
+        let mut s = Session::new(m.clone(), stock, &dialect_definition(&m), &|| false).unwrap();
+        s.chunk(&lines, &checked, &|| false).unwrap();
+        let r = s.finish(3, &|| false).unwrap().clone();
+        assert_eq!(r.tool_changes, 1);
+        r.findings
+            .into_iter()
+            .filter(|f| f.kind == "machine_travel" && f.motion_id == Some(4))
+            .collect::<Vec<_>>()
+    };
+    let found = change(true);
+    assert!(found.is_empty(), "{found:?}");
+    let found = change(false);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(
+        (found[0].status, found[0].bodies[0].as_str(), found[0].fraction),
+        (Status::Uncertain, "axis_x", 0.)
+    );
+}

@@ -816,20 +816,9 @@ fn check_machine(
     let mut session = crate::machine::Session::new(model, replay.clone(), definition, cancel)?;
     let result = (|| {
         for chunk in chunks.iter().filter(|c| journaled(c)) {
-            for check in &chunk.chunk.checked {
-                for event in check.control_effects.clone().unwrap_or_default() {
-                    session.event(event, check.event_index, cancel)?;
-                }
-                if let Some(motion) = &check.motion {
-                    session.event(
-                        Event::Motion {
-                            motion: motion.clone(),
-                        },
-                        check.event_index,
-                        cancel,
-                    )?;
-                }
-            }
+            // With its posted blocks: an axis no block commanded since a
+            // declared machine-axis position is held exactly there.
+            session.chunk(&chunk.chunk.lines, &chunk.chunk.checked, cancel)?;
         }
         session.finish(motions, cancel).cloned()
     })();
