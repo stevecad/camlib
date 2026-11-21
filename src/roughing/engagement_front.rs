@@ -33,11 +33,17 @@ use crate::{
     stock::{CancelSignal, ClearanceCursor, Stock, StockSpec},
     tool::ToolAssembly,
 };
+mod entry_tiles;
+mod front_tiles;
+mod heights;
+use heights::HeightsGrid;
 use serde::Serialize;
 use std::{
     collections::VecDeque,
     f64::consts::{PI, TAU},
 };
+
+const DENSE_CELLS: usize = 64_000_000;
 
 /// Fine-grid geometry shared by every layer of one roughing operation.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -627,7 +633,7 @@ impl MaterialBits {
 /// was produced against.
 pub(crate) struct FrontMemory {
     grid: Grid,
-    cleared: Vec<f64>,
+    cleared: HeightsGrid,
     generation: u64,
 }
 
@@ -927,10 +933,10 @@ fn sort_open_cells(
 
 struct Layer {
     g: Grid,
-    /// Top of possible material per fine cell.
-    top: Vec<f64>,
+    /// Committed whole-cell upper bound exceeds this layer and its guard.
+    stock_above: Vec<bool>,
     /// This operation's cleared height per fine cell.
-    cleared: Vec<f64>,
+    cleared: HeightsGrid,
     /// Cell centres inside the level's region.
     inside: Vec<bool>,
     allowed: Vec<bool>,
@@ -955,6 +961,7 @@ struct Layer {
     bits: MaterialBits,
     /// See `most_open`.
     open: std::cell::RefCell<Option<OpenOrder>>,
+    tile_entries: std::cell::RefCell<Option<entry_tiles::EntryTiles>>,
 }
 impl Layer {
     /// Work out `room` (a whole-grid distance transform), observing
@@ -982,6 +989,21 @@ impl Layer {
                 .collect()
         })
     }
+    fn distances_to_fitting_centres(
+        &self,
+        clearance: f64,
+        cancel: &impl CancelSignal,
+    ) -> Result<Vec<f64>, String> {
+        self.room_init(cancel)?;
+        let fits = self
+            .inside
+            .iter()
+            .zip(self.room())
+            .map(|(&inside, &room)| inside && room as f64 >= clearance)
+            .collect::<Vec<_>>();
+        edt(&self.g, &fits, cancel)
+    }
+
     /// The allowed cell with material that is not dead and has the most
     /// room beyond `need` (the first of equals, by cell index), and that
     /// room: where an entry into enclosed material is tried.
@@ -1001,6 +1023,16 @@ impl Layer {
         cancel: &impl CancelSignal,
     ) -> Result<Option<(f64, usize)>, String> {
         self.room_init(cancel)?;
+        if self.allowed.len() > DENSE_CELLS {
+            let mut entries = self.tile_entries.borrow_mut();
+            if entries
+                .as_ref()
+                .is_none_or(|e| e.need.to_bits() != need.to_bits())
+            {
+                *entries = Some(entry_tiles::EntryTiles::build(self, need, cancel)?);
+            }
+            return entries.as_mut().unwrap().best(self, cancel);
+        }
         let room = self.room();
         let mut open = self.open.borrow_mut();
         if open.as_ref().is_none_or(|o| o.need != need.to_bits()) {
@@ -1045,7 +1077,7 @@ impl Layer {
         {
             shortcut_taken(3);
             let mut scan: Option<(f64, usize)> = None;
-            for k in 0..self.top.len() {
+            for k in 0..self.stock_above.len() {
                 if self.allowed[k] && !self.dead[k] && self.material(k) {
                     let room = room[k] as f64 - need;
                     if scan.is_none_or(|(b, _)| room > b) {
@@ -1063,6 +1095,10 @@ impl Layer {
     /// Cell `k` may have material and be alive again (an undone cut, a
     /// revived start): `most_open` looks at it again.
     fn reopened(&self, k: usize) {
+        if let Some(entries) = self.tile_entries.borrow_mut().as_mut() {
+            entries.reopen(self, k);
+            return;
+        }
         let mut open = self.open.borrow_mut();
         let Some(order) = open.as_mut() else {
             return;
@@ -1084,6 +1120,7 @@ impl Layer {
     /// layer is made: `cut` and `undo` keep them current after that.
     fn sync_bits(&mut self) {
         *self.open.borrow_mut() = None;
+        *self.tile_entries.borrow_mut() = None;
         let g = self.g;
         let stride = g.nx.div_ceil(64);
         self.bits = MaterialBits {
@@ -1102,7 +1139,7 @@ impl Layer {
             if self.allowed[k] {
                 self.bits.allowed[w] |= bit;
             }
-            if self.cleared[k] > self.z {
+            if self.cleared.at(k) > self.z {
                 self.bits.uncut[w] |= bit;
             }
         }
@@ -1110,7 +1147,7 @@ impl Layer {
     fn undo(&mut self, to: usize) {
         while self.journal.len() > to {
             let (k, old) = self.journal.pop().unwrap();
-            self.cleared[k] = old;
+            self.cleared.set(k, old);
             let material = self.material(k);
             self.bits.assign(&self.g, k, material, self.reachable[k]);
             let (w, bit) = (
@@ -1128,7 +1165,7 @@ impl Layer {
         }
     }
     fn material(&self, k: usize) -> bool {
-        self.top[k].min(self.cleared[k]) > self.z + self.material_guard
+        self.stock_above[k] && self.cleared.at(k) > self.z + self.material_guard
     }
     fn allowed_at(&self, p: Point) -> bool {
         self.g
@@ -1141,13 +1178,13 @@ impl Layer {
     /// a pass's next step finds few: they are read from the `uncut` bits,
     /// in the order a scan of the disk meets them (the journal's order).
     fn cut(&mut self, p: Point, rad: f64) -> usize {
-        let (z, floor) = (self.z, self.z + self.material_guard);
+        let z = self.z;
         let g = self.g;
         #[cfg(test)]
         let scan = {
             let mut cells = vec![];
             g.for_disk_cells(p, rad, |k, _| {
-                if self.cleared[k] > z {
+                if self.cleared.at(k) > z {
                     cells.push(k);
                 }
             });
@@ -1182,13 +1219,12 @@ impl Layer {
                     continue;
                 }
                 let k = g.idx(i, j);
-                removed += usize::from(self.top[k].min(self.cleared[k]) > floor);
-                self.journal.push((k, self.cleared[k]));
-                self.cleared[k] = z;
+                removed += usize::from(self.material(k));
+                self.journal.push((k, self.cleared.at(k)));
+                self.cleared.set(k, z);
                 let (w, bit) = (j * stride + i / 64, 1 << (i % 64));
                 self.bits.uncut[w] &= !bit;
-                self.bits
-                    .assign_at(w, bit, self.top[k].min(z) > floor, self.reachable[k]);
+                self.bits.assign_at(w, bit, false, self.reachable[k]);
             }
         }
         #[cfg(test)]
@@ -1914,7 +1950,7 @@ fn edt(g: &Grid, mask: &[bool], cancel: &impl CancelSignal) -> Result<Vec<f64>, 
         for q in 1..n {
             loop {
                 let p = v[k];
-                let s = ((f[q] + (q * q) as f64) - (f[p] + (p * p) as f64))
+                let s = ((f[q] + q as f64 * q as f64) - (f[p] + p as f64 * p as f64))
                     / (2. * q as f64 - 2. * p as f64);
                 if s <= z[k] {
                     if k == 0 {
@@ -1969,9 +2005,10 @@ fn edt(g: &Grid, mask: &[bool], cancel: &impl CancelSignal) -> Result<Vec<f64>, 
         pass(&row, &mut out, &mut v, &mut zz);
         f[j * nx..(j + 1) * nx].copy_from_slice(&out);
     }
-    Ok(f.iter()
-        .map(|&d| if d >= INF / 2. { 1e9 } else { d.sqrt() * g.c })
-        .collect())
+    for d in &mut f {
+        *d = if *d >= INF / 2. { 1e9 } else { d.sqrt() * g.c };
+    }
+    Ok(f)
 }
 
 /// Flatten a region boundary to straight segments with sagitta <= `sag`.
@@ -2463,6 +2500,7 @@ pub(crate) struct EngagementFrontPlan {
     /// Refuse the level when it starts with an area no entry reaches
     /// (`with_unentered_refused`), instead of listing it in the report.
     refuse_unentered: bool,
+    entry_areas_checked: bool,
 }
 
 /// The entry and link options of an engagement_front clearing, as `Roughing`
@@ -2630,6 +2668,7 @@ impl EngagementFrontPlan {
             link_reach: std::cell::RefCell::new(None),
             link_failed: std::cell::Cell::new(None),
             refuse_unentered: false,
+            entry_areas_checked: false,
         })
     }
     /// See `RoughingOperation::ramp_clearance_mm` (validated there).
@@ -2767,15 +2806,9 @@ impl EngagementFrontPlan {
                     // to the walls is the cutter radius and the allowance;
                     // the cutter reaches its radius from there.
                     let g = layer.g;
-                    let fits: Vec<bool> = (0..layer.top.len())
-                        .map(|k| {
-                            layer.inside[k]
-                                && layer.room()[k] as f64 >= self.r + self.op.radial_allowance_mm
-                        })
-                        .collect();
-                    let to_fit = edt(&g, &fits, cancel)?;
+                    let mut to_fit = None;
                     let mut left = [0usize; 3];
-                    for k in 0..layer.top.len() {
+                    for k in 0..layer.stock_above.len() {
                         if k.is_multiple_of(8192) && cancel.is_cancelled() {
                             return Err("engagement_front report cancelled".into());
                         }
@@ -2785,7 +2818,16 @@ impl EngagementFrontPlan {
                         if layer.reachable[k] {
                             left[0] += 1;
                         } else if layer.inside[k] {
-                            left[if to_fit[k] <= self.r { 1 } else { 2 }] += 1;
+                            // Reachable material needs no wall-distance classification.
+                            // Build this field only if some residual needs it.
+                            let distances = match &to_fit {
+                                Some(distances) => distances,
+                                None => to_fit.insert(layer.distances_to_fitting_centres(
+                                    self.r + self.op.radial_allowance_mm,
+                                    cancel,
+                                )?),
+                            };
+                            left[if distances[k] <= self.r { 1 } else { 2 }] += 1;
                         }
                     }
                     let area = |cells: usize| cells as f64 * g.c * g.c;
@@ -2817,7 +2859,7 @@ impl EngagementFrontPlan {
         // the operation region can contain reachable material. Its exact
         // prepared bounds include arcs; the same exterior margin keeps the
         // grid border outside all region, cutter and steering queries (#193).
-        if cells(nx, ny) > 64_000_000
+        if cells(nx, ny) > DENSE_CELLS as u128
             && let Some(bounds) = self.guides.source_region().bounds()
         {
             let lo = [
@@ -2840,12 +2882,16 @@ impl EngagementFrontPlan {
                 [nx, ny] = cropped;
             }
         }
-        if cells(nx, ny) > 64_000_000 {
-            return Err(format!(
-                "engagement_front steering grid of {nx} x {ny} cells exceeds 64M even when bounded to the operation; use a larger tool or split the operation region"
-            ));
-        }
-        crate::resources::check_memory(cells(nx, ny) * 32, "engagement_front steering grid")?;
+        let count = nx.checked_mul(ny).filter(|&n| n <= isize::MAX as usize / std::mem::size_of::<(usize, f64)>()).ok_or(
+            "engagement_front steering grid exceeds addressable memory; split the operation region",
+        )?;
+        // The large-grid estimate includes cleared heights at full detail,
+        // component flood scratch, masks, journal and distance fields.
+        let bytes_per_cell = if count > DENSE_CELLS { 96 } else { 32 };
+        crate::resources::check_memory(
+            count as u128 * bytes_per_cell,
+            "engagement_front steering grid",
+        )?;
         Ok(Grid { x0, y0, c, nx, ny })
     }
 
@@ -2999,15 +3045,17 @@ impl EngagementFrontPlan {
         let step = stock.cell_widths_mm();
         let cells = stock.cells();
         let smin = stock.spec().min_mm;
-        let top: Vec<f64> = (0..n)
+        let tiled = n > DENSE_CELLS;
+        let material_guard = 16. * self.op.tolerance_mm;
+        let stock_above = (0..n)
             .map(|k| {
                 let p = g.center(k);
                 let i = ((p[0] - smin[0]) / step[0]).floor();
                 let j = ((p[1] - smin[1]) / step[1]).floor();
                 if i < 0. || j < 0. || i >= snx as f64 || j >= sny as f64 {
-                    f64::NEG_INFINITY
+                    false
                 } else {
-                    cells[j as usize * snx + i as usize].upper_mm
+                    cells[j as usize * snx + i as usize].upper_mm > self.z + material_guard
                 }
             })
             .collect();
@@ -3019,14 +3067,20 @@ impl EngagementFrontPlan {
             }
             Some(_) => {
                 self.report.diagnostics.push("previous layer's steering memory did not match the committed stock; steering from whole-cell stock bounds only".into());
-                vec![f64::INFINITY; n]
+                HeightsGrid::filled(n, f64::INFINITY, tiled)
             }
-            None => vec![f64::INFINITY; n],
+            None => HeightsGrid::filled(n, f64::INFINITY, tiled),
         };
+        if tiled {
+            self.report.diagnostics.push(format!(
+                "tiled engagement front on {} x {} cells at {} mm resolution",
+                g.nx, g.ny, g.c
+            ));
+        }
         self.report.engagement_grid_mm = g.c;
         self.layer = Some(Layer {
             g,
-            top,
+            stock_above,
             cleared,
             inside,
             allowed,
@@ -3037,10 +3091,11 @@ impl EngagementFrontPlan {
             candidates: vec![],
             thin: vec![],
             z: self.z,
-            material_guard: 16. * self.op.tolerance_mm,
+            material_guard,
             journal: vec![],
             bits: MaterialBits::default(),
             open: Default::default(),
+            tile_entries: Default::default(),
         });
         self.layer.as_mut().unwrap().sync_bits();
         // What was known of another layer's links is void.
@@ -3068,42 +3123,47 @@ impl EngagementFrontPlan {
             .map(|w| w.count_ones() as usize)
             .sum();
         let left = cells as f64 * g.c * g.c;
-        let whole = ([0, g.nx - 1], [0, g.ny - 1]);
-        // Material within r + c blocks a start; reachable material within
-        // r + 3 c makes one. Both are whole-grid dilations and observe
-        // cancellation (#312).
-        let near =
-            |bits: &[u64], t: f64, cancel: &dyn CancelSignal| -> Result<Option<Near>, String> {
-                cells2_within(g.c, t, true)
-                    .map(|d2| Near::new(bits, stride, whole.0, whole.1, d2, cancel))
-                    .transpose()
-            };
-        let blocked = near(&layer.bits.any, r + g.c, cancel)?;
-        let beside = near(&layer.bits.reach, r + 3. * g.c, cancel)?;
-        let mut candidates = vec![];
-        if let Some(beside) = &beside {
-            for j in 0..g.ny {
-                if j.is_multiple_of(256) && cancel.is_cancelled() {
-                    return Err("engagement_front planning cancelled".into());
-                }
-                for w in 0..stride {
-                    let mut word = beside.grown[j * stride + w];
-                    if let Some(blocked) = &blocked {
-                        word &= !blocked.grown[j * stride + w];
+        let candidates = if g.nx * g.ny > DENSE_CELLS {
+            front_tiles::candidates(layer, r, cancel)?
+        } else {
+            let whole = ([0, g.nx - 1], [0, g.ny - 1]);
+            // Material within r + c blocks a start; reachable material within
+            // r + 3 c makes one. Both are whole-grid dilations and observe
+            // cancellation (#312).
+            let near =
+                |bits: &[u64], t: f64, cancel: &dyn CancelSignal| -> Result<Option<Near>, String> {
+                    cells2_within(g.c, t, true)
+                        .map(|d2| Near::new(bits, stride, whole.0, whole.1, d2, cancel))
+                        .transpose()
+                };
+            let blocked = near(&layer.bits.any, r + g.c, cancel)?;
+            let beside = near(&layer.bits.reach, r + 3. * g.c, cancel)?;
+            let mut candidates = vec![];
+            if let Some(beside) = &beside {
+                for j in 0..g.ny {
+                    if j.is_multiple_of(256) && cancel.is_cancelled() {
+                        return Err("engagement_front planning cancelled".into());
                     }
-                    while word != 0 {
-                        let i = w * 64 + word.trailing_zeros() as usize;
-                        word &= word - 1;
-                        if i < g.nx {
-                            let k = g.idx(i, j);
-                            if layer.allowed[k] && !layer.dead[k] {
-                                candidates.push(k);
+                    for w in 0..stride {
+                        let mut word = beside.grown[j * stride + w];
+                        if let Some(blocked) = &blocked {
+                            word &= !blocked.grown[j * stride + w];
+                        }
+                        while word != 0 {
+                            let i = w * 64 + word.trailing_zeros() as usize;
+                            word &= word - 1;
+                            if i < g.nx {
+                                let k = g.idx(i, j);
+                                if layer.allowed[k] && !layer.dead[k] {
+                                    candidates.push(k);
+                                }
                             }
                         }
                     }
                 }
             }
-        }
+            candidates
+        };
         #[cfg(test)]
         {
             let (area, scan) = Self::refresh_scan(layer, r);
@@ -5889,8 +5949,14 @@ impl EngagementFrontPlan {
         let g = layer.g;
         let n = g.nx * g.ny;
         let need = self.grid_clearance(g.c);
-        let material: Vec<bool> = (0..n).map(|k| layer.material(k)).collect();
-        let clear = edt(&g, &material, cancel)?;
+        let blocked = Near::new(
+            &layer.bits.any,
+            layer.bits.stride,
+            [0, g.nx - 1],
+            [0, g.ny - 1],
+            cells2_within(g.c, self.r + g.c, true).expect("positive blocking distance"),
+            cancel,
+        )?;
         layer.room_init(cancel)?;
         let radii = helix.radii(self.r, self.r / 2., 0.);
         // The entry policy is part of eligibility (#310): a helix that
@@ -5923,15 +5989,22 @@ impl EngagementFrontPlan {
                 if visits.is_multiple_of(8192) && cancel.is_cancelled() {
                     return Err("engagement_front planning cancelled".into());
                 }
-                let p = g.center(k);
-                low = [low[0].min(p[0]), low[1].min(p[1])];
-                high = [high[0].max(p[0]), high[1].max(p[1])];
-                way_in |= clear[k] > self.r + g.c || layer.cleared[k] <= layer.z;
-                if material[k] {
-                    cells.push(k);
-                    let room = layer.room()[k] as f64 - need;
-                    if best.is_none_or(|(b, _)| room > b) {
-                        best = Some((room, k));
+                if !way_in {
+                    let p = g.center(k);
+                    low = [low[0].min(p[0]), low[1].min(p[1])];
+                    high = [high[0].max(p[0]), high[1].max(p[1])];
+                    way_in = !blocked.at(k % g.nx, k / g.nx) || layer.cleared.at(k) <= layer.z;
+                    if layer.material(k) {
+                        cells.push(k);
+                        let room = layer.room()[k] as f64 - need;
+                        if best.is_none_or(|(b, _)| room > b) {
+                            best = Some((room, k));
+                            way_in |= helix_allowed
+                                && radii.iter().any(|&h| h <= room - g.c && h > 4. * g.c);
+                        }
+                    }
+                    if way_in {
+                        cells = Vec::new();
                     }
                 }
                 g.for_neighbours(k, |m| {
@@ -5942,7 +6015,7 @@ impl EngagementFrontPlan {
                 });
             }
             let Some((room, k)) = best else { continue };
-            if way_in || (helix_allowed && radii.iter().any(|&h| h <= room - g.c && h > 4. * g.c)) {
+            if way_in {
                 continue;
             }
             components.push(cells);
@@ -6211,7 +6284,12 @@ impl EngagementFrontPlan {
         while self.pending.is_empty() && !self.finished {
             if self.layer.is_none() {
                 self.build_layer(stock, cancel)?;
+            }
+            // A cancelled entry search leaves a built layer. Retrying must
+            // still establish entry eligibility before the first stroke.
+            if !self.entry_areas_checked {
                 self.note_unentered(cancel)?;
+                self.entry_areas_checked = true;
             }
             if !self.plan_pass(stock, cancel)? {
                 if (self.wall_pass || self.wall_runs) && !self.walls_done {
@@ -6575,8 +6653,8 @@ mod tests {
         let n = g.nx * g.ny;
         let mut layer = Layer {
             g,
-            top: vec![10.; n],
-            cleared: vec![f64::INFINITY; n],
+            stock_above: vec![true; n],
+            cleared: HeightsGrid::Dense(vec![f64::INFINITY; n]),
             inside: vec![true; n],
             allowed: vec![true; n],
             reachable: vec![true; n],
@@ -6590,6 +6668,7 @@ mod tests {
             journal: vec![],
             bits: MaterialBits::default(),
             open: Default::default(),
+            tile_entries: Default::default(),
         };
         layer.sync_bits();
         let (p, r) = ([8., 8.], 3.);
@@ -6602,8 +6681,8 @@ mod tests {
         );
         assert_eq!(layer.cut(p, r), 0);
         // Cells already below the layer (no material) are not progress.
-        layer.top = vec![-1.; n];
-        layer.cleared = vec![f64::INFINITY; n];
+        layer.stock_above.fill(false);
+        layer.cleared = HeightsGrid::Dense(vec![f64::INFINITY; n]);
         layer.sync_bits();
         assert_eq!(layer.cut(p, r), 0);
     }
@@ -6629,12 +6708,14 @@ mod tests {
         let reachable: Vec<bool> = (0..n)
             .map(|k| y(k) <= 4.875 + r - 0.5 * g.c + 1e-9)
             .collect();
+        let cleared = reachable
+            .iter()
+            .map(|&can_reach| if can_reach { 0. } else { f64::INFINITY })
+            .collect();
         let mut layer = Layer {
             g,
-            top: vec![10.; n],
-            cleared: (0..n)
-                .map(|k| if reachable[k] { 0. } else { f64::INFINITY })
-                .collect(),
+            stock_above: vec![true; n],
+            cleared: HeightsGrid::Dense(cleared),
             inside: vec![true; n],
             allowed: (0..n).map(|k| y(k) <= 5.).collect(),
             reachable,
@@ -6648,6 +6729,7 @@ mod tests {
             journal: vec![],
             bits: MaterialBits::default(),
             open: Default::default(),
+            tile_entries: Default::default(),
         };
         layer.sync_bits();
         let (p, q) = ([8., 4.9], [8.9, 4.9]);
@@ -6669,10 +6751,8 @@ mod tests {
         let n = g.nx * g.ny;
         let mut layer = Layer {
             g,
-            top: (0..n)
-                .map(|k| if material(k) { 10. } else { -1. })
-                .collect(),
-            cleared: vec![f64::INFINITY; n],
+            stock_above: (0..n).map(material).collect(),
+            cleared: HeightsGrid::Dense(vec![f64::INFINITY; n]),
             inside: vec![true; n],
             allowed: vec![true; n],
             reachable: (0..n).map(reachable).collect(),
@@ -6686,6 +6766,7 @@ mod tests {
             journal: vec![],
             bits: MaterialBits::default(),
             open: Default::default(),
+            tile_entries: Default::default(),
         };
         layer.sync_bits();
         layer
@@ -6732,7 +6813,7 @@ mod tests {
             assert_eq!(layer.bits.any[w] >> bit & 1 == 1, material, "cell {k}");
             assert_eq!(
                 layer.bits.uncut[w] >> bit & 1 == 1,
-                layer.cleared[k] > layer.z,
+                layer.cleared.at(k) > layer.z,
                 "cell {k}"
             );
             assert_eq!(
@@ -8263,7 +8344,9 @@ mod tests {
         assert_eq!(areas.len(), 1, "{areas:?}");
         assert_eq!(areas[0].reason, "no_helix_allowed");
         let layer = plan.layer.as_ref().unwrap();
-        let material_before = (0..layer.top.len()).filter(|&k| layer.material(k)).count();
+        let material_before = (0..layer.stock_above.len())
+            .filter(|&k| layer.material(k))
+            .count();
         let excluded = starts(&mut plan);
         assert!(
             excluded.is_empty(),
@@ -8271,7 +8354,9 @@ mod tests {
         );
         // Dead is not cleared: the material stands and is counted as before.
         let layer = plan.layer.as_ref().unwrap();
-        let material_after = (0..layer.top.len()).filter(|&k| layer.material(k)).count();
+        let material_after = (0..layer.stock_above.len())
+            .filter(|&k| layer.material(k))
+            .count();
         assert_eq!(material_before, material_after);
     }
 
@@ -8341,7 +8426,9 @@ mod tests {
 
     fn material_cells(plan: &EngagementFrontPlan) -> usize {
         let layer = plan.layer.as_ref().unwrap();
-        (0..layer.top.len()).filter(|&k| layer.material(k)).count()
+        (0..layer.stock_above.len())
+            .filter(|&k| layer.material(k))
+            .count()
     }
 
     #[test]
@@ -8589,6 +8676,63 @@ mod tests {
              grid (see the square and curved pocket regressions)"
         );
     }
+    #[test]
+    fn tiled_front_matches_distances_and_entry_order_across_seams_and_rollback() {
+        let g = Grid {
+            x0: -2.4,
+            y0: 8.1,
+            c: 0.1,
+            nx: 521,
+            ny: 259,
+        };
+        // Material abuts or crosses both tile boundaries, including the short
+        // final row and column. One patch is outside the reachable set.
+        let mut layer = layer_of(
+            g,
+            |k| {
+                let (i, j) = (k % g.nx, k / g.nx);
+                (246..=269).contains(&i) || j > 249 || (i > 504 && j < 12)
+            },
+            |k| k % g.nx < 517,
+        );
+        layer.cleared = HeightsGrid::filled(g.nx * g.ny, f64::INFINITY, true);
+        layer.room = std::cell::OnceCell::from(
+            (0..g.nx * g.ny)
+                .map(|k| ((k % 31) + 1) as f32)
+                .collect::<Vec<_>>(),
+        );
+        layer.sync_bits();
+        let radius = 0.68;
+        let check = |layer: &Layer| {
+            let (_, oracle) = EngagementFrontPlan::refresh_scan(layer, radius);
+            assert!(!oracle.is_empty());
+            assert_eq!(
+                front_tiles::candidates(layer, radius, &NeverCancelled).unwrap(),
+                oracle
+            );
+        };
+        check(&layer);
+        let need = 0.5;
+        let mut entries = entry_tiles::EntryTiles::build(&layer, need, &NeverCancelled).unwrap();
+        let winner = entries.best(&layer, &NeverCancelled).unwrap().unwrap();
+        assert_eq!(
+            Some(winner),
+            layer.most_open(need, &NeverCancelled).unwrap()
+        );
+        layer.cut(g.center(winner.1), radius);
+        layer.cut(g.center(g.idx(256, 255)), radius);
+        check(&layer);
+        assert_eq!(
+            entries.best(&layer, &NeverCancelled).unwrap(),
+            layer.most_open(need, &NeverCancelled).unwrap()
+        );
+        layer.undo(0);
+        entries.reopen(&layer, winner.1);
+        assert_eq!(entries.best(&layer, &NeverCancelled).unwrap(), Some(winner));
+        check(&layer);
+        assert!(front_tiles::candidates(&layer, radius, &|| true).is_err());
+    }
+
     fn bounded_grid_plan(
         side: f64,
         vertices: Option<serde_json::Value>,
@@ -8623,6 +8767,23 @@ mod tests {
         )
         .unwrap();
         (plan, Stock::new(spec.clone()).unwrap())
+    }
+
+    #[test]
+    fn cancelling_entry_classification_cannot_admit_an_enclosed_stock_edge_start_on_retry() {
+        let (mut plan, stock) = bounded_grid_plan(25., None);
+        plan.entry = serde_json::from_value(serde_json::json!({"kind": "stock_edge"})).unwrap();
+        plan.refuse_unentered = true;
+        plan.build_layer(&stock, &NeverCancelled).unwrap();
+        let cancelled = plan.next_motion_with_stock(&stock, &|| true).unwrap_err();
+        assert!(cancelled.contains("cancelled"), "{cancelled}");
+        for _ in 0..2 {
+            let refusal = plan
+                .next_motion_with_stock(&stock, &NeverCancelled)
+                .unwrap_err();
+            assert!(refusal.contains("the entry allows no helix"), "{refusal}");
+            assert_eq!(plan.report.motions, 0);
+        }
     }
 
     #[test]
@@ -8674,7 +8835,7 @@ mod tests {
     }
 
     #[test]
-    fn bounded_steering_grid_encloses_arc_extrema_and_keeps_the_active_region_cap() {
+    fn bounded_steering_grid_encloses_arc_extrema_and_checks_the_active_region_budget() {
         // The two vertices have x=10; the semicircles reach x=0 and x=20.
         let (mut circle, stock) = bounded_grid_plan(
             1000.,
@@ -8692,11 +8853,11 @@ mod tests {
                 [0., 1000., 0.]
             ])),
         );
-        assert!(
-            whole
-                .grid_for(&stock)
-                .unwrap_err()
-                .contains("exceeds 64M even when bounded")
-        );
+        let grid =
+            crate::resources::with_memory_budget(12 << 30, || whole.grid_for(&stock)).unwrap();
+        assert!(grid.nx * grid.ny > DENSE_CELLS);
+        let error =
+            crate::resources::with_memory_budget(1 << 20, || whole.grid_for(&stock)).unwrap_err();
+        assert!(error.contains("CAMLIB_MEMORY_BUDGET_BYTES"), "{error}");
     }
 }
