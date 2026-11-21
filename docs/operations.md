@@ -491,16 +491,19 @@ no full-width slotting, for hard materials and high-speed toolpaths.
   that tight which opens into a wider part of the region is not such an
   area: the level's wall pass follows the walls' exact offset into it and
   cuts it.
-- **Small regions on large stock** keep the same steering resolution. If the
-  whole-stock steering grid exceeds 64 million cells, its domain is bounded
-  to the operation region's exact bounds (including arc extrema), plus the
-  existing exterior margin. Integer cell offsets retain the stock-aligned
-  lattice, and the report records the reduced dimensions. A grid already
-  below the cap stays unchanged. The 64M cap and planning-memory budget still
-  apply after bounding: a genuinely large active region must be split or use
-  a larger tool. This is a focused allocation improvement under #193/#325;
-  it does not tile a large active front or change the exact stroke, entry,
-  engagement, stock or machine checks.
+- **Large adaptive layers** use the same stock-aligned steering resolution as
+  small ones. Above 64 million cells, the planner first bounds the grid to
+  the operation, including arc extrema and the exterior margin. If the
+  bounded grid still exceeds that threshold, each front-search tile reads
+  enough neighbouring cells to see the entire cutter disk and steering band.
+  Uniform cleared heights share storage, and each entry-search tile tracks
+  its best candidate. Ties follow the same row and column order as on a
+  small layer. The report gives the tiled dimensions and cell size.
+  Whole-layer region masks, distance fields and entry connectivity still
+  require memory proportional to the bounded footprint. If the estimated
+  working set exceeds the available or declared budget, planning refuses
+  with `engagement_front steering grid needs about … GiB but only … GiB is
+  available`. Split the operation region or provide the required memory.
 - **The residual area of a level** (`layers[].clearing`) counts all the
   stock left in the region at that level, from the region and the stock
   (on the steering grid, with the stock's whole-cell bounds), not from
