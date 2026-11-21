@@ -565,6 +565,7 @@ fn posted(header: &[&str], blocks: &[Block]) -> (Vec<camlib::post::Line>, Vec<ca
             operation: None,
             motion_id: None,
             text: text.to_string(),
+            holds_axes: false,
         });
     }
     for (index, (text, curve)) in blocks.iter().enumerate() {
@@ -576,6 +577,7 @@ fn posted(header: &[&str], blocks: &[Block]) -> (Vec<camlib::post::Line>, Vec<ca
             operation: Some("op".into()),
             motion_id: curve.map(|_| id),
             text: text.to_string(),
+            holds_axes: false,
         });
         checked.push(camlib::post::Checked {
             event_index: index,
@@ -827,6 +829,60 @@ fn a_commanded_axis_carries_the_interval_and_real_overtravel_is_caught() {
     assert_eq!(
         (found[0].status, found[0].bodies[0].as_str(), found[0].fraction),
         (Status::Uncertain, "axis_x", 0.)
+    );
+}
+
+#[test]
+fn a_block_the_decoder_reads_as_moving_no_axis_commands_none() {
+    // Haas and FANUC headers clear the local shift with G52 X0 Y0 Z0, and
+    // Haas mirror image with G100 X0 Y0 Z0 (#369): offset and mode settings
+    // whose axis words are parameters. Their decoders say so
+    // (`Line::holds_axes`), and the axes stay exactly at home, on the
+    // limits, until a move commands them.
+    let m = homed(WorkFrame::identity());
+    let header = ["%", "O1000", "G21 G90 G17", "G52 X0 Y0 Z0", "G100 X0 Y0 Z0"];
+    let first = [
+        ("G0 Z10", Some((HOME_TIP, [0., 0., 10.]))),
+        ("G0 X50 Y40 Z10", Some(([0., 0., 10.], [50., 40., 10.]))),
+    ];
+    let findings = |held: bool| {
+        let (mut lines, checked) = posted(&header, &first);
+        for line in &mut lines[3..5] {
+            line.holds_axes = held;
+        }
+        let mut s = Session::new(m.clone(), manifest(), &dialect_definition(&m), &|| false).unwrap();
+        s.chunk(&lines, &checked, &|| false).unwrap();
+        let report = s.finish(2, &|| false).unwrap().clone();
+        (
+            report.status,
+            report
+                .findings
+                .into_iter()
+                .filter(|f| f.kind == "machine_travel")
+                .collect::<Vec<_>>(),
+        )
+    };
+    let (status, found) = findings(true);
+    assert!(found.is_empty(), "{found:?}");
+    assert_eq!(status, Status::Clear);
+    // The same blocks, unclassified (no decoder held them): every axis they
+    // name is commanded at the decoded position, which straddles the limits
+    // by the interval. The conservative rule stays the default.
+    // The header's finding is at no move (Z, the first axis outside), and
+    // the traverse then starts from an X known only to the interval.
+    let (status, found) = findings(false);
+    assert_eq!(status, Status::Uncertain);
+    assert!(
+        found
+            .iter()
+            .any(|f| f.bodies[0] == "axis_z" && f.motion_id.is_none()),
+        "{found:?}"
+    );
+    assert!(
+        found
+            .iter()
+            .any(|f| (f.bodies[0].as_str(), f.motion_id, f.fraction) == ("axis_x", Some(2), 0.)),
+        "{found:?}"
     );
 }
 

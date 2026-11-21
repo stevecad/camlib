@@ -204,6 +204,9 @@ class CentroidDecoder(NativeGCodeDecoder):
             if set(values) != {'G', 'X', 'Y', 'Z'} or any(values[a] != 0 for a in 'XYZ'):
                 raise ValueError('only an explicit zero XYZ G52 reset is supported')
             self.ready.add('frame_reset')
+            # 12.20: G52 shifts the local coordinate system (zero cancels the
+            # shift); it moves no axis, the X/Y/Z words are the shift.
+            self.hold_axes()
             return []
         if values.get('G') in (73, 83, 84) and any('.' not in text for w, text in pieces if w == 'Q'):
             # Parameters 245/246 may reinterpret an undotted Q (implied decimals).

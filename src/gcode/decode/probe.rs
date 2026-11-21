@@ -125,6 +125,8 @@ impl Decoder {
         cycle: &ProbeCycle,
         covers: u32,
     ) -> Result<Vec<Event>, String> {
+        // A probing cycle's blocks move axes: none is held.
+        self.held.clear();
         if !self.cycle_queue.is_empty() || self.cycle_active || self.tap_return.is_some() {
             return Err("a probing cycle cannot start inside another cycle".into());
         }

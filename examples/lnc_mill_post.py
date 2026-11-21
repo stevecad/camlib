@@ -385,6 +385,9 @@ class LNCMillDecoder(NativeGCodeDecoder):
             if set(values) != {'X', 'Y', 'Z'} or any(values[a] != 0 for a in 'XYZ'):
                 raise ValueError('only an explicit all-axis G52 zero is supported')
             self.ready.add('frame_reset')
+            # p.48: G52 X0 Y0 Z0 clears the local coordinate system; it moves
+            # no axis, the X/Y/Z words are the shift.
+            self.hold_axes()
             return []
         tool_change = int(self.machine.dialect.code('tool_change')[1:])
         if values.get('M') in (0, 1, tool_change):

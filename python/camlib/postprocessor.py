@@ -1213,7 +1213,7 @@ class PostProcessor(_TransactionCopy):
             raise ValueError(f'{name} emitted no blocks')
         return self._lines[:]
 
-    def _track_placed(self, name):
+    def _track_placed(self, name, held=()):
         """Which axes are still where the controller placed them after the
         blocks the hook ``name`` wrote (``self._lines``).
 
@@ -1222,9 +1222,11 @@ class PostProcessor(_TransactionCopy):
         change whose declared mode moves axes to machine positions places
         those axes again, at its change block. Any block that names an axis
         word commands that axis to a work position, through the
-        controller's actual work offset, so the axis leaves that state. A
-        probing cycle's macros move axes their blocks need not name: it
-        leaves every axis commanded."""
+        controller's actual work offset, so the axis leaves that state,
+        except a block the decoder read as moving no axis (``held``, one
+        flag per block: ``GCodeDecoder.hold_axes``), whose axis letters are
+        parameters. A probing cycle's macros move axes their blocks need not
+        name: it leaves every axis commanded."""
         if name == 'on_begin':
             self._placed = (True, True, True)
             return
@@ -1234,7 +1236,9 @@ class PostProcessor(_TransactionCopy):
         d = self.machine.dialect
         placed = list(getattr(self, '_placed', (False, False, False)))
         places = _TOOL_CHANGE_PLACES.get(self.machine.tool_change_position_mode, ())
-        for line in self._lines:
+        for k, line in enumerate(self._lines):
+            if k < len(held) and held[k]:
+                continue
             if name == 'on_tool_change' and _changes_tool(line, d):
                 for i in places:
                     placed[i] = True
@@ -1242,6 +1246,14 @@ class PostProcessor(_TransactionCopy):
                 if written:
                     placed[i] = False
         self._placed = tuple(placed)
+
+    def _hold_placed(self, name, before, held):
+        """After the decoder read the blocks the last hook ``name`` wrote:
+        track them again from ``before`` (the state before that hook),
+        leaving out the blocks it held, as the machine check does."""
+        if any(held):
+            self._placed = before
+            self._track_placed(name, held)
 
 
 class GCodePost(PostProcessor):
@@ -2016,6 +2028,9 @@ class GCodeDecoder(_TransactionCopy):
         self.cycle_queue = []
         self.cycle_initial = None
         self.compensation = 'off'
+        # The blocks of the last read() held as moving no axis (hold_axes).
+        self.held = ()
+        self._holding = False
 
         # Beam tools: the spindle words fire and stop their beam.
         def shape(t):
@@ -2049,7 +2064,18 @@ class GCodeDecoder(_TransactionCopy):
         if not required <= self.ready:
             raise ValueError('incomplete explicit decoder modal initialization: ' + str(sorted(required - self.ready)))
 
+    def hold_axes(self):
+        """Call from ``read_line`` while reading a block that sets an offset
+        or a mode and moves no axis, whose axis words are parameters of that
+        setting (``G52 X0 Y0 Z0``): cite the controller's manual where it is
+        called. The machine check then leaves the axes the block names where
+        they were, and the post keeps them placed; any other block that names
+        an axis commands it. ``held`` gives, after ``read``, one flag per
+        block (empty when none was held)."""
+        self._holding = True
+
     def read(self, lines, context=None):
+        self.held = ()
         if context is not None and 'probe' in context:
             if self.cycle_queue or self.cycle_active or self.tap_return is not None:
                 raise ValueError('a probing cycle cannot start inside another cycle')
@@ -2060,8 +2086,14 @@ class GCodeDecoder(_TransactionCopy):
             raise ValueError('canned cycle moves still pending')
         result = []
         pending = self.tap_return
+        held = []
         for line in lines:
+            self._holding = False
             result.extend(self.read_line(line, context))
+            held.append(self._holding)
+        self._holding = False
+        if any(held):
+            self.held = tuple(held)
         if pending is not None:
             # The block after a tapping cycle is its return: G33.1 returns by
             # itself; a G84 cycle returns to R and must then be cancelled (G80).
@@ -3217,6 +3249,17 @@ def _is_curve(event):
     )
 
 
+def _held_json(held):
+    """The decoder's held blocks (``GCodeDecoder.held``) for the native
+    session, or None when it held none."""
+    return _json([bool(h) for h in held]) if any(held) else None
+
+
+def _held_blocks_json(held):
+    """``_held_json`` for each event's blocks."""
+    return _json([[bool(h) for h in block] for block in held]) if any(any(b) for b in held) else None
+
+
 class PostEngine:
     """Owns one run, bounded atomic batches and separately owned post/decoder state."""
 
@@ -3303,7 +3346,9 @@ class PostEngine:
             scheduling = _settings(m, True)
             scheduling['policy']['junction_mode'] = 'exact_stop'
             settings['motion_scheduling'] = scheduling
-        session = native.IntentSession(_json(replace(program, events=()).to_dict()), _json(settings), _json(lines))
+        session = native.IntentSession(
+            _json(replace(program, events=()).to_dict()), _json(settings), _json(lines), _held_json(decoder.held)
+        )
         session.check_cancel(cancel)
         first = Chunk(session.take_begin())
         data = first.data
@@ -3394,6 +3439,7 @@ class PostEngine:
         blocks = []
         actual = []
         effects = []
+        held = []
         fast = self._default_motions(post, decoder)
         if fast is not None:
             return self._format_default(fast, post, decoder, events, originals, ranges, cancel, renumber)
@@ -3415,21 +3461,27 @@ class PostEngine:
             post.position_mm = decoder.position
             post.source_event = _typed(original) if isinstance(original, dict) else original
             post.source_fraction = interval if kind == 'motion' else None
-            block = post._call('on_' + ('motion' if kind == 'motion' else kind), typed)
+            name = 'on_' + ('motion' if kind == 'motion' else kind)
+            placed = post._placed
+            block = post._call(name, typed)
             if post.machine is not self.machine:
                 raise ValueError('hook changed the machine definition')
             context = _context(event)
             decoded = decoder.read(block, context)
             if decoder.ended or decoder.tool_pending:
                 raise ValueError('event ended program or left a partial tool transition')
+            # The post keeps placed axes as the machine check reads the
+            # blocks: those the decoder held command no axis.
+            post._hold_placed(name, placed, decoder.held)
             if renumber and kind == 'motion' and any(isinstance(e, Motion) for e in decoded):
                 next_id += 1
             # Own immutable snapshots before releasing the GIL in native checking.
             owned = [_typed(e.to_dict()) for e in decoded]
             blocks.append(block)
             actual.append([e.to_dict() for e in owned])
+            held.append(list(decoder.held))
             effects.extend(owned)
-        return post, decoder, blocks, actual, tuple(effects)
+        return post, decoder, blocks, actual, tuple(effects), held
 
     def _format_default(self, fast, post, decoder, events, originals, ranges, cancel, renumber=False):
         """As _format, with runs of non-tapping motions formatted and decoded
@@ -3437,6 +3489,7 @@ class PostEngine:
         blocks = []
         actual = []
         effects = []
+        held = []
         next_id = None
         i = 0
         while i < len(events):
@@ -3473,6 +3526,7 @@ class PostEngine:
                 post._placed = tuple(placed)
                 for event, block, words in zip(events[i:j], lines, decoded):
                     blocks.append(block)
+                    held.append([])
                     if renumber and next_id is None:
                         next_id = event['motion']['id']
                     if words is None:
@@ -3513,21 +3567,25 @@ class PostEngine:
             post.position_mm = decoder.position
             post.source_event = _typed(original) if isinstance(original, dict) else original
             post.source_fraction = interval if kind == 'motion' else None
-            block = post._call('on_' + ('motion' if kind == 'motion' else kind), typed)
+            name = 'on_' + ('motion' if kind == 'motion' else kind)
+            placed = post._placed
+            block = post._call(name, typed)
             if post.machine is not self.machine:
                 raise ValueError('hook changed the machine definition')
             context = _context(event)
             decoded = decoder.read(block, context)
             if decoder.ended or decoder.tool_pending:
                 raise ValueError('event ended program or left a partial tool transition')
+            post._hold_placed(name, placed, decoder.held)
             if renumber and kind == 'motion' and any(isinstance(e, Motion) for e in decoded):
                 next_id += 1
             owned = [_typed(e.to_dict()) for e in decoded]
             blocks.append(block)
             actual.append([e.to_dict() for e in owned])
+            held.append(list(decoder.held))
             effects.extend(owned)
             i += 1
-        return post, decoder, blocks, actual, tuple(effects)
+        return post, decoder, blocks, actual, tuple(effects), held
 
     @staticmethod
     def _checked_chunk(raw, blocks, effects):
@@ -3606,9 +3664,13 @@ class PostEngine:
             if self.machine.schedule_post_feeds
             else source
         )
-        post, decoder, blocks, actual, effects = self._format(prepared, originals, [(0.0, 1.0)] * len(source), cancel)
+        post, decoder, blocks, actual, effects, held = self._format(
+            prepared, originals, [(0.0, 1.0)] * len(source), cancel
+        )
         out = self._checked_chunk(
-            self._session.consume(_json(source), _json(actual), _json(blocks), cancel), blocks, effects
+            self._session.consume(_json(source), _json(actual), _json(blocks), cancel, _held_blocks_json(held)),
+            blocks,
+            effects,
         )
         self.post = post
         self.decoder = decoder
@@ -3698,11 +3760,13 @@ class PostEngine:
         preview = json.loads(self._session.preview(max_segments, cancel))
         events = [p['event'] for p in preview]
         ranges = [p['source_fraction_interval'] for p in preview]
-        post, decoder, blocks, actual, effects = self._format(
+        post, decoder, blocks, actual, effects, held = self._format(
             events, [self._sources[p['source']] for p in preview], ranges, cancel, renumber=True
         )
         out = self._checked_chunk(
-            self._session.check_lowered(_json(ranges), _json(actual), _json(blocks), cancel), blocks, effects
+            self._session.check_lowered(_json(ranges), _json(actual), _json(blocks), cancel, _held_blocks_json(held)),
+            blocks,
+            effects,
         )
         self.post = post
         self.decoder = decoder
@@ -3850,7 +3914,7 @@ class PostEngine:
             for a in actions
         ):
             raise ValueError('finish needs stopped spindle/coolant and end; no extra motion/effects')
-        out = self._checked_chunk(self._session.finish(_json(lines), cancel), [lines], ())
+        out = self._checked_chunk(self._session.finish(_json(lines), cancel, _held_json(decoder.held)), [lines], ())
         self.post = post
         self.decoder = decoder
         self.finished = True

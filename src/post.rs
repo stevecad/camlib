@@ -17,6 +17,14 @@ pub struct Line {
     pub operation: Option<String>,
     pub motion_id: Option<u64>,
     pub text: String,
+    /// The independent decoder read this block as setting an offset or a
+    /// mode without moving any axis: the axis letters it names are
+    /// parameters, not positions (Haas and FANUC `G52 X0 Y0 Z0`, Haas
+    /// `G100 X0 Y0 Z0`). The machine check then leaves the axes it names
+    /// where they were. Only a decoder sets it; absent, every axis word in
+    /// the block counts as commanding its axis.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub holds_axes: bool,
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Checked {

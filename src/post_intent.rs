@@ -209,6 +209,18 @@ impl IntentChecker {
         settings: Settings,
         lines: &[String],
     ) -> Result<(Self, Output), String> {
+        Self::begin_held(header, settings, lines, &[])
+    }
+    /// `begin`, with the independent decoder's reading of each
+    /// initialization block: `held[i]` when it read block `i` as setting an
+    /// offset or a mode without moving any axis (`Line::holds_axes`). Empty
+    /// when it held none.
+    pub fn begin_held(
+        header: &Program,
+        settings: Settings,
+        lines: &[String],
+        held: &[bool],
+    ) -> Result<(Self, Output), String> {
         if !header.events.is_empty()
             || !valid_id(&settings.run_id)
             || !settings.tolerance_mm.is_finite()
@@ -362,7 +374,7 @@ impl IntentChecker {
         };
         state.check_point(header.initial_position_mm, None)?;
         state.check_point(state.settings.decoded_initial_position_mm, None)?;
-        let mut chunk = state.chunk(None, lines)?;
+        let mut chunk = state.chunk(None, lines, held)?;
         chunk.decoded_initial_position_mm = Some(state.settings.decoded_initial_position_mm);
         let mut output = state.output(chunk, vec![], vec![]);
         output.lowering_policy = state.settings.lowering.clone();
@@ -566,9 +578,19 @@ impl IntentChecker {
         }
         Ok(Some(checks))
     }
-    fn chunk(&mut self, event: Option<(&Event, usize)>, lines: &[String]) -> Result<Chunk, String> {
+    /// `held`: the decoder's reading of each block (`Line::holds_axes`),
+    /// empty when it held none.
+    fn chunk(
+        &mut self,
+        event: Option<(&Event, usize)>,
+        lines: &[String],
+        held: &[bool],
+    ) -> Result<Chunk, String> {
+        if !held.is_empty() && held.len() != lines.len() {
+            return Err("decoder block classification does not match the written blocks".into());
+        }
         let mut output = vec![];
-        for text in lines {
+        for (i, text) in lines.iter().enumerate() {
             if text.len() > 1024
                 || !text.is_ascii()
                 || text.bytes().any(|b| b < 32 && b != b'\t' || b == 127)
@@ -589,6 +611,7 @@ impl IntentChecker {
                 operation: motion.map(|m| m.operation.clone()),
                 motion_id: motion.map(|m| m.id),
                 text: text.clone(),
+                holds_axes: held.get(i).copied().unwrap_or(false),
             });
         }
         Ok(Chunk {
@@ -608,6 +631,7 @@ impl IntentChecker {
         expected: &Event,
         actual: &[Event],
         lines: &[String],
+        held: &[bool],
         index: usize,
     ) -> Result<Chunk, String> {
         let start_line = self.line + 1;
@@ -677,7 +701,7 @@ impl IntentChecker {
             self.normal_acceleration = self.checked_normal_acceleration(event, false)?;
             self.axis_feed = self.checked_axis_feed(event, false)?;
         }
-        let mut chunk = self.chunk(Some((expected, index)), lines)?;
+        let mut chunk = self.chunk(Some((expected, index)), lines, held)?;
         // Preserve exactly the decoded control effects, including explicit
         // coolant-off and immaterial stopped-spindle direction. No candidate
         // record escapes if comparison, quota or cancellation later fails.
@@ -984,11 +1008,25 @@ impl IntentChecker {
         blocks: &[Vec<String>],
         cancel: &impl CancelSignal,
     ) -> Result<Output, String> {
+        self.consume_held(source, decoded, blocks, &[], cancel)
+    }
+    /// `consume`, with the independent decoder's reading of each event's
+    /// blocks (`begin_held`): one entry per event, or none when it held no
+    /// block.
+    pub fn consume_held(
+        &mut self,
+        source: &[Event],
+        decoded: &[Vec<Event>],
+        blocks: &[Vec<String>],
+        held: &[Vec<bool>],
+        cancel: &impl CancelSignal,
+    ) -> Result<Output, String> {
         if self.finished
             || self.settings.lowering.is_some()
             || source.len() > 64
             || source.len() != decoded.len()
             || source.len() != blocks.len()
+            || !held.is_empty() && held.len() != blocks.len()
             || blocks
                 .iter()
                 .zip(source)
@@ -1003,7 +1041,7 @@ impl IntentChecker {
         let mut next = self.clone();
         let first = next.source.summary.events;
         next.source.consume(source)?;
-        let mut out = next.chunk(None, &[])?;
+        let mut out = next.chunk(None, &[], &[])?;
         let mut mappings = vec![];
         let mut records = vec![];
         for (i, ((expected, actual), lines)) in source.iter().zip(decoded).zip(blocks).enumerate() {
@@ -1024,7 +1062,8 @@ impl IntentChecker {
             let expected = scheduled.as_ref().map_or(authored, |s| &s.event);
             next.normal_acceleration = next.checked_normal_acceleration(expected, true)?;
             next.axis_feed = next.checked_axis_feed(expected, true)?;
-            let chunk = next.decoded_event(expected, actual, lines, first + i)?;
+            let held = held.get(i).map_or(&[][..], |h| &h[..]);
+            let chunk = next.decoded_event(expected, actual, lines, held, first + i)?;
             let hash = format!(
                 "{:x}",
                 Sha256::digest(serde_json::to_vec(authored).map_err(|e| e.to_string())?)
@@ -1256,11 +1295,24 @@ impl IntentChecker {
         blocks: &[Vec<String>],
         cancel: &impl CancelSignal,
     ) -> Result<Output, String> {
+        self.check_lowered_held(ranges, decoded, blocks, &[], cancel)
+    }
+    /// `check_lowered`, with the decoder's reading of each segment's blocks
+    /// (`consume_held`).
+    pub fn check_lowered_held(
+        &mut self,
+        ranges: &[[f64; 2]],
+        decoded: &[Vec<Event>],
+        blocks: &[Vec<String>],
+        held: &[Vec<bool>],
+        cancel: &impl CancelSignal,
+    ) -> Result<Output, String> {
         if self.finished
             || ranges.is_empty()
             || ranges.len() > 64
             || ranges.len() != decoded.len()
             || ranges.len() != blocks.len()
+            || !held.is_empty() && held.len() != blocks.len()
             || blocks.iter().any(|b| b.len() > PROBE_BLOCK_LINES)
             || decoded.iter().any(|b| b.len() > 8)
         {
@@ -1279,10 +1331,12 @@ impl IntentChecker {
             return Err("source interval gap/overlap or modified lowering plan".into());
         }
         let mut next = self.clone();
-        let mut out = next.chunk(None, &[])?;
+        let mut out = next.chunk(None, &[], &[])?;
         let mut mappings = vec![];
         let mut records = vec![];
-        for (range, (actual, lines)) in ranges.iter().zip(decoded.iter().zip(blocks)) {
+        for (i, (range, (actual, lines))) in
+            ranges.iter().zip(decoded.iter().zip(blocks)).enumerate()
+        {
             cancelled(cancel)?;
             let start = next.decoded.summary.final_position_mm;
             let p = next
@@ -1303,7 +1357,8 @@ impl IntentChecker {
             if lines.len() > block_lines(&event) {
                 return Err("generic lowering lifecycle/batch/block cap".into());
             }
-            let mut chunk = next.decoded_event(&event, actual, lines, index)?;
+            let held = held.get(i).map_or(&[][..], |h| &h[..]);
+            let mut chunk = next.decoded_event(&event, actual, lines, held, index)?;
             if let Event::Motion { motion } = &original {
                 let decoded = chunk.checked[0].motion.as_ref();
                 let has_motion = decoded.is_some();
@@ -1392,6 +1447,16 @@ impl IntentChecker {
         lines: &[String],
         cancel: &impl CancelSignal,
     ) -> Result<Output, String> {
+        self.finish_held(lines, &[], cancel)
+    }
+    /// `finish`, with the decoder's reading of each closing block
+    /// (`begin_held`).
+    pub fn finish_held(
+        &mut self,
+        lines: &[String],
+        held: &[bool],
+        cancel: &impl CancelSignal,
+    ) -> Result<Output, String> {
         if self.finished
             || !self.pending.is_empty()
             || self.deferred_compensation.is_some()
@@ -1402,7 +1467,7 @@ impl IntentChecker {
         }
         cancelled(cancel)?;
         let mut next = self.clone();
-        let chunk = next.chunk(None, lines)?;
+        let chunk = next.chunk(None, lines, held)?;
         let output = next.output(chunk, vec![], vec![]);
         check_chunk_size(&output)?;
         cancelled(cancel)?;

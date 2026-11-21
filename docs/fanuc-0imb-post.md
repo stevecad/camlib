@@ -32,7 +32,9 @@ are retained privately; the manual is not redistributed in the library.
 G43/H and G49 can cause axis movement. The reference therefore uses explicit
 G1 compensation blocks whose spindle-axis endpoints preserve the declared tip
 position. G52 clears only the local shift; a zero G92 shift remains a setup
-premise. Units agree with startup offset-table units. Decimal points avoid DPI
+premise. G52 moves no axis: the decoder reads its X/Y/Z words as the shift
+(`hold_axes`), so the machine check keeps a start pose on the travel limits
+exactly there (#369). Units agree with startup offset-table units. Decimal points avoid DPI
 parameter ambiguity. G61 selects exact-stop mode without asserting zero physical
 servo error. M-code functions and ATC routes depend on the builder.
 

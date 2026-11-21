@@ -22,8 +22,9 @@ pub struct ArcOutput {
     pub lines_precision: u64,
 }
 
-/// Each event's written blocks and their decoded events.
-type Formatted = (Vec<Vec<String>>, Vec<Vec<Event>>);
+/// Each event's written blocks, their decoded events and the blocks the
+/// decoder held (`Decoder::held`).
+type Formatted = (Vec<Vec<String>>, Vec<Vec<Event>>, Vec<Vec<bool>>);
 
 pub struct Engine {
     machine: Machine,
@@ -164,7 +165,7 @@ impl Engine {
             lowering: lowering.clone(),
             motion_scheduling: None,
         };
-        let (session, first) = IntentChecker::begin(header, settings, &lines)?;
+        let (session, first) = IntentChecker::begin_held(header, settings, &lines, &decoder.held)?;
         if cancel.is_cancelled() {
             return Err("post cancelled; batch not committed".into());
         }
@@ -200,6 +201,7 @@ impl Engine {
     ) -> Result<Formatted, String> {
         let mut blocks = Vec::with_capacity(events.len());
         let mut actual = Vec::with_capacity(events.len());
+        let mut held = Vec::with_capacity(events.len());
         let mut next_id: Option<u64> = None;
         for (event, original) in events.iter().zip(originals) {
             if cancel.is_cancelled() {
@@ -220,6 +222,7 @@ impl Engine {
             }
             self.post.position_mm = Some(self.decoder.position);
             self.post.source_event = Some(original.clone());
+            let placed = self.post.placed();
             let block = self.post.call(Hook::Event(&typed), 8)?;
             let decoded = if let Event::Probe { cycle, covers } = &typed {
                 self.decoder.read_probe(&block, cycle, *covers)?
@@ -238,10 +241,15 @@ impl Engine {
             {
                 *id += 1;
             }
+            // The post keeps placed axes as the machine check reads the
+            // blocks: those the decoder held command no axis.
+            self.post
+                .hold_placed(Hook::Event(&typed), placed, &self.decoder.held);
             blocks.push(block);
             actual.push(decoded);
+            held.push(self.decoder.held.clone());
         }
-        Ok((blocks, actual))
+        Ok((blocks, actual, held))
     }
 
     /// `PostEngine.consume` (direct mode): at most 64 events, one chunk.
@@ -259,8 +267,9 @@ impl Engine {
         if events.len() > 64 {
             return Err("post consume accepts at most 64 events".into());
         }
-        let (blocks, actual) = self.format(events, events, false, cancel)?;
-        self.session.consume(events, &actual, &blocks, cancel)
+        let (blocks, actual, held) = self.format(events, events, false, cancel)?;
+        self.session
+            .consume_held(events, &actual, &blocks, &held, cancel)
     }
 
     /// How a lowered source arc/helix is written (`PostEngine._arc_output`).
@@ -332,10 +341,10 @@ impl Engine {
                     .ok_or("lowered segment without its source")
             })
             .collect::<Result<_, _>>()?;
-        let (blocks, actual) = self.format(&events, &originals, true, cancel)?;
+        let (blocks, actual, held) = self.format(&events, &originals, true, cancel)?;
         let out = self
             .session
-            .check_lowered(&ranges, &actual, &blocks, cancel)?;
+            .check_lowered_held(&ranges, &actual, &blocks, &held, cancel)?;
         // Sources whose last segment was in this batch are complete.
         for _ in 0..ranges.iter().filter(|r| r[1] == 1.).count() {
             self.sources.pop_front();
@@ -477,7 +486,9 @@ impl Engine {
                 "finish needs stopped spindle/coolant and end; no extra motion/effects".into(),
             );
         }
-        let out = self.session.finish(&lines, cancel)?;
+        let out = self
+            .session
+            .finish_held(&lines, &self.decoder.held, cancel)?;
         self.finished = true;
         Ok(out)
     }

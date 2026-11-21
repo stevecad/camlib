@@ -21,6 +21,33 @@ pub enum Hook<'a> {
     Finish,
 }
 
+/// The Python hook a `Hook` calls.
+fn hook_name(hook: &Hook<'_>) -> &'static str {
+    match hook {
+        Hook::Begin { .. } => "on_begin",
+        Hook::Finish => "on_finish",
+        Hook::Event(e) => match e {
+            Event::Motion { .. } => "on_motion",
+            Event::ToolChange { .. } => "on_tool_change",
+            Event::Spindle { .. } => "on_spindle",
+            Event::Coolant { .. } => "on_coolant",
+            Event::WorkOffset { .. } => "on_work_offset",
+            Event::Stop { .. } => "on_stop",
+            Event::Dwell { .. } => "on_dwell",
+            Event::Cycle { .. } => "on_cycle",
+            Event::SpindleOrient { .. } => "on_spindle_orient",
+            Event::Beam { .. } => "on_beam",
+            Event::BeamMark { .. } => "on_beam_mark",
+            Event::BeamStart { .. } => "on_beam_start",
+            Event::HeightControl { .. } => "on_height_control",
+            Event::SurfaceSpeed { .. } => "on_surface_speed",
+            Event::FeedPerRev { .. } => "on_feed_per_rev",
+            Event::CutterCompensation { .. } => "on_cutter_compensation",
+            Event::Probe { .. } => "on_probe",
+        },
+    }
+}
+
 #[derive(Clone)]
 pub struct DefaultPost {
     machine: Machine,
@@ -328,29 +355,7 @@ impl DefaultPost {
     pub fn call(&mut self, hook: Hook<'_>, limit: usize) -> Result<Vec<String>, String> {
         self.lines.clear();
         self.limit = limit;
-        let name = match &hook {
-            Hook::Begin { .. } => "on_begin",
-            Hook::Finish => "on_finish",
-            Hook::Event(e) => match e {
-                Event::Motion { .. } => "on_motion",
-                Event::ToolChange { .. } => "on_tool_change",
-                Event::Spindle { .. } => "on_spindle",
-                Event::Coolant { .. } => "on_coolant",
-                Event::WorkOffset { .. } => "on_work_offset",
-                Event::Stop { .. } => "on_stop",
-                Event::Dwell { .. } => "on_dwell",
-                Event::Cycle { .. } => "on_cycle",
-                Event::SpindleOrient { .. } => "on_spindle_orient",
-                Event::Beam { .. } => "on_beam",
-                Event::BeamMark { .. } => "on_beam_mark",
-                Event::BeamStart { .. } => "on_beam_start",
-                Event::HeightControl { .. } => "on_height_control",
-                Event::SurfaceSpeed { .. } => "on_surface_speed",
-                Event::FeedPerRev { .. } => "on_feed_per_rev",
-                Event::CutterCompensation { .. } => "on_cutter_compensation",
-                Event::Probe { .. } => "on_probe",
-            },
-        };
+        let name = hook_name(&hook);
         if self.covered > 0 && self.covered_probe {
             // A written probing cycle carries all its moves.
             if name != "on_motion" {
@@ -408,7 +413,7 @@ impl DefaultPost {
             Hook::Finish => self.on_finish()?,
             Hook::Event(event) => self.on_event(event)?,
         }
-        self.track_placed(name);
+        self.track_placed(name, &[]);
         if self.lines.is_empty()
             && name != "on_cycle"
             && !(name == "on_cutter_compensation" && self.machine.dialect.compensation_with_move)
@@ -428,8 +433,10 @@ impl DefaultPost {
     /// word commands that axis to a work position, through the controller's
     /// actual work offset, so the axis leaves that state. A probing cycle's
     /// macros move axes their blocks need not name: it leaves every axis
-    /// commanded.
-    fn track_placed(&mut self, name: &str) {
+    /// commanded. A block the decoder read as moving no axis (`held`, one
+    /// flag per block, empty for none: `post::Line::holds_axes`) names its
+    /// axes as parameters, not words that command them.
+    fn track_placed(&mut self, name: &str, held: &[bool]) {
         match name {
             "on_begin" => self.placed = [true; 3],
             "on_probe" => self.placed = [false; 3],
@@ -440,7 +447,10 @@ impl DefaultPost {
                     "table" => &[0, 1, 2],
                     _ => &[],
                 };
-                for line in &self.lines {
+                for (i, line) in self.lines.iter().enumerate() {
+                    if held.get(i).copied().unwrap_or(false) {
+                        continue;
+                    }
                     if name == "on_tool_change" && changes_tool(line, d) {
                         for &i in places {
                             self.placed[i] = true;
@@ -453,6 +463,22 @@ impl DefaultPost {
                     }
                 }
             }
+        }
+    }
+
+    /// Which work axes are still where the controller placed them.
+    pub fn placed(&self) -> [bool; 3] {
+        self.placed
+    }
+
+    /// `PostProcessor._hold_placed`: after the decoder read the blocks the
+    /// last `call` wrote for `hook`, track them again from `before` (the
+    /// state before that call) leaving out the blocks it held, as the
+    /// machine check does.
+    pub fn hold_placed(&mut self, hook: Hook<'_>, before: [bool; 3], held: &[bool]) {
+        if held.contains(&true) {
+            self.placed = before;
+            self.track_placed(hook_name(&hook), held);
         }
     }
 

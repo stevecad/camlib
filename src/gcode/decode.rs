@@ -187,6 +187,11 @@ pub struct Decoder {
     rules: Vec<(Code, Effect)>,
     required: BTreeSet<String>,
     motions: crate::post_decode::Decoder,
+    /// Per block of the last `read`: read as setting an offset or a mode
+    /// without moving any axis, the axis letters it names being parameters
+    /// (`hold_axes`; `post::Line::holds_axes`). Empty when none was.
+    pub held: Vec<bool>,
+    holding: bool,
 }
 
 impl Decoder {
@@ -274,6 +279,8 @@ impl Decoder {
             rules,
             required,
             motions,
+            held: vec![],
+            holding: false,
             machine: machine.clone(),
         })
     }
@@ -299,6 +306,15 @@ impl Decoder {
         }
     }
 
+    /// Called while reading a block that sets an offset or a mode and
+    /// moves no axis, whose axis words are parameters of that setting (the
+    /// controller's manual says so: cite it where it is called). The
+    /// machine check then leaves the axes the block names where they were;
+    /// any other block naming an axis commands it.
+    fn hold_axes(&mut self) {
+        self.holding = true;
+    }
+
     fn rule(&self, code: &Code) -> Option<&Effect> {
         self.rules.iter().find(|(c, _)| c == code).map(|(_, e)| e)
     }
@@ -309,6 +325,7 @@ impl Decoder {
         lines: &[String],
         context: Option<&Context>,
     ) -> Result<Vec<Event>, String> {
+        self.held.clear();
         if lines.is_empty() && !self.cycle_queue.is_empty() {
             return Ok(vec![self.cycle_effect(context)?]);
         }
@@ -317,8 +334,14 @@ impl Decoder {
         }
         let mut result = vec![];
         let pending = self.tap_return;
+        self.held.clear();
         for line in lines {
+            self.holding = false;
             result.extend(self.read_line(line, context)?);
+            self.held.push(self.holding);
+        }
+        if !self.held.contains(&true) {
+            self.held.clear();
         }
         if let Some((start, bottom, feed)) = pending {
             // The block after a tapping cycle is its return.

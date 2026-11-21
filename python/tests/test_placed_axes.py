@@ -25,7 +25,7 @@ from camlib.motion import WorkFrame
 from camlib.post import GCodePost, post_job, post_job_input
 from camlib.verification import StockContactOptions
 from support.facing import facing_job
-from test_rust_post import ROOT, plain
+from test_rust_post import ROOT, example, plain
 from test_tool_change_pose import job as drilling_job, machine as mill, tools as drilling_tools
 
 # Work zero in machine coordinates: the mill homes at X 0, Y 0 (its travel
@@ -33,8 +33,9 @@ from test_tool_change_pose import job as drilling_job, machine as mill, tools as
 ORIGIN = (250.0, 200.0, -150.0)
 
 
-def homed_model(tool, register, work_error_mm):
-    """A mill homed on its limits, the work frame known to +-work_error_mm."""
+def homed_model(tool, register, work_error_mm, z_max_mm=0):
+    """A mill homed on its limits, the work frame known to +-work_error_mm.
+    z_max_mm: the Z travel maximum (home is Z 0)."""
     g = tool.gauge_length_mm
     return MachineModel(
         1,
@@ -42,7 +43,7 @@ def homed_model(tool, register, work_error_mm):
         'homed-at-limits',
         '1',
         'milling',
-        (Axis('head', 0, 500), Axis('head', 0, 400), Axis('head', -300, 0)),
+        (Axis('head', 0, 500), Axis('head', 0, 400), Axis('head', -300, z_max_mm)),
         1,
         WorkFrame(ORIGIN),
         (-work_error_mm,) * 3,
@@ -65,8 +66,10 @@ def homed_model(tool, register, work_error_mm):
     )
 
 
-def facing_from_home(work_error_mm=0.02):
-    """A Facing whose start is the home pose, and the homed LinuxCNC mill."""
+def facing_from_home(work_error_mm=0.02, tool_change=None):
+    """A Facing whose start is the home pose, and the homed LinuxCNC mill.
+    tool_change: the setup's (ToolChangeInPlace unless given), from the
+    home pose."""
     spec = facing_job()
     tool = spec['tools'][0]
     home = (-ORIGIN[0], -ORIGIN[1], -ORIGIN[2] - tool.gauge_length_mm)
@@ -76,7 +79,7 @@ def facing_from_home(work_error_mm=0.02):
         tools=spec['tools'],
         operations=tuple(camlib.OperationNode(op, sources=()) for op in spec['operations']),
         initial_position_mm=home,
-        tool_change=ToolChangeInPlace(),
+        tool_change=ToolChangeInPlace() if tool_change is None else tool_change(tool, home),
     )
     job = camlib.Job('facing-from-home', '1', (setup,))
     setting = ToolSetting.for_tool(tool, number=1, length_register=1)
@@ -154,6 +157,105 @@ class StartPoseTest(unittest.TestCase):
         self.assertIn('straddles the minimum 0.000000 mm', details)
 
 
+class OffsetBlockTest(unittest.TestCase):
+    """#369: Haas and FANUC headers clear the local shift with G52 X0 Y0 Z0
+    (Haas also mirror image, G100 X0 Y0 Z0). Those blocks set an offset or
+    a mode and move no axis; their decoders read them so (hold_axes), and
+    the machine check keeps the axes they name exactly at home."""
+
+    def facing(self, controller):
+        # The FANUC reference declares where M6 leaves the spindle: here the
+        # table pose of the tool is the home pose the program starts at.
+        table = controller == 'fanuc_0imb_post'
+        job, _, home = facing_from_home(
+            tool_change=(lambda tool, home: camlib.ToolChangeTable({tool.id: home})) if table else None
+        )
+        tool = facing_job()['tools'][0]
+        declared = dict(
+            output_units='mm',
+            decimals=3,
+            max_feed_mm_min=10000,
+            max_spindle_rpm=30000,
+            max_sweep_rad=6.283185307179586,
+            tool_changes=True,
+            flood=True,
+            rapid_mm_min=6000,
+            tool_change_position_mode='preserve_spindle',
+            # FANUC activates the length offset with G1 G43 H Z (B-63844EN
+            # pp. 199-206), which commands Z: there Z is homed below its
+            # maximum, X and Y still on their minimums.
+            crash_model=homed_model(tool, 1, 0.02, z_max_mm=50 if table else 0),
+        )
+        setting = ToolSetting.for_tool(tool, number=1, length_register=1)
+        module = example(controller)
+        if controller == 'haas_ngc_post':
+            m = module.define_machine(
+                'Haas homed at its limits',
+                (setting,),
+                traverse_feed_mm_min=3000,
+                coordinate_system='fanuc',
+                h_t_agreement=True,
+                g92_shift_mm=(0, 0, 0),
+                rotation_scaling=False,
+                work_to_machine=WorkFrame(ORIGIN),
+                **declared,
+            )
+            return job, m, module.HaasNGCPost, module.HaasNGCDecoder
+        declared['tool_change_position_mode'] = 'table'
+        m = module.define_machine(
+            'FANUC homed at its limits',
+            (replace(setting, position_after_mm=home),),
+            startup_units='mm',
+            startup_standard_modes=True,
+            g92_shift_mm=(0, 0, 0),
+            m_codes=dict(
+                tool_change='M6', spindle_cw='M3', spindle_ccw='M4', spindle_off='M5', coolant_off='M9', flood='M8'
+            ),
+            traverse_feed_mm_min=3000,
+            work_to_machine=WorkFrame(ORIGIN),
+            **declared,
+        )
+        return job, m, module.Fanuc0iMBPost, module.Fanuc0iMBDecoder
+
+    def test_haas_and_fanuc_headers_leave_the_axes_at_home(self):
+        for controller, block in (('haas_ngc_post', 'G52 X0 Y0 Z0'), ('fanuc_0imb_post', 'G52 X0. Y0. Z0.')):
+            with self.subTest(controller):
+                job, m, post, decoder = self.facing(controller)
+                released = job.post_nc('top', machine=m, post=post, decoder=decoder)
+                self.assertIn(block, released.text.splitlines())
+                # X and Y are not written before the first traverse; the
+                # header names them only as G52's (and G100's) parameters.
+                self.assertEqual(released.machine['status'], 'clear', released.machine)
+                self.assertTrue(released.machine['complete'])
+                self.assertEqual(tuple(released.findings), ())
+                if controller == 'haas_ngc_post':
+                    self.assertIn('G100 X0 Y0 Z0', released.text.splitlines())
+                    # The Rust Haas post and decoder release the same program.
+                    rust = post_job(post_job_input(job, 'top', machine=m))
+                    self.assertTrue(rust['released'], rust.get('refused'))
+                    self.assertEqual(rust['program'], released.text)
+                    self.assertEqual(rust['machine']['status'], 'clear')
+
+    def test_a_block_no_decoder_classifies_still_commands_its_axes(self):
+        # The same header read by a decoder that does not classify it: the
+        # axis letters count as words, which command the axes at home
+        # through the work offset, straddling the minimums by the interval.
+        for controller in ('haas_ngc_post', 'fanuc_0imb_post'):
+            with self.subTest(controller):
+                job, m, post, decoder = self.facing(controller)
+
+                class Unclassified(decoder):
+                    def hold_axes(self):
+                        pass
+
+                with self.assertRaises(ExportRefused) as refused:
+                    job.post_nc('top', machine=m, post=post, decoder=Unclassified)
+                self.assertEqual(refused.exception.statuses, ('uncertain',))
+                posted = job.post_nc('top', machine=m, post=post, decoder=Unclassified, accept={'uncertain'})
+                details = ' '.join(f['detail'] for f in posted.machine['findings'])
+                self.assertIn('straddles the minimum 0.000000 mm of declared [0, 500] machine travel', details)
+
+
 class ToolChangeTest(unittest.TestCase):
     def test_z_home_tool_change_places_z_until_the_program_moves_it(self):
         m = mill(
@@ -208,6 +310,24 @@ class ToolChangeTest(unittest.TestCase):
         p._placed = (False, False, False)
         p._call('on_tool_change', ToolChange('drill3', 1, 1, (0, 0, 40)))
         self.assertEqual(p._placed, (False, False, False))
+
+    def test_a_block_the_decoder_held_leaves_placed_axes_placed(self):
+        # The post keeps placed axes as the machine check reads the blocks:
+        # after the decoder held a block, its axis letters are parameters.
+        p = GCodePost(mill({'drill3': (0.0, 0.0, 40.0)}, mode='preserve_tip'))
+        p._placed = (True, True, True)
+        p._lines = ['G52 X0 Y0 Z0', 'G4 P1']
+        p._track_placed('on_dwell', (True, False))
+        self.assertEqual(p._placed, (True, True, True))
+        p._track_placed('on_dwell')
+        self.assertEqual(p._placed, (False, False, False))
+        # _hold_placed tracks the hook's blocks again from the state before
+        # it, leaving out those held; with none held it changes nothing.
+        p._lines = ['G52 X0 Y0 Z0', 'G0 Y5']
+        p._hold_placed('on_dwell', (True, True, True), (True, False))
+        self.assertEqual(p._placed, (True, False, True))
+        p._hold_placed('on_dwell', (True, True, True), ())
+        self.assertEqual(p._placed, (True, False, True))
 
 
 if __name__ == '__main__':

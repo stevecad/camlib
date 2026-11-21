@@ -115,7 +115,9 @@ start pose or a waypoint set it is still exactly there, at the start of every
 move and along any move that does not command it. A mill homed on its limits
 (X 0 of travel [0, 508], say) therefore starts its first moves inside. A block
 commands an axis by writing its word, even one equal to the current position,
-or by moving along it; the exact rule is in
+or by moving along it, but not by naming it as a parameter of an offset or
+mode setting its decoder reads as moving nothing (the Haas and FANUC header's
+`G52 X0 Y0 Z0`); the exact rule is in
 [the travel rule](python.md#the-travel-rule). A decoded arc
 whose words leave an endpoint gap is known to that gap either side of its
 nominal circle.

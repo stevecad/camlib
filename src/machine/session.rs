@@ -853,6 +853,19 @@ impl Session {
         }
         if depth != 0 { [true; 3] } else { words }
     }
+    /// The work axes a posted block may command: none for a block the
+    /// independent decoder read as setting an offset or a mode without
+    /// moving any axis (`Line::holds_axes`: its axis letters are parameters,
+    /// such as the shift of `G52 X0 Y0 Z0`), else `axis_words`. Only the
+    /// decoder's own reading holds a block; any other block that names an
+    /// axis commands it.
+    fn line_words(&self, line: &crate::post::Line) -> [bool; 3] {
+        if line.holds_axes {
+            [false; 3]
+        } else {
+            self.axis_words(&line.text)
+        }
+    }
     /// The machine axes a command of the `work` axes may move: those whose
     /// row of the rigid work-to-machine frame depends on one of them.
     fn affected(&self, work: [bool; 3]) -> [bool; 3] {
@@ -905,7 +918,9 @@ impl Session {
     /// block that writes an axis word commands that axis to a work position,
     /// even one equal to the decoded current position (that block decodes
     /// to no move, yet the machine goes to the commanded position, which the
-    /// interval places), so it is held with the interval from then on.
+    /// interval places), so it is held with the interval from then on. A
+    /// block the decoder read as moving no axis (`line_words`: `G52 X0 Y0
+    /// Z0` and the like) writes no axis word.
     ///
     /// For a decoded move: its start is exact on every axis still exact
     /// before its record's blocks (except the last one, which may be the
@@ -937,7 +952,7 @@ impl Session {
                 ([false; 3], [false; 3])
             } else {
                 while next < lines.len() && lines[next].number < start {
-                    let words = self.axis_words(&lines[next].text);
+                    let words = self.line_words(&lines[next]);
                     let between = Attribution {
                         event: self.last_event,
                         ..Default::default()
@@ -949,7 +964,7 @@ impl Session {
                 let mut complete = true;
                 while next < lines.len() && lines[next].number <= end {
                     complete &= lines[next].number == start + own.len();
-                    own.push(self.axis_words(&lines[next].text));
+                    own.push(self.line_words(&lines[next]));
                     next += 1;
                 }
                 if !complete || own.len() != end - start + 1 {
@@ -982,7 +997,7 @@ impl Session {
             }
         }
         while next < lines.len() {
-            let words = self.axis_words(&lines[next].text);
+            let words = self.line_words(&lines[next]);
             let between = Attribution {
                 event: self.last_event,
                 ..Default::default()

@@ -175,6 +175,9 @@ class CentroidPlasmaDecoder(NativeGCodeDecoder):
             self.length = None
             return super().read_line(line, context)
         if text == 'G52 X0 Y0 Z0':
-            # Cancels any local offset: the frame reset.
+            # Cancels any local offset: the frame reset. CNC12 G52 (Mill
+            # Operator's Manual 12.20, the same CNC12 software) moves no axis:
+            # the X/Y/Z words are the shift.
+            self.hold_axes()
             return super().read_line('G52', context)
         return super().read_line(line, context)

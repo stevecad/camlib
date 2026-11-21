@@ -448,6 +448,10 @@ class Fanuc0iMBDecoder(NativeGCodeDecoder):
             if set(values) != {'X', 'Y', 'Z'} or any(values[a] != 0 for a in 'XYZ'):
                 raise ValueError('only explicit all-axis local zero supported')
             self.ready.add('frame_reset')
+            # B-63844EN, local coordinate system (printed pp. 79-89): G52 IP_
+            # sets the local shift, G52 with zero cancels it; the block moves
+            # no axis, its X/Y/Z words are the shift.
+            self.hold_axes()
             return []
         if values.get('M') in (0, 1, int(self.machine.dialect.code('tool_change')[1:])):
             if self.rpm or self.coolant != 'off':

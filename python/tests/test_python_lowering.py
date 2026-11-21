@@ -179,7 +179,7 @@ class PythonLowering(unittest.TestCase):
                 e.drain(n)
         events = [i['event'] for i in preview]
         ranges = [list(i['source_fraction_interval']) for i in preview]
-        _, _, blocks, actual, _ = e._format(events, [p.events[-1]] * 7, ranges, None)
+        _, _, blocks, actual, _, _ = e._format(events, [p.events[-1]] * 7, ranges, None)
         ranges[0][1] += 1e-5
         with self.assertRaisesRegex(ValueError, 'interval'):
             e._session.check_lowered(json.dumps(ranges), json.dumps(actual), json.dumps(blocks))

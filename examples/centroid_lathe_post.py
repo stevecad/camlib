@@ -204,6 +204,9 @@ class CentroidLatheDecoder(NativeGCodeDecoder):
             return [CutterCompensation(self.compensation, 'xz')]
         if text == 'G52 X0 Z0':
             self.ready.add('frame_reset')
+            # 9.17: G52 with zero shifts cancels any local offset; it moves
+            # no axis, the X/Z words are the shift.
+            self.hold_axes()
             return []
         words = text.split(' ')
         if words[0] == d.code('rapid'):

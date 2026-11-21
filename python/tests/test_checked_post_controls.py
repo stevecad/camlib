@@ -144,7 +144,7 @@ class CheckedPostControls(unittest.TestCase):
         e = PostEngine(m)
         begin = e.begin(p)
         source = [v.to_dict() for v in p.events[:2]]
-        _, _, blocks, actual, _ = e._format(source, p.events[:2], [(0.0, 1.0)] * 2, None)
+        _, _, blocks, actual, _, _ = e._format(source, p.events[:2], [(0.0, 1.0)] * 2, None)
         for change in ('tool', 'number', 'length_register', 'position_after_mm'):
             forged = deepcopy(actual)
             forged[1][0][change] = {'tool': 'other', 'number': 3, 'length_register': 8, 'position_after_mm': [6, 0, 3]}[

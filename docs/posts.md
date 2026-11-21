@@ -357,6 +357,11 @@ while that axis is still where the controller placed it itself (#367):
   controller post writes itself (a FANUC `G1 G43 H.. Z..`, a Carvera
   `G53 G0 Z-3`). A probing cycle leaves every axis written, since its macros
   move axes their blocks need not name.
+- A block that only sets an offset or a mode, naming axis letters as its
+  parameters (`G52 X0 Y0 Z0`, Haas `G100 X0 Y0 Z0`), writes no axis word:
+  the decoder reads it as moving no axis (`GCodeDecoder.hold_axes`), and
+  the post and the machine check both leave the axes it names placed. A
+  block no decoder classifies so counts every axis it names.
 
 An axis word commands the axis to that work coordinate through the
 controller's *actual* work offset, even at the value it already has. Where

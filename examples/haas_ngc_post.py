@@ -450,6 +450,11 @@ class HaasNGCDecoder(NativeGCodeDecoder):
                 self.ready.add('frame_reset')
             else:
                 self.mirror_off = True
+            # 96-8210 Rev N, G-codes: G52 sets a coordinate shift (zero
+            # clears it) and G100 cancels mirror image on the axes it names.
+            # Neither commands motion: the X/Y/Z words are the shift and the
+            # axes selected, not positions.
+            self.hold_axes()
             return []
         if g in (50, 69, 187):
             if set(values) != {'G'} or g in (50, 69) and not self.machine.rotation_scaling:

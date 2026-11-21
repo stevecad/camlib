@@ -354,6 +354,10 @@ class Siemens808DISODecoder(NativeGCodeDecoder):
                 if self.resets != {50, 69, 50.1}:
                     raise ValueError('cancel transforms before coordinate reset')
                 self.ready.add('frame_reset')
+            # ISO pp104-113: G50.1 cancels mirroring on the axes it names and
+            # G92.1 X0. Y0. Z0. resets the G92/G52 shifts of those axes;
+            # neither moves an axis, the X/Y/Z words select the axes.
+            self.hold_axes()
             return []
         if (m in (0, 1, 6) or 'T' in values) and (self.rpm or self.coolant != 'off'):
             raise ValueError('explicit spindle/coolant off required before OEM stop/tool change')

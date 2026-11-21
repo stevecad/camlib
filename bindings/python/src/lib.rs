@@ -1856,13 +1856,35 @@ struct IntentSession {
     state: camlib::post_intent::IntentChecker,
     initial: Vec<u8>,
 }
+/// The decoder's reading of each event's blocks (`Line.holds_axes`), a JSON
+/// list of boolean lists; omitted when it held none.
+fn held_blocks(held_json: Option<&str>) -> PyResult<Vec<Vec<bool>>> {
+    held_json
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+        .map(Option::unwrap_or_default)
+}
 #[pymethods]
 impl IntentSession {
+    /// `held_json`: the decoder's reading of each initialization block, a
+    /// JSON list of booleans (`Line.holds_axes`); omitted when it held none.
     #[new]
-    fn new(header_json: &str, settings_json: &str, lines_json: &str) -> PyResult<Self> {
-        if [header_json.len(), settings_json.len(), lines_json.len()]
-            .iter()
-            .any(|n| *n > 512 * 1024)
+    #[pyo3(signature=(header_json,settings_json,lines_json,held_json=None))]
+    fn new(
+        header_json: &str,
+        settings_json: &str,
+        lines_json: &str,
+        held_json: Option<&str>,
+    ) -> PyResult<Self> {
+        if [
+            header_json.len(),
+            settings_json.len(),
+            lines_json.len(),
+            held_json.map_or(0, str::len),
+        ]
+        .iter()
+        .any(|n| *n > 512 * 1024)
         {
             return Err(PyValueError::new_err("generic post header byte cap"));
         }
@@ -1872,8 +1894,14 @@ impl IntentSession {
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         let lines: Vec<String> =
             serde_json::from_str(lines_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
-        let (state, first) = camlib::post_intent::IntentChecker::begin(&header, settings, &lines)
-            .map_err(PyValueError::new_err)?;
+        let held: Vec<bool> = held_json
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?
+            .unwrap_or_default();
+        let (state, first) =
+            camlib::post_intent::IntentChecker::begin_held(&header, settings, &lines, &held)
+                .map_err(PyValueError::new_err)?;
         let initial =
             serde_json::to_vec(&first).map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(Self { state, initial })
@@ -1985,7 +2013,7 @@ impl IntentSession {
         let bytes = serde_json::to_vec(&out).map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(PyBytes::new(py, &bytes))
     }
-    #[pyo3(signature=(ranges_json,decoded_json,blocks_json,cancel=None))]
+    #[pyo3(signature=(ranges_json,decoded_json,blocks_json,cancel=None,held_json=None))]
     fn check_lowered<'py>(
         &mut self,
         py: Python<'py>,
@@ -1993,11 +2021,17 @@ impl IntentSession {
         decoded_json: &str,
         blocks_json: &str,
         cancel: Option<PyRef<'_, PostCancellation>>,
+        held_json: Option<&str>,
     ) -> PyResult<Bound<'py, PyBytes>> {
         if !self.initial.is_empty()
-            || [ranges_json.len(), decoded_json.len(), blocks_json.len()]
-                .iter()
-                .any(|n| *n > 512 * 1024)
+            || [
+                ranges_json.len(),
+                decoded_json.len(),
+                blocks_json.len(),
+                held_json.map_or(0, str::len),
+            ]
+            .iter()
+            .any(|n| *n > 512 * 1024)
         {
             return Err(PyValueError::new_err(
                 "generic lowered lifecycle/input byte cap",
@@ -2009,14 +2043,18 @@ impl IntentSession {
             serde_json::from_str(decoded_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
         let blocks: Vec<Vec<String>> =
             serde_json::from_str(blocks_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let held = held_blocks(held_json)?;
         let flag = cancel.map(|c| c.flag.clone()).unwrap_or_default();
         let out = py
-            .detach(|| self.state.check_lowered(&ranges, &decoded, &blocks, &*flag))
+            .detach(|| {
+                self.state
+                    .check_lowered_held(&ranges, &decoded, &blocks, &held, &*flag)
+            })
             .map_err(PyValueError::new_err)?;
         let bytes = serde_json::to_vec(&out).map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(PyBytes::new(py, &bytes))
     }
-    #[pyo3(signature=(events_json,decoded_json,blocks_json,cancel=None))]
+    #[pyo3(signature=(events_json,decoded_json,blocks_json,cancel=None,held_json=None))]
     fn consume<'py>(
         &mut self,
         py: Python<'py>,
@@ -2024,11 +2062,17 @@ impl IntentSession {
         decoded_json: &str,
         blocks_json: &str,
         cancel: Option<PyRef<'_, PostCancellation>>,
+        held_json: Option<&str>,
     ) -> PyResult<Bound<'py, PyBytes>> {
         if !self.initial.is_empty()
-            || [events_json.len(), decoded_json.len(), blocks_json.len()]
-                .iter()
-                .any(|n| *n > 512 * 1024)
+            || [
+                events_json.len(),
+                decoded_json.len(),
+                blocks_json.len(),
+                held_json.map_or(0, str::len),
+            ]
+            .iter()
+            .any(|n| *n > 512 * 1024)
         {
             return Err(PyValueError::new_err(
                 "generic post lifecycle/input byte cap",
@@ -2040,10 +2084,13 @@ impl IntentSession {
             serde_json::from_str(decoded_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
         let blocks: Vec<Vec<String>> =
             serde_json::from_str(blocks_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let held = held_blocks(held_json)?;
         let flag = cancel.map(|c| c.flag.clone()).unwrap_or_default();
         let bytes = py
             .detach(|| {
-                let out = self.state.consume(&events, &decoded, &blocks, &*flag)?;
+                let out = self
+                    .state
+                    .consume_held(&events, &decoded, &blocks, &held, &*flag)?;
                 serde_json::to_vec(&out).map_err(|e| e.to_string())
             })
             .map_err(PyValueError::new_err)?;
@@ -2143,21 +2190,30 @@ impl IntentSession {
             (placed[0], placed[1], placed[2]),
         ))
     }
-    #[pyo3(signature=(lines_json,cancel=None))]
+    #[pyo3(signature=(lines_json,cancel=None,held_json=None))]
     fn finish<'py>(
         &mut self,
         py: Python<'py>,
         lines_json: &str,
         cancel: Option<PyRef<'_, PostCancellation>>,
+        held_json: Option<&str>,
     ) -> PyResult<Bound<'py, PyBytes>> {
-        if !self.initial.is_empty() || lines_json.len() > 32768 {
+        if !self.initial.is_empty()
+            || lines_json.len() > 32768
+            || held_json.is_some_and(|h| h.len() > 32768)
+        {
             return Err(PyValueError::new_err("generic finish byte cap"));
         }
         let lines: Vec<String> =
             serde_json::from_str(lines_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let held: Vec<bool> = held_json
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?
+            .unwrap_or_default();
         let flag = cancel.map(|c| c.flag.clone()).unwrap_or_default();
         let out = py
-            .detach(|| self.state.finish(&lines, &*flag))
+            .detach(|| self.state.finish_held(&lines, &held, &*flag))
             .map_err(PyValueError::new_err)?;
         let bytes = serde_json::to_vec(&out).map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(PyBytes::new(py, &bytes))

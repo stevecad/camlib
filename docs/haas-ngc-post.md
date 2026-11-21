@@ -112,6 +112,9 @@ length geometry+wear, G92 and machine setup remain external measured premises.
 Initialization: framed `%`/O program, explicit units/G90/G17/G94/G40/G49/G80,
 G52 X0 Y0 Z0, conditional G50/G69, G100 X0 Y0 Z0, plain G187 reset, G61 exact stop,
 M5/M9. Decoder requires the closing percent after M30 before file completion.
+G52 and G100 set a shift and a mode and move no axis: both decoders read their
+X/Y/Z words as parameters (`hold_axes`), so the machine check keeps a start
+pose on the travel limits exactly there (#369).
 G61 supplies the documented nominal stop at every commanded endpoint. No G64,
 G187 P/E blending model or automatic corner rounding/chamfer words. This proves
 nominal paths under the declared model, not servo/acceleration/physical accuracy.

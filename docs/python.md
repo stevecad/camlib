@@ -249,6 +249,15 @@ and route waypoints.
     and an absent word is the only way to leave an axis where it is;
   - a block that writes an axis word and decodes to no move (its words equal
     the decoded position) commands that axis all the same, for the next move;
+  - a block the independent decoder reads as setting an offset or a mode
+    without moving any axis commands none of the axes it names: there the
+    letters are parameters, not positions. The controller decoders read so
+    the local-shift reset `G52 X0 Y0 Z0` (Haas NGC, FANUC 0i-MB, Centroid
+    CNC12 mill, plasma and lathe, LNC), the Haas mirror-image cancel `G100
+    X0 Y0 Z0` and the Siemens 808D ISO `G50.1`/`G92.1 X0. Y0. Z0.` resets,
+    each from its manual. The decoder says so itself
+    (`GCodeDecoder.hold_axes`, recorded as `holds_axes` on the posted line);
+    a block no decoder classifies counts every axis it names;
   - a route waypoint makes the axes it names exact again; an axis it retains
     stays as it was.
 

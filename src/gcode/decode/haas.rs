@@ -181,6 +181,12 @@ impl Decoder {
             } else {
                 self.haas.mirror_off = true;
             }
+            // Haas 96-8210 Rev N (Mill Operator's Manual, NGC), G-codes: G52
+            // sets a coordinate shift (the local system with Setting 33
+            // FANUC; zero clears it) and G100 cancels mirror image on the
+            // axes it names. Neither commands motion: their X/Y/Z words are
+            // the shift and the axes selected, not positions.
+            self.hold_axes();
             return Ok(vec![]);
         }
         if matches!(g, Some(50. | 69. | 187.)) {
