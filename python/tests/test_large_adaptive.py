@@ -97,12 +97,17 @@ class LargeAdaptiveTest(unittest.TestCase):
         clearing = reports[-1]['layers'][0]['clearing']
         self.assertAlmostEqual(clearing['engagement_grid_mm'], 0.05)
         self.assertEqual(any('tiled engagement front' in d for d in clearing['diagnostics']), side == 400)
-        self.assertGreater(clearing['engagement_proved_strokes'], 0)
+        self.assertGreater(clearing['certified_strokes'], 0)
+        self.assertEqual(clearing['engagement_proved_strokes'], clearing['certified_strokes'])
         self.assertLessEqual(clearing['proven_max_engagement_deg'], math.degrees(math.acos(0.75)) + 1e-8)
         self.assertEqual(clearing.get('confined_strokes', 0), 0)
 
     def test_pocket_around_a_large_boss(self):
-        self.check_rim(400, False)
+        for side in (30, 400):
+            with self.subTest(side=side):
+                self.check_rim(side, False)
 
     def test_adaptive_roughing_around_a_large_boss(self):
-        self.check_rim(400, True)
+        for side in (30, 400):
+            with self.subTest(side=side):
+                self.check_rim(side, True)
