@@ -1,0 +1,583 @@
+{
+ "accept": [],
+ "frame": {
+  "origin_mm": [
+   0,
+   0,
+   0
+  ],
+  "x": [
+   1,
+   0,
+   0
+  ],
+  "y": [
+   0,
+   1,
+   0
+  ],
+  "z": [
+   0,
+   0,
+   1
+  ]
+ },
+ "machine": {
+  "arcs": true,
+  "crash_model": {
+   "absent_components": {
+    "column": "synthetic stand",
+    "enclosure": "open stand",
+    "table": "remote support"
+   },
+   "allowed_contacts": [
+    {
+     "bodies": [
+      "head",
+      "@tool"
+     ],
+     "reason": "tool mounted in spindle"
+    }
+   ],
+   "axes": [
+    {
+     "drive": "head",
+     "max_mm": 500,
+     "min_mm": 0
+    },
+    {
+     "drive": "head",
+     "max_mm": 400,
+     "min_mm": 0
+    },
+    {
+     "drive": "head",
+     "max_mm": 0,
+     "min_mm": -300
+    }
+   ],
+   "bodies": [
+    {
+     "component": "spindle_head",
+     "id": "head",
+     "indexed_solids": {},
+     "mount": "head",
+     "solids": [
+      {
+       "kind": "box",
+       "max_mm": [
+        1,
+        1,
+        10
+       ],
+       "min_mm": [
+        -1,
+        -1,
+        0
+       ]
+      }
+     ]
+    }
+   ],
+   "controller_reference": "synthetic exact-stop controller",
+   "id": "homed-at-limits",
+   "initial_axes_mm": [
+    0,
+    0,
+    0
+   ],
+   "initial_tool": null,
+   "options": {
+    "max_axis_tests": 1000000,
+    "max_findings": 128,
+    "spatial_resolution_mm": 0.05,
+    "stock_contact": {
+     "max_cell_reads": 2000000,
+     "max_findings": 128,
+     "max_nodes": 200000,
+     "spatial_resolution_mm": 0.001,
+     "tolerance_mm": 1e-05
+    },
+    "tolerance_mm": 1e-05
+   },
+   "process": "milling",
+   "program_end_route_mm": [],
+   "rapid_mode": "linear",
+   "revision": "1",
+   "tool_change_routes": {
+    "face8": {
+     "after_index_mm": [],
+     "before_index_mm": [],
+     "index_envelopes": [
+      {
+       "kind": "box",
+       "max_mm": [
+        20,
+        20,
+        1
+       ],
+       "min_mm": [
+        -20,
+        -20,
+        -61
+       ]
+      }
+     ],
+     "reference": "synthetic complete indexing enclosure",
+     "replaces": [
+      "@tool"
+     ]
+    }
+   },
+   "tools": [
+    {
+     "body_solids": [],
+     "gauge_offset_max_mm": [
+      0,
+      0,
+      60
+     ],
+     "gauge_offset_min_mm": [
+      0,
+      0,
+      60
+     ],
+     "length_register": 1,
+     "tool": "face8"
+    }
+   ],
+   "units": "mm",
+   "version": 1,
+   "work_error_max_mm": [
+    0.02,
+    0.02,
+    0.02
+   ],
+   "work_error_min_mm": [
+    -0.02,
+    -0.02,
+    -0.02
+   ],
+   "work_offset": 1,
+   "work_to_machine": {
+    "origin_mm": [
+     250.0,
+     200.0,
+     -150.0
+    ],
+    "x": [
+     1,
+     0,
+     0
+    ],
+    "y": [
+     0,
+     1,
+     0
+    ],
+    "z": [
+     0,
+     0,
+     1
+    ]
+   }
+  },
+  "decimals": 3,
+  "dialect": {
+   "axes": [
+    "X",
+    "Y",
+    "Z"
+   ],
+   "beam_effect": "spindle_cw",
+   "beam_s_max": null,
+   "centers": [
+    "I",
+    "J",
+    "K"
+   ],
+   "chip_break_lift_mm": 0.254,
+   "commands": [
+    {
+     "code": "G0",
+     "effect": "rapid"
+    },
+    {
+     "code": "G1",
+     "effect": "linear"
+    },
+    {
+     "code": "G2",
+     "effect": "arc_cw"
+    },
+    {
+     "code": "G3",
+     "effect": "arc_ccw"
+    },
+    {
+     "code": "G21",
+     "effect": "units_mm"
+    },
+    {
+     "code": "G20",
+     "effect": "units_inch"
+    },
+    {
+     "code": "G90",
+     "effect": "absolute"
+    },
+    {
+     "code": "G91.1",
+     "effect": "center_incremental"
+    },
+    {
+     "code": "G17",
+     "effect": "plane_xy"
+    },
+    {
+     "code": "G18",
+     "effect": "plane_xz"
+    },
+    {
+     "code": "G19",
+     "effect": "plane_yz"
+    },
+    {
+     "code": "G94",
+     "effect": "feed_per_minute"
+    },
+    {
+     "code": "G97",
+     "effect": "rpm_mode"
+    },
+    {
+     "code": "G40",
+     "effect": "radius_off"
+    },
+    {
+     "code": "G41",
+     "effect": "radius_left"
+    },
+    {
+     "code": "G42",
+     "effect": "radius_right"
+    },
+    {
+     "code": "G49",
+     "effect": "length_off"
+    },
+    {
+     "code": "G80",
+     "effect": "cycles_off"
+    },
+    {
+     "code": "G92.1",
+     "effect": "frame_reset"
+    },
+    {
+     "code": "G61.1",
+     "effect": "exact_stop"
+    },
+    {
+     "code": "G43",
+     "effect": "length_on"
+    },
+    {
+     "code": "M3",
+     "effect": "spindle_cw"
+    },
+    {
+     "code": "M4",
+     "effect": "spindle_ccw"
+    },
+    {
+     "code": "M5",
+     "effect": "spindle_off"
+    },
+    {
+     "code": "M6",
+     "effect": "tool_change"
+    },
+    {
+     "code": "M7",
+     "effect": "mist"
+    },
+    {
+     "code": "M8",
+     "effect": "flood"
+    },
+    {
+     "code": "M9",
+     "effect": "coolant_off"
+    },
+    {
+     "code": "M0",
+     "effect": "stop"
+    },
+    {
+     "code": "M1",
+     "effect": "optional_stop"
+    },
+    {
+     "code": "M2",
+     "effect": "end"
+    },
+    {
+     "code": "G4",
+     "effect": "dwell"
+    },
+    {
+     "code": "G81",
+     "effect": "drill_cycle"
+    },
+    {
+     "code": "G82",
+     "effect": "drill_dwell_cycle"
+    },
+    {
+     "code": "G83",
+     "effect": "peck_cycle"
+    },
+    {
+     "code": "G73",
+     "effect": "chip_break_cycle"
+    },
+    {
+     "code": "G98",
+     "effect": "cycle_return_initial"
+    },
+    {
+     "code": "G85",
+     "effect": "bore_cycle"
+    },
+    {
+     "code": "G89",
+     "effect": "bore_dwell_cycle"
+    },
+    {
+     "code": "G86",
+     "effect": "bore_stop_cycle"
+    },
+    {
+     "code": "G33.1",
+     "effect": "tap_synchronized"
+    },
+    {
+     "code": "G99",
+     "effect": "cycle_return_r"
+    }
+   ],
+   "compensation_register": true,
+   "compensation_with_move": false,
+   "compensation_word": "D",
+   "css_limit_word": null,
+   "cycle_dwell_unit": "s",
+   "dwell_max_s": 100000.0,
+   "dwell_resolution_s": 0.001,
+   "dwell_word": "P",
+   "feed_word": "F",
+   "fixed_modes": [],
+   "height_control_word": null,
+   "length_activation": "explicit",
+   "length_word": "H",
+   "oriented_edge_deg": null,
+   "parentheses_comments": true,
+   "peck_reentry_mm": 0.254,
+   "probe_fast_feed_mm_min": null,
+   "probe_switching": false,
+   "probing": null,
+   "radius_relative_tolerance": 0.001,
+   "radius_tolerance_mm": 0.00127,
+   "speed_word": "S",
+   "tap_pitch_word": null,
+   "thread_lead_word": "K",
+   "tool_change": "m6",
+   "tool_word": "T",
+   "work_offsets": [
+    "G54",
+    "G55",
+    "G56",
+    "G57",
+    "G58",
+    "G59"
+   ],
+   "x_diameter": false
+  },
+  "feed_tolerance_mm_min": 0.1,
+  "flood": true,
+  "frame": {
+   "origin_mm": [
+    0,
+    0,
+    0
+   ],
+   "x": [
+    1,
+    0,
+    0
+   ],
+   "y": [
+    0,
+    1,
+    0
+   ],
+   "z": [
+    0,
+    0,
+    1
+   ]
+  },
+  "helices": true,
+  "max_feed_mm_min": 10000,
+  "max_length_register": 99,
+  "max_spindle_rpm": 30000,
+  "max_sweep_rad": 6.283185307179586,
+  "max_tool_number": 99,
+  "mist": false,
+  "name": "Three-axis mill",
+  "output_units": "mm",
+  "planes": [
+   "xy",
+   "xz",
+   "yz"
+  ],
+  "rapid_mm_min": 6000,
+  "revision": "1",
+  "tip_travel_mm": null,
+  "tolerance_mm": 0.01,
+  "tool_change_home_z_mm": null,
+  "tool_change_position_mode": "preserve_spindle",
+  "tool_changes": true,
+  "tools": [
+   {
+    "diameter_register": null,
+    "gauge_length_mm": 60,
+    "length_register": 1,
+    "number": 1,
+    "position_after_mm": null,
+    "tool": "face8"
+   }
+  ],
+  "traverse_feed_mm_min": null,
+  "work_offset": 1,
+  "work_to_machine": {
+   "origin_mm": [
+    250.0,
+    200.0,
+    -150.0
+   ],
+   "x": [
+    1,
+    0,
+    0
+   ],
+   "y": [
+    0,
+    1,
+    0
+   ],
+   "z": [
+    0,
+    0,
+    1
+   ]
+  }
+ },
+ "manifest": {
+  "initial_position_mm": [
+   -250.0,
+   -200.0,
+   90.0
+  ],
+  "operations": [
+   {
+    "axis": "x",
+    "clearance_z_mm": 12,
+    "coolant": "flood",
+    "edge_overlap_mm": null,
+    "entry_air_gap_mm": 1,
+    "feed_mm_min": 600,
+    "floor_z_mm": 8,
+    "id": "face",
+    "kind": "facing",
+    "length_register": 1,
+    "mode": "zigzag",
+    "plunge_mm_min": 150,
+    "reverse": false,
+    "spindle_rpm": 12000,
+    "stepdown_mm": 1,
+    "stepover_mm": 6,
+    "tolerance_mm": 1e-05,
+    "tool": "face8",
+    "tool_number": 1,
+    "work_offset": 1
+   }
+  ],
+  "rapid_retracts": true,
+  "run": {
+   "id": "homed-facing-fixture",
+   "revision": "1@482b30d499a8e518383206c141b82a07f1c4542c2d22b5c4386ff488cf4c24bf"
+  },
+  "stock": {
+   "cell_size_mm": 0.25,
+   "max_cells": 4294967295,
+   "max_mm": [
+    40,
+    24,
+    10
+   ],
+   "min_mm": [
+    0,
+    0,
+    0
+   ],
+   "units": "mm",
+   "version": 1
+  },
+  "sweep": {
+   "chord_error_mm": 0.002,
+   "max_cell_visits": 100000000,
+   "max_changed_cells": 4294967295,
+   "max_scratch_cells": 4294967295,
+   "max_segments": 100000,
+   "max_tip_step_mm": 0.1,
+   "tolerance_mm": 1e-05
+  },
+  "tool_change": {
+   "in_place": true
+  },
+  "tools": [
+   {
+    "cutter": {
+     "center_cutting": true,
+     "cutting_length_mm": 30,
+     "diameter_mm": 8,
+     "flutes": 3,
+     "id": "em8",
+     "material": "carbide",
+     "name": "em8",
+     "neck": null,
+     "overall_length_mm": 50,
+     "shank_diameter_mm": 8,
+     "shape": {
+      "kind": "flat"
+     }
+    },
+    "gauge_length_mm": 60,
+    "holders": [
+     {
+      "radius_max_mm": 5,
+      "radius_min_mm": 5,
+      "z_max_mm": 60,
+      "z_min_mm": 35
+     }
+    ],
+    "id": "face8",
+    "stickout_mm": 35
+   }
+  ],
+  "version": 1
+ },
+ "program_id": "top",
+ "run_id": "homed-facing-fixture"
+}

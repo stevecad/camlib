@@ -2053,7 +2053,7 @@ impl IntentSession {
     /// unmodified default post: formats and independently decodes them with
     /// `formatter`, then runs the same checks. Returns the chunk, and the
     /// decoder's position and plane after it.
-    #[pyo3(signature=(events_json,formatter,position,units,plane,tool,cancel=None))]
+    #[pyo3(signature=(events_json,formatter,position,units,plane,tool,placed,cancel=None))]
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn consume_default<'py>(
         &mut self,
@@ -2064,8 +2064,14 @@ impl IntentSession {
         units: f64,
         plane: Option<&str>,
         tool: &str,
+        placed: (bool, bool, bool),
         cancel: Option<PyRef<'_, PostCancellation>>,
-    ) -> PyResult<(Bound<'py, PyBytes>, (f64, f64, f64), Option<String>)> {
+    ) -> PyResult<(
+        Bound<'py, PyBytes>,
+        (f64, f64, f64),
+        Option<String>,
+        (bool, bool, bool),
+    )> {
         use camlib::motion::{Event, Motion, MoveKind};
         if !self.initial.is_empty() || events_json.len() > 512 * 1024 {
             return Err(PyValueError::new_err(
@@ -2092,11 +2098,12 @@ impl IntentSession {
                     .ok_or_else(|| PyValueError::new_err("invalid decoder plane"))
             })
             .transpose()?;
-        let (blocks, decoded, end, plane) = formatter.format_decode(
+        let (blocks, decoded, end, plane, placed) = formatter.format_decode(
             &motions,
             [position.0, position.1, position.2],
             units,
             plane,
+            [placed.0, placed.1, placed.2],
         )?;
         let decoded: Vec<Vec<Event>> = motions
             .iter()
@@ -2133,6 +2140,7 @@ impl IntentSession {
             PyBytes::new(py, &bytes),
             (end[0], end[1], end[2]),
             plane.map(|i| names[i].to_string()),
+            (placed[0], placed[1], placed[2]),
         ))
     }
     #[pyo3(signature=(lines_json,cancel=None))]
@@ -2418,7 +2426,9 @@ impl DefaultMotionPost {
     }
     /// Blocks for each source motion and its decoded motion words (None when
     /// a linear block rounds to the current position), the decoded end
-    /// position and plane. `units` is the decoder's active unit scale.
+    /// position and plane, and which axes are still where the controller
+    /// placed them. `units` is the decoder's active unit scale; `placed` the
+    /// post's `_placed` before the batch.
     #[allow(clippy::type_complexity)]
     fn motions(
         &self,
@@ -2426,11 +2436,13 @@ impl DefaultMotionPost {
         position: (f64, f64, f64),
         units: f64,
         plane: Option<&str>,
+        placed: (bool, bool, bool),
     ) -> PyResult<(
         Vec<Vec<String>>,
         Vec<Option<(MotionWords, Option<&'static str>)>>,
         (f64, f64, f64),
         Option<String>,
+        (bool, bool, bool),
     )> {
         use camlib::motion::Curve;
         let names = ["xy", "xz", "yz"];
@@ -2444,8 +2456,13 @@ impl DefaultMotionPost {
                     .ok_or_else(|| PyValueError::new_err("invalid decoder plane"))
             })
             .transpose()?;
-        let (blocks, decoded, position, plane) =
-            self.format_decode(&motions, [position.0, position.1, position.2], units, plane)?;
+        let (blocks, decoded, position, plane, placed) = self.format_decode(
+            &motions,
+            [position.0, position.1, position.2],
+            units,
+            plane,
+            [placed.0, placed.1, placed.2],
+        )?;
         let point = |p: camlib::motion::Vec3| (p[0], p[1], p[2]);
         let words = decoded
             .into_iter()
@@ -2483,13 +2500,16 @@ impl DefaultMotionPost {
             words,
             point(position),
             plane.map(|i| names[i].to_string()),
+            (placed[0], placed[1], placed[2]),
         ))
     }
 }
 impl DefaultMotionPost {
     /// Blocks for each source motion, its independently decoded curve, feed
     /// and rapid flag (None when a linear block rounds to the current
-    /// position), the decoded end position and plane index.
+    /// position), the decoded end position and plane index, and the axes
+    /// still where the controller placed them (`placed` on entry: the post's
+    /// `_placed`).
     #[allow(clippy::type_complexity)]
     fn format_decode(
         &self,
@@ -2497,11 +2517,13 @@ impl DefaultMotionPost {
         position: camlib::motion::Vec3,
         units: f64,
         plane: Option<usize>,
+        placed: [bool; 3],
     ) -> PyResult<(
         Vec<Vec<String>>,
         Vec<Option<(camlib::motion::Curve, Option<f64>, bool)>>,
         camlib::motion::Vec3,
         Option<usize>,
+        [bool; 3],
     )> {
         use camlib::motion::{Curve, MoveKind, Plane};
         let names = ["xy", "xz", "yz"];
@@ -2515,6 +2537,7 @@ impl DefaultMotionPost {
         // against its source, so a missing code is refused.
         let mut selected = plane;
         let mut position = position;
+        let mut placed = placed;
         let declared = |code: &Option<String>, effect: &str| {
             code.clone()
                 .ok_or_else(|| PyValueError::new_err(format!("dialect does not declare {effect}")))
@@ -2598,6 +2621,7 @@ impl DefaultMotionPost {
                 for &i in &axes {
                     addresses.push_str(&self.axes[i]);
                     values.push(e[i]);
+                    placed[i] = false;
                 }
                 addresses.push_str(&self.centers[u]);
                 addresses.push_str(&self.centers[v]);
@@ -2615,13 +2639,29 @@ impl DefaultMotionPost {
                     && (position[0] - end[0]).hypot(position[1] - end[1])
                         + 0.5 * self.unit * 10f64.powi(-(self.decimals as i32))
                         <= self.output_tolerance;
-                for &i in &axes {
-                    addresses.push_str(&self.axes[i]);
-                    values.push(if vertical && i < 2 {
+                let value = |i: usize| {
+                    if vertical && i < 2 {
                         position[i]
                     } else {
                         end[i]
-                    });
+                    }
+                };
+                // `GCodePost.on_motion`: an axis the controller placed that
+                // this move keeps gets no word (a word would command it
+                // through the actual work offset). A block left with no axis
+                // word is written whole: a bare G0 is no motion block.
+                let mut kept: Vec<usize> = axes
+                    .iter()
+                    .copied()
+                    .filter(|&i| !(placed[i] && value(i) == position[i]))
+                    .collect();
+                if kept.is_empty() {
+                    kept = axes.clone();
+                }
+                for i in kept {
+                    addresses.push_str(&self.axes[i]);
+                    values.push(value(i));
+                    placed[i] = false;
                 }
             }
             if let Some(f) = m.feed_mm_min {
@@ -2679,7 +2719,7 @@ impl DefaultMotionPost {
             blocks.push(lines);
             decoded.push(result);
         }
-        Ok((blocks, decoded, position, plane))
+        Ok((blocks, decoded, position, plane, placed))
     }
 }
 

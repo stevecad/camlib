@@ -287,9 +287,8 @@ class FeedTraverseTest(unittest.TestCase):
             self.assertEqual(len(moves), 1)
             self.assertEqual(moves[0].kind, 'rapid')
             self.assertEqual(moves[0].feed_mm_min, 600)
-            self.assertRegex(
-                ''.join(c.text for c in chunks), r'G1 X10(?:\.0+)? Y0(?:\.0+)? Z3(?:\.0+)? F600(?:\.0+)?\n'
-            )
+            # Y and Z stay where the tool change placed them: no words (#367).
+            self.assertRegex(''.join(c.text for c in chunks), r'G1 X10(?:\.0+)? F600(?:\.0+)?\n')
         scene = Scene('traverse-limits', '1', machine=MachineLimits((-100, -100, -100), (100, 100, 100), 500))
         with Verifier(scene) as verifier:
             report = verifier.check(p.tools[0], motion)

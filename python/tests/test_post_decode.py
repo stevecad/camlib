@@ -254,7 +254,9 @@ class MotionDecoder(unittest.TestCase):
             e.begin(program)
             chunk = e.consume(program.events)
             self.assertEqual(chunk.motions, (program.events[4],))
-            self.assertEqual(e.post.helper_calls, 5)  # spindle S plus X/Y/Z/F
+            # Spindle S plus X/F: Y and Z stay where the tool change placed
+            # them, so the move writes no word for them (#367).
+            self.assertEqual(e.post.helper_calls, 3)
         for args in (('X', [float('nan')], 1, 3), ('X', [1000001.0], 1, 3), ('XY', [1.0], 1, 3), ('X', [1.0], 2, 3)):
             with self.assertRaises(ValueError):
                 native.format_post_words(*args)

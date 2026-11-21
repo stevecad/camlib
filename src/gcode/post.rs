@@ -61,6 +61,11 @@ pub struct DefaultPost {
     work_offset: Option<u32>,
     /// The next LinuxCNC O-word label for a protected probe move.
     probe_label: u32,
+    /// Per work axis: still where the controller placed it (the start pose,
+    /// or a tool change's machine position), with no block written since
+    /// that names it (`PostProcessor._placed`). Set by `call` from the
+    /// blocks each hook writes.
+    placed: [bool; 3],
 }
 
 /// `PostProcessor.version`/`GCodePost.version` of the Python post this one
@@ -118,6 +123,54 @@ fn format_g(value: f64) -> String {
 fn step_digits(step: f64) -> usize {
     (-(step.log10() + 1e-9).floor()).max(0.) as usize
 }
+/// The part of a block every decoder reads: before its first `;` and, when
+/// the dialect makes them comments, outside parentheses. None for
+/// unbalanced parentheses, which no decoder accepts (Python `_uncommented`).
+fn uncommented(line: &str, parentheses: bool) -> Option<String> {
+    let body = line.split(';').next().unwrap_or("");
+    if !parentheses {
+        return Some(body.to_string());
+    }
+    let (mut out, mut depth) = (String::new(), 0usize);
+    for ch in body.chars() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = depth.checked_sub(1)?,
+            _ if depth == 0 => out.push(ch),
+            _ => {}
+        }
+    }
+    (depth == 0).then_some(out)
+}
+/// The work axes a block may write: those whose address letter appears in
+/// it outside a comment, the rule of the machine check (`axis_words` in
+/// `machine::session`). Any other appearance of the letter counts too, which
+/// only writes more words. Unbalanced parentheses count every axis.
+fn axis_words(line: &str, d: &super::machine::Dialect) -> [bool; 3] {
+    let Some(body) = uncommented(line, d.parentheses_comments) else {
+        return [true; 3];
+    };
+    let body = body.to_uppercase();
+    std::array::from_fn(|k| d.axes.get(k).is_some_and(|a| body.contains(a.as_str())))
+}
+/// Whether a block of a tool-change hook makes the change: the M6 word
+/// (`tool_change = "m6"`), or the T word that changes the tool itself.
+fn changes_tool(line: &str, d: &super::machine::Dialect) -> bool {
+    let Some(body) = uncommented(line, d.parentheses_comments) else {
+        return false;
+    };
+    if d.tool_change == "m6" {
+        let Ok(code) = d.code("tool_change") else {
+            return false;
+        };
+        return body.split_whitespace().any(|w| w == code);
+    }
+    let t = d.tool_word.as_str();
+    body.split_whitespace().any(|w| {
+        w.strip_prefix(t)
+            .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+    })
+}
 
 impl DefaultPost {
     pub fn new(machine: Machine) -> Self {
@@ -146,6 +199,7 @@ impl DefaultPost {
             radii: BTreeMap::new(),
             work_offset: None,
             probe_label: 100,
+            placed: [false; 3],
         }
     }
     pub fn machine(&self) -> &Machine {
@@ -354,6 +408,7 @@ impl DefaultPost {
             Hook::Finish => self.on_finish()?,
             Hook::Event(event) => self.on_event(event)?,
         }
+        self.track_placed(name);
         if self.lines.is_empty()
             && name != "on_cycle"
             && !(name == "on_cutter_compensation" && self.machine.dialect.compensation_with_move)
@@ -361,6 +416,44 @@ impl DefaultPost {
             return Err(format!("{name} emitted no blocks"));
         }
         Ok(self.lines.clone())
+    }
+
+    /// `PostProcessor._track_placed`: which axes are still where the
+    /// controller placed them after the blocks the hook `name` wrote.
+    ///
+    /// At the program start the controller holds every axis where it is
+    /// (the header moves none: the engine refuses one that does). A tool
+    /// change whose declared mode moves axes to machine positions places
+    /// those axes again, at its change block. Any block that names an axis
+    /// word commands that axis to a work position, through the controller's
+    /// actual work offset, so the axis leaves that state. A probing cycle's
+    /// macros move axes their blocks need not name: it leaves every axis
+    /// commanded.
+    fn track_placed(&mut self, name: &str) {
+        match name {
+            "on_begin" => self.placed = [true; 3],
+            "on_probe" => self.placed = [false; 3],
+            _ => {
+                let d = &self.machine.dialect;
+                let places: &[usize] = match self.machine.tool_change_position_mode.as_str() {
+                    "z_home" => &[2],
+                    "table" => &[0, 1, 2],
+                    _ => &[],
+                };
+                for line in &self.lines {
+                    if name == "on_tool_change" && changes_tool(line, d) {
+                        for &i in places {
+                            self.placed[i] = true;
+                        }
+                    }
+                    for (placed, written) in self.placed.iter_mut().zip(axis_words(line, d)) {
+                        if written {
+                            *placed = false;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn on_event(&mut self, event: &Event) -> Result<(), String> {
@@ -1398,6 +1491,27 @@ impl DefaultPost {
                 .iter()
                 .map(|i| if *i < 2 { position[*i] } else { end[*i] })
                 .collect();
+        }
+        if circular.is_none()
+            && let Some(position) = self.position_mm
+            && self.placed.iter().any(|p| *p)
+            && self.pending_compensation.as_ref().is_none_or(Vec::is_empty)
+        {
+            // An axis the controller placed itself (the start pose, a tool
+            // change's machine position) that this move keeps gets no word:
+            // a word, even of the same value, commands the axis to that work
+            // position through the controller's actual work offset, so it
+            // would move by the offset's error (at a travel limit, beyond
+            // it). The decoders read an absent word as the current position.
+            // A block left with no axis word is no move: it is written whole,
+            // as a bare G0 is no motion block to the decoders.
+            let kept: Vec<usize> = (0..axes.len())
+                .filter(|&k| !(self.placed[axes[k]] && values[k] == position[axes[k]]))
+                .collect();
+            if !kept.is_empty() {
+                addresses = kept.iter().map(|&k| addresses[k].clone()).collect();
+                values = kept.iter().map(|&k| values[k]).collect();
+            }
         }
         if let Some((plane, _, _)) = circular {
             let [u, v, _] = plane.axes();

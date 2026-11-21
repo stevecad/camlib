@@ -172,10 +172,12 @@ class Oracle:
         required = {'units', 'frame', 'spindle', 'coolant', 90, 17, 94, 40, 49, 80, 61}
         if g != 1 or not required <= self.flags or self.active is None or self.length is None or self.offset is None:
             raise ValueError('oracle: motion state')
-        if set(words) != {'X', 'Y', 'Z', 'F'} or words['F'] <= 0:
+        # An axis word left out keeps that axis where it is (the post leaves
+        # out the words of axes the controller placed, #367).
+        if not ('F' in words and set(words) - {'F'} and set(words) <= {'X', 'Y', 'Z', 'F'}) or words['F'] <= 0:
             raise ValueError('oracle: G1 words')
         start = self.position
-        self.position = tuple(words[a] * self.units for a in 'XYZ')
+        self.position = tuple(words[a] * self.units if a in words else p for a, p in zip('XYZ', start))
         if self.position == start:
             return []
         self.count += 1

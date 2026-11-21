@@ -345,7 +345,8 @@ class SiemensISO(unittest.TestCase):
         rapid = replace(p.events[4], kind='rapid', feed_mm_min=None)
         job = replace(p, events=(*p.events[:3], rapid))
         chunks = list(post_iso(job, m))
-        self.assertIn('G1 X10. Y0. Z3. F3000.', ''.join(c.text for c in chunks))
+        # Y and Z stay where the tool change placed them: no words (#367).
+        self.assertIn('G1 X10. F3000.', ''.join(c.text for c in chunks))
         self.oracle(job, m, chunks)
 
     def test_complete_pocket_actual_stock_and_independent_literal_file(self):

@@ -339,6 +339,56 @@ deviation of a posted arc
 includes the spiral: the start/end radius difference of the written words is
 added to the bound before it is compared with the posting tolerance.
 
+## Axis words a straight move leaves out
+
+A straight move (G0/G1) leaves out the word of an axis it does not move
+while that axis is still where the controller placed it itself (#367):
+
+- At the program start every axis is where the controller placed it (the
+  machine's start pose).
+- A tool change whose declared mode moves axes to a machine position places
+  them again, from its change block (`M6`, or the `T` word with
+  `tool_change="direct_t"`/`"lathe_t"`): Z with
+  `tool_change_position_mode="z_home"`, every axis with `"table"`.
+  `"preserve_tip"` and `"preserve_spindle"` place none.
+- An axis leaves that state with the first block that writes its word: a
+  move that changes it, an arc or helix (they always name their plane's
+  axes), a canned cycle, a tapping or threading block, or a block a
+  controller post writes itself (a FANUC `G1 G43 H.. Z..`, a Carvera
+  `G53 G0 Z-3`). A probing cycle leaves every axis written, since its macros
+  move axes their blocks need not name.
+
+An axis word commands the axis to that work coordinate through the
+controller's *actual* work offset, even at the value it already has. Where
+the controller placed the axis itself, the program's nominal offset and the
+real one differ by the calibration interval, so the word would move the axis
+by that error; at a travel limit, past it. A mill homed at X 0 and Y 0 (its
+travel minimums) facing from its home pose writes
+
+```
+G0 Z10
+G0 X-24 Y-17.6 Z10
+```
+
+and not `G0 X-250 Y-200 Z10` first, which LinuxCNC refuses as beyond the soft
+limit when the real offset is 0.02 mm the other way. The word is left out
+only when the value the block would write equals the controller's current
+position exactly (the vertical-move rule above keeps the current XY, so a
+move vertical in the plan qualifies), and never in a block that turns cutter
+compensation on or off. A move that would keep no axis word at all (it moves
+nothing) is written whole, since a bare `G0` is no motion block. Every decoder reads an absent word as the axis's
+current position, and the machine check holds an axis no block has written
+exactly at its declared position ([machine coverage](machine.md)), so the
+first moves from a pose on a travel limit are checked inside it. Only the
+blocks before each axis is first written change; the toolpaths do not.
+
+The default post (`GCodePost.on_motion`, and every controller post in
+`examples/` built on it), the native default formatter and the Rust posts
+(default, Haas NGC, Carvera) apply the rule alike. The state is
+`self._placed` (one flag per work axis), kept by `PostProcessor._call` from
+the blocks each hook writes; a post that writes its own straight-move blocks
+can read it.
+
 ## Writing your own post
 
 Subclass `GCodePost` and override the hooks you need. Each hook writes lines

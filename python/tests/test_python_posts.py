@@ -126,7 +126,10 @@ class PythonPosts(unittest.TestCase):
                 engine.post.fail = False
                 result = engine.finish()
                 self.assertEqual(engine.post.observed, [expected])
-                self.assertIn('terminal 10.0,0.0,3.0', result.text)
+                # The hook wrote the decoded position (10, 0, 3, checked
+                # above). Y and Z are never written (the tool change placed
+                # them, #367), so they are the declared values as given.
+                self.assertIn('terminal ' + ','.join(str(v) for v in expected), result.text)
 
     def test_precision_collapsed_lines_keep_checked_source_maps_without_fake_sweeps(self):
         from camlib.post import LoweringOptions
@@ -991,7 +994,8 @@ class PythonPosts(unittest.TestCase):
         # Single-motion shortcut also follows arbitrary declared codes/addresses.
         d = replace(m.dialect, axes=('U', 'V', 'W'), feed_word='E').with_commands(linear='G101')
         chunks = list(post_program(p, replace(m, dialect=d)))
-        self.assertIn('G101 U10 V0 W3 E1200', chunks[1].text)
+        # V and W stay where the tool change placed them: no words (#367).
+        self.assertIn('G101 U10 E1200', chunks[1].text)
         self.assertEqual(chunks[1].motions, (p.events[4],))
 
     def test_immutable_decoder_tables_and_custom_mutable_state_keep_batch_isolation(self):

@@ -829,3 +829,95 @@ fn a_commanded_axis_carries_the_interval_and_real_overtravel_is_caught() {
         (Status::Uncertain, "axis_x", 0.)
     );
 }
+
+/// Posted by Python's `Job.post_nc` (python/tests/test_placed_axes.py): a
+/// Facing whose start is the home pose of a LinuxCNC mill homed at X 0, Y 0
+/// (its travel minimums) and Z 0 (its maximum), its work frame known to
+/// +-0.02 mm (#367).
+const HOMED_FACING: &str = include_str!("../fixtures/posts/rust/homed-facing.json");
+const HOMED_FACING_NC: &str = include_str!("../fixtures/posts/rust/homed-facing.nc");
+
+fn motion_blocks(program: &str) -> Vec<&str> {
+    program
+        .lines()
+        .filter(|l| ["G0", "G1"].contains(&l.split(' ').next().unwrap_or("")))
+        .collect()
+}
+
+#[test]
+fn a_move_from_a_pose_on_the_travel_limits_writes_only_the_axes_it_moves() {
+    let report = camlib::post_job::run(HOMED_FACING, &AtomicBool::new(false)).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&report).unwrap();
+    // Released without accepting anything: the machine check holds X and Y,
+    // which no block writes until the first traverse, exactly at home on
+    // their minimums.
+    assert_eq!(report["released"], true, "{report}");
+    assert_eq!(report["accepted"], json!([]));
+    assert_eq!(report["machine"]["status"], "clear");
+    assert_eq!(report["machine"]["complete"], true);
+    let program = report["program"].as_str().unwrap();
+    assert_eq!(program, HOMED_FACING_NC);
+    // Z down from home names Z only (not X-250 Y-200, which would command
+    // X and Y through the work offset onto the limits); the traverse after
+    // it names every axis, Z included, since the first block wrote Z.
+    let blocks = motion_blocks(program);
+    assert_eq!(blocks[..2], ["G0 Z12", "G0 X-5 Y3.2 Z12"]);
+}
+
+#[test]
+fn a_z_home_tool_change_places_z_until_a_block_writes_it() {
+    let input: serde_json::Value = serde_json::from_str(HOMED_FACING).unwrap();
+    let mut machine = input["machine"].clone();
+    machine.as_object_mut().unwrap().remove("crash_model");
+    // M6 sends the gauge line to machine Z 0: work Z 150, the 60 mm tool's
+    // tip at 90, as at the start.
+    machine["tool_change_position_mode"] = json!("z_home");
+    machine["tool_change_home_z_mm"] = json!(0.);
+    let home = [-250., -200., 90.];
+    let line = |id: u64, start: [f64; 3], end: [f64; 3]| {
+        json!({"kind": "motion", "motion": {"id": id, "operation": "op", "tool": "face8",
+            "curve": {"kind": "line", "start": start, "end": end}, "feed_mm_min": null, "kind": "rapid"}})
+    };
+    let change = |at: [f64; 3]| {
+        json!({"kind": "tool_change", "tool": "face8", "number": 1, "length_register": 1, "position_after_mm": at})
+    };
+    let over = [-5., 3.2, 12.];
+    let program = json!({
+        "version": 1, "id": "z-home", "revision": "1", "units": "mm", "tolerance_mm": 1e-6,
+        "frame": input["frame"], "initial_position_mm": home,
+        "tools": input["manifest"]["tools"],
+        "events": [
+            {"kind": "work_offset", "number": 1},
+            change(home),
+            {"kind": "spindle", "rpm": 12000, "direction": "cw"},
+            line(1, home, [home[0], home[1], 12.]),
+            line(2, [home[0], home[1], 12.], over),
+            {"kind": "spindle", "rpm": 0, "direction": "cw"},
+            change([over[0], over[1], 90.]),
+            {"kind": "spindle", "rpm": 12000, "direction": "cw"},
+            line(3, [over[0], over[1], 90.], [0., 0., 90.]),
+            line(4, [0., 0., 90.], [0., 0., 12.]),
+        ],
+    });
+    let out = camlib::gcode::post_program(
+        &json!({"program": program, "machine": machine}).to_string(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let out: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let blocks = motion_blocks(out["program"].as_str().unwrap());
+    // At the start every axis is placed; after the second M6, Z only: the
+    // move that keeps it writes X and Y, which earlier blocks wrote, and no
+    // Z, until the descent writes it.
+    assert_eq!(
+        blocks,
+        [
+            "G0 Z12",
+            "G0 X-5 Y3.2 Z12",
+            "G0 X0 Y0",
+            "G0 X0 Y0 Z12"
+        ],
+        "{}",
+        out["program"]
+    );
+}
