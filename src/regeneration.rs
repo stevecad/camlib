@@ -855,7 +855,8 @@ fn uncached<C: CancelSignal>(
     Ok(())
 }
 /// The run's own moves after operation `index`'s last, before its end: the
-/// stated retract before a tool change in place (#374). Each is an ordinary
+/// stated retract before a tool change in place (#374) and, after the last
+/// operation, the moves to the stated end position (#378). Each is an ordinary
 /// motion of that operation and takes the path of every planned move: the
 /// operation's avoid areas, the configured checks, the stock sweep and its
 /// frames. They are never part of the operation's cache entry, since they
@@ -883,6 +884,13 @@ fn after_operation<C: CancelSignal>(
             ),
             motion,
         ));
+    }
+    if index + 1 == manifest.operations.len() {
+        for motion in producer.end_position_moves(op.id(), op.tool())? {
+            let (start, end) = (motion.curve.start(), motion.curve.end());
+            let axis = if start[2] == end[2] { "XY" } else { "Z" };
+            moves.push((format!("the end position's {axis} move"), motion));
+        }
     }
     if moves.is_empty() {
         return Ok(());

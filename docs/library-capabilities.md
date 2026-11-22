@@ -78,6 +78,9 @@ combinations and impossible dimensions are rejected before any motion.
   tool's table pose, or the spindle staying where it was);
   its first move is checked like any rapid, and posting refuses a setup that
   disagrees with the machine.
+- `Setup(end_position=EndPosition(gauge_z_mm=..., xy_mm=...))` ends a milling
+  program at a stated position: a Z rapid to the gauge height, then an XY
+  rapid, checked, posted and decoded like any move; none is assumed.
 - `ToolChangeInPlace(retract_gauge_z_mm=...)` plans a Z retract to a stated
   spindle gauge height before every tool change in place, as an ordinary
   checked, posted and decoded rapid; no retract is assumed without it.

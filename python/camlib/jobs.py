@@ -164,6 +164,13 @@ class Setup:
     # index position every tool's controlled point starts from.
     turning: object | None = None
     initial_stock: object | None = None
+    # Where a milling program ends (camlib.EndPosition): after the last
+    # operation, a Z rapid until the spindle gauge line is at the stated
+    # work Z, then an XY rapid when one is stated; checked, posted and
+    # decoded like any move. None: the program ends where its last operation
+    # stopped (no end move is assumed). A lathe setup ends at its turret
+    # index position (initial_position_mm) and takes none.
+    end_position: object | None = None
 
 
 @dataclass(frozen=True)
@@ -350,6 +357,11 @@ class Job:
                     "a lathe setup checks every move against its part, bore, chuck and stock; "
                     "milling limits, checks and tool-change poses do not apply"
                 )
+            if lathe and setup.end_position is not None:
+                raise ValueError(
+                    "a lathe setup already ends at its turret index position: after the last operation the tool "
+                    "returns to initial_position_mm; an end position (a milling spindle's gauge Z and XY) does not apply"
+                )
             toolmap = {(t['tool']['id'] if lathe else t['id']): t for t in tools}
             if len(toolmap) != len(tools):
                 raise ValueError("duplicate tool id")
@@ -448,6 +460,8 @@ class Job:
                     config['tool_change'] = setup.tool_change.to_dict()
                 if setup.initial_stock is not None:
                     config['initial_stock'] = _plain(setup.initial_stock)
+                if setup.end_position is not None:
+                    config['end_position'] = setup.end_position.to_dict()
                 # Always explicit: the engine default is on.
                 config['rapid_retracts'] = setup.rapid_retracts
             # Snapshot all authored values before spawning a native process. Native

@@ -129,6 +129,13 @@ and path policy; their instructions are not interpreted by this reference.
 M7 is shower coolant here, so it is not relabeled as mist;
 the reference supports M8/M9 flood/off only. Finish M5/M9/G49/M30/closing `%`.
 
+Program end position: with `Setup(end_position=EndPosition(...))` the planned
+end moves are written as this post's ordinary traverses in the active work
+offset (`G1` at the declared `traverse_feed_mm_min`, like every other rapid
+of such a machine) before the finishing M9/M5/G49/M30, and decoded like any
+other block. This reference writes no `G28`/`G53` return of its own. See
+[Posts](posts.md#program-end-position).
+
 Coordinate precision is at most3metric/4inch decimal places, consistent with the
 manual's minimum programmable dimensions. Dimensional words always include a
 decimal point, including integral coordinates/IJK/F, so Setting162 DefaultToFloat

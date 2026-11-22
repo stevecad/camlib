@@ -154,6 +154,7 @@ pub fn apply(
         tool_change: None,
         rapid_retracts: false,
         turning: None,
+        end_position: None,
     })?;
     // Initial irregular stock is enclosed by its StockSpec box here. Missing
     // material can only overstate engagement. Supports are added exclusively

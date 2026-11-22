@@ -105,6 +105,11 @@ core API directly, pass `post=Siemens808DPost`, `decoder=Siemens808DDecoder`, an
 and revisions are included in run definitions; this is not attestation of arbitrary
 Python dependencies. Custom Python posts remain trusted executable code.
 
+Program end position: with `Setup(end_position=EndPosition(...))` the planned
+end moves are written as ordinary `G0` blocks before the shutdown (spindle
+and coolant stop, `D0`, `M2`) and decoded like any other block. See
+[Posts](posts.md#program-end-position).
+
 ## Rigid tapping: CYCLE84
 
 A `Tapping` operation posts one `CYCLE84` call per hole, in either hand. It needs

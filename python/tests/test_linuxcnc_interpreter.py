@@ -165,6 +165,16 @@ class LinuxCNCInterpreterTest(unittest.TestCase):
         job = change.in_place_job(order, 12, ToolChangeInPlace(retract_gauge_z_mm=150), long=75)
         self.assertGreaterEqual(self.run_job(job, change.in_place_machine(order, long=75)), 16)
 
+    def test_a_stated_end_position(self):
+        # #378: the Z rapid and the XY rapid after the last operation.
+        import test_drill_cycles as drills
+        import test_end_position as ends
+
+        for end in (ends.UP, ends.END):
+            with self.subTest(end=end):
+                job = ends.job(end)
+                self.assertGreaterEqual(self.run_job(job, drills.linuxcnc(job)), 8)
+
     def run_lathe(self, plan, dialect, change=None, **settings):
         """Post a planned lathe job for a LinuxCNC lathe with `dialect` and
         compare the interpreter's run with the plan's events. `change`

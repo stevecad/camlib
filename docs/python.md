@@ -17,7 +17,7 @@ level `Setup` is the job setup (`camlib.jobs.Setup`).
 | `camlib.tools` | `EndMill`, `BallEndMill`, `BullEndMill`, `FaceMill`, `HighFeedMill`, `IndexableGeometry`, `MountedInsertGroup`, `RotationalProfile`, `AnnularFrustum`, `CircularRing`, `Drill`, `ChamferMill`, `ThreadMill`, `TSlotCutter`, `KeyseatCutter`, `LollipopCutter`, `DovetailCutter`, `Tap`, `BoringBar`, `Torch`, `LaserHead`, `Neck`, `ToolAssembly`, `HolderSection`, `holder_sections_from_mesh` |
 | `camlib.planar` | `PlanarRegion` (`components`, reported `boundary_error_mm`), `Component`, `Boundary` (line/arc regions) |
 | `camlib.surface` | `SurfaceMesh` (triangle surfaces with a finite stated `surface_error_mm` in the inclusive range 0–0.1 mm; checked at construction) |
-| `camlib.simulation` | `StockSpec(min, max, cell_size, max_cells=, mesh=)` and `StockSpec.from_mesh(mesh, cell_size)`, `InitialStock` (declared whole-cell blank bounds, [preparation](preparation.md)), `StockMesh` (closed stock solid: `from_triangles`, `transformed`; `StockState.stock_mesh()` returns the finished stock), `DexelStockSpec(min, max, cell_size, max_rays=, max_intervals=)` (tri-dexel stock: undercuts), `SweepOptions` (chord error, tip step and work budgets of the stock sweep), `Simulation`, `ToolChangePosition`, `ToolChangeTable`, `ProgressUpdate` ([planning progress](#planning-progress)), `SimulationError`, `ReachRefused` and its typed `ReachRefusal` ([reach refusals](operations.md#pocket-pocket-restpocket)), `CamWarning`, low-level streaming |
+| `camlib.simulation` | `StockSpec(min, max, cell_size, max_cells=, mesh=)` and `StockSpec.from_mesh(mesh, cell_size)`, `InitialStock` (declared whole-cell blank bounds, [preparation](preparation.md)), `StockMesh` (closed stock solid: `from_triangles`, `transformed`; `StockState.stock_mesh()` returns the finished stock), `DexelStockSpec(min, max, cell_size, max_rays=, max_intervals=)` (tri-dexel stock: undercuts), `SweepOptions` (chord error, tip step and work budgets of the stock sweep), `Simulation`, `ToolChangePosition`, `ToolChangeTable`, `ToolChangeInPlace`, `EndPosition`, `ProgressUpdate` ([planning progress](#planning-progress)), `SimulationError`, `ReachRefused` and its typed `ReachRefusal` ([reach refusals](operations.md#pocket-pocket-restpocket)), `CamWarning`, low-level streaming |
 | `camlib.verification` | `StreamChecks(scene=, options=, material=, stock_contact=)`, `StockContactOptions` (resolution, work and finding limits), `Scene(id, revision, bodies, machine, work_to_machine)`, `Prism` (fixture or protected part; `z_error_mm`, `representation`), `MachineLimits` (travel of one tip or of the gauge line, feed, acceleration, axis feeds), `MaterialCheck(target, after_operation=)` |
 | `camlib.playback` | `Player`, `Cursor` (operation, motion and `fraction` along it), `RecordedRun` (replay, seek, save) |
 | `camlib.dexel_state` | `DexelStockState` (a tri-dexel run's committed stock: `volume()`, `heights` (the height view), `ray(axis, index)`, `rays(axis)`, `grid`, `preview(frame, fraction)`, `compare_solid(mesh, tolerance_mm)` (leftover material and over-cut against a closed mesh of the part, undercuts included), checkpoints), `heights_at` |
@@ -60,6 +60,22 @@ the operation before the change, checked, posted and decoded like any other;
 it only goes up, and without the value none is planned. Without any of them,
 each tool's tip starts where the previous operation ended. See
 [Posts](posts.md) for the matching machine setting.
+
+`Setup(end_position=EndPosition(gauge_z_mm=..., xy_mm=None))` states where a
+milling program ends, in work coordinates: after the last operation its tool
+goes straight up at rapid until the spindle gauge line is at `gauge_z_mm`
+(the tip at that Z less the tool's gauge length), then, when `xy_mm` is given,
+at rapid to that XY at the same height. They are the last operation's last
+moves: streamed, checked against stock, fixtures, avoid areas and machine
+travel, posted before the spindle and coolant stop and the program end, and
+decoded, so the decoded program ends at the planned pose. The Z move only goes
+up (a `gauge_z_mm` below where the last operation leaves the spindle is
+refused), and no end move is assumed: without the value the program ends
+where its last operation stopped, exactly as before. A lathe setup takes no
+end position: it already ends with the tool back at its turret index position
+(`initial_position_mm`). Neither does a plasma or laser setup: a cutting head
+has no spindle gauge line, and where it parks is not yet something a setup
+can state. See [Posts](posts.md#program-end-position).
 
 `SuppliedToolpath(id, tool, motions, clearance_z_mm, ...)` puts moves planned
 outside camlib into a job between planned operations: `motions` are

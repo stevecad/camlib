@@ -137,6 +137,16 @@ G1 G49 Z63. F3000.
 M30
 ```
 
+## Program end position
+
+With `Setup(end_position=EndPosition(gauge_z_mm=..., xy_mm=...))` the planned
+end moves (a Z rapid to the gauge height, then an XY rapid) are written as
+this post's ordinary traverses (`G1` at the declared `traverse_feed_mm_min`,
+like every other rapid here) after the last operation, before the spindle
+and coolant stop, and decoded like any other block. The length-cancel block
+that follows states the gauge line's Z, which is then the stated one. No
+reference-point return is written. See [Posts](posts.md#program-end-position).
+
 ## Checks
 
 Every posted block is read back by `LNCMillDecoder`, which imports no

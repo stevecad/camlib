@@ -248,6 +248,11 @@ pub struct StreamManifest {
     pub rapid_retracts: bool,
     /// A lathe run's turning setup (with turning stock); None otherwise.
     pub turning: Option<TurnSetup>,
+    /// Where a milling operation run ends (#378): after the last operation
+    /// its tool goes straight up at rapid until the spindle gauge line is at
+    /// `gauge_z_mm`, then at rapid to `xy_mm` when given. None: the run ends
+    /// where its last operation stopped (no end move is ever assumed).
+    pub end_position: Option<GaugePose>,
 }
 /// The machine's tool-change pose, in work coordinates.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -541,6 +546,14 @@ impl StreamManifest {
                 .any(|t| matches!(t.cutter.shape, crate::tool::CutterShape::Beam));
         if self.tool_change_retract_gauge_z().is_some() && !milling_operations {
             return Err("a retract before a tool change in place (retract_gauge_z_mm) is planned between the operations of a milling operation run; a run that is given its moves makes its own".into());
+        }
+        if let Some(end) = &self.end_position {
+            if !finite(&end.gauge_z_mm) || end.xy_mm.is_some_and(|p| !p.iter().all(finite)) {
+                return Err("end position needs finite work coordinates".into());
+            }
+            if !milling_operations {
+                return Err("an end position is planned after the last operation of a milling operation run (a spindle gauge Z, then XY): a lathe run already ends at its turret index position (the setup's initial position), a cutting table has no spindle gauge line, and a run that is given its moves makes its own".into());
+            }
         }
         if self.version == 2 && !self.operations.is_empty() {
             return Err(
@@ -1305,6 +1318,57 @@ impl StreamProducer {
             ));
         }
         self.planned_rapid(operation, tool, [x, y, tip_z])
+    }
+    /// The stated end position's moves (#378), when the manifest states
+    /// one: after the run's last operation `tool` goes straight up at rapid
+    /// until the spindle gauge line is at the stated work Z and, when an XY
+    /// is stated, there at rapid. They are ordinary motions of that
+    /// operation, with consecutive ids: the caller checks and commits each
+    /// in order like any other. Empty: no end position is stated, or the
+    /// tool is already exactly there.
+    pub fn end_position_moves(&self, operation: &str, tool: &str) -> Result<Vec<Motion>, String> {
+        let Some(end) = &self.state.manifest.end_position else {
+            return Ok(vec![]);
+        };
+        let [x, y, z] = self.state.position;
+        let tip_z = end.gauge_z_mm - self.gauge_length(tool)?;
+        if tip_z < z {
+            return Err(format!(
+                "end position: the stated gauge Z {} (EndPosition(gauge_z_mm={})) would lower {tool}'s tip to Z {tip_z}, below the Z {z} where the last operation {operation} left it: the end move only goes up; state a gauge_z_mm of at least {}",
+                end.gauge_z_mm,
+                end.gauge_z_mm,
+                z + self.gauge_length(tool)?
+            ));
+        }
+        let mut moves: Vec<Motion> = self
+            .planned_rapid(operation, tool, [x, y, tip_z])?
+            .into_iter()
+            .collect();
+        if let Some(xy) = end.xy_mm
+            && xy != [x, y]
+        {
+            let id = self
+                .state
+                .sequence
+                .checked_add(1 + moves.len() as u64)
+                .ok_or("motion ID overflow")?;
+            let end = [xy[0], xy[1], tip_z];
+            if !point_valid(end) {
+                return Err(format!("the end position {end:?} is out of range"));
+            }
+            moves.push(Motion {
+                id,
+                operation: operation.into(),
+                tool: tool.into(),
+                kind: MoveKind::Rapid,
+                feed_mm_min: None,
+                curve: Curve::Line {
+                    start: [x, y, tip_z],
+                    end,
+                },
+            });
+        }
+        Ok(moves)
     }
     /// Both frames are prepared before stock commits. Publish the chunk first,
     /// then its optional passive check record before producing another motion.

@@ -68,6 +68,12 @@ tapping uses G84/G74 (below).
 | Circles/helix | ISO pp97–100: G17, G2/G3, signed incremental I/J, absolute endpoints, explicit F; one-turn arcs/helix, no native TURN syntax, radius R or contour chamfer/rounding words. |
 | Stop/feed/spindle | ISO pp122–125: G94, explicit S with M3/M4, G61. Coolant codes are declared OEM functions. Tool changes and stops require spindle/coolant already off; optional stop requires declared enablement. Shutdown explicitly stops spindle/coolant and cancels length before M30. |
 
+Program end position: with `Setup(end_position=EndPosition(...))` the planned
+end moves are written as this post's ordinary traverses (`G1` at the
+declared `traverse_feed_mm_min`) before the shutdown (coolant and spindle
+stop, length cancel, `M30`) and decoded like any other block. See
+[Posts](posts.md#program-end-position).
+
 ## Rigid tapping: G84 and G74
 
 A `Tapping` operation posts `G98 G84 X Y Z R F` (right hand) or `G98 G74 ...`

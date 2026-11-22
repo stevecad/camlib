@@ -58,6 +58,12 @@ programmed Z while the spindle reverses. camlib's `Tapping` requires the
 drilled hole to extend below the tap depth by `bottom_clearance_mm` (one
 pitch by default); set it to suit the machine.
 
+Program end position: with `Setup(end_position=EndPosition(...))` the end
+moves are written before `M9`/`M5`/`M30` as this post's traverses (CNC12
+rapids are written as `G1` at the declared `traverse_feed_mm_min`, like every
+other rapid here) and decoded the same way. See
+[Posts](posts.md#program-end-position).
+
 Centroid's lathe controls (T-series) have their own post: [Centroid lathe post](centroid-lathe-post.md).
 The premises (traverse feed, tool poses after M6, Parameters 2 and 36) must
 match the installed machine; nothing is read from the control.

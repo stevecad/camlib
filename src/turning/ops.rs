@@ -3705,6 +3705,7 @@ mod tests {
             tool_change: None,
             rapid_retracts: false,
             turning: Some(setup),
+            end_position: None,
         };
         // The manifest's wire form reads back to the same manifest.
         let bytes = manifest.canonical_bytes().unwrap();

@@ -7,6 +7,7 @@ fn manifest() -> StreamManifest {
         tool_change: None,
         rapid_retracts: false,
         turning: None,
+        end_position: None,
         version: 1,
         run: RunIdentity {
             id: "run-1".into(),

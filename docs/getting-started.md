@@ -194,6 +194,29 @@ step 5. `job.post` and `job.post_nc` refuse a setup that disagrees with the
 machine before planning, naming the tool, both poses and the setup to declare.
 Each posted tool change is also decoded and checked against the plan.
 
+## Where the program ends
+
+A program ends where its last operation retracted to: above the part, over
+the last cut. To end with the spindle clear of the work and the table where
+you want it, say where:
+
+```python
+from camlib import EndPosition
+
+setup = Setup("top", stock=..., tools=(mill, drill),
+              operations=(face, pocket, holes), initial_position_mm=(0, 0, 15),
+              # Gauge line 150 mm above the work origin, then over X-20 Y120.
+              end_position=EndPosition(gauge_z_mm=150, xy_mm=(-20, 120)))
+```
+
+After the last operation the tool goes straight up at rapid until the spindle
+gauge line is at `gauge_z_mm`, then at rapid to `xy_mm` (leave it out to keep
+X and Y). Both moves are planned, checked against stock, fixtures and machine
+travel, posted before the spindle and coolant stop, and decoded like every
+other move. camlib assumes no end position: give none and the program ends as
+it does today. Lathe setups end at their turret index position
+(`initial_position_mm`) and take no end position.
+
 ## Reading the results
 
 Replay the run to the end to see the final stock and check summary:

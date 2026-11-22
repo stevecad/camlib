@@ -741,3 +741,172 @@ fn a_change_in_place_is_refused_as_a_tool_change_with_and_without_a_retract() {
         .unwrap();
     assert_eq!(p.change_tool("long").unwrap(), [0., 0., 10.]);
 }
+
+#[test]
+fn a_stated_end_position_is_planned_after_the_last_operation() {
+    use camlib::motion::{Curve, MoveKind};
+    // Two facing operations with one tool (gauge length 60 mm), ending at
+    // their clearance Z 8 (gauge line Z 68).
+    let job = |end: Option<GaugePose>| {
+        let mut m = manifest();
+        let mut second = m.operations[0].clone();
+        let Operation::Facing(p) = &mut second else {
+            panic!("fixture")
+        };
+        p.id = "second".into();
+        m.operations.push(second);
+        m.end_position = end;
+        m
+    };
+    let plain = job(None);
+    assert!(!serde_json::to_string(&plain).unwrap().contains("end_position"));
+    let (plain_motions, plain_ends) = consumed(&plain, &uncached(&plain).unwrap());
+    let stop = plain_motions.last().unwrap().curve.end();
+    assert_eq!(stop[2], 8.);
+
+    let stated = job(Some(GaugePose {
+        gauge_z_mm: 100.,
+        xy_mm: Some([-5., 20.]),
+    }));
+    stated.validate().unwrap();
+    let text = serde_json::to_string(&stated).unwrap();
+    assert!(text.contains(r#""end_position":{"gauge_z_mm":100.0,"xy_mm":[-5.0,20.0]}"#));
+    assert_eq!(
+        serde_json::from_str::<StreamManifest>(&text)
+            .unwrap()
+            .end_position,
+        stated.end_position
+    );
+    let (motions, ends) = consumed(&stated, &uncached(&stated).unwrap());
+    // Everything up to the last operation's own end is the same plan.
+    assert_eq!(motions[..plain_motions.len()], plain_motions[..]);
+    assert_eq!(ends[0], plain_ends[0]);
+    // Then a Z rapid to gauge Z 100 (tip Z 40) and an XY rapid, both
+    // motions of the last operation, before its end.
+    let tail: Vec<_> = motions[plain_motions.len()..].iter().collect();
+    assert_eq!(tail.len(), 2);
+    assert_eq!(
+        tail[0].curve,
+        Curve::Line {
+            start: stop,
+            end: [stop[0], stop[1], 40.]
+        }
+    );
+    assert_eq!(
+        tail[1].curve,
+        Curve::Line {
+            start: [stop[0], stop[1], 40.],
+            end: [-5., 20., 40.]
+        }
+    );
+    for (k, motion) in tail.iter().enumerate() {
+        assert_eq!(
+            (motion.kind, motion.feed_mm_min, motion.operation.as_str()),
+            (MoveKind::Rapid, None, "second")
+        );
+        assert_eq!(motion.id, (plain_motions.len() + 1 + k) as u64);
+    }
+    assert_eq!(ends[1], motions.len() as u64);
+
+    // Z only; already at that height (XY only); already there (nothing).
+    let tails = |end| {
+        let m = job(Some(end));
+        let (motions, _) = consumed(&m, &uncached(&m).unwrap());
+        motions[plain_motions.len()..]
+            .iter()
+            .map(|x| x.curve.end())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        tails(GaugePose {
+            gauge_z_mm: 100.,
+            xy_mm: None
+        }),
+        [[stop[0], stop[1], 40.]]
+    );
+    assert_eq!(
+        tails(GaugePose {
+            gauge_z_mm: 68.,
+            xy_mm: Some([-5., 20.])
+        }),
+        [[-5., 20., 8.]]
+    );
+    assert!(
+        tails(GaugePose {
+            gauge_z_mm: 68.,
+            xy_mm: Some([stop[0], stop[1]])
+        })
+        .is_empty()
+    );
+
+    // The end move only goes up.
+    let low = job(Some(GaugePose {
+        gauge_z_mm: 67.,
+        xy_mm: None,
+    }));
+    let error = uncached(&low).unwrap_err();
+    assert!(
+        error.starts_with("end position: the stated gauge Z 67 (EndPosition(gauge_z_mm=67)) would lower face8's tip to Z 7, below the Z 8 where the last operation second left it")
+            && error.ends_with("state a gauge_z_mm of at least 68"),
+        "{error}"
+    );
+
+    // With a regeneration cache, cold and warm, the run is the same, and
+    // the operations' entries are the operations alone: they also serve
+    // the job without an end position.
+    let directory = Directory::new();
+    let (_, cold, _) = execute(stated.clone(), directory.options());
+    let (_, warm, reports) = execute(stated.clone(), directory.options());
+    assert!(
+        reports
+            .iter()
+            .all(|r| r["report"]["regeneration"]["cache_hit"] == true)
+    );
+    for frames in [cold, warm] {
+        assert_eq!(consumed(&stated, &frames), (motions.clone(), ends.clone()));
+    }
+    let (_, frames, reports) = execute(plain.clone(), directory.options());
+    assert!(
+        reports
+            .iter()
+            .all(|r| r["report"]["regeneration"]["cache_hit"] == true)
+    );
+    assert_eq!(consumed(&plain, &frames), (plain_motions, plain_ends));
+}
+
+#[test]
+fn an_end_position_is_only_for_planned_milling_runs() {
+    let end = Some(GaugePose {
+        gauge_z_mm: 100.,
+        xy_mm: None,
+    });
+    let mut m = manifest();
+    m.end_position = end.clone();
+    m.validate().unwrap();
+    // A run that is given its moves has no last operation to end after.
+    let mut given = m.clone();
+    given.operations.clear();
+    let error = given.validate().unwrap_err();
+    assert!(error.contains("an end position is planned after the last operation of a milling operation run"), "{error}");
+    // A cutting table has no spindle gauge line.
+    let mut table = m.clone();
+    table.tools[0].cutter.shape = camlib::tool::CutterShape::Beam;
+    let error = table.validate().unwrap_err();
+    assert!(
+        error.contains("a cutting table has no spindle gauge line"),
+        "{error}"
+    );
+    for bad in [f64::NAN, f64::INFINITY, 1e7] {
+        let mut m = m.clone();
+        m.end_position = Some(GaugePose {
+            gauge_z_mm: bad,
+            xy_mm: None,
+        });
+        assert!(m.validate().unwrap_err().contains("end position needs finite"));
+        m.end_position = Some(GaugePose {
+            gauge_z_mm: 100.,
+            xy_mm: Some([0., bad]),
+        });
+        assert!(m.validate().unwrap_err().contains("end position needs finite"));
+    }
+}

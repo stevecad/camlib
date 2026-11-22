@@ -561,6 +561,50 @@ naming the change and the height it needs. The value is a work Z of the
 spindle gauge line, so it is the same for every tool; it is not the
 controller's `G53`/`G28`/`G30` and no machine-coordinate block is written.
 
+### Program end position
+
+A post ends a program by stopping the spindle and coolant and writing its
+end code; it adds no move of its own (the Carvera post writes its
+`G53 G0 Z-3` only where the plan already ends at that height, see its
+notes), so the tool is left where the last operation retracted to. State where the program should end instead with
+`Setup(end_position=EndPosition(gauge_z_mm=..., xy_mm=None))`: the planner
+adds a Z rapid until the spindle gauge line is at that work Z and, when
+`xy_mm` is given, an XY rapid, after the last operation. Every mill post
+writes them as its ordinary rapids (`G0`, or `G1` at the declared traverse
+feed on a machine that declares one), before the stop and the end code, and
+its decoder reads them back like any other block. With the default post
+(LinuxCNC dialect), a 60 mm tool and
+`EndPosition(gauge_z_mm=100, xy_mm=(-10, 30))`:
+
+```
+G1 X20 Y8 Z12 F600
+G0 X20 Y8 Z40
+G0 X-10 Y30 Z40
+M9
+M5
+G49
+M2
+```
+
+and without an end position, byte for byte what it was:
+
+```
+G1 X20 Y8 Z12 F600
+M9
+M5
+G49
+M2
+```
+
+The positions are work coordinates of the active work offset, written as
+plain `G0` blocks: no `G53`, `G28` or `G30` block is written, since where
+those send a machine is its configuration. The moves are checked like any
+others (stock contact, fixtures, avoid areas, the declared travel, and the
+machine check on the decoded program), and an end position a check refuses
+is reported on that move. Lathe posts are unchanged: a lathe program already
+ends with the tool at the turret index position the setup starts from.
+Plasma and laser setups take no end position.
+
 ## Posting without Python (Rust, WebAssembly)
 
 The default post (`GCodePost` with `NativeGCodeDecoder`) also exists in Rust,

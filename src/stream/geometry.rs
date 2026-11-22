@@ -31,6 +31,8 @@ struct Wire<G> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     turning: Option<TurnSetup>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    end_position: Option<GaugePose>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     geometry: Option<Vec<SurfaceGeometry>>,
 }
 #[derive(Serialize, Deserialize)]
@@ -67,6 +69,7 @@ impl StreamManifest {
             tool_change: self.tool_change,
             rapid_retracts: self.rapid_retracts,
             turning: self.turning,
+            end_position: self.end_position,
             geometry: None,
         })
     }
@@ -150,6 +153,7 @@ impl<'de> Deserialize<'de> for StreamManifest {
             tool_change: wire.tool_change,
             rapid_retracts: wire.rapid_retracts,
             turning: wire.turning,
+            end_position: wire.end_position,
         })
     }
 }

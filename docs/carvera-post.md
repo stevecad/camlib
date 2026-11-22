@@ -103,6 +103,10 @@ table. These safety blocks require the planned retract pose at the declared outp
 resolution. A setup
 ending lower, or changing tools at another height, refuses with “plan the
 retract”; the post never silently adds an unchecked machine-coordinate move.
+`Setup(end_position=EndPosition(gauge_z_mm=<the work Z of machine Z-3>))`
+plans the final retract: the program then ends at that gauge height (and at
+the stated XY, when one is given) as checked moves, and the post writes its
+`G53 G0 Z-3` there before M30.
 This is a deliberate limitation of this first reference, rather than a claim
 that arbitrary setup clearances are Carvera-safe. All tool changes require
 spindle and air explicitly off. Physical routes, offsets and measured tool

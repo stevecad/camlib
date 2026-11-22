@@ -239,6 +239,7 @@ fn height_field_refuses_narrowing_cutters() {
             tool_change: None,
             rapid_retracts: false,
             turning: None,
+            end_position: None,
         };
         let e = StreamReceiver::new(manifest).err().unwrap();
         assert!(e.contains("tri-dexel"), "{e}");

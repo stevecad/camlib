@@ -486,6 +486,45 @@ class ToolChangeInPlace:
 
 
 @dataclass(frozen=True)
+class EndPosition:
+    """Where a milling program ends, in work coordinates
+    (``Setup(end_position=...)``): after the last operation its tool goes
+    straight up at rapid until the spindle gauge line is at ``gauge_z_mm``
+    (its tip at that Z less its gauge length), then, when ``xy_mm`` is given,
+    at rapid to that XY at the same height. Both are ordinary moves of the
+    last operation: streamed, checked against stock, fixtures and machine
+    travel, posted before the spindle and coolant stop and decoded like any
+    other. The Z move only goes up: a ``gauge_z_mm`` below where the last
+    operation leaves the spindle is refused. Without an end position the
+    program ends where its last operation stopped; none is ever assumed.
+
+    For three-axis milling setups. A lathe setup already ends at its turret
+    index position (``Setup.initial_position_mm``), and a cutting table has
+    no spindle gauge line: both refuse it."""
+
+    gauge_z_mm: float
+    xy_mm: tuple | None = None
+
+    def __post_init__(self):
+        xy = self.xy_mm
+        if xy is not None:
+            if not isinstance(xy, (list, tuple)) or len(xy) != 2:
+                raise ValueError("end position xy_mm needs two work coordinates (or None: X and Y stay)")
+            object.__setattr__(self, "xy_mm", tuple(xy))
+        if not all(
+            not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v) and abs(v) <= 1e6
+            for v in (self.gauge_z_mm, *(self.xy_mm or ()))
+        ):
+            raise ValueError("end position needs finite work coordinates")
+
+    def to_dict(self):
+        data = {"gauge_z_mm": float(self.gauge_z_mm)}
+        if self.xy_mm is not None:
+            data["xy_mm"] = [float(v) for v in self.xy_mm]
+        return data
+
+
+@dataclass(frozen=True)
 class ToolChangeTable:
     """Where a tool change leaves each tool: its tip in work coordinates, per
     tool assembly id. This is the machine behaviour of posts with
@@ -1004,7 +1043,16 @@ class StockState:
         if (
             not required
             <= set(m)
-            <= required | {"operations", "verification", "geometry", "tool_change", "rapid_retracts", "initial_stock"}
+            <= required
+            | {
+                "operations",
+                "verification",
+                "geometry",
+                "tool_change",
+                "rapid_retracts",
+                "initial_stock",
+                "end_position",
+            }
             or type(m["version"]) is not int
             or m["version"] not in (1, 2)
         ):
@@ -1088,6 +1136,20 @@ class StockState:
         ):
             raise ProtocolError("invalid tool change pose")
         self._tool_change = change
+        # The producer plans the stated end position as ordinary moves
+        # (#378); a consumer only checks the declaration's shape.
+        end = m.get("end_position")
+        if end is not None and (
+            m["version"] != 1
+            or not isinstance(end, dict)
+            or set(end) - {"gauge_z_mm", "xy_mm"}
+            or not _finite_number(end.get("gauge_z_mm"))
+            or "xy_mm" in end
+            and not (
+                isinstance(end["xy_mm"], list) and len(end["xy_mm"]) == 2 and all(map(_finite_number, end["xy_mm"]))
+            )
+        ):
+            raise ProtocolError("invalid end position")
         # False only after restoring a checkpoint that does not record the
         # tool in the spindle (written before #168).
         self._last_tool_known = True
@@ -1737,6 +1799,7 @@ def simulation_manifest(
     rapid_retracts=True,
     turning=None,
     initial_stock=None,
+    end_position=None,
 ):
     """The JSON stream manifest a ``Simulation`` sends to ``cam-sim-stream``
     (also the setup manifest of a ``camlib.post.post_job`` input)."""
@@ -1763,6 +1826,13 @@ def simulation_manifest(
         manifest["tool_change"] = tool_change.to_dict() if hasattr(tool_change, "to_dict") else dict(tool_change)
     if type(rapid_retracts) is not bool:
         raise ValueError("rapid_retracts must be a bool")
+    if end_position is not None:
+        if turning is not None:
+            raise ValueError(
+                "a lathe run already ends at its turret index position (the setup's initial position); "
+                "an end position is a milling spindle's gauge Z and XY"
+            )
+        manifest["end_position"] = end_position.to_dict() if hasattr(end_position, "to_dict") else dict(end_position)
     if turning is not None:
         # A lathe run: its turning setup plans and checks every move.
         if operations or verification is not None or tool_change is not None:
@@ -1801,6 +1871,7 @@ class Simulation:
         rapid_retracts=True,
         turning=None,
         initial_stock=None,
+        end_position=None,
         _on_spawn=None,
     ):
         manifest = simulation_manifest(
@@ -1817,6 +1888,7 @@ class Simulation:
             rapid_retracts=rapid_retracts,
             turning=turning,
             initial_stock=initial_stock,
+            end_position=end_position,
         )
         self._regeneration = regeneration
         self.executable = _executable("cam-sim-stream", executable)

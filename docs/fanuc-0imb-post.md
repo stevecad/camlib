@@ -192,6 +192,19 @@ incorrect compensation endpoint, a bare moving G43/G49, or the wrong H entry.
 Subsequent motion/stock checks operate on the unchanged physical tip position.
 The declared ATC route itself is still an external machine premise.
 
+## Program end position
+
+With `Setup(end_position=EndPosition(gauge_z_mm=..., xy_mm=...))` the planned
+end moves (a Z rapid to the gauge height, then an XY rapid) are written as
+this post's ordinary traverses in the active work offset (`G1` at the
+declared `traverse_feed_mm_min`, like every other rapid here) after the last
+operation, before the spindle and coolant stop, and decoded like any other
+block. The length-cancel block that follows states the gauge line's Z, which
+is then the stated one (`G1 G49 Z100. F3000.` for `gauge_z_mm=100`). The
+post writes no `G28`/`G30`/`G53` return of its own: where those send the
+machine is the builder's configuration. See
+[Posts](posts.md#program-end-position).
+
 ## Probing with Renishaw Inspection Plus
 
 Probing is not a FANUC function: it runs through Renishaw's Inspection Plus

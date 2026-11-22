@@ -118,6 +118,7 @@ class RecordedRun:
         rapid_retracts=True,
         turning=None,
         initial_stock=None,
+        end_position=None,
         # How often an operation run reports its planning progress
         # (planning_progress()); None: not at all. Never recorded.
         progress_interval_s=0.25,
@@ -170,6 +171,7 @@ class RecordedRun:
             rapid_retracts=rapid_retracts,
             turning=turning,
             initial_stock=initial_stock,
+            end_position=end_position,
             _on_spawn=self._spawned,
         )
         self._verification = verification.to_dict() if hasattr(verification, "to_dict") else verification

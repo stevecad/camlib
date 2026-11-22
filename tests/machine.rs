@@ -50,6 +50,7 @@ fn manifest() -> StreamManifest {
         tool_change: None,
         rapid_retracts: false,
         turning: None,
+        end_position: None,
     }
 }
 fn box_(lo: Vec3, hi: Vec3) -> Solid {

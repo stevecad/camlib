@@ -38,7 +38,9 @@ while the Rust side does the planning and the checking.
      from planned moves. Such a run must configure the stock contact check.
      The run driver adds the moves a setup states between operations
      (`regeneration::after_operation`): the retract before a tool change in
-     place (`ToolChangeInPlace(retract_gauge_z_mm=...)`, #374). They are
+     place (`ToolChangeInPlace(retract_gauge_z_mm=...)`, #374) and, after
+     the last operation, the moves to the stated end position
+     (`Setup(end_position=EndPosition(...))`, #378). They are
      ordinary motions of the operation they follow, sent before its end, so
      receivers, checks, playback, posts and decoders handle them as any
      planned move; they are never part of that operation's cache entry, and
@@ -459,4 +461,5 @@ work refuses the move, independent of optional verification settings.
 | Wear compensation | Controller cutter compensation (G41/G42) carrying only the wear; camlib still plans the exact tool-centre path |
 | Turret pose | A lathe's tool-change position; every tool's controlled point starts there |
 | Tool change in place | A mill's tool change that moves no axis (`tool_change_position_mode="preserve_spindle"`, `ToolChangeInPlace`): the spindle gauge line stays, so the tip moves along Z by the old gauge length minus the new one. A stated `retract_gauge_z_mm` is a planned rapid of the old tool before the change, not part of the change |
+| End position | Where a milling setup states its program ends (`EndPosition`): a Z rapid to a spindle gauge height, then an XY rapid, planned after the last operation. A lathe run ends at its turret pose |
 | Export gate | Refusing to write a program while unaccepted check results remain |

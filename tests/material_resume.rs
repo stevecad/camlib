@@ -36,6 +36,7 @@ fn manifest() -> StreamManifest {
         initial_stock: None,
         rapid_retracts: false,
         turning: None,
+        end_position: None,
         version: 1,
         run: RunIdentity {
             id: "resume".into(),

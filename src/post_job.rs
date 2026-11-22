@@ -227,6 +227,7 @@ pub fn post(input: Input, run_id: String, cancel: &impl CancelSignal) -> Result<
         tool_change: replay_tool_change(&machine, &header)?,
         rapid_retracts: true,
         turning: None,
+        end_position: None,
     };
     let identity_bytes = crate::stream::identity_bytes(&replay)?;
     let mut producer = StreamProducer::new(replay.clone())?;
