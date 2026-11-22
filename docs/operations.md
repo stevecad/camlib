@@ -2187,7 +2187,9 @@ cut = camlib.ThermalCut("plasma", torch, parts, feed_mm_min=2500, cut_height_mm=
     the controller cannot form from its part side: a slot or gap narrower
     than the kerf (its kerf path bridges it), an element whose part side
     its corners trim away, a kerf path that turns sharply toward the part
-    or crosses itself; an outside corner whose extended join is not clear
+    or crosses itself, or a written part outline that doubles back or crosses
+    itself (including a second intersection between consecutive edges); an
+    outside corner whose extended join is not clear
     of the parts (an acute point near a neighbour).
 - **Order**: holes before their part's outline; a part lying in another part's
   hole before that hole. Among parts at the same depth `part_order` chooses the

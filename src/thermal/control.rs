@@ -346,16 +346,18 @@ pub(super) fn beam_path(
     let corners = (0..m)
         .map(|k| written_corner(&out[k], &out[(k + 1) % m]))
         .collect::<Result<Vec<_>, _>>()?;
+    let mut written = Vec::with_capacity(m);
     for k in 0..m {
         let s = &out[k];
         let (a, b) = (corners[(k + m - 1) % m], corners[k]);
-        let keeps = match s.arc {
-            None => dot(sub(b, a), sub(s.b, s.a)) > 0.,
-            Some((c, w)) => {
-                let sweep = w + wrap(angle_of(c, b) - angle_of(c, s.b))
-                    - wrap(angle_of(c, a) - angle_of(c, s.a));
-                sweep * w > 0.
-            }
+        let arc = s.arc.map(|(c, w)| {
+            let sweep = w + wrap(angle_of(c, b) - angle_of(c, s.b))
+                - wrap(angle_of(c, a) - angle_of(c, s.a));
+            (c, sweep)
+        });
+        let keeps = match (s.arc, arc) {
+            (Some((_, w)), Some((_, sweep))) => sweep * w > 0. && sweep.abs() < TAU,
+            _ => dot(sub(b, a), sub(s.b, s.a)) > 0.,
         };
         if !keeps {
             return Err(format!(
@@ -364,13 +366,10 @@ pub(super) fn beam_path(
                 at(s.b)
             ));
         }
+        written.push(Stroke { a, b, arc });
     }
-    if let Some(p) = crossing(&out, tolerance) {
-        return Err(format!(
-            "the kerf path the controller would cut crosses itself near {}: an extended corner reaches across the loop; use compensation=\"computer\"",
-            at(p)
-        ));
-    }
+    validate_loop(&written, tolerance, "written part-side loop")?;
+    validate_loop(&out, tolerance, "beam loop")?;
     // Arcs of at most a quarter turn: the controller's offset of a written
     // arc ends where the offsets of its neighbours meet it, so its sweep
     // moves by a hair of the written words' rounding; a half turn would
@@ -405,63 +404,58 @@ pub(super) fn beam_path(
     Ok((split, joins))
 }
 
-/// Where two non-adjacent strokes of a closed loop meet (beyond `tolerance`
-/// of their shared ends), if anywhere.
-fn crossing(strokes: &[Stroke], tolerance: f64) -> Option<Point> {
-    let n = strokes.len();
-    let bounds: Vec<[f64; 4]> = strokes
-        .iter()
-        .map(|s| match s.arc {
-            None => [
-                s.a[0].min(s.b[0]),
-                s.a[1].min(s.b[1]),
-                s.a[0].max(s.b[0]),
-                s.a[1].max(s.b[1]),
-            ],
-            Some((c, _)) => {
-                let r = len(sub(s.a, c));
-                [c[0] - r, c[1] - r, c[0] + r, c[1] + r]
-            }
-        })
-        .collect();
-    let on = |s: &Stroke, p: Point| -> bool {
-        match s.arc {
-            None => {
-                let d = sub(s.b, s.a);
-                let t = dot(sub(p, s.a), d) / dot(d, d);
-                (-1e-12..=1. + 1e-12).contains(&t)
-            }
-            Some((c, w)) => {
-                let a = angle_of(c, s.a);
-                let travel = if w > 0. {
-                    (angle_of(c, p) - a).rem_euclid(TAU)
-                } else {
-                    (a - angle_of(c, p)).rem_euclid(TAU)
-                };
-                travel <= w.abs() + 1e-12
-            }
-        }
-    };
-    for i in 0..n {
-        for j in i + 1..n {
-            // Neighbours meet at their shared end.
-            if j == i + 1 || (i == 0 && j == n - 1) {
-                continue;
-            }
-            let (a, b) = (bounds[i], bounds[j]);
-            if a[0] > b[2] + tolerance
-                || b[0] > a[2] + tolerance
-                || a[1] > b[3] + tolerance
-                || b[1] > a[3] + tolerance
-            {
-                continue;
-            }
-            for p in meet(carrier(&strokes[i]), carrier(&strokes[j])) {
-                if on(&strokes[i], p) && on(&strokes[j], p) {
-                    return Some(p);
-                }
-            }
+/// Reuse the same simple-boundary checks as an input region: exact
+/// polygon predicates and continuous line/arc intersections, including
+/// overlapping carriers and a second contact between consecutive edges.
+fn validate_loop(strokes: &[Stroke], tolerance: f64, name: &str) -> Result<(), String> {
+    use crate::planar::{Boundary, Component, ConstructionOptions, PlanarRegion};
+    let mut vertices = Vec::with_capacity(strokes.len());
+    for s in strokes {
+        let sweep = s.arc.map_or(0., |(_, w)| w);
+        // Boundary represents circular arcs of at most 180 degrees.
+        let count = (sweep.abs() / PI).ceil().max(1.) as usize;
+        let bulge = (sweep / (4. * count as f64)).tan();
+        for k in 0..count {
+            let p = if k == 0 {
+                s.a
+            } else {
+                crate::profiles::stroke_point(s, k as f64 / count as f64)
+            };
+            vertices.push([p[0], p[1], bulge]);
         }
     }
-    None
+    PlanarRegion {
+        version: 1, units: "mm".into(), name: name.into(), boundary_error_mm: 0.,
+        components: vec![Component { outer: Boundary { vertices }, holes: vec![] }],
+        source: serde_json::Value::Null,
+    }
+    .prepare(ConstructionOptions { tolerance_mm: tolerance })
+    .map_err(|reason| {
+        format!("the controller's {name} cannot form a simple boundary: {reason}; use compensation=\"computer\"")
+    })?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn consecutive_edges_may_only_meet_at_their_join() {
+        // A semicircle from (0,0) to (2,0) through (1,-1). Its
+        // next edge crosses it a second time at (0.2,-0.6).
+        let arc = Stroke {
+            a: [0., 0.],
+            b: [2., 0.],
+            arc: Some(([1., 0.], PI)),
+        };
+        let loop_edges = |corner| {
+            [
+                arc,
+                Stroke::line(arc.b, corner),
+                Stroke::line(corner, arc.a),
+            ]
+        };
+        assert!(validate_loop(&loop_edges([-1., -1.]), 1e-5, "beam loop").is_err());
+        assert!(validate_loop(&loop_edges([1., 1.]), 1e-5, "beam loop").is_ok());
+    }
 }
