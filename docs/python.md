@@ -52,8 +52,13 @@ each tool's tip after its change instead (`ToolChangeTable.from_machine(machine)
 takes them from a `"table"` machine's `position_after_mm`).
 `Setup(tool_change=ToolChangeInPlace())` is a machine that changes the tool
 where the spindle stands: the tip moves along Z by the old gauge length minus
-the new one. Without any of them, each tool's tip starts where the previous
-operation ended. See
+the new one. `ToolChangeInPlace(retract_gauge_z_mm=...)` also states a retract
+before every change: the old tool goes straight up at rapid until the spindle
+gauge line is at that work Z, and the tool is changed there (the new tip
+starts at that Z less its own gauge length). The retract is the last move of
+the operation before the change, checked, posted and decoded like any other;
+it only goes up, and without the value none is planned. Without any of them,
+each tool's tip starts where the previous operation ended. See
 [Posts](posts.md) for the matching machine setting.
 
 `SuppliedToolpath(id, tool, motions, clearance_z_mm, ...)` puts moves planned

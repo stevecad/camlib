@@ -2261,7 +2261,7 @@ fn in_place_manifest() -> StreamManifest {
     long.holders[0].z_max_mm = 115.;
     m.tools.push(long);
     m.initial_position_mm = [3., 5., 60.];
-    m.tool_change = Some(ToolChangePose::InPlace(InPlacePose { in_place: true }));
+    m.tool_change = Some(ToolChangePose::InPlace(InPlacePose::stay()));
     m
 }
 fn rapid(id: u64, tool: &str, start: Vec3, end: Vec3) -> Motion {
@@ -2363,7 +2363,10 @@ fn a_tool_change_in_place_refuses_what_it_cannot_place() {
         m.tool_change.clone().unwrap()
     );
     let mut off = m.clone();
-    off.tool_change = Some(ToolChangePose::InPlace(InPlacePose { in_place: false }));
+    off.tool_change = Some(ToolChangePose::InPlace(InPlacePose {
+        in_place: false,
+        retract_gauge_z_mm: None,
+    }));
     assert!(off.validate().is_err());
     // Without the declaration the tip stays where it was.
     let mut none = m;
@@ -2523,4 +2526,40 @@ fn a_restored_consumer_measures_a_change_in_place_from_exactly_the_spindle_tool(
     let old = without_spindle_tool(&r.checkpoint(DEFAULT_FRAME_LIMIT).unwrap(), &none);
     let mut r = StreamReceiver::from_checkpoint(none, &old, DEFAULT_FRAME_LIMIT).unwrap();
     r.accept(&b, DEFAULT_FRAME_LIMIT).unwrap();
+}
+
+#[test]
+fn a_retract_before_a_change_in_place_is_declared_for_planned_milling_runs_only() {
+    let mut m = in_place_manifest();
+    let stated = ToolChangePose::InPlace(InPlacePose {
+        in_place: true,
+        retract_gauge_z_mm: Some(150.),
+    });
+    let json = serde_json::to_value(&stated).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({"in_place": true, "retract_gauge_z_mm": 150.0})
+    );
+    assert_eq!(
+        serde_json::from_value::<ToolChangePose>(json).unwrap(),
+        stated
+    );
+    // Without the value the declaration and the manifest are as before.
+    assert_eq!(InPlacePose::stay().retract_gauge_z_mm, None);
+    assert!(!serde_json::to_string(&m).unwrap().contains("retract"));
+    assert_eq!(m.tool_change_retract_gauge_z(), None);
+    // This run is given its moves: it has no operations to plan a retract
+    // between, so the value would silently do nothing.
+    m.tool_change = Some(stated);
+    assert_eq!(m.tool_change_retract_gauge_z(), Some(150.));
+    let error = m.validate().unwrap_err();
+    assert!(error.contains("retract_gauge_z_mm"), "{error}");
+    for bad in [f64::NAN, f64::INFINITY, 1e7] {
+        m.tool_change = Some(ToolChangePose::InPlace(InPlacePose {
+            in_place: true,
+            retract_gauge_z_mm: Some(bad),
+        }));
+        let error = m.validate().unwrap_err();
+        assert!(error.contains("finite work coordinates"), "{error}");
+    }
 }

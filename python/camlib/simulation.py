@@ -456,10 +456,33 @@ class ToolChangeInPlace:
     fixtures). The first tool starts at the setup's initial position.
     Declare it only for a machine that behaves so (for LinuxCNC: an M6 with
     no configured tool-change move); posts must declare the same
-    (``Machine(tool_change_position_mode="preserve_spindle")``)."""
+    (``Machine(tool_change_position_mode="preserve_spindle")``).
+
+    ``retract_gauge_z_mm`` states a retract before every tool change of a
+    planned job: the old tool goes straight up at rapid until the spindle
+    gauge line is at that work Z, and the tool is changed there, so the new
+    tool's tip starts at that Z less its own gauge length. The retract is an
+    ordinary move of the operation before the change: checked against stock,
+    fixtures and machine travel, posted and decoded like any other. It only
+    goes up: a value below where an operation leaves the spindle is refused.
+    None (the default) plans no retract: the tool is changed where the last
+    operation stopped, and an operation whose longer tool would then start
+    below its clearance height is refused."""
+
+    retract_gauge_z_mm: float | None = None
+
+    def __post_init__(self):
+        z = self.retract_gauge_z_mm
+        if z is not None and (
+            isinstance(z, bool) or not isinstance(z, (int, float)) or not math.isfinite(z) or abs(z) > 1e6
+        ):
+            raise ValueError("retract_gauge_z_mm needs a finite work Z (or None: no retract)")
 
     def to_dict(self):
-        return {"in_place": True}
+        data = {"in_place": True}
+        if self.retract_gauge_z_mm is not None:
+            data["retract_gauge_z_mm"] = float(self.retract_gauge_z_mm)
+        return data
 
 
 @dataclass(frozen=True)
@@ -962,6 +985,10 @@ def _parsed_manifest(digest, raw):
     return parsed
 
 
+def _finite_number(value):
+    return type(value) in (int, float) and math.isfinite(value)
+
+
 class StockState:
     """Transactional Python consumer of native bounds, with a read-only cell view."""
 
@@ -1040,7 +1067,14 @@ class StockState:
         self._gauges = {t["id"]: t["gauge_length_mm"] for t in m["tools"]}
         change = m.get("tool_change")
         if change is not None and (
-            (m["version"] != 1 or change != {"in_place": True})
+            (
+                m["version"] != 1
+                or change["in_place"] is not True
+                or set(change) - {"in_place", "retract_gauge_z_mm"}
+                # The producer plans the stated retract as an ordinary move
+                # (#374); a consumer only needs the change itself.
+                or not _finite_number(change.get("retract_gauge_z_mm", 0.0))
+            )
             if "in_place" in change
             else m["version"] != 1
             or (

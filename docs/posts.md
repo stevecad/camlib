@@ -84,7 +84,9 @@ Key settings:
   other rapid. With `tool_change_position_mode="preserve_spindle"` no axis
   moves at the tool change: the spindle gauge line stays, so the new tip is
   the old tip moved along Z by the old gauge length minus the new one. Plan
-  with `Setup(tool_change=ToolChangeInPlace())` (see
+  with `Setup(tool_change=ToolChangeInPlace())`, or with
+  `ToolChangeInPlace(retract_gauge_z_mm=...)` to have the program retract Z
+  to a stated height before each change (see
   [LinuxCNC tool changes](#linuxcnc-tool-changes)). `job.post` and
   `job.post_nc` refuse a setup whose tool-change pose disagrees with the
   machine's, before planning.
@@ -527,6 +529,37 @@ with that pose: an operation whose tool would arrive below its clearance
 height is refused with the change named, and the new tool's first moves are
 checked against stock and fixtures like any others. The mode needs the work Z axis along machine Z, and is refused
 for lathe turrets and for controllers that select a cutting edge with `T`/`D`.
+
+Because M6 moves nothing on such a machine, the program itself must take the
+spindle clear before the change when the next tool is longer. State where:
+`Setup(tool_change=ToolChangeInPlace(retract_gauge_z_mm=150))` plans, before
+every tool change, one rapid of the old tool straight up until the spindle
+gauge line is at work Z 150 (the 75 mm tool's tip at Z 75); the 115 mm tool
+is then changed in with its tip at Z 35. The post writes that rapid as an
+ordinary block before the change (here after an operation that stopped at
+Z 12 over X20 Y8), and the decoder reads it back as one:
+
+```
+G1 X20 Y8 Z12 F600
+G0 X20 Y8 Z75
+M9
+M5
+G54
+T2
+M6
+G43 H2
+```
+
+The retract is a planned move like any other: it is streamed with the run,
+checked against stock, fixtures and the machine's travel, and compared with
+the decoded program. camlib assumes no retract height: without the value the
+tool is changed where the last operation stopped, as before, and a job whose
+longer tool would then start below its clearance height is refused. A stated
+retract only goes up (a value below where an operation leaves the spindle is
+refused), and a value too low for the next tool's clearance height is refused
+naming the change and the height it needs. The value is a work Z of the
+spindle gauge line, so it is the same for every tool; it is not the
+controller's `G53`/`G28`/`G30` and no machine-coordinate block is written.
 
 ## Posting without Python (Rust, WebAssembly)
 

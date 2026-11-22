@@ -199,8 +199,9 @@ class TableValueTest(unittest.TestCase):
                 list(run)
 
 
-def gauge_tools():
-    """Tools of 75 and 115 mm gauge length (#168)."""
+def gauge_tools(long=115):
+    """Tools of 75 and 115 mm gauge length (#168); ``long``: the longer
+    tool's gauge length."""
     short = camlib.ToolAssembly(
         "short",
         camlib.Drill("short", diameter=3, point_angle=118, flute_length=12, overall_length=50),
@@ -212,16 +213,19 @@ def gauge_tools():
         "long",
         camlib.Drill("long", diameter=5, point_angle=118, flute_length=20, overall_length=60),
         40,
-        115,
-        (camlib.HolderSection(40, 115, 10, 10),),
+        long,
+        (camlib.HolderSection(40, long, 10, 10),),
     )
     return short, long
 
 
-def in_place_job(order, clearance, tool_change=ToolChangeInPlace()):
+CONTACT = camlib.StreamChecks(stock_contact=camlib.StockContactOptions())
+
+
+def in_place_job(order, clearance, tool_change=ToolChangeInPlace(), long=115, verification=CONTACT):
     """Two drilling operations, one per tool in ``order``; ``clearance`` is
     each operation's clearance height (one value: the same for both)."""
-    by_id = {t.id: t for t in gauge_tools()}
+    by_id = {t.id: t for t in gauge_tools(long)}
     clearances = clearance if isinstance(clearance, tuple) else (clearance, clearance)
     ops = tuple(
         camlib.Drilling(
@@ -245,14 +249,14 @@ def in_place_job(order, clearance, tool_change=ToolChangeInPlace()):
         tools=tuple(by_id.values()),
         operations=tuple(camlib.OperationNode(op, sources=()) for op in ops),
         initial_position_mm=(0, 0, 70),
-        verification=camlib.StreamChecks(stock_contact=camlib.StockContactOptions()),
+        verification=verification,
         tool_change=tool_change,
     )
     return camlib.Job("tool-change-in-place", "1", (setup,))
 
 
-def in_place_machine(order, mode="preserve_spindle", **settings):
-    by_id = {t.id: t for t in gauge_tools()}
+def in_place_machine(order, mode="preserve_spindle", long=115, **settings):
+    by_id = {t.id: t for t in gauge_tools(long)}
     table = tuple(
         ToolSetting.for_tool(by_id[t], number=k, length_register=k, position_after_mm=(0, 0, 70))
         for k, t in enumerate(order, 1)
@@ -544,6 +548,240 @@ class ToolChangeInPlaceTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must be table, preserve_tip, preserve_spindle or z_home"):
             in_place_machine(("short", "long"), mode="in_place")
         self.assertEqual(ToolChangeInPlace().to_dict(), {"in_place": True})
+
+
+class PlannedRetractTest(unittest.TestCase):
+    """A stated retract before every tool change in place (#374): the old
+    tool goes straight up until the spindle gauge line is at the stated work
+    Z, as an ordinary checked, posted and decoded rapid. Tools of 75 and
+    130 mm gauge length: the second is 55 mm longer."""
+
+    ORDER = ("short", "long")
+
+    def job(self, retract, clearance=12, **options):
+        change = ToolChangeInPlace() if retract is None else ToolChangeInPlace(retract_gauge_z_mm=retract)
+        return in_place_job(self.ORDER, clearance, change, long=130, **options)
+
+    def machine(self, **settings):
+        return in_place_machine(self.ORDER, long=130, **settings)
+
+    def test_value(self):
+        self.assertEqual(ToolChangeInPlace().to_dict(), {"in_place": True})
+        self.assertEqual(
+            ToolChangeInPlace(retract_gauge_z_mm=150).to_dict(), {"in_place": True, "retract_gauge_z_mm": 150.0}
+        )
+        for bad in (float("nan"), float("inf"), 1e7, "150", True):
+            with self.assertRaisesRegex(ValueError, "retract_gauge_z_mm"):
+                ToolChangeInPlace(retract_gauge_z_mm=bad)
+
+    def test_the_planner_retracts_the_old_tool_to_the_stated_gauge_line(self):
+        poses, moves = planned(self.job(150))
+        last = moves["short"][-1]
+        before = moves["short"][-2]["curve"]["end"]
+        # One rapid straight up from where the 75 mm tool stopped (Z 12),
+        # until its gauge line is at Z 150: its tip at Z 75.
+        self.assertEqual(last["kind"], "rapid")
+        self.assertEqual(last["curve"]["start"], before)
+        self.assertEqual(tuple(last["curve"]["end"]), (before[0], before[1], 75.0))
+        self.assertEqual(before[2], 12.0)
+        # The 130 mm tool is changed in there: its tip 55 mm lower, at Z 20.
+        self.assertEqual(poses[1], ("long", (before[0], before[1], 20.0)))
+        self.assertEqual(tuple(moves["long"][0]["curve"]["start"]), poses[1][1])
+        # Without the value the plan has no such move.
+        _, plain = planned(in_place_job(self.ORDER, (70, 12), long=130))
+        _, stated = planned(in_place_job(self.ORDER, (70, 12), ToolChangeInPlace(retract_gauge_z_mm=150), long=130))
+        self.assertEqual(len(stated["short"]), len(plain["short"]) + 1)
+        self.assertEqual(stated["short"][:-1], plain["short"])
+
+    def test_two_tool_linuxcnc_program_posts_one_z_rapid_before_the_change_and_decodes(self):
+        m = self.machine()
+        self.assertEqual(m.dialect, GCodeDialect.linuxcnc())
+        j = self.job(150)
+        # Posted, decoded with the machine's tool change (which knows no
+        # retract: it only keeps the spindle), compared with the plan and
+        # replayed on the stock.
+        nc = posted(j, m)
+        change = nc.index("T2")
+        # One Z rapid from where the 75 mm tool stopped, then the stops and
+        # the change; the 130 mm tool's first move comes straight down the
+        # same XY from Z 20 to its clearance.
+        self.assertEqual(
+            nc[change - 5 : change + 6],
+            [
+                "G1 X20 Y8 Z12 F600",
+                "G0 X20 Y8 Z75",
+                "M9",
+                "M5",
+                "G54",
+                "T2",
+                "M6",
+                "G43 H2",
+                "M3 S6000",
+                "M8",
+                "G0 X20 Y8 Z12",
+            ],
+        )
+        self.assertEqual(sum("Z75" in line for line in nc), 1)
+        released = j.post_nc("top", machine=m, accept={"unchecked_machine"})
+        self.assertEqual(released.text.splitlines(), nc)
+        self.assertEqual(tuple(released.findings), ())
+        # The Rust post (its own decoder and replay) writes the same program.
+        from camlib.post import post_job, post_job_input
+
+        rust = post_job(post_job_input(j, "top", machine=m, accept={"unchecked_machine"}))
+        self.assertTrue(rust["released"])
+        self.assertEqual(rust["program"], released.text)
+
+    def test_without_the_value_the_job_is_refused_as_a_tool_change(self):
+        for run in (
+            lambda j: j.post_nc("top", machine=self.machine(), accept={"unchecked_machine"}),
+            lambda j: list(j.regenerate()),
+        ):
+            with self.assertRaises(Exception) as caught:
+                run(self.job(None))
+            text = str(caught.exception)
+            self.assertRegex(
+                text,
+                r"operation drill2 cannot start after its tool change \(start Z -43 is below clearance_z_mm 12\): "
+                r"the tool change from short to long leaves the spindle where it stands.*tip is at Z -43, 55 mm below "
+                r"the Z 12 where short stopped.*ToolChangeInPlace\(retract_gauge_z_mm=",
+            )
+            self.assertNotIn("invalid hole parameters", text)
+
+    def test_stated_and_unstated_programs_differ_only_by_the_retract(self):
+        # A job that needs no retract (the first tool's clearance is high
+        # enough): stating one adds exactly the retract and the longer
+        # descent after the change.
+        m = self.machine()
+        plain = posted(in_place_job(self.ORDER, (70, 12), long=130), m)
+        stated = posted(in_place_job(self.ORDER, (70, 12), ToolChangeInPlace(retract_gauge_z_mm=150), long=130), m)
+        self.assertEqual([line for line in stated if line != "G0 X20 Y8 Z75"], plain)
+        self.assertEqual(len(stated), len(plain) + 1)
+
+    def test_a_retract_too_low_for_the_longer_tool_is_refused_naming_the_change(self):
+        # Gauge Z 140: the 130 mm tool arrives with its tip at Z 10, below
+        # its operation's clearance 12.
+        with self.assertRaisesRegex(
+            Exception,
+            r"operation drill2 cannot start after its tool change \(start Z 10 is below clearance_z_mm 12\): the tool "
+            r"change from short to long is made in place after the stated retract to gauge Z 140 .*leaves long's tip "
+            r"at Z 10: state a retract_gauge_z_mm of at least the operation's clearance_z_mm plus long's gauge "
+            r"length 130",
+        ):
+            self.job(140).post_nc("top", machine=self.machine(), accept={"unchecked_machine"})
+        # A retract never goes down: gauge Z 80 is below where the 75 mm
+        # tool stopped (tip Z 12, gauge line Z 87).
+        with self.assertRaisesRegex(
+            Exception,
+            r"tool change from short to long in place: the stated retract to gauge Z 80 .*would lower short's tip "
+            r"to Z 5, below the Z 12 where operation drill1 left it.*at least 87",
+        ):
+            list(self.job(80).regenerate())
+        # Exactly at the gauge line where the tool stopped: no move at all.
+        _, moves = planned(self.job(145, clearance=(70, 12)))
+        _, plain = planned(self.job(None, clearance=(70, 12)))
+        self.assertEqual(moves, plain)
+
+    def test_a_retract_outside_the_machine_travel_is_refused_by_the_machine_check(self):
+        from camlib.export import ExportRefused
+        from camlib.verification import MachineLimits, Scene
+
+        def checks(max_gauge_z):
+            limits = MachineLimits.gauge_line((-500, -500, 0), (500, 500, max_gauge_z), 10000)
+            return camlib.StreamChecks(scene=Scene("mill", "1", machine=limits), stock_contact=CONTACT.stock_contact)
+
+        m = self.machine()
+        released = self.job(150, verification=checks(150)).post_nc("top", machine=m, accept={"unchecked_machine"})
+        self.assertEqual(tuple(released.findings), ())
+        _, moves = planned(self.job(150))
+        retract = moves["short"][-1]["id"]
+        with self.assertRaises(ExportRefused) as caught:
+            self.job(150, verification=checks(149.5)).post_nc("top", machine=m, accept={"unchecked_machine"})
+        first = caught.exception.findings[0]
+        self.assertEqual((first["completed"], first["status"]), (retract, "violation"))
+        self.assertRegex(str(caught.exception), rf"first at move {retract}: machine_")
+
+    def test_a_retract_through_a_fixture_is_refused_naming_the_move(self):
+        from camlib.export import ExportRefused
+        from camlib.planar import Boundary, Component, PlanarRegion
+        from camlib.verification import Prism, Scene
+
+        # A bridge over the last hole, above everything the operations
+        # reach (the 75 mm tool's holder top is at Z 87 while it drills):
+        # only the retract takes the holder up through it.
+        square = Boundary.polygon(((19, 6), (22, 6), (22, 10), (19, 10)))
+        over = Prism("bridge", PlanarRegion("bridge", (Component(square),)), 90, 100)
+        scene = camlib.StreamChecks(scene=Scene("mill", "1", bodies=(over,)), stock_contact=CONTACT.stock_contact)
+        _, moves = planned(self.job(150))
+        retract = moves["short"][-1]["id"]
+        with self.assertRaises(ExportRefused) as caught:
+            self.job(150, verification=scene).post_nc("top", machine=self.machine(), accept={"unchecked_machine"})
+        self.assertEqual(caught.exception.findings[0]["completed"], retract)
+        self.assertRegex(str(caught.exception), rf"first at move {retract}: .*bridge")
+
+    def test_playback_seeks_across_the_retract_and_the_change_from_every_checkpoint(self):
+        from camlib.playback import Cursor, Player
+
+        j = self.job(150)
+        with j.post("top", machine=self.machine(), checkpoint_every=1) as run:
+            run.wait()
+            count = run.status()["available"]
+            player = Player(run, compact=True)
+            for cursor in (*range(count, -1, -1), *range(count + 1)):
+                player.seek(Cursor(cursor))
+            self.assertEqual(run.status()["error"], None)
+        # The planned run too, partway through the retract itself.
+        with j.record("top", rapid_mm_min=6000, checkpoint_every=1) as run:
+            run.wait()
+            count = run.status()["available"]
+            _, moves = planned(j)
+            retract = moves["short"][-1]["id"]
+            player = Player(run, compact=True)
+            for cursor in (*range(count, -1, -1), *range(count + 1)):
+                player.seek(Cursor(cursor))
+            state = player.seek(Cursor(retract - 1, 0.5))
+            self.assertEqual(tuple(state.position), (20.0, 8.0, 43.5))
+            self.assertEqual(run.status()["error"], None)
+
+    def test_a_regeneration_cache_replays_the_same_run(self):
+        import tempfile
+
+        from camlib.jobs import RegenerationCache
+
+        with tempfile.TemporaryDirectory() as directory:
+            cache = RegenerationCache(directory)
+
+            def run():
+                hits, moves = [], []
+                with self.job(150).regenerate(cache) as updates:
+                    for event in updates:
+                        update = event.update
+                        if hasattr(update, "motion"):
+                            moves.append(update.motion)
+                        elif getattr(update, "stage", None) == "end":
+                            hits.append(update.report["regeneration"]["cache_hit"])
+                return hits, moves
+
+            cold, warm = run(), run()
+            self.assertEqual((cold[0], warm[0]), ([False, False], [True, True]))
+            self.assertEqual(cold[1], warm[1])
+            self.assertEqual(sum(tuple(m["curve"]["end"])[2] == 75.0 for m in warm[1]), 1)
+
+    def test_only_a_planned_milling_run_takes_a_retract(self):
+        from camlib.motion import Line, Motion
+        from camlib.simulation import Simulation, SimulationError
+
+        # A run that is given its moves makes its own retracts.
+        with self.assertRaisesRegex((SimulationError, ValueError, RuntimeError), "retract"):
+            with Simulation(
+                camlib.StockSpec((0, 0, 0), (28, 16, 10), 0.5),
+                gauge_tools(),
+                revision="1",
+                run_id="given",
+                initial_position_mm=(0, 0, 70),
+                tool_change=ToolChangeInPlace(retract_gauge_z_mm=150),
+            ) as sim:
+                list(sim.motions([Motion(1, "a", "short", Line((0, 0, 70), (5, 5, 60)), None, "rapid")]))
 
 
 if __name__ == "__main__":

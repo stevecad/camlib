@@ -278,6 +278,22 @@ pub struct GaugePose {
 #[serde(deny_unknown_fields)]
 pub struct InPlacePose {
     pub in_place: bool,
+    /// The stated retract before every tool change of an operation run
+    /// (#374): the old tool goes straight up at rapid until the spindle
+    /// gauge line is at this work Z, and the tool is changed there. None:
+    /// the tool is changed where the last operation stopped (no retract is
+    /// ever assumed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retract_gauge_z_mm: Option<f64>,
+}
+impl InPlacePose {
+    /// A change exactly where the spindle stands, with no planned retract.
+    pub fn stay() -> Self {
+        Self {
+            in_place: true,
+            retract_gauge_z_mm: None,
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -384,6 +400,13 @@ impl StreamManifest {
     /// The manifest's tool changes leave the spindle where it stands.
     pub fn tool_change_in_place(&self) -> bool {
         matches!(self.tool_change, Some(ToolChangePose::InPlace(_)))
+    }
+    /// The stated gauge Z of the retract before a tool change in place.
+    pub fn tool_change_retract_gauge_z(&self) -> Option<f64> {
+        match &self.tool_change {
+            Some(ToolChangePose::InPlace(p)) => p.retract_gauge_z_mm,
+            _ => None,
+        }
     }
     pub fn validate(&self) -> Result<(), String> {
         if ![1, 2].contains(&self.version)
@@ -498,12 +521,26 @@ impl StreamManifest {
                                 !tip.iter().all(finite) || !self.tools.iter().any(|a| &a.id == tool)
                             })
                     }
-                    ToolChangePose::InPlace(p) => !p.in_place,
+                    ToolChangePose::InPlace(p) => {
+                        !p.in_place || p.retract_gauge_z_mm.is_some_and(|z| !finite(&z))
+                    }
                 })
         {
             return Err(
                 "tool change pose needs finite work coordinates, for declared tools (operation runs only)".into(),
             );
+        }
+        // The run plans these moves itself, between and after its
+        // operations: a run that is given its moves has nowhere to make them.
+        let milling_operations = self.version == 1
+            && !self.operations.is_empty()
+            && self.turning.is_none()
+            && !self
+                .tools
+                .iter()
+                .any(|t| matches!(t.cutter.shape, crate::tool::CutterShape::Beam));
+        if self.tool_change_retract_gauge_z().is_some() && !milling_operations {
+            return Err("a retract before a tool change in place (retract_gauge_z_mm) is planned between the operations of a milling operation run; a run that is given its moves makes its own".into());
         }
         if self.version == 2 && !self.operations.is_empty() {
             return Err(
@@ -835,9 +872,12 @@ pub struct StreamProducer {
     /// The tool the last `change_tool` put in the spindle (None before the
     /// first change and after a restore).
     spindle_tool: Option<String>,
-    /// The last tool change was in place and lowered the tip: what it did
-    /// (for the refusal of an operation that cannot start there).
-    lowered_tip: Option<String>,
+    /// The last tool change was in place and lowered the tip, or followed a
+    /// stated retract: what it did and how to fix it (for the refusal of an
+    /// operation that cannot start there).
+    change_note: Option<String>,
+    /// That change was made where the old tool stopped and lowered the tip.
+    change_lowered: bool,
 }
 #[derive(Clone)]
 pub struct StreamReceiver {
@@ -951,7 +991,8 @@ impl StreamProducer {
             read_only,
             turn_replay: None,
             spindle_tool: None,
-            lowered_tip: None,
+            change_note: None,
+            change_lowered: false,
         })
     }
     /// The committed height-field stock (milling and thermal runs).
@@ -1133,17 +1174,40 @@ impl StreamProducer {
                 _ => previous = spindle.map(str::to_string),
             }
         }
+        // A stated retract (#374) is part of every change in place: the
+        // change is placed only from where that retract leaves the old tool.
+        let retract = previous
+            .as_deref()
+            .filter(|old| *old != tool)
+            .and_then(|old| Some((old, self.state.manifest.tool_change_retract_gauge_z()?)));
+        if let Some((old, gauge_z)) = retract {
+            let expected = gauge_z - self.gauge_length(old)?;
+            if self.state.position[2] != expected {
+                return Err(format!(
+                    "tool change from {old} to {tool} in place: the stated retract to gauge Z {gauge_z} was not made ({old}'s tip is at Z {}, not Z {expected}); plan it with tool_change_retract before the change",
+                    self.state.position[2]
+                ));
+            }
+        }
         let tip =
             self.state
                 .manifest
                 .tool_change_tip(tool, self.state.position, previous.as_deref())?;
         self.spindle_tool = Some(tool.to_string());
-        self.lowered_tip = None;
-        if let (Some(old), Some(tip)) = (&previous, tip)
+        self.change_note = None;
+        self.change_lowered = false;
+        if let (Some((old, gauge_z)), Some(tip)) = (retract, tip) {
+            self.change_note = Some(format!(
+                "the tool change from {old} to {tool} is made in place after the stated retract to gauge Z {gauge_z} (ToolChangeInPlace(retract_gauge_z_mm={gauge_z})), which leaves {tool}'s tip at Z {}: state a retract_gauge_z_mm of at least the operation's clearance_z_mm plus {tool}'s gauge length {}",
+                tip[2],
+                self.gauge_length(tool)?,
+            ));
+        } else if let (Some(old), Some(tip)) = (&previous, tip)
             && tip[2] < self.state.position[2]
         {
-            self.lowered_tip = Some(format!(
-                "the tool change from {old} to {tool} leaves the spindle where it stands, so the longer tool's tip is at Z {}, {} mm below the Z {} where {old} stopped: retract {old} at least that much higher before the change, or use the longer tool first",
+            self.change_lowered = true;
+            self.change_note = Some(format!(
+                "the tool change from {old} to {tool} leaves the spindle where it stands, so the longer tool's tip is at Z {}, {} mm below the Z {} where {old} stopped: state a retract before the change (ToolChangeInPlace(retract_gauge_z_mm=...)), retract {old} at least that much higher, or use the longer tool first",
                 tip[2],
                 self.state.position[2] - tip[2],
                 self.state.position[2],
@@ -1157,13 +1221,90 @@ impl StreamProducer {
         }
         Ok(self.state.position)
     }
-    /// A refusal to plan the operation that follows a tool change, naming
-    /// a change in place that lowered the tip (the likely cause and its fix).
-    pub fn explain_tool_change(&self, error: String) -> String {
-        match &self.lowered_tip {
-            Some(note) => format!("{error} ({note})"),
-            None => error,
+    fn gauge_length(&self, tool: &str) -> Result<f64, String> {
+        self.state
+            .manifest
+            .tools
+            .iter()
+            .find(|t| t.id == tool)
+            .map(|t| t.gauge_length_mm)
+            .ok_or_else(|| format!("undeclared tool {tool}"))
+    }
+    /// A refusal to plan `operation`, the one that follows a tool change:
+    /// when the change in place left the tip where the operation cannot
+    /// start, the refusal says so, with what the change did and its fix
+    /// (#374: the cause is the tool change, not the operation's parameters).
+    pub fn explain_tool_change(&self, operation: &str, error: String) -> String {
+        let Some(note) = &self.change_note else {
+            return error;
+        };
+        match error.find("start Z ") {
+            Some(at) if error.contains("is below clearance_z_mm") => format!(
+                "operation {operation} cannot start after its tool change ({}): {note}",
+                &error[at..]
+            ),
+            // Another refusal keeps its own words; a change that lowered
+            // the tip is still noted as its likely cause.
+            _ if self.change_lowered => format!("{error} ({note})"),
+            _ => error,
         }
+    }
+    /// A straight rapid of `tool` in `operation` from the current position,
+    /// as the run's next motion; None when it would not move.
+    fn planned_rapid(
+        &self,
+        operation: &str,
+        tool: &str,
+        end: Vec3,
+    ) -> Result<Option<Motion>, String> {
+        let start = self.state.position;
+        if start == end {
+            return Ok(None);
+        }
+        if !point_valid(end) {
+            return Err(format!("a planned rapid to {end:?} is out of range"));
+        }
+        Ok(Some(Motion {
+            id: self
+                .state
+                .sequence
+                .checked_add(1)
+                .ok_or("motion ID overflow")?,
+            operation: operation.into(),
+            tool: tool.into(),
+            kind: MoveKind::Rapid,
+            feed_mm_min: None,
+            curve: Curve::Line { start, end },
+        }))
+    }
+    /// The stated retract before a tool change in place (#374), when the
+    /// manifest states one: `tool`, which just finished `operation`, goes
+    /// straight up at rapid until the spindle gauge line is at the stated
+    /// work Z. It is an ordinary motion of that operation: the caller checks
+    /// and commits it like any other (`push_checked_motion`) before
+    /// `change_tool(next_tool)`. None: no retract is stated, the tool does
+    /// not change, or the gauge line is already exactly there.
+    pub fn tool_change_retract(
+        &self,
+        operation: &str,
+        tool: &str,
+        next_tool: &str,
+    ) -> Result<Option<Motion>, String> {
+        let Some(gauge_z) = self.state.manifest.tool_change_retract_gauge_z() else {
+            return Ok(None);
+        };
+        if tool == next_tool {
+            return Ok(None);
+        }
+        let [x, y, z] = self.state.position;
+        let tip_z = gauge_z - self.gauge_length(tool)?;
+        if tip_z < z {
+            return Err(format!(
+                "tool change from {tool} to {next_tool} in place: the stated retract to gauge Z {gauge_z} (ToolChangeInPlace(retract_gauge_z_mm={gauge_z})) would lower {tool}'s tip to Z {tip_z}, below the Z {z} where operation {operation} left it: a retract only goes up; state a retract_gauge_z_mm of at least {}",
+                z + self.gauge_length(tool)?
+            ));
+        }
+        self.planned_rapid(operation, tool, [x, y, tip_z])
     }
     /// Both frames are prepared before stock commits. Publish the chunk first,
     /// then its optional passive check record before producing another motion.

@@ -78,6 +78,9 @@ combinations and impossible dimensions are rejected before any motion.
   tool's table pose, or the spindle staying where it was);
   its first move is checked like any rapid, and posting refuses a setup that
   disagrees with the machine.
+- `ToolChangeInPlace(retract_gauge_z_mm=...)` plans a Z retract to a stated
+  spindle gauge height before every tool change in place, as an ordinary
+  checked, posted and decoded rapid; no retract is assumed without it.
 - Avoid areas and containment regions apply to every operation and to every
   rapid and link.
 

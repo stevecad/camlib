@@ -154,8 +154,13 @@ the old gauge length minus the new one: after a 75 mm tool, a 115 mm tool
 reaches 40 mm further down. The planner starts the new tool there, and the
 stock, fixture and machine-travel checks and the posted-program check all use
 that pose. An operation whose longer tool would arrive below its clearance
-height (in or close above the part) is refused, naming the change: retract
-higher before the change, or put the longer tool first. The first
+height (in or close above the part) is refused, naming the change: state a
+retract before the change, retract higher by hand, or put the longer tool
+first. `ToolChangeInPlace(retract_gauge_z_mm=150)` states the retract once
+for the setup: before every tool change the old tool goes straight up at
+rapid until the spindle gauge line is at work Z 150, as an ordinary checked
+and posted move, and the new tool starts with its tip at 150 less its gauge
+length. No retract height is assumed when you give none. The first
 tool starts at the setup's `initial_position_mm`. This is what a LinuxCNC
 machine does when its `M6` is not configured to move (see
 [Posts](posts.md#linuxcnc-tool-changes)); declare it only if yours behaves so.

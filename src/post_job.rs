@@ -784,7 +784,7 @@ fn replay_tool_change(
             }
             Some(ToolChangePose::Table(TablePose { tips_mm: tips }))
         }
-        "preserve_spindle" => Some(ToolChangePose::InPlace(InPlacePose { in_place: true })),
+        "preserve_spindle" => Some(ToolChangePose::InPlace(InPlacePose::stay())),
         _ => None,
     })
 }
