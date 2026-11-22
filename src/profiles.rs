@@ -886,6 +886,7 @@ impl ProfileMotion {
                 self.events.push(Event::CutterCompensation {
                     side: *side,
                     plane: crate::motion::Plane::Xy,
+                    amount_mm: None,
                 });
             }
             if phase == Phase::Cut {
@@ -899,6 +900,7 @@ impl ProfileMotion {
                         self.events.push(Event::CutterCompensation {
                             side: CompensationSide::Off,
                             plane: crate::motion::Plane::Xy,
+                            amount_mm: None,
                         });
                     }
                 }

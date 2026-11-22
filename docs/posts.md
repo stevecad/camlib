@@ -92,6 +92,8 @@ Key settings:
   machine's, before planning.
 - **`diameter_register`** (per `ToolSetting`): the D register holding the
   tool's wear, written with `G41`/`G42` for `Contour(compensation="wear")`.
+  `ThermalCut(compensation="control")` writes no register: the dialect's
+  `compensation_amount_word` carries the amount.
 - **`decimals`**: output precision. 3 mm / 4 inch is what FANUC/Haas-class
   controls accept. LinuxCNC and GRBL accept more.
 - **Curves**: `arcs`, `helices`, `planes` and `max_sweep_rad` declare which
@@ -156,6 +158,7 @@ Key settings:
 | `tap_cycle`, `tap_cycle_left` | Canned rigid tapping, right hand (`G84`) and left hand (`G74`), declared with `with_commands`. The spindle turns in the cycle's direction beforehand (M3 for G84, M4 for G74, FANUC 0i-MB §13.1.2); the decoder refuses a cycle under the other direction. Without `tap_cycle_left` (and without `tap_synchronized` G33.1) a left-hand tap is refused |
 | `compensation_word` | D register word of G41/G42 |
 | `compensation_with_move` | G41/G42/G40 written in the block of the move that turns compensation on or off (FANUC, Haas), not alone |
+| `compensation_amount_word` | The word of a whole compensation amount for `ThermalCut(compensation="control")`: `G41`/`G42` and this word with half the kerf, in output units at the linear resolution, on a block of their own, and `G40` on its own (WinCNC `O`: "G41 O# ... O# is the compensation amount on machines without a tool changer", Users Guide, Controller 3.1, revision 3.1.04, pp. 138-139). The post writes the part side of the planned beam path (`camlib.postprocessor.written_path`); the decoder reads the stretch from `G41`/`G42` to the move after `G40` whole and replays the controller's offset of what was written (`GCodeDecoder.replay_compensation`, `camlib.controller_offset`), each move checked against the plan. None (default): `compensation="control"` is refused. Not with `compensation_with_move` |
 | `oriented_edge_deg` | Where the boring bar's edge points after the oriented spindle stop |
 | `thread_lead_word` | Lathe threading (`thread_synchronized`, e.g. G33/G32): the word carrying the lead (K for LinuxCNC G33, F for G32) |
 | `tool_change="lathe_t"` | Lathe tool words `T<nn><oo>` (tool and offset, T0101) |

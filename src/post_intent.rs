@@ -38,6 +38,12 @@ pub struct Settings {
     pub lowering: Option<crate::post_lowering::Options>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub motion_scheduling: Option<crate::dynamics::Settings>,
+    /// The machine's controller applies a whole compensation amount from
+    /// its own setup, with no word in the program (a premise its owner
+    /// declares): a compensation change with an amount writes no block, and
+    /// the decoder reads it from where the controller applies it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub compensation_unwritten: bool,
 }
 
 #[derive(Serialize)]
@@ -690,7 +696,11 @@ impl IntentChecker {
                 ));
             }
             cycle_event_index = Some(cycle);
-        } else if lines.is_empty() {
+        } else if lines.is_empty()
+            && !(self.settings.compensation_unwritten
+                && !actual.is_empty()
+                && matches!(expected, Event::CutterCompensation { .. }))
+        {
             return Err(format!("event {index}: post wrote no block"));
         }
         self.decoded.consume(actual)?;
@@ -885,6 +895,23 @@ impl IntentChecker {
             (Event::CutterCompensation { .. }, []) if self.deferred_compensation.is_some() => {
                 (None, None)
             }
+            // The controller's whole amount, as its words were written: the
+            // replayed path from the written amount is compared with the
+            // plan move by move.
+            (
+                Event::CutterCompensation {
+                    side: a,
+                    plane: pa,
+                    amount_mm: Some(x),
+                },
+                [
+                    Event::CutterCompensation {
+                        side: b,
+                        plane: pb,
+                        amount_mm: Some(y),
+                    },
+                ],
+            ) if a == b && pa == pb && (x - y).abs() <= self.settings.tolerance_mm => (None, None),
             (
                 Event::SurfaceSpeed {
                     m_min: a,

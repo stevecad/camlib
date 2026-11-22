@@ -88,6 +88,44 @@ word, which overrides the material's feed.
 Both comments state the premise to the operator; the decoder reads them as
 the work offset and the torch, and refuses a `G92` on such a machine.
 
+## Kerf applied by the control (`compensation="control"`)
+
+`ThermalCut(compensation="control")` writes the part side of the kerf path
+(the part outline, beyond the boundary margin) and leaves the kerf to the
+control. How the control takes it is declared, as the table's owner knows it:
+
+| Declared | Written | Source |
+| --- | --- | --- |
+| `control_kerf="g41"` | `G41 O<kerf/2>` on a block of its own before each straight lead-in, `G40` on its own before each straight lead-out; `O` in output units at the linear resolution | WinCNC Users Guide, Controller 3.1, revision 3.1.04, pp. 138-139: "G41 Cutter Compensation Left - G41 O# ... Starts to the left on the first move. O# is the compensation amount on machines without a tool changer", G42 likewise to the right, "G40 Cutter Compensation Off". ShopSabre's own plasma post (Autodesk post library, "shopsabre plasma", $Revision 44226, lines 490-504) writes `G41 O<kerfWidth/2>` alone, then the G1 lead-in, and `G40` alone, and refuses a compensation change on a rapid or an arc |
+| `control_kerf="material", material_kerf_mm=...` | No compensation word | **The owner's declaration of their control**, not a WinCNC manual fact: the control applies half the kerf of the material setup chosen at it, to the left of travel, from the first move after the torch fires (`M61`) to the last before it goes off (`M62`), and the parts come out on size. Only `compensation="control"` loops can be cut on such a table (no crop, skeleton, chain or micro-joint cuts, which the control would offset too), in the usual direction (`reverse=False`), with the torch's kerf equal to `material_kerf_mm` |
+| `control_kerf=None` (default) | | `compensation="control"` is refused |
+
+The G41/G42 `O#` behaviour cited is documented for revision 3.1.04 of the
+Users Guide (Controller 3.1); earlier WinCNC versions are not covered by
+that citation, and no claim is made for them.
+
+The premises of `WINCNC.INI` (Users Guide p. 72, `cutcomp=T# D# R# C#`):
+`T0` (the default: "does not insert entry move") and a positive `D` (a
+negative one swaps G41 and G42). The decoder replays the others:
+`cutcomp_arc_radius_mm` and `cutcomp_arc_angle_deg` (R and C, defaults 200 in
+and 0.5 degrees: an arc of a larger radius turning less is cut as a line), and
+`cutcomp_full_circle_mm` (F, Versions Information List 3.1.07b: an arc whose
+ends are closer is taken as a full circle; no documented default, so it must
+be declared, 0 where it is not set, before a compensated arc is posted).
+
+What camlib plans and checks (see [ThermalCut](operations.md)): the beam
+path the control cuts from the written path. At an outside corner WinCNC
+joins its offset elements at their intersection (Versions Information List
+3.1.01a: arcs are offset and "a new intersection point" calculated), so the
+kerf paths of the two edges run on to where they meet; the arc join a
+control could take instead lies inside it, and both are proven clear of
+every part. The pierce and the end of each lead-out are on the written path;
+the written straight leads run along the planned ones, tangent into the lead
+arcs, so where the control ends its start-up does not depend on its entry
+type. The decoder reads each stretch from the compensation turning on to the
+move after it turns off, and replays the control's offset of the written
+words; every replayed move is compared with the plan.
+
 A `ThermalMark` is refused: the post declares no marking method for WinCNC
 (`M61` fires the torch with the cutting material setup).
 

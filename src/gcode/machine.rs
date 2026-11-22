@@ -49,6 +49,11 @@ pub struct Dialect {
     pub compensation_word: String,
     pub compensation_with_move: bool,
     pub compensation_register: bool,
+    /// The word of a whole compensation amount (`ThermalCut(compensation=
+    /// "control")`, WinCNC `G41 O#`). The default post refuses such a
+    /// compensation: it is posted by a Python post (see `docs/posts.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compensation_amount_word: Option<String>,
     pub dwell_word: String,
     pub dwell_resolution_s: f64,
     pub dwell_max_s: f64,

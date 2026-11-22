@@ -736,15 +736,22 @@ pub enum Event {
         mm_rev: f64,
     },
     /// Cutter radius compensation (G41 left / G42 right of the programmed
-    /// path in the direction of travel, G40 off). The programmed path is the
-    /// tool center: the controller offsets it by the register's wear only.
-    /// It turns on and off over the next move, a straight line in `plane`
-    /// (XY on a mill; XZ on a lathe, G18, where the offset's tip direction
-    /// applies).
+    /// path in the direction of travel, G40 off). It turns on and off over
+    /// the next move, a straight line in `plane` (XY on a mill; XZ on a
+    /// lathe, G18, where the offset's tip direction applies).
+    ///
+    /// Without `amount_mm` the motions are the tool center and the
+    /// controller offsets them by its register's wear only. With it
+    /// (`ThermalCut(compensation="control")`) the controller offsets the
+    /// written path by the whole `amount_mm` to `side`: the motions stay
+    /// where the tool center runs, and the post writes them offset back by
+    /// `amount_mm` to the other side (the part side). Only on turning it on.
     CutterCompensation {
         side: CompensationSide,
         #[serde(default = "xy_plane", skip_serializing_if = "is_xy")]
         plane: Plane,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        amount_mm: Option<f64>,
     },
     /// The next `covers` motions are one probing cycle (`crate::probe`):
     /// protected positioning, guarded measuring moves to the expected
@@ -1421,9 +1428,24 @@ impl ProgramValidator {
                         return Err(error("dwell needs a positive finite time in seconds"));
                     }
                 }
-                Event::CutterCompensation { side, plane } => {
+                Event::CutterCompensation {
+                    side,
+                    plane,
+                    amount_mm,
+                } => {
                     if *plane == Plane::Yz {
                         return Err(error("cutter compensation works in XY or XZ"));
+                    }
+                    if let Some(amount) = amount_mm
+                        && (*side == CompensationSide::Off
+                            || *plane != Plane::Xy
+                            || !amount.is_finite()
+                            || *amount <= 0.
+                            || *amount > 1e3)
+                    {
+                        return Err(error(
+                            "a controller compensation amount turns compensation on in XY, positive and finite (G40 carries none)",
+                        ));
                     }
                     if compensation_move
                         || (*side == CompensationSide::Off)
@@ -1434,6 +1456,7 @@ impl ProgramValidator {
                         ));
                     }
                     if *side != CompensationSide::Off
+                        && amount_mm.is_none()
                         && active_tool.as_ref().is_some_and(|t| radius_set.contains(t))
                     {
                         return Err(error(

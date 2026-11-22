@@ -28,6 +28,7 @@ use std::f64::consts::{FRAC_PI_2, PI};
 
 mod bridges;
 mod common_line;
+mod control;
 mod corners;
 mod lead_placement;
 mod skeleton;
@@ -567,7 +568,16 @@ impl ThermalCutPlan {
                 (
                     op.compensation == Compensation::Computer
                         || (op.lead_in.length_mm > guard && op.lead_out.length_mm > guard),
-                    "wear compensation turns G41/G42 on over the straight lead-in and off over the straight lead-out: set both lead length_mm".into(),
+                    "cutter compensation (wear or control) turns G41/G42 on over the straight lead-in and off over the straight lead-out: set both lead length_mm".into(),
+                ),
+                (
+                    op.compensation != Compensation::Control
+                        || (op.lead_in.radius_mm > guard && op.lead_out.radius_mm > guard),
+                    "compensation=\"control\" turns the controller's offset on and off over straight leads that run tangent into the cut: set both lead radius_mm (where a controller ends its start-up at a corner differs between controllers)".into(),
+                ),
+                (
+                    op.compensation != Compensation::Control || op.edge_starts.is_none(),
+                    "compensation=\"control\" pierces on the written path, half a kerf beside the planned lead: edge_starts is not planned with it".into(),
                 ),
                 (
                     op.pierce_clearance_mm.is_none_or(|c| c.is_finite() && c >= 0.),
@@ -725,6 +735,8 @@ impl ThermalCutPlan {
             part: usize,
             hole: Option<usize>,
             length: f64,
+            /// compensation="control": the corners the controller joins.
+            joins: Vec<control::Join>,
         }
         let mut loops = vec![];
         for p in prepared.loops {
@@ -749,6 +761,7 @@ impl ThermalCutPlan {
                 part: p.component,
                 hole: p.hole,
                 length,
+                joins: vec![],
             });
         }
         if loops.is_empty() {
@@ -790,6 +803,7 @@ impl ThermalCutPlan {
                     strokes,
                     part,
                     hole,
+                    joins: vec![],
                 })
                 .collect();
             common = plan;
@@ -821,9 +835,36 @@ impl ThermalCutPlan {
                 strokes: o.strokes,
                 part: o.part,
                 hole: None,
+                joins: vec![],
             }));
             bridge_groups = planned.groups;
             bridge_reports = planned.bridges;
+        }
+        // compensation="control": each loop as the controller cuts it from
+        // its part side (see `thermal/control.rs`).
+        if op.compensation == Compensation::Control {
+            let scrap = if op.reverse { -1. } else { 1. };
+            for l in &mut loops {
+                let (strokes, joins) = control::beam_path(
+                    &l.strokes,
+                    scrap,
+                    kerf / 2.,
+                    offset,
+                    guard,
+                    op.tolerance_mm,
+                )
+                .map_err(|e| {
+                    format!(
+                        "thermal cut {}: part {} {}: {e}",
+                        op.id,
+                        l.part,
+                        l.hole.map_or("outline".into(), |h| format!("hole {h}"))
+                    )
+                })?;
+                l.length = strokes.iter().map(crate::profiles::stroke_length).sum();
+                l.strokes = strokes;
+                l.joins = joins;
+            }
         }
         let mut common_diagnostics = std::mem::take(&mut common.diagnostics);
         // The parts cut as one group with `part`: joined by bridges, or by
@@ -856,9 +897,9 @@ impl ThermalCutPlan {
                     op.id
                 ));
             }
-            if op.compensation == Compensation::Wear {
+            if op.compensation != Compensation::Computer {
                 return Err(format!(
-                    "thermal cut {}: corner_loops is not planned together with wear compensation (a controller's cutter compensation is not proven along a path that crosses itself); use compensation in the program",
+                    "thermal cut {}: corner_loops is not planned together with wear compensation or control compensation (a controller's cutter compensation is not proven along a path that crosses itself); use compensation=\"computer\"",
                     op.id
                 ));
             }
@@ -1218,6 +1259,19 @@ impl ThermalCutPlan {
                 let n = rot_left(t);
                 [side * n[0], side * n[1]]
             };
+            // compensation="control": the pierce and the lead-out's end are
+            // where the written straight leads start and end, half a kerf to
+            // the part side of the planned ones (the controller is off
+            // there), so that the written leads run along the planned ones
+            // and tangent into the cut. Elsewhere: the point itself.
+            let control = op.compensation == Compensation::Control;
+            let beside = |p: [f64; 2], d: [f64; 2]| {
+                if control {
+                    add(p, scrap(d), -kerf / 2.)
+                } else {
+                    p
+                }
+            };
             // Where the loop starts: its own start, unless the leads (or the
             // pierce) there are not clear of the parts. Then the middle of
             // its longest straight stroke whose leads are: a loop starting at a
@@ -1229,7 +1283,7 @@ impl ThermalCutPlan {
                 let n = scrap(t);
                 let center = add(start, n, lin.radius_mm);
                 let a = add(center, t, -lin.radius_mm);
-                let pierce = add(a, n, lin.length_mm);
+                let pierce = beside(add(a, n, lin.length_mm), [-n[0], -n[1]]);
                 let low = |p: [f64; 2]| at_z(p, z_check);
                 if crater {
                     probe(
@@ -1270,7 +1324,7 @@ impl ThermalCutPlan {
                 if lout.length_mm > 0. {
                     probe(
                         &kerf_probe,
-                        line(low(b), low(add(b, ne, lout.length_mm))),
+                        line(low(b), low(beside(add(b, ne, lout.length_mm), ne))),
                         "lead",
                     )?;
                 }
@@ -1315,7 +1369,10 @@ impl ThermalCutPlan {
                     let (start, t) = (r[0].a, r[0].tangent(false));
                     let normal = scrap(t);
                     let center = add(start, normal, lin.radius_mm);
-                    add(add(center, t, -lin.radius_mm), normal, lin.length_mm)
+                    beside(
+                        add(add(center, t, -lin.radius_mm), normal, lin.length_mm),
+                        [-normal[0], -normal[1]],
+                    )
                 };
                 let mut reachable: Vec<(f64, Vec<Stroke>)> = (0..n)
                     .map(Start::End)
@@ -1555,7 +1612,7 @@ impl ThermalCutPlan {
             let geometry = |l: Lead| {
                 let center = add(start, n, l.radius_mm);
                 let a = add(center, t, -l.radius_mm);
-                (center, a, add(a, n, l.length_mm))
+                (center, a, beside(add(a, n, l.length_mm), [-n[0], -n[1]]))
             };
             let crater = |p: [f64; 2]| line(at_z(p, top + 1.), at_z(p, z_check));
             let (mut center, mut a, mut pierce) = geometry(lin);
@@ -1714,12 +1771,41 @@ impl ThermalCutPlan {
                     );
                 }
             }
-            let wear = op.compensation == Compensation::Wear;
+            // Wear or control: the controller's offset goes to the scrap
+            // side, the left of travel unless reversed (the part is on the
+            // right).
+            let wear = op.compensation != Compensation::Computer;
             let comp_side = if op.reverse {
-                CompensationSide::Left
-            } else {
                 CompensationSide::Right
+            } else {
+                CompensationSide::Left
             };
+            let amount = control.then_some(kerf / 2.);
+            if control && lin.radius_mm <= guard {
+                return Err(format!(
+                    "thermal cut {}: part {} {}: the lead-in has no arc here (a hole too small for one): compensation=\"control\" needs the straight lead to run tangent into the cut; use compensation=\"computer\" or a larger hole",
+                    op.id,
+                    lp.part,
+                    lp.hole.map_or("outline".into(), |h| format!("hole {h}"))
+                ));
+            }
+            // The controller's corners: both joins clear of every part.
+            for j in &lp.joins {
+                for piece in &j.extensions {
+                    probe(&kerf_probe, piece.curve(z_check), "corner join").map_err(|e| {
+                        format!(
+                            "the controller joins the edges at the corner near ({:.3}, {:.3}) at their intersection, {:.3} mm from the written corner (r / sin(theta/2)), and that is not clear of the parts: {e}; round the corner, give it room or use compensation=\"computer\"",
+                            j.tip[0], j.tip[1], j.reach_mm
+                        )
+                    })?;
+                }
+                probe(&kerf_probe, j.arc_join.curve(z_check), "corner arc join").map_err(|e| {
+                    format!(
+                        "a controller joining the corner near ({:.3}, {:.3}) with an arc is not clear of the parts: {e}",
+                        j.tip[0], j.tip[1]
+                    )
+                })?;
+            }
             // Lead-in: straight, then the tangent arc onto the loop.
             let mut cuts: Vec<(Curve, MoveKind)> = vec![];
             // Per move of `cuts` (absent: none): part of a corner loop, and
@@ -1839,7 +1925,7 @@ impl ThermalCutPlan {
             let ne = scrap(te);
             let c_out = add(e, ne, lout.radius_mm);
             let b = add(c_out, te, lout.radius_mm);
-            let q = add(b, ne, lout.length_mm);
+            let q = beside(add(b, ne, lout.length_mm), ne);
             if lout.radius_mm > 0. {
                 cuts.push((
                     Curve::Arc {
@@ -2040,6 +2126,7 @@ impl ThermalCutPlan {
                     steps.push_back(Step::Event(Event::CutterCompensation {
                         side: comp_side,
                         plane: crate::motion::Plane::Xy,
+                        amount_mm: amount,
                     }));
                 }
                 // Height control: on over the loop's cut, off over the
@@ -2057,6 +2144,7 @@ impl ThermalCutPlan {
                     steps.push_back(Step::Event(Event::CutterCompensation {
                         side: CompensationSide::Off,
                         plane: crate::motion::Plane::Xy,
+                        amount_mm: None,
                     }));
                 }
                 if kind == MoveKind::Cut {

@@ -2706,6 +2706,11 @@ impl<'a> TurnSession<'a> {
                         "{id}: inside finishing needs a boring tool (side inner)"
                     ));
                 }
+                if *compensation == crate::contour::Compensation::Control {
+                    return Err(format!(
+                        "{id}: compensation=\"control\" is planned for thermal cutting only (ThermalCut): use \"computer\" or \"wear\""
+                    ));
+                }
                 let path = bore.bore_path(rn + allowance_mm)?;
                 let first = path[0].start();
                 approach(&mut *planner, &mut report, [z_start, first[1]])?;
@@ -2716,6 +2721,7 @@ impl<'a> TurnSession<'a> {
                     planner.events.push(Event::CutterCompensation {
                         side: CompensationSide::Left,
                         plane: crate::motion::Plane::Xz,
+                        amount_mm: None,
                     });
                 }
                 planner.emit(&geom, &id, first, MoveKind::Plunge, feed, &mut report)?;
@@ -2773,6 +2779,7 @@ impl<'a> TurnSession<'a> {
                     planner.events.push(Event::CutterCompensation {
                         side: CompensationSide::Off,
                         plane: crate::motion::Plane::Xz,
+                        amount_mm: None,
                     });
                 }
                 let back = (low - job.clearance_mm).max(0.);
@@ -3025,6 +3032,11 @@ impl<'a> TurnSession<'a> {
                 compensation,
                 ..
             } => {
+                if *compensation == crate::contour::Compensation::Control {
+                    return Err(format!(
+                        "{id}: compensation=\"control\" is planned for thermal cutting only (ThermalCut): use \"computer\" or \"wear\""
+                    ));
+                }
                 let feed = feed_of(*feed_mm_rev)?;
                 let path = job.part.offset(rn + allowance_mm)?;
                 let first = path[0].start();
@@ -3037,6 +3049,7 @@ impl<'a> TurnSession<'a> {
                     planner.events.push(Event::CutterCompensation {
                         side: CompensationSide::Right,
                         plane: crate::motion::Plane::Xz,
+                        amount_mm: None,
                     });
                 }
                 planner.emit(&geom, &id, first, MoveKind::Plunge, feed, &mut report)?;
@@ -3078,6 +3091,7 @@ impl<'a> TurnSession<'a> {
                     planner.events.push(Event::CutterCompensation {
                         side: CompensationSide::Off,
                         plane: crate::motion::Plane::Xz,
+                        amount_mm: None,
                     });
                 }
                 planner.emit(
@@ -5082,6 +5096,7 @@ test_tool("groove_in".into(), Insert::Groove { width_mm: 3.,
             Event::CutterCompensation {
                 side: CompensationSide::Left,
                 plane: crate::motion::Plane::Xz,
+                amount_mm: None,
             }
         )));
     }

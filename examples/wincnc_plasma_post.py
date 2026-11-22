@@ -52,6 +52,20 @@ Premises (declared, not checked on the machine):
   delay. With material feed declared, F{THF} selects it at the edge start.
 - WinCNC arcs are XY only (no plane words); its velocity smoothing (G9)
   must keep the path within the machine tolerance.
+- control_kerf: how the control applies the kerf of a
+  ThermalCut(compensation="control") program, which carries the part side
+  of the kerf path. "g41": the program says it, `G41 O<kerf/2>` on a block
+  of its own before the straight lead-in and `G40` on its own before the
+  straight lead-out (Users Guide, Controller 3.1, revision 3.1.04,
+  pp. 138-139; ShopSabre's own plasma post writes it so). "material": the
+  owner declares that the control applies half the kerf of the material
+  setup chosen at it (material_kerf_mm) to the left of travel with no word
+  in the program, from the first move after M61 to the last before M62.
+  None (default): compensation="control" is refused. The cutcomp settings
+  of WINCNC.INI (Users Guide p. 72: T0, no entry move inserted, the
+  default; a positive D) are premises; cutcomp_arc_radius_mm and
+  cutcomp_arc_angle_deg (R and C, defaults 200 in and 0.5 degrees) and
+  cutcomp_full_circle_mm (F, Versions 3.1.07b) are replayed by the decoder.
 - Arcs: post with lowering=LoweringOptions(native_arcs=True). At most half
   a turn per arc (as WinCNC's Fusion post). WinCNC takes arcs whose start
   and end radius differ by up to its arc_err setting (WINCNC.INI; Users
@@ -82,6 +96,8 @@ def _torch_comment(machine):
 
 
 def _dialect(end, arc_radius_tolerance_mm=0):
+    # G41/G42 O#: "O# is the compensation amount on machines without a tool
+    # changer" (Users Guide, Controller 3.1, revision 3.1.04, pp. 138-139).
     commands = (
         GCodeDialect()
         .with_commands(
@@ -128,6 +144,7 @@ def _dialect(end, arc_radius_tolerance_mm=0):
         arc_word_mismatch_mm=arc_radius_tolerance_mm,
         fixed_modes=('center_incremental', 'feed_per_minute', 'rpm_mode', 'cycles_off', 'exact_stop'),
         beam_s_max=1,
+        compensation_amount_word='O',
     )
 
 
@@ -152,6 +169,20 @@ class WinCNCPlasmaMachine(Machine):
     # specifications", default .01 unit of measure). 0: exactly consistent
     # words only, and arcs that have none are posted as checked lines.
     arc_radius_tolerance_mm: float = 0
+    # How the control applies the kerf of a compensation="control" program:
+    # "g41" (G41 O<kerf/2> in the program), "material" (the owner declares
+    # the control applies its material setup's kerf, material_kerf_mm, to
+    # the left of travel with no word), or None (refused).
+    control_kerf: str | None = None
+    material_kerf_mm: float | None = None
+    # WINCNC.INI cutcomp R# and C# (Users Guide p. 72, defaults 200 in and
+    # 0.5 degrees): an arc of a larger radius turning less is cut as a line
+    # under compensation. F# (Versions 3.1.07b; no documented default): an
+    # arc whose ends are closer is taken as a full circle. None: a
+    # compensated arc is refused until it is declared (0 when not set).
+    cutcomp_arc_radius_mm: float = 200 * 25.4
+    cutcomp_arc_angle_deg: float = 0.5
+    cutcomp_full_circle_mm: float | None = None
     torch_on_code: str = 'M61'
     torch_off_code: str = 'M62'
     end_code: str = 'M66'
@@ -181,6 +212,35 @@ class WinCNCPlasmaMachine(Machine):
             raise ValueError('WinCNC plasma: one torch, XY arcs of at most half a turn')
         if self.dialect != _dialect(self.end_code, self.arc_radius_tolerance_mm) or self.flood or self.mist:
             raise ValueError('dialect differs from the WinCNC plasma subset')
+        if self.control_kerf not in (None, 'g41', 'material'):
+            raise ValueError(
+                'control_kerf must be "g41" (G41 O<kerf/2> in the program), "material" (the control applies '
+                'its material setup\'s kerf with no word) or None'
+            )
+        if (self.control_kerf == 'material') != (self.material_kerf_mm is not None) or (
+            self.material_kerf_mm is not None
+            and not (math.isfinite(self.material_kerf_mm) and 0 < self.material_kerf_mm <= 100)
+        ):
+            raise ValueError('control_kerf="material" needs the material setup\'s kerf: a positive material_kerf_mm')
+        if not (
+            math.isfinite(self.cutcomp_arc_radius_mm)
+            and self.cutcomp_arc_radius_mm > 0
+            and math.isfinite(self.cutcomp_arc_angle_deg)
+            and 0 <= self.cutcomp_arc_angle_deg < 180
+            and (
+                self.cutcomp_full_circle_mm is None
+                or math.isfinite(self.cutcomp_full_circle_mm)
+                and self.cutcomp_full_circle_mm >= 0
+            )
+        ):
+            raise ValueError('cutcomp settings: a positive R, an angle C of 0..180 degrees and F of zero or more')
+
+    @property
+    def compensation_unwritten(self):
+        """The control applies the kerf from its material setup, with no
+        word in the program (control_kerf="material", the owner's
+        declaration)."""
+        return self.control_kerf == 'material'
 
 
 def define_machine(
@@ -196,6 +256,11 @@ def define_machine(
     arc_radius_tolerance_mm=0,
     material_feed_mm_min=None,
     edge_start_cut_z_mm=None,
+    control_kerf=None,
+    material_kerf_mm=None,
+    cutcomp_arc_radius_mm=200 * 25.4,
+    cutcomp_arc_angle_deg=0.5,
+    cutcomp_full_circle_mm=None,
     **settings,
 ):
     """``torch``: the torch's ToolSetting. The macro codes are those of your
@@ -211,7 +276,15 @@ def define_machine(
     ``edge_start_cut_z_mm``: opt in to native edge starts at the declared Z
     in plan coordinates. The selected material's THR must represent that
     height and sheet Z must already be established. Requires
-    program_height_control=True; see docs/wincnc-plasma-post.md."""
+    program_height_control=True; see docs/wincnc-plasma-post.md.
+    ``control_kerf``: how the control applies the kerf of a
+    ThermalCut(compensation="control") program: "g41" (``G41 O<kerf/2>``
+    written, WinCNC Users Guide 3.1.04 pp. 138-139) or "material" (the
+    control applies its material setup's kerf, ``material_kerf_mm``, to the
+    left of travel with no word: the owner's declaration). The cutcomp
+    settings of WINCNC.INI: ``cutcomp_arc_radius_mm`` and
+    ``cutcomp_arc_angle_deg`` (R, C) and ``cutcomp_full_circle_mm`` (F, 0
+    when not set; needed for compensated arcs)."""
     return WinCNCPlasmaMachine(
         name,
         (torch,),
@@ -227,6 +300,11 @@ def define_machine(
         arc_radius_tolerance_mm=arc_radius_tolerance_mm,
         material_feed_mm_min=material_feed_mm_min,
         edge_start_cut_z_mm=edge_start_cut_z_mm,
+        control_kerf=control_kerf,
+        material_kerf_mm=material_kerf_mm,
+        cutcomp_arc_radius_mm=cutcomp_arc_radius_mm,
+        cutcomp_arc_angle_deg=cutcomp_arc_angle_deg,
+        cutcomp_full_circle_mm=cutcomp_full_circle_mm,
         torch_on_code=torch_on_code,
         torch_off_code=torch_off_code,
         end_code=end_code,
@@ -281,6 +359,8 @@ class WinCNCPlasmaPost(GCodePost):
     def on_beam(self, event):
         m = self.machine
         self._edge_delay = False
+        if event.power_percent == 0:
+            self._stretch_open = False
         if event.power_percent != 0 and m.program_height_control and getattr(self, '_thc', None) is None:
             # Height control is off over a lead-in: before the first cut
             # that is the program's to say, whatever state it starts in.
@@ -312,6 +392,30 @@ class WinCNCPlasmaPost(GCodePost):
             self.emit('F{THF}')
         self._spindle_on = True
         self._edge_delay = True
+
+    def on_cutter_compensation(self, event):
+        m = self.machine
+        if event.side != 'off' and event.amount_mm is not None:
+            if m.control_kerf is None:
+                raise ValueError(
+                    'WinCNC plasma: declare how the control applies the kerf of a compensation="control" '
+                    'program: control_kerf="g41" (G41 O<kerf/2> written, Users Guide 3.1.04 pp. 138-139) or '
+                    '"material" (the control applies its material setup\'s kerf with no word)'
+                )
+            if m.control_kerf == 'material':
+                if event.side != 'left':
+                    raise ValueError(
+                        'WinCNC plasma: this control applies its kerf to the left of travel: plan with '
+                        'reverse=False (outlines clockwise, holes counter-clockwise)'
+                    )
+                if abs(2 * event.amount_mm - m.material_kerf_mm) > m.tolerance_mm:
+                    raise ValueError(
+                        f'WinCNC plasma: the plan\'s kerf ({2 * event.amount_mm:g} mm) differs from the material '
+                        f'setup\'s ({m.material_kerf_mm:g} mm, material_kerf_mm): plan with the torch\'s kerf as '
+                        'the control applies it'
+                    )
+            self._stretch_open = True
+        return super().on_cutter_compensation(event)
 
     def on_beam_mark(self, event):
         raise ValueError(
@@ -365,6 +469,17 @@ class WinCNCPlasmaPost(GCodePost):
                 'cut at that feed (no small-hole or corner feed), or leave material_feed_mm_min undeclared so the '
                 'program states its feeds'
             )
+        if (
+            m.control_kerf == 'material'
+            and getattr(self, '_spindle_on', False)
+            and motion.kind != 'rapid'
+            and not getattr(self, '_stretch_open', False)
+        ):
+            raise ValueError(
+                'WinCNC plasma: this control offsets every cut by its material kerf (control_kerf="material"): '
+                'only ThermalCut(compensation="control") loops can be cut on it, without crop, skeleton, chain '
+                'or micro_joints'
+            )
         super().on_motion(motion)
         self._edge_position = tuple(c.end)
         d = m.dialect
@@ -396,6 +511,34 @@ class WinCNCPlasmaDecoder(NativeGCodeDecoder):
         self._edge_stage = None
         self._edge_delay = False
         self._thc = None
+
+    def unwritten_compensation(self):
+        m = self.machine
+        return ('left', m.material_kerf_mm / 2) if m.control_kerf == 'material' else None
+
+    def replay_compensation(self, side, amount_mm, curves):
+        from camlib.motion import Arc, Line
+
+        m = self.machine
+        written = []
+        for c in curves:
+            if isinstance(c, Arc):
+                if m.cutcomp_full_circle_mm is None:
+                    raise ValueError(
+                        'WinCNC plasma: declare cutcomp_full_circle_mm (WINCNC.INI cutcomp F#, 0 when it is not '
+                        'set): under compensation an arc whose ends are closer is taken as a full circle'
+                    )
+                if math.dist(c.start[:2], c.end[:2]) < m.cutcomp_full_circle_mm:
+                    raise ValueError(
+                        f'WinCNC plasma: the compensated arc from {c.start[:2]} to {c.end[:2]} ends closer to its '
+                        'start than cutcomp F#: the control would cut a full circle'
+                    )
+                radius = math.dist(c.start[:2], c.center[:2])
+                if radius > m.cutcomp_arc_radius_mm and abs(math.degrees(c.sweep_rad)) < m.cutcomp_arc_angle_deg:
+                    # cutcomp R#/C#: cut as a line (Users Guide p. 72).
+                    c = Line(c.start, c.end)
+            written.append(c)
+        return super().replay_compensation(side, amount_mm, written)
 
     def validate_initialized(self):
         # The frame reset (G92) is the work offset's own block: until that
@@ -452,6 +595,10 @@ class WinCNCPlasmaDecoder(NativeGCodeDecoder):
             self._edge_delay = False
             return [Dwell(seconds)]
         self._edge_delay = False
+        if text.split(' ')[0] in ('G41', 'G42') and m.control_kerf != 'g41':
+            raise ValueError(
+                'WinCNC plasma: this machine declares no G41/G42 in its programs (control_kerf="g41" writes them)'
+            )
         if text == 'G92' and m.local_coordinates == 'cancel':
             # No local coordinates: WinCNC's work coordinates, offset 1.
             self.ready.add('frame_reset')

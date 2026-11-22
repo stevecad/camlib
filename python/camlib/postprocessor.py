@@ -385,6 +385,14 @@ class GCodeDialect:
     # Lathes: G41/G42 carry no register word (the T word's offset holds the
     # nose radius and tip direction).
     compensation_register: bool = True
+    # The word of a whole compensation amount in G41/G42 blocks, for
+    # ThermalCut(compensation="control"): the program carries the part side
+    # and the controller offsets it by this amount (half the kerf), written
+    # in output units at the linear resolution, the G41/G42 on a block of
+    # its own. WinCNC: 'O' (Users Guide, Controller 3.1, revision 3.1.04,
+    # pp. 138-139: "G41 O# ... O# is the compensation amount on machines
+    # without a tool changer"). None: compensation="control" is refused.
+    compensation_amount_word: str | None = None
     # Dwell time word (seconds), its resolution and its maximum.
     dwell_word: str = 'P'
     dwell_resolution_s: float = 0.001
@@ -470,6 +478,15 @@ class GCodeDialect:
             not re.fullmatch('[A-Z]', self.tap_pitch_word) or self.tap_pitch_word in (*letters, 'G', 'M', 'N', 'R')
         ):
             raise ValueError('tap_pitch_word must be a free uppercase letter')
+        if self.compensation_amount_word is not None and (
+            not re.fullmatch('[A-Z]', self.compensation_amount_word)
+            or self.compensation_amount_word in (*letters, 'G', 'M', 'N', self.compensation_word)
+            or self.compensation_with_move
+        ):
+            raise ValueError(
+                'compensation_amount_word must be a free uppercase letter (not the register word), '
+                'and the amount is written with G41/G42 on a block of their own (compensation_with_move=False)'
+            )
         if (
             not re.fullmatch('[A-Z]', self.dwell_word)
             or self.dwell_word in (*letters, 'G', 'M', 'N')
@@ -856,6 +873,8 @@ class Machine:
             data['dialect'].pop('beam_mark')
         if not data['dialect']['arc_word_mismatch_mm']:
             data['dialect'].pop('arc_word_mismatch_mm')
+        if data['dialect']['compensation_amount_word'] is None:
+            data['dialect'].pop('compensation_amount_word')
         return data
 
     def schedule(self, program, *, adjust_feeds=True, cancel=None):
@@ -918,6 +937,24 @@ def _plain_value(value):
     if isinstance(value, (list, tuple)):
         return [_plain_value(v) for v in value]
     return value
+
+
+def _curve(data):
+    """A typed curve from its dict."""
+    c = dict(data)
+    kind = c.pop('kind')
+    for k in ('start', 'end', 'center'):
+        if k in c:
+            c[k] = tuple(c[k])
+    return {'line': Line, 'arc': Arc, 'helix': Helix}[kind](**c)
+
+
+@dataclass(frozen=True)
+class StretchMove:
+    """A move of a compensated stretch as read so far: the ``index``-th
+    written move, known once the stretch is read (``end_stretch``)."""
+
+    index: int
 
 
 def _typed(data):
@@ -1208,7 +1245,13 @@ class PostProcessor(_TransactionCopy):
         if (
             not self._lines
             and name != 'on_cycle'
-            and not (name == 'on_cutter_compensation' and self.machine.dialect.compensation_with_move)
+            and not (
+                name == 'on_cutter_compensation'
+                and (
+                    self.machine.dialect.compensation_with_move
+                    or getattr(self.machine, 'compensation_unwritten', False)
+                )
+            )
         ):
             raise ValueError(f'{name} emitted no blocks')
         return self._lines[:]
@@ -1546,8 +1589,40 @@ class GCodePost(PostProcessor):
         self.emit(self.machine.dialect.code('optional_stop' if event.optional else 'stop'))
 
     def on_cutter_compensation(self, event):
-        """G41/G42 with the active tool's D register (its wear), or G40."""
+        """G41/G42 with the active tool's D register (its wear), or G40.
+
+        With an amount (ThermalCut(compensation="control")): G41/G42 and the
+        dialect's compensation_amount_word with the amount in output units,
+        on a block of its own (WinCNC ``G41 O#``; ShopSabre's own plasma post
+        writes it so, then the straight lead-in). On a machine whose
+        controller applies the amount from its own setup
+        (``compensation_unwritten``), nothing is written for either change."""
         d = self.machine.dialect
+        unwritten = getattr(self.machine, 'compensation_unwritten', False)
+        if event.side != 'off' and getattr(event, 'amount_mm', None) is not None:
+            self._control_compensation = True
+            if unwritten:
+                return
+            if d.compensation_amount_word is None:
+                raise ValueError(
+                    'this controller declares no compensation amount word (GCodeDialect.compensation_amount_word, '
+                    'WinCNC: G41 O#): compensation="control", where the controller applies the whole kerf, cannot '
+                    'be written for it; plan with compensation="computer"'
+                )
+            code = d.code('radius_left' if event.side == 'left' else 'radius_right')
+            self.emit(code, *self.words((d.compensation_amount_word,), (event.amount_mm,)))
+            return
+        if event.side == 'off' and getattr(self, '_control_compensation', False):
+            self._control_compensation = False
+            if unwritten:
+                return
+            self.emit(d.code('radius_off'))
+            return
+        if unwritten:
+            raise ValueError(
+                "this machine's controller applies the kerf from its own setup: it takes no wear compensation "
+                'from the program'
+            )
         if event.side == 'off':
             if d.compensation_with_move:
                 self._pending_compensation = (d.code('radius_off'),)
@@ -2031,6 +2106,14 @@ class GCodeDecoder(_TransactionCopy):
         # The blocks of the last read() held as moving no axis (hold_axes).
         self.held = ()
         self._holding = False
+        # Controller compensation by a whole amount: the written moves of
+        # the stretch being read (begin_stretch .. end_stretch), the moves
+        # read since the beam last fired, and whether the beam must go off
+        # before the next move (unwritten compensation: the controller
+        # offsets every move it cuts).
+        self._stretch = None
+        self._since_beam = None
+        self._stop_due = False
 
         # Beam tools: the spindle words fire and stop their beam.
         def shape(t):
@@ -2074,7 +2157,124 @@ class GCodeDecoder(_TransactionCopy):
         block (empty when none was held)."""
         self._holding = True
 
+    def unwritten_compensation(self):
+        """(side, amount_mm) when this machine's controller applies a whole
+        compensation amount from its own setup with no word in the program
+        (a premise its owner declares), else None. It then offsets every
+        move cut between the beam firing and going off: the first is the
+        entry move, the last the cancel move."""
+        return None
+
+    def begin_stretch(self):
+        """The blocks read until ``end_stretch`` are one compensated
+        stretch: the controller offsets the written moves by a whole amount
+        (G41/G42 with ``compensation_amount_word``, or the machine's
+        ``unwritten_compensation``), joining each with the next, so a move
+        is known only once the move after it is read. Its moves read back as
+        placeholders (``StretchMove``) until then."""
+        if self._stretch is not None:
+            raise ValueError('a compensated stretch starts inside another one')
+        self._stretch = dict(state='before', side=None, amount=None, moves=[])
+
+    def end_stretch(self):
+        """The tool-center moves of the stretch just read, in order: the
+        written moves offset by the controller (``replay_compensation``)."""
+        stretch, self._stretch = self._stretch, None
+        if stretch is None or stretch['state'] != 'done':
+            raise ValueError('a compensated stretch must end with compensation off and its cancel move')
+        moves = stretch['moves']
+        path = self.replay_compensation(stretch['side'], stretch['amount'], [m.curve for m in moves])
+        if len(path) != len(moves):
+            raise ValueError('the replayed compensation has another number of moves than was written')
+        if self.unwritten_compensation() is not None:
+            self._stop_due = True
+        return [replace(m, curve=c) for m, c in zip(moves, path)]
+
+    def replay_compensation(self, side, amount_mm, curves):
+        """Where the controller runs the tool for the written ``curves`` (the
+        entry move, the compensated moves, the cancel move) compensated by
+        ``amount_mm`` to ``side``: each offset, joined with the next at their
+        intersection (camlib.controller_offset; subclass for a controller
+        that differs)."""
+        out = json.loads(
+            native.replay_controller_offset(
+                _json([c.to_dict() for c in curves]), side, amount_mm, self.machine.tolerance_mm
+            )
+        )
+        # Where the model does not decide the controller's path (rounded
+        # words a hair off tangent): added to each move's checked deviation.
+        self.compensation_residual_mm = out['residual_mm']
+        return [_curve(c) for c in out['path']]
+
+    def _in_stretch(self, result, lines, context):
+        """Placeholders for the moves of a compensated stretch; the
+        unwritten compensation changes where the controller makes them."""
+        stretch = self._stretch
+        unwritten = self.unwritten_compensation()
+        if stretch is not None and unwritten is not None and not lines and context is None:
+            # An event that wrote nothing: where this controller turns its
+            # own compensation on (right after the beam fires) or off (for
+            # the last move before it goes off).
+            side, amount = unwritten
+            if stretch['state'] == 'before':
+                if not self.rpm or self._since_beam != 0:
+                    raise ValueError(
+                        'this controller offsets every move it cuts by its own kerf: its compensation starts '
+                        'with the first move after the torch fires'
+                    )
+                result = [CutterCompensation(side, 'xy', amount)]
+                self.compensation = side
+            elif stretch['state'] == 'on':
+                result = [CutterCompensation('off', 'xy')]
+                self.compensation = 'off'
+        out = []
+        for e in result:
+            if isinstance(e, (Beam, BeamStart, BeamMark)):
+                if e.power_percent:
+                    self._since_beam = 0
+                else:
+                    self._since_beam = None
+                    self._stop_due = False
+            if isinstance(e, CutterCompensation) and (e.amount_mm is not None or (stretch and e.side == 'off')):
+                if stretch is None:
+                    raise ValueError(
+                        "controller compensation by a whole amount is read only as one stretch (the controller "
+                        'joins each move with the next)'
+                    )
+                if e.side != 'off' and stretch['state'] == 'before':
+                    stretch.update(state='on', side=e.side, amount=e.amount_mm)
+                elif e.side == 'off' and stretch['state'] == 'on':
+                    stretch['state'] = 'off'
+                else:
+                    raise ValueError('controller compensation must turn on, then off, once in its stretch')
+            if isinstance(e, Motion):
+                if self._stop_due:
+                    raise ValueError(
+                        'this controller offsets every move it cuts by its own kerf: the torch must go off '
+                        'after the cancel move'
+                    )
+                if self._since_beam is not None:
+                    self._since_beam += 1
+                if stretch is not None:
+                    if stretch['state'] not in ('on', 'off'):
+                        raise ValueError('a move in a compensated stretch outside its compensation')
+                    stretch['moves'].append(e)
+                    if stretch['state'] == 'off':
+                        stretch['state'] = 'done'
+                    e = StretchMove(len(stretch['moves']) - 1)
+                elif unwritten is not None and self.rpm and e.kind != 'rapid':
+                    raise ValueError(
+                        'this controller offsets every move it cuts by its own kerf (unwritten compensation): '
+                        'only planned compensated loops can be cut on it, not crop, skeleton, chain or '
+                        'micro-joint moves'
+                    )
+            out.append(e)
+        return out
+
     def read(self, lines, context=None):
+        return self._in_stretch(self._read(lines, context), lines, context)
+
+    def _read(self, lines, context=None):
         self.held = ()
         if context is not None and 'probe' in context:
             if self.cycle_queue or self.cycle_active or self.tap_return is not None:
@@ -2233,6 +2433,8 @@ class GCodeDecoder(_TransactionCopy):
                 if d.compensation_with_move:
                     raise ValueError('this controller turns cutter compensation on/off in the block of an XY move')
                 used.add(d.compensation_word)
+                if d.compensation_amount_word is not None:
+                    used.add(d.compensation_amount_word)
                 output.extend(self._compensation(effect, values))
             elif effect == 'rpm_mode':
                 self.css = None
@@ -2464,6 +2666,13 @@ class GCodeDecoder(_TransactionCopy):
             return [CutterCompensation('off', self._compensation_plane())]
         if self.active is None or self.tool_pending or self.compensation != 'off':
             raise ValueError('cutter compensation needs an active tool and must be off before it is turned on')
+        amount_word = d.compensation_amount_word
+        if amount_word is not None and amount_word in values:
+            amount = values[amount_word] * self.units if self.units else None
+            if amount is None or not 0 < amount <= 1e3:
+                raise ValueError('a compensation amount must be positive, in declared units')
+            self.compensation = 'left' if effect == 'radius_left' else 'right'
+            return [CutterCompensation(self.compensation, self._compensation_plane(), amount)]
         if d.compensation_register:
             if not d.compensation_word_free():
                 raise ValueError('compensation word is not free in this dialect')
@@ -3260,6 +3469,167 @@ def _held_blocks_json(held):
     return _json([[bool(h) for h in block] for block in held]) if any(any(b) for b in held) else None
 
 
+def _tangent(curve, end):
+    if isinstance(curve, Line):
+        dx, dy = curve.end[0] - curve.start[0], curve.end[1] - curve.start[1]
+        n = math.hypot(dx, dy)
+        if n == 0:
+            raise ValueError('a compensated move of zero length')
+        return dx / n, dy / n
+    p = curve.end if end else curve.start
+    rx, ry = p[0] - curve.center[0], p[1] - curve.center[1]
+    n = math.hypot(rx, ry)
+    sign = 1 if curve.sweep_rad > 0 else -1
+    return -ry / n * sign, rx / n * sign
+
+
+def _carrier(curve, k):
+    """The curve's line or circle moved by ``k`` along its left normal."""
+    if isinstance(curve, Line):
+        tx, ty = _tangent(curve, False)
+        return ('line', (curve.start[0] - k * ty, curve.start[1] + k * tx), (tx, ty))
+    rho = math.hypot(curve.start[0] - curve.center[0], curve.start[1] - curve.center[1])
+    radius = rho - (1 if curve.sweep_rad > 0 else -1) * k
+    if radius <= 1e-6:
+        raise ValueError(
+            f'a compensated arc of radius {rho:.4f} mm cannot be written {abs(k):.4f} mm to its part side '
+            '(it is tighter than half the kerf)'
+        )
+    return ('circle', (curve.center[0], curve.center[1]), radius)
+
+
+def _meet(a, b):
+    if a[0] == 'circle' and b[0] == 'line':
+        a, b = b, a
+    if a[0] == 'line' and b[0] == 'line':
+        (p, d), (q, e) = a[1:], b[1:]
+        den = d[0] * e[1] - d[1] * e[0]
+        if abs(den) < 1e-14:
+            return []
+        t = ((q[0] - p[0]) * e[1] - (q[1] - p[1]) * e[0]) / den
+        return [(p[0] + t * d[0], p[1] + t * d[1])]
+    if a[0] == 'line':
+        (p, d), (c, r) = a[1:], b[1:]
+        t = (c[0] - p[0]) * d[0] + (c[1] - p[1]) * d[1]
+        foot = (p[0] + t * d[0], p[1] + t * d[1])
+        h = math.hypot(foot[0] - c[0], foot[1] - c[1])
+        if h > r:
+            return []
+        w = math.sqrt(max(r * r - h * h, 0))
+        return [(foot[0] - w * d[0], foot[1] - w * d[1]), (foot[0] + w * d[0], foot[1] + w * d[1])]
+    (c1, r1), (c2, r2) = a[1:], b[1:]
+    dd = math.hypot(c2[0] - c1[0], c2[1] - c1[1])
+    if dd < 1e-12 or dd > r1 + r2 or dd < abs(r1 - r2):
+        return []
+    x = (r1 * r1 - r2 * r2 + dd * dd) / (2 * dd)
+    h = math.sqrt(max(r1 * r1 - x * x, 0))
+    ux, uy = (c2[0] - c1[0]) / dd, (c2[1] - c1[1]) / dd
+    mx, my = c1[0] + x * ux, c1[1] + x * uy
+    return [(mx - h * uy, my + h * ux), (mx + h * uy, my - h * ux)]
+
+
+def _wrap(a):
+    a = math.fmod(a, math.tau)
+    if a <= -math.pi:
+        a += math.tau
+    elif a > math.pi:
+        a -= math.tau
+    return a
+
+
+def written_path(curves, side, amount_mm):
+    """What a post writes for one stretch of ``CutterCompensation(side,
+    amount_mm=...)``: the tool-center ``curves`` (the entry move, the
+    compensated moves, the cancel move) offset back by ``amount_mm`` to the
+    other side, so that a controller offsetting the written path by the
+    amount to ``side`` runs them.
+
+    Each compensated move is moved to its part side; where two meet at a
+    corner they are joined at their intersection (extended outside the
+    turn, trimmed inside it), and where they meet tangent at their common
+    point. The entry move starts, and the cancel move ends, where the tool
+    center is (compensation is off there). Raises where the part side
+    cannot be formed. The decoders check the result independently: they
+    replay the controller's offset of what was written."""
+    if side not in ('left', 'right') or not (math.isfinite(amount_mm) and amount_mm > 0):
+        raise ValueError('controller compensation needs a side and a positive amount')
+    if len(curves) < 3 or not isinstance(curves[0], Line) or not isinstance(curves[-1], Line):
+        raise ValueError('controller compensation turns on and off over straight moves around the compensated ones')
+    k = -(1 if side == 'left' else -1) * amount_mm
+    z = curves[0].start[2]
+    moves = curves[1:-1]
+    if any(isinstance(c, Helix) or c.start[2] != z or c.end[2] != z for c in curves):
+        raise ValueError('controller compensation offsets XY moves at one height only')
+    carriers = [_carrier(c, k) for c in moves]
+
+    def beside(curve, end):
+        tx, ty = _tangent(curve, end)
+        p = curve.end if end else curve.start
+        return (p[0] - k * ty, p[1] + k * tx), (-ty * math.copysign(1, k), tx * math.copysign(1, k))
+
+    joints = [beside(moves[0], False)[0]]
+    for i in range(len(moves) - 1):
+        a, b = moves[i], moves[i + 1]
+        (pa, na), (pb, nb) = beside(a, True), beside(b, False)
+        ta, tb = _tangent(a, True), _tangent(b, False)
+        turn = math.atan2(ta[0] * tb[1] - ta[1] * tb[0], ta[0] * tb[0] + ta[1] * tb[1])
+        if abs(turn) <= 1e-7:
+            joints.append(((pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2))
+            continue
+        if abs(turn) > math.pi - 1e-6:
+            raise ValueError(f'the compensated path reverses at {a.end[:2]}: its part side cannot be written')
+        mx, my = na[0] + nb[0], na[1] + nb[1]
+        m = math.hypot(mx, my)
+        reach = abs(k) / math.cos(turn / 2)
+        expected = (a.end[0] + reach * mx / m, a.end[1] + reach * my / m) if m > 0 else pa
+        window = 4 * abs(k) * abs(math.tan(turn / 2)) + 1e-6
+        found = [p for p in _meet(carriers[i], carriers[i + 1]) if math.dist(p, expected) <= window]
+        if not found:
+            raise ValueError(
+                f'the part side of the compensated path does not meet at ({a.end[0]:.4f}, {a.end[1]:.4f}): '
+                'it cannot be written for the controller to offset'
+            )
+        joints.append(min(found, key=lambda p: math.dist(p, expected)))
+    joints.append(beside(moves[-1], True)[0])
+    out = [Line(curves[0].start, (*joints[0], z))]
+    for i, c in enumerate(moves):
+        a, b = joints[i], joints[i + 1]
+        if isinstance(c, Line):
+            if (b[0] - a[0]) * (c.end[0] - c.start[0]) + (b[1] - a[1]) * (c.end[1] - c.start[1]) <= 0:
+                raise ValueError(
+                    f'the part side of the compensated move from {c.start[:2]} to {c.end[:2]} is trimmed away '
+                    'by its corners: it cannot be written for the controller to offset'
+                )
+            out.append(Line((*a, z), (*b, z)))
+        else:
+            cx, cy = c.center[0], c.center[1]
+
+            def angle(p):
+                return math.atan2(p[1] - cy, p[0] - cx)
+
+            sweep = c.sweep_rad + _wrap(angle(b) - angle(c.end)) - _wrap(angle(a) - angle(c.start))
+            if sweep * c.sweep_rad <= 0 or abs(sweep) >= math.tau:
+                raise ValueError(
+                    f'the part side of the compensated arc from {c.start[:2]} to {c.end[:2]} is trimmed away '
+                    'by its corners: it cannot be written for the controller to offset'
+                )
+            out.append(Arc((*a, z), (*b, z), (cx, cy, z), sweep, c.plane))
+    out.append(Line((*joints[-1], z), curves[-1].end))
+    return out
+
+
+def _control_start(event):
+    """Whether a source event turns on controller compensation by a whole
+    amount (a compensated stretch starts)."""
+    data = _event_data(event)
+    return (
+        isinstance(data, dict)
+        and data.get('kind') == 'cutter_compensation'
+        and data.get('amount_mm') is not None
+        and data.get('side') != 'off'
+    )
+
+
 class PostEngine:
     """Owns one run, bounded atomic batches and separately owned post/decoder state."""
 
@@ -3340,6 +3710,10 @@ class PostEngine:
         for key in ('max_normal_accel_mm_s2', 'max_axis_feed_mm_min', 'gauge_travel_mm'):
             if getattr(m, key) is not None:
                 settings[key] = getattr(m, key)
+        if getattr(m, 'compensation_unwritten', False):
+            # Declared by the machine's owner: its controller applies a
+            # whole compensation amount from its own setup, with no word.
+            settings['compensation_unwritten'] = True
         if m.schedule_post_feeds:
             from .dynamics import _settings
 
@@ -3774,6 +4148,120 @@ class PostEngine:
         del self._sources[: sum(r[1] == 1.0 for r in ranges)]
         return out
 
+    def _post_stretch(self, first, iterator, cancel):
+        """Post one stretch of controller compensation by a whole amount:
+        from ``first`` (compensation on) to the move after it turns off.
+
+        The controller joins each written move with the next, so the stretch
+        is written and read whole: the post writes each move's part side
+        (``written_path``), the decoder reads the stretch and replays the
+        controller's offset (``GCodeDecoder.end_stretch``), and each
+        replayed move is checked against its planned one, in checked batches
+        of at most 64 events. A stretch may be of any length."""
+        events = [first]
+        off = False
+        while True:
+            self._session.check_cancel(cancel)
+            data = _event_data(events[-1])
+            if off and data['kind'] == 'motion':
+                break
+            if data['kind'] == 'cutter_compensation' and data['side'] == 'off':
+                off = True
+            try:
+                events.append(next(iterator))
+            except StopIteration:
+                raise ValueError('the events end inside a stretch of controller compensation') from None
+        if self.machine.schedule_post_feeds:
+            raise ValueError('feed scheduling is not posted together with controller compensation')
+        source = [_event_data(e) for e in events]
+        typed = [_typed(d) for d in source]
+        if any(isinstance(t, (Cycle, Probe)) or isinstance(t, Motion) and t.kind in ('rapid', 'shift') for t in typed):
+            raise ValueError('a stretch of controller compensation holds cutting moves only')
+        motions = [t for t in typed if isinstance(t, Motion)]
+        for t in motions:
+            if isinstance(t.curve, Arc) and (
+                self.lowering is not None
+                and not getattr(self.lowering, 'native_arcs', False)
+                or t.curve.plane not in self.machine.planes
+                or abs(t.curve.sweep_rad) > self.machine.max_sweep_rad
+                or not self.machine.arcs
+            ):
+                raise ValueError(
+                    'an arc under controller compensation must be written as one G2/G3 block (the controller '
+                    'offsets the written arc): post with lowering=LoweringOptions(native_arcs=True) on a machine '
+                    'that takes it'
+                )
+        written = iter(written_path([t.curve for t in motions], typed[0].side, typed[0].amount_mm))
+        post = deepcopy(self.post, _machine_memo(self.machine))
+        decoder = self._clone_decoder()
+        decoder.begin_stretch()
+        blocks, read, held = [], [], []
+        for data, original in zip(source, typed):
+            self._session.check_cancel(cancel)
+            kind = data['kind']
+            event = replace(original, curve=next(written)) if kind == 'motion' else original
+            post.position_mm = decoder.position
+            post.source_event = original
+            post.source_fraction = (0.0, 1.0) if kind == 'motion' else None
+            name = 'on_' + ('motion' if kind == 'motion' else kind)
+            placed = post._placed
+            block = post._call(name, event)
+            if post.machine is not self.machine:
+                raise ValueError('hook changed the machine definition')
+            decoded = decoder.read(block, _context(data))
+            if decoder.ended or decoder.tool_pending:
+                raise ValueError('event ended program or left a partial tool transition')
+            post._hold_placed(name, placed, decoder.held)
+            blocks.append(block)
+            read.append(decoded)
+            held.append(list(decoder.held))
+        path = decoder.end_stretch()
+        actual = [[path[e.index] if isinstance(e, StretchMove) else e for e in r] for r in read]
+        for start in range(0, len(source), 64):
+            self._session.check_cancel(cancel)
+            end = min(start + 64, len(source))
+            part = [[_typed(e.to_dict()) for e in a] for a in actual[start:end]]
+            if self.lowering is None:
+                raw = self._session.consume(
+                    _json(source[start:end]),
+                    _json([[e.to_dict() for e in a] for a in part]),
+                    _json(blocks[start:end]),
+                    cancel,
+                    _held_blocks_json(held[start:end]),
+                )
+            else:
+                arcs = [d['kind'] == 'motion' and d['motion']['curve']['kind'] == 'arc' for d in source[start:end]]
+                self._session.start_many(_json(source[start:end]), arcs, cancel)
+                self._sources.extend(typed[start:end])
+                self.arc_output['native'] += sum(arcs)
+                preview = json.loads(self._session.preview(end - start, cancel))
+                if len(preview) != end - start or any(p['source_fraction_interval'] != [0.0, 1.0] for p in preview):
+                    raise ValueError('a stretch of controller compensation must be posted one block per event')
+                # Lowered runs number motions as they are decoded.
+                for p, a in zip(preview, part):
+                    if p['event']['kind'] == 'motion':
+                        a[:] = [replace(e, id=p['event']['motion']['id']) if isinstance(e, Motion) else e for e in a]
+                raw = self._session.check_lowered(
+                    _json([p['source_fraction_interval'] for p in preview]),
+                    _json([[e.to_dict() for e in a] for a in part]),
+                    _json(blocks[start:end]),
+                    cancel,
+                    _held_blocks_json(held[start:end]),
+                )
+                del self._sources[: end - start]
+            residual = getattr(decoder, 'compensation_residual_mm', 0)
+            for check in json.loads(raw)['checked']:
+                bound = check.get('deviation_bound_mm')
+                if check.get('motion') is not None and (bound or 0) + residual > self.machine.tolerance_mm:
+                    raise ValueError(
+                        f'event {check["event_index"]}: the controller\'s compensated path is within '
+                        f'{(bound or 0) + residual:.6f} mm of the plan (decoded {bound or 0:.6f} mm, start-up and '
+                        f'near-tangent joins {residual:.6f} mm), beyond the output tolerance'
+                    )
+            yield self._checked_chunk(raw, blocks[start:end], tuple(e for a in part for e in a))
+        self.post = post
+        self.decoder = decoder
+
     def consume_events(self, events, *, cancel=None):
         """Yield bounded chunks in either mode, polling before pulling sources."""
         if self._session is None or self.finished or self.pending:
@@ -3817,6 +4305,12 @@ class PostEngine:
                                 )
                             done = True
                             break
+                    if not covered and _control_start(held):
+                        if queued:
+                            break  # the stretch is posted on its own
+                        yield from self._post_stretch(held, iterator, cancel)
+                        held = None
+                        continue
                     covers = _cycle_covers(held)
                     if covers is not None:
                         if covered:
@@ -3874,6 +4368,12 @@ class PostEngine:
                             held = next(iterator)
                         except StopIteration:
                             break
+                    if not covered and _control_start(held):
+                        if batch:
+                            break  # the stretch is posted on its own
+                        yield from self._post_stretch(held, iterator, cancel)
+                        held = None
+                        continue
                     covers = _cycle_covers(held)
                     if covers is not None:
                         if covered:

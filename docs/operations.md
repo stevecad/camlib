@@ -2144,8 +2144,51 @@ cut = camlib.ThermalCut("plasma", torch, parts, feed_mm_min=2500, cut_height_mm=
 
 - **Kerf compensation**: the beam center runs half a kerf (plus half of
   `boundary_tolerance_mm`) outside each part. `compensation="wear"` posts the
-  same path with G41/G42, turned on over the straight lead-in and off over the
-  straight lead-out, so the operator can trim the kerf at the controller.
+  same path with G41/G42 (G41 for the usual direction: the controller offsets
+  toward the scrap, on the left of travel; G42 with `reverse=True`), turned on
+  over the straight lead-in and off over the straight lead-out, so the
+  operator can trim the kerf at the controller.
+- **Controller kerf** (`compensation="control"`, #384): for controllers that
+  apply the whole kerf themselves (plasma tables whose nesting software is
+  set to "in control"). The program carries the part side of the kerf path,
+  the part outline beyond the boundary margin, and turns the controller's
+  offset on with half the declared kerf before the straight lead-in and off
+  before the straight lead-out (WinCNC: `G41 O<kerf/2>` and `G40`, each on a
+  block of its own; WinCNC Users Guide, Controller 3.1, revision 3.1.04,
+  pp. 138-139; ShopSabre's own plasma post for these tables writes it so).
+  The side is the scrap side: G41 for outlines clockwise and holes
+  counter-clockwise, G42 with `reverse=True`. A post whose controller has no
+  amount word (`GCodeDialect.compensation_amount_word`) refuses it.
+  - What is planned is where the beam then runs. Along the edges it is the
+    same kerf path; at an outside corner, whose part side is a corner the
+    controller turns itself, the beam path is the controller's intersection
+    join (WinCNC: arcs and lines are offset and "a new intersection point"
+    calculated, Versions Information List 3.1.01a): the two edges' kerf paths
+    run on to where they meet, r / sin(θ/2) from the written corner. The arc
+    join a controller could use instead (an arc of half a kerf about the
+    written corner) lies inside it, and both are proven clear of every part,
+    the extended corner against the neighbouring parts too. Inside corners
+    are where the controller's offsets overlap and are trimmed: one place.
+    A loop whose first vertex is an outside corner starts in the middle of
+    the edge after it (the leads meet a straight edge).
+  - The pierce is on the written path, half a kerf to the part side of the
+    planned lead, and keeps `pierce_clearance_mm`; the entry move (offset
+    off to on) runs straight from it to the start of the lead arc and the
+    cancel move from the end of the lead-out arc to the written end, both
+    checked as leads. Both leads need a straight part and an arc
+    (`radius_mm > 0`), so the written lead runs tangent into the cut: where
+    a controller ends its start-up at a corner differs between controllers.
+  - The posted program is decoded and the controller's offset replayed from
+    the written words (`camlib.controller_offset`, independent of the
+    planner and the post), move by move against the plan.
+  - Refused: with `common_line` (a part on both sides), `micro_joints` (the
+    beam stops inside the loop), `corner_loops` (a path that crosses
+    itself), `edge_starts`; leads without a straight part or an arc; a loop
+    the controller cannot form from its part side: a slot or gap narrower
+    than the kerf (its kerf path bridges it), an element whose part side
+    its corners trim away, a kerf path that turns sharply toward the part
+    or crosses itself; an outside corner whose extended join is not clear
+    of the parts (an acute point near a neighbour).
 - **Order**: holes before their part's outline; a part lying in another part's
   hole before that hole. Among parts at the same depth `part_order` chooses the
   next one: `"nearest"` (default: the part whose outline starts nearest to
@@ -2205,8 +2248,8 @@ cut = camlib.ThermalCut("plasma", torch, parts, feed_mm_min=2500, cut_height_mm=
   the lead-in and off before the lead-out of each loop.
 - **Micro-joints**: `MicroJoints(width_mm, count=... or spacing_mm=...,
   holes=False)` leave uncut bridges on outlines; the beam turns off over each
-  and fires again after it (no pierce clearance there). Not with wear
-  compensation.
+  and fires again after it (no pierce clearance there). Not with wear or
+  control compensation.
 - `power_percent` is the laser power (posted as S).
 - **Lead placement**: `lead_placement=camlib.LeadPlacement(keep_off, keep_off_distance_mm=...,
   prefer=...)` says where loops may start, and so where their leads go (a

@@ -1107,6 +1107,7 @@ impl Decoder {
             return Ok(vec![Event::CutterCompensation {
                 side: CompensationSide::Off,
                 plane: self.compensation_plane(),
+                amount_mm: None,
             }]);
         }
         if self.active.is_none() || self.tool_pending || self.compensation != CompensationSide::Off
@@ -1137,6 +1138,7 @@ impl Decoder {
         Ok(vec![Event::CutterCompensation {
             side: self.compensation,
             plane: self.compensation_plane(),
+            amount_mm: None,
         }])
     }
 

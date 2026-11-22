@@ -164,6 +164,7 @@ impl Engine {
             decoded_initial_position_mm: decoder.position,
             lowering: lowering.clone(),
             motion_scheduling: None,
+            compensation_unwritten: false,
         };
         let (session, first) = IntentChecker::begin_held(header, settings, &lines, &decoder.held)?;
         if cancel.is_cancelled() {

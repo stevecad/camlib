@@ -76,6 +76,7 @@ modules! {
     tapping,
     thermal,
     thermal_common_line,
+    thermal_control,
     thermal_mark,
     thread_mill,
     trace,

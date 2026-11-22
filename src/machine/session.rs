@@ -1052,7 +1052,7 @@ impl Session {
             Event::CutterCompensation { side, .. }
                 if side != crate::motion::CompensationSide::Off =>
             {
-                return Err("machine clearance under controller wear compensation is unproven; use computer compensation with declared geometry or explicitly accept uncertainty".into());
+                return Err("machine clearance under controller cutter compensation (wear, or the controller's whole kerf) is unproven; use computer compensation with declared geometry or explicitly accept uncertainty".into());
             }
             Event::Beam { .. }
             | Event::BeamStart { .. }

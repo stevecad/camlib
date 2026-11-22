@@ -299,6 +299,7 @@ fn mutated_tool_word_is_caught_by_decode_and_compare() {
             decoded_initial_position_mm: d.position,
             lowering: None,
             motion_scheduling: None,
+            compensation_unwritten: false,
         };
         let (mut checker, _) = IntentChecker::begin(&header, settings, &lines).unwrap();
         for event in &events[..2] {

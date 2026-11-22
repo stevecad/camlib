@@ -105,9 +105,16 @@ pub enum TabShape {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Compensation {
+    /// The program carries the tool-center (beam-center) path.
     #[default]
     Computer,
+    /// The same path, with G41/G42 so the controller adds its register's
+    /// wear.
     Wear,
+    /// The program carries the part-side path and the controller offsets
+    /// it by the whole tool radius (half the kerf) it is given with
+    /// G41/G42 (`ThermalCut` only).
+    Control,
 }
 impl Compensation {
     fn is_computer(&self) -> bool {
@@ -275,6 +282,10 @@ impl ContourPlan {
                 (
                     op.lead_in_mm >= 0. && op.lead_out_mm >= 0.,
                     "lead_in_mm and lead_out_mm must not be negative".into(),
+                ),
+                (
+                    op.compensation != Compensation::Control,
+                    "compensation=\"control\" (the controller applies the whole tool radius) is planned for thermal cutting only (ThermalCut): use \"computer\" or \"wear\"".into(),
                 ),
                 (
                     op.compensation == Compensation::Computer

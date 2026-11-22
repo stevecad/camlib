@@ -558,6 +558,9 @@ impl DefaultPost {
             Event::Stop { optional } => {
                 self.emit(&[d.code(if *optional { "optional_stop" } else { "stop" })?])
             }
+            Event::CutterCompensation {
+                amount_mm: Some(_), ..
+            } => Err("the Rust default post writes cutter compensation with a D register (wear) only: post compensation=\"control\" with a Python post whose dialect declares compensation_amount_word".into()),
             Event::CutterCompensation { side, .. } => self.on_cutter_compensation(*side),
             Event::Probe { cycle, covers } => self.on_probe(cycle, *covers),
             Event::Beam { power_percent } => {

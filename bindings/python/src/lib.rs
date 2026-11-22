@@ -2353,6 +2353,31 @@ fn round_circular_words(
     .map_err(PyValueError::new_err)?;
     Ok((end.to_vec(), offsets.to_vec()))
 }
+/// The controller's offset of a written compensated stretch (the entry
+/// move, the compensated moves, the cancel move) by a whole amount
+/// (`camlib::controller_offset::replay`), as JSON.
+#[pyfunction]
+fn replay_controller_offset(
+    curves_json: &str,
+    side: &str,
+    amount_mm: f64,
+    tolerance_mm: f64,
+) -> PyResult<String> {
+    let curves: Vec<camlib::motion::Curve> =
+        serde_json::from_str(curves_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let side = match side {
+        "left" => camlib::motion::CompensationSide::Left,
+        "right" => camlib::motion::CompensationSide::Right,
+        _ => {
+            return Err(PyValueError::new_err(
+                "compensation side must be left or right",
+            ));
+        }
+    };
+    let replay = camlib::controller_offset::replay(&curves, side, amount_mm, tolerance_mm)
+        .map_err(PyValueError::new_err)?;
+    serde_json::to_string(&replay).map_err(|e| PyValueError::new_err(e.to_string()))
+}
 #[pyclass]
 #[derive(Clone)]
 struct MotionDecoder {
@@ -2955,6 +2980,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<DefaultMotionPost>()?;
     module.add_function(wrap_pyfunction!(format_post_words, module)?)?;
     module.add_function(wrap_pyfunction!(round_circular_words, module)?)?;
+    module.add_function(wrap_pyfunction!(replay_controller_offset, module)?)?;
     module.add_function(wrap_pyfunction!(css_rpm_bound, module)?)?;
     module.add_function(wrap_pyfunction!(post_job, module)?)?;
     module.add_function(wrap_pyfunction!(post_program, module)?)?;

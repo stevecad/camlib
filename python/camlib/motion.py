@@ -317,17 +317,25 @@ class Probe:
 @dataclass(frozen=True)
 class CutterCompensation:
     """Cutter radius compensation: 'left' (G41), 'right' (G42) of the
-    programmed path in the direction of travel, or 'off' (G40). The path is
-    the tool center; the controller adds only the D register's wear."""
+    programmed path in the direction of travel, or 'off' (G40).
+
+    Without ``amount_mm`` the path is the tool center and the controller
+    adds only the D register's wear. With it (``ThermalCut(compensation=
+    "control")``, turning on) the controller offsets the written path by
+    the whole amount: the motions are still where the tool center runs, and
+    the post writes them offset back by the amount to the other side."""
 
     side: str
     # The plane it works in: "xy" (mills) or "xz" (lathes, G18).
     plane: str = "xy"
+    amount_mm: float | None = None
 
     def to_dict(self):
         data = {"kind": "cutter_compensation", "side": self.side}
         if self.plane != "xy":
             data["plane"] = self.plane
+        if self.amount_mm is not None:
+            data["amount_mm"] = self.amount_mm
         return data
 
 
