@@ -202,12 +202,15 @@ from it (#344), so no level is deeper than `stepdown_mm`. Every stock cell
 meeting the `region` must be at or below it, within the stock model's band
 of 16 x `tolerance_mm`; the run checks this against the committed stock, so a
 lower top needs the stock (an `AdaptivePocket` planned without it is refused).
-Where stock inside that band stands above `top_z_mm` within the cutter's reach,
-the depths are measured from the highest of it instead
-(`stock_top.reachable_upper_z_mm` in the report, #344): `stepdown_mm` is a
-strict maximum below the stock model. The model cannot tell a faced top's
-sweep error from material, so a top faced to exactly `top_z_mm` can gain a last,
-nearly empty depth when the depth is a whole number of stepdowns. The floor is
+Where stock inside that band stands more than `tolerance_mm` above `top_z_mm`
+within the cutter's reach, the depths are measured from the highest of it
+instead (`stock_top.reachable_upper_z_mm` in the report, #344), so no depth is
+deeper than `stepdown_mm` below the stock model. Stock within `tolerance_mm`
+of the top is at the top (#381): a flat cut at a height leaves the model's
+upper bound its sweep guard (the run's sweep `tolerance_mm`) above it, and
+each depth is placed a stepdown below the tip of the depth above, not below
+that guard. So a pocket from a floor faced to exactly `top_z_mm` cuts whole
+stepdowns, with no extra, nearly empty last depth. The floor is
 checked against the authored top first. If the stock changes before the first motion and
 stands higher than the top the depths were planned from, where the cutter
 reaches, the run refuses. After the first motion, the next move requires the

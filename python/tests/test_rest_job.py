@@ -70,8 +70,10 @@ class RestJobTest(unittest.TestCase):
         result = collect(job)
         self.assertGreater(result["ends"]["rest"]["rest_history_skipped_strokes"], 0)
         self.assertLess(result["rest_air_mm"], 35.0)
-        # Four fractions of the corner cells, including the stock sweep guard.
-        self.assertAlmostEqual(result["volumes"]["rest"] - result["volumes"]["pocket"], 1.999995, places=7)
+        # Four fractions of the corner cells: 2 mm deep, 1 mm^2 in all. Both
+        # operations plan whole stepdowns from the faced top (#381), so the
+        # rest cut takes the corners to the pocket's floor bound exactly.
+        self.assertAlmostEqual(result["volumes"]["rest"] - result["volumes"]["pocket"], 2.0, places=7)
 
     def test_cad_two_tools_stock_cache_and_upstream_changes(self):
         with TemporaryDirectory() as directory:

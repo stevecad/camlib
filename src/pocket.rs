@@ -707,6 +707,8 @@ impl Outside {
 /// judged by the tool assembly (`Outside`).
 pub(crate) struct StockTop {
     ceiling: f64,
+    /// The operation's `tolerance_mm` (`planning_top`).
+    tolerance: f64,
     /// The top the depths are planned from (`planning_top`).
     planned: f64,
     identity: u64,
@@ -748,7 +750,7 @@ impl StockTop {
         let ceiling = top + 16. * tolerance;
         let mut outside = Outside::new(scope, tolerance)?;
         let scan = Self::scan(stock, top, ceiling, &outside, cancel)?;
-        let planned = Self::planning_top(top, scan.reachable);
+        let planned = Self::planning_top(top, tolerance, scan.reachable);
         spec.max_mm[2] = planned;
         stock.request_sweep_receipts();
         outside.highest = scan.tall;
@@ -756,6 +758,7 @@ impl StockTop {
             spec,
             Some(Self {
                 ceiling,
+                tolerance,
                 planned,
                 identity: stock.identity(),
                 tool: scope.tool.clone(),
@@ -777,11 +780,20 @@ impl StockTop {
     /// The top the depths are planned from. Stock the top accepts within
     /// the model's band may still stand above it where the cutter reaches:
     /// the depths then start from the highest of it, so no depth of cut is
-    /// deeper than `stepdown_mm` below the stock model (#344). `stepdown_mm`
-    /// is a strict maximum: the model cannot tell a faced top's sweep error
-    /// from material, so that error is treated as material too.
-    fn planning_top(top: f64, reachable: Option<f64>) -> f64 {
-        reachable.filter(|h| *h > top).unwrap_or(top)
+    /// deeper than `stepdown_mm` below the stock model (#344).
+    ///
+    /// Stock no more than `tolerance` above the top is at the top (#381).
+    /// A flat cut at height `h` leaves the model's upper bound its sweep
+    /// guard above `h` (`Stock::preview_sweep`, `upper = z + guard`), and
+    /// the levels below the first are each placed a stepdown below the tip
+    /// of the level above, not below that guard. A top faced to exactly
+    /// `top_z_mm` holds the same guard; planning from it would add a last
+    /// level a guard deep under the one above (the whole region a sheet of
+    /// that thickness, which the engagement proof rightly refuses, and a
+    /// `Pocket` pass repeated at the posted resolution). Stock standing
+    /// higher than the operation's tolerance still raises the top.
+    fn planning_top(top: f64, tolerance: f64, reachable: Option<f64>) -> f64 {
+        reachable.filter(|h| *h > top + tolerance).unwrap_or(top)
     }
     pub(crate) fn planned_top(&self) -> f64 {
         self.planned
@@ -946,7 +958,11 @@ impl StockTop {
                 &self.outside,
                 cancel,
             )?;
-            let needed = Self::planning_top(self.report.authored_top_z_mm, scan.reachable);
+            let needed = Self::planning_top(
+                self.report.authored_top_z_mm,
+                self.tolerance,
+                scan.reachable,
+            );
             if needed > self.planned {
                 return Err(format!(
                     "operation {}: the stock changed after planning: stock up to Z{needed} where the cutter reaches stands above Z{}, the top the depths were planned from; plan the operation again against this stock",

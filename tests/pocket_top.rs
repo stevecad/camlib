@@ -130,11 +130,11 @@ fn pocket_and_adaptive_use_faced_stock_top_without_resetting_stock_or_extra_dept
                         .iter()
                         .map(|l| l["tip_z_mm"].as_f64().unwrap())
                         .collect();
-                    // From the faced stock model, which stands up to
-                    // 16 x tolerance above Z8 (see `faced`): stepdown_mm is
-                    // a strict maximum below it (#344).
-                    assert!(tips.len() == 2 && tips[1] == 5., "{tips:?}");
-                    assert!((6. ..=6. + 16. * 1e-5).contains(&tips[0]), "{tips:?}");
+                    // The faced stock model stands its sweep guard (within
+                    // the operation's tolerance) above Z8: that is the
+                    // faced floor, and the levels are whole stepdowns
+                    // below it (#344, #381).
+                    assert_eq!(tips, [6., 5.]);
                 } else {
                     assert_eq!(report["depth_passes"], 2);
                 }
@@ -492,4 +492,227 @@ fn stock_in_the_gap_between_pockets_does_not_raise_the_planning_top() {
     assert_eq!(report["stock_top"]["maximum_upper_z_mm"], 10.);
     assert!(report["stock_top"].get("reachable_upper_z_mm").is_none());
     assert!(prepare(&low).next_motion_with_stock(&raised, &|| false).unwrap().is_some());
+}
+
+/// #381: a 100 x 60 plate in stock 1 mm taller, faced to exactly Z20 with a
+/// 6 mm end mill, then an adaptive pocket from that faced floor to Z12.
+fn faced_plate(cell: f64) -> (StreamManifest, Stock, [f64; 3], u64) {
+    let mut m: serde_json::Value =
+        serde_json::from_str(include_str!("../fixtures/operations/facing.json")).unwrap();
+    m["stock"]["max_mm"] = serde_json::json!([100., 60., 21.]);
+    m["stock"]["cell_size_mm"] = cell.into();
+    m["tools"][0]["cutter"]["diameter_mm"] = 6.into();
+    m["tools"][0]["cutter"]["shank_diameter_mm"] = 6.into();
+    m["initial_position_mm"] = serde_json::json!([0., 0., 25.]);
+    let face = &mut m["operations"][0];
+    face["floor_z_mm"] = 20.into();
+    face["stepover_mm"] = 4.into();
+    face["clearance_z_mm"] = 25.into();
+    let m: StreamManifest = serde_json::from_value(m).unwrap();
+    let mut stock = Stock::new(m.stock.height().unwrap().clone()).unwrap();
+    let mut plan = OperationPlan::prepare_with_stock(
+        m.operations[0].clone(),
+        &m.tools[0],
+        &stock,
+        m.initial_position_mm,
+        1,
+        &|| false,
+    )
+    .unwrap();
+    let mut position = m.initial_position_mm;
+    let mut next = 1;
+    while let Some(motion) = plan.next_motion_with_stock(&stock, &|| false).unwrap() {
+        position = motion.curve.end();
+        next = motion.id + 1;
+        commit(&mut stock, &motion, &m);
+    }
+    (m, stock, position, next)
+}
+
+fn plate_pocket(
+    stepdown: f64,
+    entry: camlib::pocket::PocketEntry,
+    top: f64,
+    floor: f64,
+) -> Operation {
+    let mut op = operation(top, true);
+    let Operation::AdaptivePocket(a) = &mut op else {
+        unreachable!()
+    };
+    let p = &mut a.pocket;
+    p.id = "plate-pocket".into();
+    p.region.components[0].outer.vertices = vec![
+        [20., 15., 0.],
+        [80., 15., 0.],
+        [80., 45., 0.],
+        [20., 45., 0.],
+    ];
+    p.floor_z_mm = floor;
+    p.stepdown_mm = stepdown;
+    p.stepover_mm = 1.5;
+    p.clearance_z_mm = 25.;
+    p.entry = Some(entry);
+    op
+}
+
+/// #381: an adaptive pocket from a floor a Facing just cut, to a whole
+/// number of stepdowns below it. The faced stock model stands its sweep
+/// guard above Z20; the levels used to be planned from that guard, which
+/// left a last level a guard deep at the floor (the whole region a sheet
+/// that thick), and its engagement proof refused it. The levels are whole
+/// stepdowns from the faced floor, each one cuts, the last is at the floor,
+/// and the pocket is released with either entry. No motion removes more
+/// than a stepdown of the stock model (as #344 requires).
+#[test]
+fn adaptive_pocket_from_a_faced_floor_cuts_whole_stepdowns_to_the_floor() {
+    use camlib::pocket::{HelicalEntry, PocketEntry, RampEntry};
+    let (m, faced, position, next) = faced_plate(0.5);
+    let tool = m.tools[0].prepare().unwrap();
+    let inside = |p: [f64; 2], margin: f64| {
+        (20. + margin..=80. - margin).contains(&p[0])
+            && (15. + margin..=45. - margin).contains(&p[1])
+    };
+    let centres: Vec<[f64; 2]> = (0..faced.cells().len())
+        .map(|i| faced.cell_center(i).unwrap())
+        .collect();
+    // The faced floor: the model's upper bound is above Z20, by no more than
+    // the sweep guard, where the pocket is.
+    let faced_upper = faced
+        .cells()
+        .iter()
+        .zip(&centres)
+        .filter(|(_, p)| inside(**p, 0.))
+        .map(|(c, _)| c.upper_mm)
+        .fold(f64::MIN, f64::max);
+    assert!(
+        faced_upper > 20. && faced_upper <= 20. + 1e-5,
+        "{faced_upper}"
+    );
+    for (stepdown, expected) in [
+        (2., vec![18., 16., 14., 12.]),
+        (3., vec![17., 14., 12.]),
+        (8., vec![12.]),
+    ] {
+        for entry in [
+            PocketEntry::Helix(HelicalEntry::default()),
+            PocketEntry::Ramp(RampEntry {
+                angle_rad: 5f64.to_radians(),
+                min_length_mm: Some(10.),
+                feed_mm_min: None,
+            }),
+        ] {
+            let what = format!("stepdown {stepdown}, {entry:?}");
+            let mut stock = Stock::from_snapshot(faced.snapshot()).unwrap();
+            let mut plan = OperationPlan::prepare_with_stock(
+                plate_pocket(stepdown, entry, 20., 12.),
+                &m.tools[0],
+                &stock,
+                position,
+                next,
+                &|| false,
+            )
+            .unwrap();
+            let report = serde_json::to_value(plan.report()).unwrap();
+            let tips: Vec<f64> = report["layers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|l| l["tip_z_mm"].as_f64().unwrap())
+                .collect();
+            assert_eq!(tips, expected, "{what}");
+            let mut deepest: f64 = 0.;
+            // Stock cells each level's cutting motions changed.
+            let mut changed = vec![0usize; tips.len()];
+            while let Some(motion) = plan
+                .next_motion_with_stock(&stock, &|| false)
+                .unwrap_or_else(|e| panic!("{what}: {e}"))
+            {
+                let delta = stock
+                    .preview_sweep(&tool, &motion, 1., SweepOptions::default(), &|| false)
+                    .unwrap();
+                let before: Vec<f64> = stock.cells().iter().map(|c| c.upper_mm).collect();
+                stock.apply_delta(&delta).unwrap();
+                for (b, a) in before.iter().zip(stock.cells()) {
+                    deepest = deepest.max(b - a.upper_mm);
+                }
+                let end = motion.curve.end();
+                if motion.kind.cuts()
+                    && motion.curve.start()[2] == end[2]
+                    && let Some(level) = tips.iter().position(|z| *z == end[2])
+                {
+                    changed[level] += delta.changes().len();
+                }
+            }
+            assert!(
+                deepest <= stepdown + 1e-9,
+                "{what}: one motion removed {deepest} mm of the stock model, more than the stepdown"
+            );
+            assert!(changed.iter().all(|n| *n > 0), "{what}: {changed:?}");
+            // The floor is reached at exactly Z12 inside the pocket.
+            let left = stock
+                .cells()
+                .iter()
+                .zip(&centres)
+                .filter(|(_, p)| inside(**p, 4.))
+                .map(|(c, _)| c.upper_mm)
+                .fold(f64::MIN, f64::max);
+            assert!(left <= 12. + 1e-5, "{what}: stock up to Z{left}");
+        }
+    }
+    // A Pocket from the same faced floor: whole stepdowns, no extra depth.
+    let mut op = plate_pocket(2., PocketEntry::Helix(HelicalEntry::default()), 20., 12.);
+    if let Operation::AdaptivePocket(a) = op {
+        op = Operation::Pocket(a.pocket);
+    }
+    let plan =
+        OperationPlan::prepare_with_stock(op, &m.tools[0], &faced, position, next, &|| false)
+            .unwrap();
+    let report = serde_json::to_value(plan.report()).unwrap();
+    assert_eq!(report["depth_passes"], 4);
+}
+
+/// #381: stock more than the operation's tolerance above the top, where the
+/// cutter reaches, still raises the top the depths are planned from (#344),
+/// however close to the tolerance it is.
+#[test]
+fn stock_just_beyond_the_tolerance_above_the_top_still_raises_the_planning_top() {
+    let m = fixture();
+    // Top Z9, floor Z5, stepdown 2 (`operation`), tolerance 1e-5.
+    for (excess, planned) in [(1e-5, 9.), (1.1e-5, 9. + 1.1e-5)] {
+        let mut stock = Stock::new(m.stock.height().unwrap().clone())
+            .unwrap()
+            .snapshot();
+        for cell in &mut stock.cells {
+            cell.lower_mm = 9.;
+            cell.upper_mm = 9.;
+        }
+        // Cell (80, 48), at X20 Y12, inside the region.
+        stock.cells[48 * 160 + 80].upper_mm = 9. + excess;
+        let stock = Stock::from_snapshot(stock).unwrap();
+        for adaptive in [false, true] {
+            let plan = OperationPlan::prepare_with_stock(
+                operation(9., adaptive),
+                &m.tools[0],
+                &stock,
+                m.initial_position_mm,
+                1,
+                &|| false,
+            )
+            .unwrap();
+            let report = serde_json::to_value(plan.report()).unwrap();
+            assert_eq!(
+                report["stock_top"]["reachable_upper_z_mm"].as_f64(),
+                Some(9. + excess)
+            );
+            // From the raised top, 4.000011 mm takes three stepdowns.
+            let depths = if planned > 9. { 3 } else { 2 };
+            if adaptive {
+                let first = report["layers"][0]["tip_z_mm"].as_f64().unwrap();
+                assert_eq!(first, planned - 2., "excess {excess}");
+                assert_eq!(report["layers"].as_array().unwrap().len(), depths);
+            } else {
+                assert_eq!(report["depth_passes"], depths, "excess {excess}");
+            }
+        }
+    }
 }
