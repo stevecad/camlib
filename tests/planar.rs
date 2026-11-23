@@ -524,6 +524,51 @@ fn rotated_regions_match_the_independent_polygon_oracle() {
     compare_offset_to_independent_polygon(&fixture, 2.1);
 }
 
+/// #393: the tool-centre region of a faceted round boss top (its mesh
+/// shadow grown with round joins, so a few-micron arc at every facet corner)
+/// eroded through every depth Flat's rings and checks take. The offset
+/// kernel mis-joined slices at 10 mm (two boundaries touching), at 13 mm
+/// (a hole with no enclosing component) and near the centre.
+#[test]
+fn faceted_round_boss_top_erodes_at_every_ring_depth() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("fixtures/planar/flat-boss-top-level.json");
+    let definition: PlanarRegion = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let p = prepared(&definition);
+    assert_eq!(p.summary().segments, 1833);
+    assert_eq!(p.summary().arc_segments, 611);
+    let tolerance = ConstructionOptions::default().tolerance_mm;
+    let mut depths: Vec<f64> = (1..=71).map(|k| k as f64 * 0.25).collect();
+    depths.extend([10.5 + tolerance, 13. + tolerance, 15.5 + tolerance]);
+    depths.sort_by(f64::total_cmp);
+    let mut previous = p.summary().area_mm2;
+    for d in depths {
+        let result = p
+            .offset_prepared(d)
+            .unwrap_or_else(|e| panic!("offset {d}: {e}"))
+            .into_parts()
+            .1;
+        let error = result.definition().boundary_error_mm;
+        assert!(error < 0.01, "offset {d}: boundary error {error}");
+        // Independently of the construction: every vertex of the eroded
+        // boundary lies `d` inside the original, within the stated error.
+        for c in &result.definition().components {
+            for b in std::iter::once(&c.outer).chain(&c.holes) {
+                for v in &b.vertices {
+                    let clearance = p.query([v[0], v[1]]).unwrap().signed_clearance_mm.unwrap();
+                    assert!(
+                        (clearance - d).abs() <= error,
+                        "offset {d}: vertex {v:?} at clearance {clearance}"
+                    );
+                }
+            }
+        }
+        let area = result.summary().area_mm2;
+        assert!(area < previous, "offset {d}: area {area} did not shrink");
+        previous = area;
+    }
+}
+
 #[test]
 fn analytic_cadquery_floor_keeps_circle_geometry_through_construction() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

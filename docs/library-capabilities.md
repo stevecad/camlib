@@ -94,7 +94,10 @@ combinations and impossible dimensions are rejected before any motion.
 - Before an offset that shrinks the machinable area, boundaries are simplified
   conservatively (at most 0.002 mm, only ever shrinking the machinable area)
   so that dense, noisy outlines from tessellated CAD or mesh slices offset
-  correctly. The amount used is reported and added to the error budget.
+  correctly. Arcs too shallow to matter that bulge out of the area (the
+  micro-arcs a faceted shadow grown with round joins has at every corner) are
+  taken as their chords first, so such outlines are simplified too. The
+  amount used is reported and added to the error budget.
 - Every pocket/roughing tool-centre path is checked against the **original**
   boundary before motion is produced; a construction error fails the operation.
 - 3D surfaces are treated as a part seen from above (a height map with a

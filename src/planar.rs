@@ -844,7 +844,7 @@ impl PreparedRegion {
         if envelope_vertices > 0 {
             result.report.normalization_error_mm += envelope_error;
             result.report.normalized_vertices += envelope_vertices;
-            result.report.diagnostics.push(format!("conservatively simplified linear boundaries before erosion (machining space only shrinks); removed {envelope_vertices} intermediate vertices with boundary displacement at most {envelope_error} mm; original clearance source retained"));
+            result.report.diagnostics.push(format!("conservatively simplified boundaries before erosion (machining space only shrinks); removed {envelope_vertices} intermediate vertices or shallow convex arcs (taken as their chords) with boundary displacement at most {envelope_error} mm; original clearance source retained"));
         }
         Ok(result)
     }
@@ -973,13 +973,30 @@ impl PreparedRegion {
         }
         self.integer_boolean_prepared(other, operation, error)
     }
-    /// Subtract the union of overlapping cutter sweeps in one operation.
-    /// Intermediate capsule seams may touch or overlap, even though the
-    /// boundary of their combined sweep is unambiguous. Chording and grid
-    /// rounding use the same error budget as the two-region integer boolean.
-    pub(crate) fn subtract_sweeps(
+    /// This region less what a disc sweeps along each chain: `(points,
+    /// radius_mm)`, a polyline of straight segments (closed when its last
+    /// point is its first), all of it subtracted in one operation, so the
+    /// seams between neighbouring sweeps never form a boundary. Only ever
+    /// less than the true sweep is subtracted, so what remains contains
+    /// every point the discs miss:
+    ///
+    /// * each chain's sweep (the union of the capsules of its segments, the
+    ///   Minkowski sum of the chain and the disc) is built by Clipper2's
+    ///   offsetting with round joins and round ends (joined ends for a
+    ///   closed chain). Clipper2 replaces each arc of the disc's boundary by
+    ///   chords between points of the circle, which lie inside it
+    ///   (`close_protectively` relies on the same), at the chord error of
+    ///   the region's other chorded booleans, so a chain costs its vertices
+    ///   and one circle at its ends, not one circle per segment;
+    /// * the chain's vertices and the offset's vertices are rounded to the
+    ///   grid (at most 0.71 unit each), covered by sweeping a radius two grid
+    ///   units smaller.
+    ///
+    /// A caller with curved strokes chords them first and shrinks the radius
+    /// by the chords' sagitta.
+    pub(crate) fn subtract_chain_sweeps(
         &self,
-        sweeps: Vec<Component>,
+        chains: &[(Vec<Point>, f64)],
         cancel: &impl crate::stock::CancelSignal,
     ) -> Result<PreparedConstruction, String> {
         let tolerance = self.options.tolerance_mm;
@@ -987,20 +1004,47 @@ impl PreparedRegion {
         let grid = (tolerance / 128.).max(1e-8);
         let mut clipper = Clipper64::new();
         clipper.add_subject(&integer_paths(self, self.origin, grid, chord)?);
-        for component in sweeps {
+        for (points, radius) in chains {
             if cancel.is_cancelled() {
                 return Err("sweep subtraction cancelled".into());
             }
-            let sweep = PlanarRegion {
-                version: 1,
-                units: "mm".into(),
-                name: "swept-capsule".into(),
-                boundary_error_mm: 0.,
-                components: vec![component],
-                source: serde_json::Value::Null,
+            if !radius.is_finite() || points.iter().flatten().any(|v| !v.is_finite()) {
+                return Err("swept chain needs finite points and radius".into());
             }
-            .prepare(self.options)?;
-            clipper.add_clip(&integer_paths(&sweep, self.origin, grid, chord)?);
+            let units = radius / grid - 2.;
+            if units <= 0. {
+                continue;
+            }
+            let mut path: Vec<Point64> = Vec::with_capacity(points.len());
+            for p in points {
+                let point = Point64::new(
+                    ((p[0] - self.origin[0]) / grid).round() as i64,
+                    ((p[1] - self.origin[1]) / grid).round() as i64,
+                );
+                if path.last() != Some(&point) {
+                    path.push(point);
+                }
+            }
+            let closed = path.len() > 2 && path.first() == path.last();
+            if closed {
+                path.pop();
+            }
+            if path.is_empty() {
+                continue;
+            }
+            let swept = clipper2_rust::inflate_paths_64(
+                &vec![path],
+                units,
+                clipper2_rust::JoinType::Round,
+                if closed {
+                    clipper2_rust::EndType::Joined
+                } else {
+                    clipper2_rust::EndType::Round
+                },
+                2.,
+                chord / grid,
+            );
+            clipper.add_clip(&swept);
         }
         let mut closed = Vec::new();
         if !clipper.execute(ClipType::Difference, FillRule::NonZero, &mut closed, None) {
@@ -1533,4 +1577,85 @@ fn integer_paths(
         }
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod chain_sweep_tests {
+    use super::*;
+
+    /// The exact distance from `p` to a polyline (the oracle: it shares no
+    /// code with the offsetting).
+    fn distance(p: Point, chain: &[Point]) -> f64 {
+        chain
+            .windows(2)
+            .map(|s| crate::geometry::point_segment_distance_sq(p, s[0], s[1]).sqrt())
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    #[test]
+    fn chain_sweeps_remove_only_what_the_disc_covers_and_all_of_it() {
+        let region = PlanarRegion {
+            version: 1,
+            units: "mm".into(),
+            name: "floor".into(),
+            boundary_error_mm: 0.,
+            components: vec![Component {
+                outer: Boundary {
+                    vertices: vec![[0., 0., 0.], [40., 0., 0.], [40., 30., 0.], [0., 30., 0.]],
+                },
+                holes: vec![],
+            }],
+            source: serde_json::Value::Null,
+        }
+        .prepare(ConstructionOptions::default())
+        .unwrap();
+        // A closed ring of 600 facets (its inside beyond the radius stays),
+        // an open zigzag with sharp convex and concave turns and a 0.2 um
+        // stub, a chain that doubles back on itself, and a line of 1 um
+        // strokes.
+        let ring: Vec<Point> = (0..=600)
+            .map(|i| {
+                let a = std::f64::consts::TAU * (i % 600) as f64 / 600.;
+                [20. + 8. * a.cos(), 15. + 8. * a.sin()]
+            })
+            .collect();
+        let zigzag = vec![
+            [3., 3.],
+            [15., 6.],
+            [9., 9.],
+            [25., 7.],
+            [25.0001, 7.0002],
+            [37., 4.],
+        ];
+        let back = vec![[2., 27.], [38., 27.], [2., 27.6]];
+        let fine: Vec<Point> = (0..=2000).map(|i| [2. + i as f64 * 1e-3, 1.]).collect();
+        let chains = vec![(ring, 3.), (zigzag, 1.5), (back, 0.5), (fine, 0.4)];
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let result = region
+            .subtract_chain_sweeps(&chains, &cancel)
+            .unwrap()
+            .into_parts()
+            .1;
+        let mut kept = 0;
+        let mut removed = 0;
+        for i in 0..=160 {
+            for j in 0..=120 {
+                let p = [0.1 + i as f64 * 0.248, 0.1 + j as f64 * 0.248];
+                let beyond = chains
+                    .iter()
+                    .map(|(c, r)| distance(p, c) - r)
+                    .fold(f64::INFINITY, f64::min);
+                let inside = result.query(p).unwrap().signed_clearance_mm.unwrap();
+                if beyond > 2e-5 {
+                    // Missed by every disc: still in the region.
+                    assert!(inside > 0., "{p:?} {beyond} removed");
+                    kept += 1;
+                } else if beyond < -2e-5 {
+                    assert!(inside < 0., "{p:?} {beyond} kept");
+                    removed += 1;
+                }
+            }
+        }
+        assert!(kept > 5000 && removed > 5000, "{kept} {removed}");
+    }
 }

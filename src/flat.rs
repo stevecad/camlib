@@ -4110,7 +4110,7 @@ fn level_loops(
             };
             for (_, need) in needs.iter_mut() {
                 if let Some(region) = need.take() {
-                    *need = subtract_swept(region, &swept, r, guard, cancel)?;
+                    *need = subtract_swept(region, &swept, r, tolerance, cancel)?;
                 }
             }
             if index < outer_count {
@@ -4180,63 +4180,94 @@ fn without_slivers(
     Ok((!opened.definition().components.is_empty()).then_some(opened))
 }
 
+/// Arcs chorded within the chord error in at most this many chords stay in
+/// their run's chain (`subtract_swept`); longer ones are swept on their own.
+const SWEPT_FINE_CHORDS: usize = 16;
+
+/// Sagitta of the chords of an arc swept on its own (`subtract_swept`).
+const SWEPT_ARC_SAGITTA_MM: f64 = 0.01;
+
+/// `arc`'s chord points (after its start) for chords of sagitta at most
+/// `sagitta`, and the largest sagitta they have.
+fn arc_chords(seg: &crate::pocket::Stroke, sagitta: f64) -> (Vec<[f64; 2]>, f64) {
+    let Some((c, sweep)) = seg.arc else {
+        return (vec![seg.b], 0.);
+    };
+    let rho = (seg.a[0] - c[0]).hypot(seg.a[1] - c[1]);
+    let n = arc_chord_count(rho, sweep, sagitta);
+    let mut points: Vec<[f64; 2]> = (1..n)
+        .map(|k| stroke_point(seg, k as f64 / n as f64))
+        .collect();
+    points.push(seg.b);
+    (points, rho * (1. - (sweep.abs() / (2. * n as f64)).cos()))
+}
+
+fn arc_chord_count(rho: f64, sweep: f64, sagitta: f64) -> usize {
+    let half = (1. - sagitta.min(rho) / rho)
+        .clamp(-1., 1.)
+        .acos()
+        .max(1e-9);
+    ((sweep.abs() / (2. * half)).ceil() as usize).clamp(1, 1 << 16)
+}
+
 /// `need` without what the disk of radius `r` sweeps along the strokes of
-/// `runs` (straight strokes as capsules; arcs by their chords, each capsule's
-/// radius reduced by the chord's sagitta so it stays inside the arc's swept
-/// disk); `None` when nothing is left.
+/// `runs` (`PreparedRegion::subtract_chain_sweeps`), never more than the
+/// disk covers: each run of connected straight strokes and short arcs is
+/// one chain of points, its arcs by chords within the region's chord error
+/// (`tolerance / 8`) and its radius reduced by their largest sagitta; an
+/// arc that takes more than `SWEPT_FINE_CHORDS` such chords is its own
+/// chain of chords of sagitta at most `SWEPT_ARC_SAGITTA_MM`, its radius
+/// reduced by theirs. One sweep per chain, not one capsule per stroke: a
+/// ring along a finely faceted wall has thousands of strokes (#393). `None`
+/// when nothing is left.
 fn subtract_swept(
     need: crate::planar::PreparedRegion,
     runs: &[Vec<crate::pocket::Stroke>],
     r: f64,
-    guard: f64,
+    tolerance: f64,
     cancel: &impl CancelSignal,
 ) -> Result<Option<crate::planar::PreparedRegion>, String> {
-    use crate::planar::{Boundary, Component};
-    let mut capsules: Vec<Component> = vec![];
-    let mut capsule = |a: [f64; 2], b: [f64; 2], radius: f64| {
-        let d = [b[0] - a[0], b[1] - a[1]];
-        let length = d[0].hypot(d[1]);
-        if length <= guard || radius <= guard {
-            return;
-        }
-        let n = [-d[1] / length * radius, d[0] / length * radius];
-        capsules.push(Component {
-            outer: Boundary {
-                vertices: vec![
-                    [a[0] - n[0], a[1] - n[1], 0.],
-                    [b[0] - n[0], b[1] - n[1], 1.],
-                    [b[0] + n[0], b[1] + n[1], 0.],
-                    [a[0] + n[0], a[1] + n[1], 1.],
-                ],
-            },
-            holes: vec![],
-        });
-    };
-    for seg in runs.iter().flatten() {
-        if cancel.is_cancelled() {
-            return Err("flat-area planning cancelled".into());
-        }
-        match seg.arc {
-            None => capsule(seg.a, seg.b, r),
-            Some((c, sweep)) => {
-                let rho = (seg.a[0] - c[0]).hypot(seg.a[1] - c[1]);
-                let sagitta = 0.01_f64.min(rho);
-                let half = (1. - sagitta / rho).clamp(-1., 1.).acos().max(1e-6);
-                let n = ((sweep.abs() / (2. * half)).ceil() as usize).clamp(1, 4096);
-                let sag = rho * (1. - (sweep.abs() / (2. * n as f64)).cos());
-                for k in 0..n {
-                    let t0 = k as f64 / n as f64;
-                    let t1 = (k + 1) as f64 / n as f64;
-                    capsule(stroke_point(seg, t0), stroke_point(seg, t1), r - sag);
-                }
+    let fine = tolerance / 8.;
+    let mut chains: Vec<(Vec<[f64; 2]>, f64)> = vec![];
+    for run in runs {
+        // The open chain: its points and the largest sagitta of its arcs.
+        let mut chain: Option<(Vec<[f64; 2]>, f64)> = None;
+        for seg in run {
+            if cancel.is_cancelled() {
+                return Err("flat-area planning cancelled".into());
             }
+            let long = seg.arc.is_some_and(|(c, sweep)| {
+                let rho = (seg.a[0] - c[0]).hypot(seg.a[1] - c[1]);
+                arc_chord_count(rho, sweep, fine) > SWEPT_FINE_CHORDS
+            });
+            let broken = chain
+                .as_ref()
+                .is_some_and(|(p, _)| *p.last().unwrap() != seg.a);
+            if (long || broken)
+                && let Some((points, sag)) = chain.take()
+            {
+                chains.push((points, r - sag));
+            }
+            if long {
+                let (mut points, sag) = arc_chords(seg, SWEPT_ARC_SAGITTA_MM);
+                points.insert(0, seg.a);
+                chains.push((points, r - sag));
+                continue;
+            }
+            let (points, sag) = chain.get_or_insert_with(|| (vec![seg.a], 0.));
+            let (more, s) = arc_chords(seg, fine);
+            points.extend(more);
+            *sag = sag.max(s);
+        }
+        if let Some((points, sag)) = chain {
+            chains.push((points, r - sag));
         }
     }
-    if capsules.is_empty() {
+    if chains.is_empty() {
         return Ok(Some(need));
     }
     let need = need
-        .subtract_sweeps(capsules, cancel)
+        .subtract_chain_sweeps(&chains, cancel)
         .map_err(|e| format!("flat-area swept region: {e}"))?
         .into_parts()
         .1;
@@ -5019,6 +5050,102 @@ fn allows_segment(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The exact distance from `p` to a stroke (line or arc): the oracle
+    /// for `subtract_swept`, sharing none of its chording.
+    fn stroke_distance(p: [f64; 2], s: &crate::pocket::Stroke) -> f64 {
+        let ends = (p[0] - s.a[0])
+            .hypot(p[1] - s.a[1])
+            .min((p[0] - s.b[0]).hypot(p[1] - s.b[1]));
+        match s.arc {
+            None => crate::geometry::point_segment_distance_sq(p, s.a, s.b).sqrt(),
+            Some((c, sweep)) => {
+                let rho = (s.a[0] - c[0]).hypot(s.a[1] - c[1]);
+                let start = (s.a[1] - c[1]).atan2(s.a[0] - c[0]);
+                let at = (p[1] - c[1]).atan2(p[0] - c[0]);
+                let tau = std::f64::consts::TAU;
+                let along = if sweep >= 0. {
+                    (at - start).rem_euclid(tau)
+                } else {
+                    (start - at).rem_euclid(tau)
+                };
+                if along <= sweep.abs() {
+                    ((p[0] - c[0]).hypot(p[1] - c[1]) - rho).abs()
+                } else {
+                    ends
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn swept_rings_subtract_no_more_than_the_disk_covers() {
+        use crate::pocket::Stroke;
+        let arc = |a: [f64; 2], c: [f64; 2], sweep: f64| {
+            let (s, k) = (sweep.sin(), sweep.cos());
+            let d = [a[0] - c[0], a[1] - c[1]];
+            Stroke {
+                a,
+                b: [c[0] + d[0] * k - d[1] * s, c[1] + d[0] * s + d[1] * k],
+                arc: Some((c, sweep)),
+            }
+        };
+        // A line, a half circle (chorded on its own), a line, a micro-arc
+        // (chorded in the chain), and a separate run.
+        let half = arc([10., 2.], [10., 8.], std::f64::consts::PI);
+        let micro = arc([4., 14.], [4., 20.], -0.01);
+        let run = vec![
+            Stroke::line([2., 2.], [10., 2.]),
+            half,
+            Stroke::line(half.b, [4., 14.]),
+            micro,
+            Stroke::line(micro.b, [2., 18.]),
+        ];
+        let other = vec![Stroke::line([18., 1.], [18., 19.])];
+        let runs = vec![run, other];
+        let floor = crate::planar::PlanarRegion {
+            version: 1,
+            units: "mm".into(),
+            name: "floor".into(),
+            boundary_error_mm: 0.,
+            components: vec![crate::planar::Component {
+                outer: crate::planar::Boundary {
+                    vertices: vec![[0., 0., 0.], [20., 0., 0.], [20., 20., 0.], [0., 20., 0.]],
+                },
+                holes: vec![],
+            }],
+            source: serde_json::Value::Null,
+        }
+        .prepare(crate::planar::ConstructionOptions::default())
+        .unwrap();
+        let (r, tolerance) = (1.5, 1e-5);
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let left = subtract_swept(floor, &runs, r, tolerance, &cancel)
+            .unwrap()
+            .unwrap();
+        let (mut kept, mut removed) = (0, 0);
+        for i in 0..=100 {
+            for j in 0..=100 {
+                let p = [0.1 + i as f64 * 0.198, 0.1 + j as f64 * 0.198];
+                let beyond = runs
+                    .iter()
+                    .flatten()
+                    .map(|s| stroke_distance(p, s) - r)
+                    .fold(f64::INFINITY, f64::min);
+                let inside = left.query(p).unwrap().signed_clearance_mm.unwrap();
+                if beyond > 2e-5 {
+                    assert!(inside > 0., "{p:?} {beyond}: removed beyond the disk");
+                    kept += 1;
+                } else if beyond < -(2. * SWEPT_ARC_SAGITTA_MM + 2e-5) {
+                    // Outside a long arc its chords run up to one sagitta
+                    // inside it and sweep a radius one sagitta smaller.
+                    assert!(inside < 0., "{p:?} {beyond}: swept but kept");
+                    removed += 1;
+                }
+            }
+        }
+        assert!(kept > 4000 && removed > 1500, "{kept} {removed}");
+    }
 
     #[test]
     fn cad_floor_retains_the_radial_reserve_and_rejects_an_outside_trim() {

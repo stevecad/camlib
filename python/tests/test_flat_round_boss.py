@@ -97,3 +97,91 @@ class FlatRoundBossTest(unittest.TestCase):
             with self.assertRaisesRegex(SimulationError, "declares no entry"):
                 for moves, _ in enumerate(sim.run_operations()):
                     self.assertLess(moves, 5000, "unplannable round-boss stream did not terminate")
+
+
+def filleted_boss():
+    """An 80 x 80 x 10 mm base with a 50 mm round boss 12 mm tall, its top
+    edge rounded 8 mm (issue #393)."""
+    base = cq.Workplane("XY").box(80, 80, 10, centered=False)
+    boss = cq.Workplane("XY").workplane(offset=10).center(40, 40).circle(25).extrude(12)
+    return base.union(boss.faces(">Z").edges().fillet(8))
+
+
+class FlatFilletedBossTest(unittest.TestCase):
+    """The fillet's tessellation leaves the boss top's tool-centre region a
+    finely faceted circle with a few-micron arc at every facet corner. Its
+    erosions came back from the offset kernel with touching boundaries
+    (#393), and the rings along it made one swept capsule per facet."""
+
+    def test_boss_top_and_base_finish_around_the_fillet(self):
+        target = filleted_boss()
+        # Roughed: 0.2 mm on both flats, the boss a 64-gon circumscribing a
+        # circle 0.3 mm proud of its wall (the stock model is polyhedral).
+        radius = 25.3 / math.cos(math.pi / 64)
+        polygon = [(radius * math.cos(math.tau * i / 64), radius * math.sin(math.tau * i / 64)) for i in range(64)]
+        blank = (
+            cq.Workplane("XY")
+            .box(80, 80, 10.2, centered=False)
+            .union(cq.Workplane("XY").workplane(offset=10).center(40, 40).polyline(polygon).close().extrude(12.2))
+        )
+        tool = ToolAssembly(
+            "mill6",
+            camlib.EndMill("em6", diameter=6, flute_length=18, overall_length=60),
+            30,
+            60,
+            (HolderSection(30, 60, 4, 4),),
+        )
+        op = camlib.Flat(
+            "flats",
+            tool,
+            export_surface_mesh(target, max_error_mm=0.005),
+            9,
+            2.5,
+            35,
+            feed_mm_min=1200,
+            plunge_mm_min=300,
+            spindle_rpm=12000,
+            tool_number=1,
+            length_register=1,
+            coolant="flood",
+            entry=camlib.RampEntry(angle_deg=3, min_length_mm=1),
+        )
+        report = None
+        with Simulation(
+            stock=camlib.StockSpec.from_mesh(export_stock_mesh(blank), 0.5),
+            tools=(tool,),
+            operations=(op,),
+            revision="1",
+            initial_position_mm=(-10, -10, 35),
+            verification=camlib.StreamChecks(stock_contact=camlib.StockContactOptions()),
+        ) as sim:
+            for update in sim.run_operations():
+                if isinstance(update, OperationUpdate) and update.stage == "end":
+                    report = update.report
+                elif isinstance(update, VerificationUpdate):
+                    self.assertNotEqual(update.status, "violation")
+            s = sim.state
+            self.assertTrue(s.finished)
+            heights = list(s.heights)
+            nx, ny, dx, dy, lo = s.nx, s.ny, s.dx, s.dy, s.min_mm
+        self.assertEqual(report["levels_z_mm"], [22, 10])
+        self.assertEqual(report["runs_completed"], report["runs"])
+        self.assertEqual(report["dropped_length_mm"], 0)
+        # Independently of the planner: every stock cell lying wholly over
+        # the top flat (radius 17 about the axis) or the base (outside the
+        # boss wall, inside the part) is cut down to that flat.
+        checked = {22: 0, 10: 0}
+        for j in range(ny):
+            for i in range(nx):
+                x0, y0 = lo[0] + i * dx, lo[1] + j * dy
+                corners = [(x0 + a * dx - 40, y0 + b * dy - 40) for a in (0, 1) for b in (0, 1)]
+                far = max(math.hypot(*c) for c in corners)
+                near = math.hypot(max(abs(x0 + dx / 2 - 40) - dx / 2, 0), max(abs(y0 + dy / 2 - 40) - dy / 2, 0))
+                inside = x0 >= 0 and y0 >= 0 and x0 + dx <= 80 and y0 + dy <= 80
+                level = 22 if far < 16.5 else 10 if inside and near > 25.5 else None
+                if level is not None:
+                    top = heights[2 * (j * nx + i) + 1]
+                    self.assertLessEqual(top, level + 0.005, (i, j, level))
+                    checked[level] += 1
+        self.assertGreater(checked[22], 600)
+        self.assertGreater(checked[10], 10000)

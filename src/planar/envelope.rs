@@ -1,6 +1,7 @@
 //! Conservative simplification before erosion: hulls of almost-convex linear
-//! holes, then local removal of tiny convex corners of the region on every
-//! straight-line loop. Both only shrink machining space (protected material
+//! holes, then, on every loop, shallow convex arcs taken as their chords and
+//! local removal of tiny convex corners of the region along its straight
+//! runs. Both only shrink machining space (protected material
 //! grows), never the reverse. Retained vertices are exact input vertices; each
 //! replaced chain has a reported Hausdorff bound. This is not input repair.
 use super::*;
@@ -165,6 +166,44 @@ fn shrink_simplify(boundary: &Boundary, budget: f64) -> Option<(Boundary, f64)> 
     })
 }
 
+/// A loop whose region interior is on the LEFT (outer CCW, holes CW) with
+/// every left-turning minor arc (bulge in `(0, 1]`, so the region is convex
+/// along it) whose sagitta is within `budget` replaced by its chord. The
+/// chord lies inside the region: only the circular segment between arc and
+/// chord leaves it, so the region only shrinks, by at most the sagitta (the
+/// arc's Hausdorff distance from its chord, `bulge * chord / 2`). Endpoints
+/// stay the exact input vertices; right-turning arcs, which would grow the
+/// region, are never touched. A shadow grown with round joins carries such an
+/// arc of a few microns at every facet corner (#393); with them the offset
+/// kernel's input is no longer linear, so `shrink_simplify` cannot merge the
+/// near-collinear facets on which it mis-joins slices.
+fn chord_shallow_arcs(boundary: &Boundary, budget: f64) -> Option<(Boundary, f64, usize)> {
+    let v = &boundary.vertices;
+    let n = v.len();
+    let scale = v
+        .iter()
+        .flat_map(|p| &p[..2])
+        .map(|x| x.abs())
+        .fold(1., f64::max);
+    let guard = 512. * f64::EPSILON * scale;
+    let mut out = boundary.clone();
+    let (mut error, mut chorded) = (0f64, 0usize);
+    for i in 0..n {
+        let bulge = v[i][2];
+        if !(bulge > 0. && bulge <= 1.) {
+            continue;
+        }
+        let next = v[(i + 1) % n];
+        let sagitta = bulge * (next[0] - v[i][0]).hypot(next[1] - v[i][1]) / 2. + guard;
+        if sagitta <= budget {
+            out.vertices[i][2] = 0.;
+            error = error.max(sagitta);
+            chorded += 1;
+        }
+    }
+    (chorded > 0).then_some((out, error, chorded))
+}
+
 impl PreparedRegion {
     /// Cover small notches in a protective shadow before expanding it.
     /// Every hull contains its original outer ring, and the holes stay fixed.
@@ -206,15 +245,27 @@ impl PreparedRegion {
             definition.components[ci].holes[hi] = new;
         }
         // Displacements of successive steps on the same loop add (triangle
-        // inequality for Hausdorff distance): hull bound + local bound.
+        // inequality for Hausdorff distance): hull bound + local bound, the
+        // local bound being the chorded arcs' plus the chain simplification's,
+        // within the one budget.
         let mut local = 0f64;
         for c in &mut definition.components {
             for b in std::iter::once(&mut c.outer).chain(c.holes.iter_mut()) {
-                if let Some((new, bound)) = shrink_simplify(b, EROSION_SIMPLIFY_BUDGET_MM) {
-                    removed += b.vertices.len() - new.vertices.len();
-                    local = local.max(bound);
+                let mut arcs = 0f64;
+                if let Some((new, bound, chorded)) =
+                    chord_shallow_arcs(b, EROSION_SIMPLIFY_BUDGET_MM / 2.)
+                {
+                    removed += chorded;
+                    arcs = bound;
                     *b = new;
                 }
+                let mut chain = 0f64;
+                if let Some((new, bound)) = shrink_simplify(b, EROSION_SIMPLIFY_BUDGET_MM - arcs) {
+                    removed += b.vertices.len() - new.vertices.len();
+                    chain = bound;
+                    *b = new;
+                }
+                local = local.max(arcs + chain);
             }
         }
         error += local;
@@ -246,6 +297,76 @@ mod tests {
             .map(|p| [p[0] + shift, p[1] + shift, p[2]])
             .to_vec(),
         }
+    }
+
+    #[test]
+    fn only_shallow_convex_arcs_become_chords_and_the_region_only_shrinks() {
+        // A 10 mm square (CCW), its corners rounded by quarter arcs of
+        // 1e-4 mm radius (sagitta 2.9e-5 mm), the left side bulging out by a
+        // shallow arc (sagitta 5e-4 mm) and the bottom side bulging in by one,
+        // a right-turning arc whose chord would grow the region.
+        let (q, k) = (1e-4, std::f64::consts::FRAC_PI_8.tan());
+        let b = Boundary {
+            vertices: vec![
+                [q, 0., -1e-4],
+                [10. - q, 0., k],
+                [10., q, 0.],
+                [10., 10. - q, k],
+                [10. - q, 10., 0.],
+                [q, 10., k],
+                [0., 10. - q, 1e-4],
+                [0., q, k],
+            ],
+        };
+        let (chorded, error, count) = chord_shallow_arcs(&b, 0.001).unwrap();
+        assert_eq!(count, 5);
+        for (old, new) in b.vertices.iter().zip(&chorded.vertices) {
+            assert_eq!(old[..2], new[..2], "endpoints stay exact");
+        }
+        let bulges: Vec<f64> = chorded.vertices.iter().map(|v| v[2]).collect();
+        assert_eq!(bulges, [-1e-4, 0., 0., 0., 0., 0., 0., 0.]);
+        let left = 1e-4 * (10. - 2. * q) / 2.;
+        // The sagitta plus the rounding guard (512 ulps at the coordinates).
+        assert!(error >= left && error <= left + 1e-11, "{error}");
+        // The chord is inside: the region shrinks, by no more than `error`
+        // anywhere (checked on the prepared regions' own queries).
+        let region = |b: &Boundary| {
+            PlanarRegion {
+                version: 1,
+                units: "mm".into(),
+                name: "arcs".into(),
+                boundary_error_mm: 0.,
+                components: vec![Component {
+                    outer: b.clone(),
+                    holes: vec![],
+                }],
+                source: serde_json::Value::Null,
+            }
+            .prepare(ConstructionOptions::default())
+            .unwrap()
+        };
+        let (before, after) = (region(&b), region(&chorded));
+        assert!(after.summary().area_mm2 < before.summary().area_mm2);
+        // Erosions take it: the arcs no longer keep the region from the
+        // simplification that runs before them.
+        let (_, bound, removed) = before.erosion_envelope().unwrap();
+        assert!(removed >= 5 && bound >= error && bound <= EROSION_SIMPLIFY_BUDGET_MM);
+        for i in 0..=40 {
+            for j in 0..=40 {
+                let p = [-0.1 + i as f64 * 0.255, -0.1 + j as f64 * 0.255];
+                let a = after.query(p).unwrap().signed_clearance_mm.unwrap();
+                let o = before.query(p).unwrap().signed_clearance_mm.unwrap();
+                // Within the queries' own rounding (1e-10).
+                assert!(
+                    a <= o + 1e-10 && o - a <= error + 1e-10,
+                    "{p:?}: {o} -> {a}"
+                );
+            }
+        }
+        // Nothing to chord: a circle's half arcs, or a budget below every sagitta.
+        let circle = PlanarRegion::circle("c", [0., 0.], 1.).unwrap();
+        assert!(chord_shallow_arcs(&circle.components[0].outer, 0.001).is_none());
+        assert!(chord_shallow_arcs(&b, 1e-9).is_none());
     }
 
     #[test]
