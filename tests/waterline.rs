@@ -2488,6 +2488,91 @@ fn ramps_on_short_runs_keep_the_ramp_angle() {
     assert!(error.is_none(), "{error:?}");
     assert_ramps_within(&moves, 3.);
 }
+/// The XY length of every leg of every ramp that turns back (a run of
+/// travelling plunge moves, split where the direction reverses):
+/// independently of the plan, the span each reversal is made on.
+fn reversed_ramp_legs(moves: &[(camlib::motion::Motion, f64)]) -> Vec<f64> {
+    use camlib::motion::MoveKind;
+    let mut out = vec![];
+    let mut legs: Vec<f64> = vec![];
+    let mut last: Option<([f64; 2], [f64; 3])> = None;
+    let mut close = |legs: &mut Vec<f64>| {
+        if legs.len() > 1 {
+            out.extend(legs.iter().copied());
+        }
+        legs.clear();
+    };
+    for (motion, _) in moves {
+        let (a, b) = (motion.curve.start(), motion.curve.end());
+        let run = (b[0] - a[0]).hypot(b[1] - a[1]);
+        if motion.kind != MoveKind::Plunge || run <= 1e-9 {
+            close(&mut legs);
+            last = None;
+            continue;
+        }
+        let unit = [(b[0] - a[0]) / run, (b[1] - a[1]) / run];
+        match last {
+            Some((u, end)) if end == a && u[0] * unit[0] + u[1] * unit[1] >= -0.5 => {
+                *legs.last_mut().unwrap() += run;
+            }
+            Some((_, end)) if end == a => legs.push(run),
+            _ => {
+                close(&mut legs);
+                legs.push(run);
+            }
+        }
+        last = Some((unit, b));
+    }
+    close(&mut legs);
+    out
+}
+#[test]
+fn open_runs_shorter_than_min_length_are_entered_after_a_retract() {
+    use camlib::pocket::{PocketEntry, RampEntry};
+    use camlib::motion::MoveKind;
+    use camlib::waterline::WaterlinePlan;
+    // #392: the roof's slope-limited runs at the in-between levels are
+    // about 2 mm long, shorter than the 3 mm the tool is declared to
+    // reverse a ramp on. A link down onto such a run (along it and back)
+    // does not exist, so the run is entered after a retract; there the
+    // stock beside it stands above the level, so the entry ramps out along
+    // the level's whole contour and back. The whole operation was refused
+    // ("open ramp span ... shorter than min_length_mm").
+    let mut m = fixture();
+    let cancel = AtomicBool::new(false);
+    let (mut op, mut stock, spec) = roof(&mut m);
+    let tolerance = op.tolerance_mm;
+    let minimum = 3.;
+    op.entry = Some(PocketEntry::Ramp(RampEntry {
+        angle_rad: 3f64.to_radians(),
+        min_length_mm: Some(minimum),
+        feed_mm_min: None,
+    }));
+    let mut plan =
+        WaterlinePlan::prepare(op, &m.tools[0], &spec, m.initial_position_mm, 1, &cancel).unwrap();
+    let (moves, error) = trace(&m, &mut plan, &mut stock);
+    assert!(error.is_none(), "{error:?}");
+    let report = plan.report();
+    assert!(report.links_refused_short_run > 0);
+    assert!(report.contour_ramp_entries > 0);
+    // Every check still holds on what was emitted: no ramp steeper than the
+    // angle, every reversal on at least the declared span, and every
+    // vertical plunge in air (it removes no stock).
+    assert_ramps_within(&moves, 3.);
+    let legs = reversed_ramp_legs(&moves);
+    assert!(!legs.is_empty());
+    for leg in legs {
+        assert!(leg >= minimum - 1e-6, "a ramp reverses after {leg} mm");
+    }
+    for (motion, cut) in &moves {
+        let (a, b) = (motion.curve.start(), motion.curve.end());
+        if motion.kind == MoveKind::Plunge && (b[0] - a[0]).hypot(b[1] - a[1]) <= 1e-9 {
+            assert!(*cut <= tolerance + 1e-9, "a plunge at {a:?} cuts {cut} mm");
+        }
+    }
+    // Every slope-limited run is still cut.
+    assert_eq!(report.loops_completed, 30);
+}
 #[test]
 fn a_tiny_ramp_descent_streams_finite_moves() {
     use camlib::stock::{HeightBounds, InitialStock, Stock};

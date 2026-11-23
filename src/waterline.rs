@@ -794,6 +794,19 @@ pub struct WaterlineReport {
     pub links_refused_link_clearance: usize,
     #[serde(skip_serializing_if = "is_zero")]
     pub links_refused_ramp_clearance: usize,
+    /// Links not taken because the open run below is too short for the ramp
+    /// down along it and back (#392): shorter than the declared
+    /// `min_length_mm`, the shortest span the tool may reverse on, or than
+    /// the angle allows within 1000 passes. The run is entered after a
+    /// retract.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub links_refused_short_run: usize,
+    /// Open runs entered after a retract whose entry ramp runs along the
+    /// level's whole contour from the run's start and back, because the run
+    /// itself is too short for it (#392); also counted in
+    /// `helical_entries`.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub contour_ramp_entries: usize,
     /// Entry ramps and level links that meet stock more than three
     /// stepdowns deep where they reach the level (#46) - for a link, beyond
     /// the level gap it descends: unroughed stock, such as a raw blank or a
@@ -917,6 +930,18 @@ fn rotate_loop(edges: &mut Vec<Stroke>, s: f64) {
             let (a, b) = (c.start(), c.end());
             let t = (s - acc) / l;
             let q = [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
+            // A split within 1e-9 of a vertex is the vertex itself (#392):
+            // the stroke not split off is dropped below, so the loop must
+            // start and end exactly there, or a second rotation (the flat
+            // lap after a ramp) leaves a gap of a rounding error mid-loop
+            // that the stream refuses.
+            let q = if (q[0] - b[0]).hypot(q[1] - b[1]) <= 1e-9 {
+                [b[0], b[1]]
+            } else if (a[0] - q[0]).hypot(a[1] - q[1]) <= 1e-9 {
+                [a[0], a[1]]
+            } else {
+                q
+            };
             let mut rotated: Vec<Stroke> = vec![];
             if (q[0] - b[0]).hypot(q[1] - b[1]) > 1e-9 {
                 rotated.push(Stroke::line(q, [b[0], b[1]]));
@@ -978,14 +1003,20 @@ impl Stack {
 type Queued = (Curve, MoveKind, Option<f64>);
 /// A piece's moves, and (ramp link, moved entries, helical entries, links
 /// refused by [the stock met, the link's part clearance, the ramp's part
-/// clearance], whether the entry or link met stock deeper than a stepdown).
-type Job = (Vec<Queued>, (bool, usize, usize, [usize; 3], bool));
+/// clearance, an open run too short for its ramp], whether the entry or
+/// link met stock deeper than a stepdown, open runs entered by a ramp along
+/// their contour).
+type Job = (Vec<Queued>, (bool, usize, usize, [usize; 4], bool, usize));
 /// Ball end mills (#46): the pieces of every level in stacks, the stack
 /// being cut, the piece just cut (the tool stands at its end), whether the
 /// emitter has fallen back to level order, and the moves of the piece being
 /// cut.
 struct Emission {
     pieces: Vec<Piece>,
+    /// Every level's whole contours, cut direction (`Piece::ring` indexes
+    /// them): an open run too short for a ramp along itself is entered by a
+    /// ramp along its contour (#392).
+    rings: Vec<Vec<[f64; 2]>>,
     stacks: Vec<Stack>,
     current: Option<usize>,
     last: Option<usize>,
@@ -1887,6 +1918,8 @@ impl WaterlinePlan {
             links_refused_stock: 0,
             links_refused_link_clearance: 0,
             links_refused_ramp_clearance: 0,
+            links_refused_short_run: 0,
+            contour_ramp_entries: 0,
             deep_stock_entries: 0,
             cut_segments: 0,
             loops_completed: 0,
@@ -2320,6 +2353,7 @@ impl WaterlinePlan {
         let stacks = build_stacks(&rings, &ring_slots, &pieces);
         Ok(Emission {
             pieces,
+            rings,
             stacks,
             current: None,
             last: None,
@@ -2656,7 +2690,9 @@ impl WaterlinePlan {
             self.report.links_refused_stock += counts.3[0];
             self.report.links_refused_link_clearance += counts.3[1];
             self.report.links_refused_ramp_clearance += counts.3[2];
+            self.report.links_refused_short_run += counts.3[3];
             self.report.deep_stock_entries += usize::from(counts.4);
+            self.report.contour_ramp_entries += counts.5;
             self.report.loops_completed += 1;
             let emission = self.emission.as_mut().unwrap();
             emission.stacks[s].next += 1;
@@ -2842,13 +2878,28 @@ impl WaterlinePlan {
         let cut_feed = Some(self.op.feed_mm_min);
         let ramp_feed = Some(self.ramp_entry.feed_mm_min.unwrap_or(self.op.plunge_mm_min));
         let stack = &e.stacks[s];
-        let mut refused = [0; 3];
+        let mut refused = [0; 4];
         let above = (stack.next > 0)
             .then(|| stack.pieces[stack.next - 1])
-            .filter(|&q| e.last == Some(q) && e.current == Some(s));
-        if let Some(q) = above
-            && (z < e.pieces[q].z - 1e-9 || !piece.closed && z <= e.pieces[q].z + 1e-9)
-        {
+            .filter(|&q| e.last == Some(q) && e.current == Some(s))
+            .filter(|&q| z < e.pieces[q].z - 1e-9 || !piece.closed && z <= e.pieces[q].z + 1e-9);
+        // A link down onto an open run descends along the run and back, a
+        // reversal; on a run shorter than the declared `min_length_mm`, or
+        // too short for the angle within `MAX_RAMP_LEGS` passes, no such
+        // ramp exists (#392). That is a link the run cannot take, like one a
+        // proof refuses: the run is entered after a retract instead.
+        let above = match above {
+            Some(q)
+                if !piece.closed
+                    && z < e.pieces[q].z - 1e-9
+                    && !self.run_ramp_fits(&piece.strokes, e.pieces[q].z - z) =>
+            {
+                refused = [0, 0, 0, 1];
+                None
+            }
+            above => above,
+        };
+        if let Some(q) = above {
             let za = e.pieces[q].z;
             let mut strokes = piece.strokes.clone();
             let total: f64 = strokes.iter().map(stroke_length).sum();
@@ -2960,11 +3011,11 @@ impl WaterlinePlan {
                 (0., 0.)
             };
             refused = if !link_clear {
-                [0, 1, 0]
+                [0, 1, 0, 0]
             } else if !ramp_clear {
-                [0, 0, 1]
+                [0, 0, 1, 0]
             } else {
-                [1, 0, 0]
+                [1, 0, 0, 0]
             };
             if link_clear && ramp_clear && met <= bound + self.op.tolerance_mm {
                 let end = ramp.last().map_or(p, |c| {
@@ -2983,7 +3034,7 @@ impl WaterlinePlan {
                     .collect();
                 moves.extend(ramp.into_iter().map(|c| (c, MoveKind::Plunge, ramp_feed)));
                 moves.extend(flat.into_iter().map(|c| (c, MoveKind::Cut, cut_feed)));
-                return Ok((moves, (true, 0, 0, [0; 3], deep)));
+                return Ok((moves, (true, 0, 0, [0; 4], deep, 0)));
             }
         }
         let heights = self.op.settings().heights;
@@ -3030,6 +3081,7 @@ impl WaterlinePlan {
         };
         let mut descent: Vec<Curve> = vec![];
         let mut flat_from = 0.;
+        let mut contour_ramps = 0;
         if points[0].is_some() {
             descent.push(Curve::Line {
                 start: [entry[0], entry[1], z],
@@ -3037,8 +3089,11 @@ impl WaterlinePlan {
             });
         } else if entry_z > z && piece.closed {
             (descent, flat_from) = self.loop_ramp(&strokes, entry_z, z)?;
-        } else if entry_z > z {
+        } else if entry_z > z && self.run_ramp_fits(&strokes, entry_z - z) {
             descent = self.run_ramp(&strokes, entry_z, z)?;
+        } else if entry_z > z {
+            descent = self.contour_ramp(&e.rings[piece.ring], &strokes, entry_z, z)?;
+            contour_ramps = 1;
         }
         // The final proof of the moves emitted: the plunge, and the side
         // lead or the ramp, against the part and the limits.
@@ -3071,7 +3126,7 @@ impl WaterlinePlan {
             strokes.iter().map(|e| e.curve(z)).collect()
         };
         moves.extend(flat.into_iter().map(|c| (c, MoveKind::Cut, cut_feed)));
-        Ok((moves, (false, moved, helical, refused, deep)))
+        Ok((moves, (false, moved, helical, refused, deep, contour_ramps)))
     }
     /// The moves off the piece just cut: up at the feed to the feed height,
     /// then a rapid to the retract height (`last`: the clearance height).
@@ -3131,7 +3186,11 @@ impl WaterlinePlan {
         let total: f64 = edges.iter().map(stroke_length).sum();
         // Each leg descends half of one out-and-back's share.
         let minimum = self.ramp_entry.min_length_mm.unwrap_or(0.);
-        if minimum > total {
+        // The callers never ask for this ramp on such a run (#392): a link
+        // enters it after a retract instead, and the entry ramps along the
+        // run's contour (`contour_ramp`). Kept as the guard of the ramp
+        // itself.
+        if self.too_short_to_reverse(edges) {
             return Err(format!(
                 "waterline operation {}: open ramp span {total:.4} mm is shorter than min_length_mm {minimum:.4} mm for a reversal",
                 self.op.id
@@ -3153,6 +3212,83 @@ impl WaterlinePlan {
             ));
         }
         Ok(curves)
+    }
+    /// The entry ramp of an open run too short for a ramp along itself
+    /// (`run_ramp_fits`), after a retract (#392): out along the level's
+    /// whole contour `ring` from the run's start, in the cut direction
+    /// (through the run and on along the contour), and back to the start,
+    /// exactly as `run_ramp` does on a run, then the run is cut. This is the
+    /// ramp along "the path that comes after the plunge" of FreeCAD's ramp
+    /// dressup (see `RampEntry`): the run is one stretch of that contour,
+    /// and the slope or region limits that cut it out choose what is
+    /// finished, not where the tool may travel above the level. Every point
+    /// of the ramp lies over the contour at or above its level, and the
+    /// caller proves it clear of the part and inside the machining limits
+    /// (`route_clear`) like every other entry. Refused by name where the
+    /// contour, too, is shorter than `min_length_mm` or than the angle
+    /// allows within `MAX_RAMP_LEGS` passes.
+    fn contour_ramp(
+        &self,
+        ring: &[[f64; 2]],
+        run: &[Stroke],
+        from: f64,
+        to: f64,
+    ) -> Result<Vec<Curve>, String> {
+        let start = run[0].a;
+        let mut edges: Vec<Stroke> = ring
+            .iter()
+            .zip(ring.iter().cycle().skip(1))
+            .take(ring.len())
+            .map(|(a, b)| Stroke::line(*a, *b))
+            .collect();
+        let total: f64 = edges.iter().map(stroke_length).sum();
+        let run_length: f64 = run.iter().map(stroke_length).sum();
+        let (s, q) = nearest_on_loop(&edges, start);
+        // The run's points are samples of this contour (`filter_runs`).
+        if (q[0] - start[0]).hypot(q[1] - start[1]) > 1e-6 {
+            return Err(format!(
+                "waterline operation {}: the open run at level Z{to} starting at ({:.4}, {:.4}) does not lie on its contour; this is a planner defect, please report it",
+                self.op.id, start[0], start[1]
+            ));
+        }
+        if s > 1e-9 && s < total - 1e-9 {
+            rotate_loop(&mut edges, s);
+        }
+        // The ramp starts and ends exactly where the run starts.
+        edges[0].a = start;
+        if !self.run_ramp_fits(&edges, from - to) {
+            return Err(format!(
+                "waterline operation {}: no entry for the open run at level Z{to} starting at ({:.4}, {:.4}): the run ({run_length:.4} mm) and its whole contour ({total:.4} mm) are too short for a ramp along them and back descending {:.4} mm at {:.3} degrees with min_length_mm {:?} (the shortest span the tool may reverse on); no point beside the run has the stock at or below the level, and it is not plunged into; rough or rest-rough there down to the level, or declare the steeper angle or smaller min_length_mm the tool allows",
+                self.op.id,
+                start[0],
+                start[1],
+                from - to,
+                self.ramp_entry.angle_rad.to_degrees(),
+                self.ramp_entry.min_length_mm,
+            ));
+        }
+        self.run_ramp(&edges, from, to)
+    }
+    /// Whether an open run is shorter than the declared `min_length_mm`, the
+    /// shortest span the tool may reverse a ramp on (#392): a ramp along it
+    /// and back (`run_ramp`) does not exist there.
+    fn too_short_to_reverse(&self, edges: &[Stroke]) -> bool {
+        self.ramp_entry
+            .min_length_mm
+            .is_some_and(|minimum| minimum > edges.iter().map(stroke_length).sum::<f64>())
+    }
+    /// Whether `run_ramp` exists on `edges` for a descent of `drop` (#392):
+    /// the run is at least `min_length_mm` long and the angle needs no more
+    /// than `MAX_RAMP_LEGS` passes along it - exactly the cases `run_ramp`
+    /// does not refuse.
+    fn run_ramp_fits(&self, edges: &[Stroke], drop: f64) -> bool {
+        if self.too_short_to_reverse(edges) {
+            return false;
+        }
+        let total: f64 = edges.iter().map(stroke_length).sum();
+        let minimum = self.ramp_entry.min_length_mm.unwrap_or(0.);
+        let leg = (drop / 2. / self.ramp_entry.angle_rad.tan()).max(minimum);
+        leg <= total || self.ramp_passes(leg, total, drop).is_ok()
     }
     /// How many passes of `total` a ramp `length` long needs, refused by
     /// name past `MAX_RAMP_LEGS` (#46).
@@ -3520,6 +3656,76 @@ mod bridge_tests {
 mod entry_tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
+    #[test]
+    fn a_loop_rotated_twice_near_a_vertex_stays_continuous() {
+        // #392: a split 5e-10 mm past a vertex is the vertex; the loop then
+        // starts and ends exactly there. Rotated again (the flat lap after a
+        // ramp), it used to carry the rounding gap mid-loop, which the
+        // stream refuses as a break in continuity.
+        let square = [[0., 0.], [1., 0.], [1., 1.], [0., 1.]];
+        for s in [1. + 5e-10, 2. - 5e-10] {
+            let mut edges: Vec<Stroke> = (0..4)
+                .map(|i| Stroke::line(square[i], square[(i + 1) % 4]))
+                .collect();
+            rotate_loop(&mut edges, s);
+            rotate_loop(&mut edges, 2.5);
+            for w in edges.windows(2) {
+                assert_eq!(w[0].b, w[1].a, "{edges:?}");
+            }
+            assert_eq!(edges[edges.len() - 1].b, edges[0].a, "{edges:?}");
+        }
+    }
+    #[test]
+    fn an_open_run_too_short_to_reverse_on_ramps_along_its_contour() {
+        // #392: a 0.4 mm run of a 10 x 10 contour, min_length_mm 1. Along
+        // the run itself there is no ramp; along the contour from the run's
+        // start and back there is, ending exactly where the run starts.
+        let manifest: crate::stream::StreamManifest =
+            serde_json::from_str(include_str!("../fixtures/operations/waterline.json")).unwrap();
+        let crate::pocket::Operation::Waterline(op) = &manifest.operations[0] else {
+            panic!("fixture");
+        };
+        let mut op = op.clone();
+        op.entry = Some(crate::entry::PocketEntry::Ramp(crate::entry::RampEntry {
+            angle_rad: 3f64.to_radians(),
+            min_length_mm: Some(1.),
+            feed_mm_min: None,
+        }));
+        let plan = WaterlinePlan::prepare(
+            op,
+            &manifest.tools[0],
+            manifest.stock.height().unwrap(),
+            manifest.initial_position_mm,
+            1,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let ring = [[0., 0.], [10., 0.], [10., 10.], [0., 10.]];
+        let run = [Stroke::line([3., 0.], [3.4, 0.])];
+        assert!(!plan.run_ramp_fits(&run, 0.5));
+        assert!(plan.run_ramp(&run, 1., 0.5).is_err());
+        let ramp = plan.contour_ramp(&ring, &run, 1., 0.5).unwrap();
+        assert_eq!(ramp[0].start(), [3., 0., 1.]);
+        assert_eq!(ramp.last().unwrap().end(), [3., 0., 0.5]);
+        for w in ramp.windows(2) {
+            assert_eq!(w[0].end(), w[1].start());
+        }
+        // Out along the run and on along the contour: 0.5 / (2 tan 3 deg)
+        // = 4.77 mm, then back.
+        let far = ramp.iter().map(|c| c.end()[0]).fold(0., f64::max);
+        assert!(
+            (far - (3. + 0.25 / 3f64.to_radians().tan())).abs() < 1e-9,
+            "{far}"
+        );
+        // A contour shorter than min_length_mm is refused by name.
+        let tiny = [[0., 0.], [0.2, 0.], [0.2, 0.2], [0., 0.2]];
+        let short = [Stroke::line([0.05, 0.], [0.1, 0.])];
+        let error = plan.contour_ramp(&tiny, &short, 1., 0.5).unwrap_err();
+        assert!(
+            error.contains("min_length_mm") && error.contains("rough or rest-rough"),
+            "{error}"
+        );
+    }
     #[test]
     fn accepted_link_cells_respect_the_stock_limit_or_the_finishing_ball() {
         // Independent section of the swept sphere on a horizontal segment.

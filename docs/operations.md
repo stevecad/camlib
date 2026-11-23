@@ -2060,6 +2060,13 @@ limits, the fragments the scallop rule keeps within one run the limits allow
 are cut as one piece when the gaps between them are under four cutter radii
 (the gaps are inside the limits).
 
+A ramp along an open run always reverses, so a run shorter than the declared
+`min_length_mm` (the shortest span the tool may reverse a ramp on), or too
+short for the angle within 1000 passes, has no ramp along itself (#392). Slope
+limits near their threshold leave such runs, fractions of a millimetre long.
+A link down onto one is not taken (`links_refused_short_run`); the run is
+entered after a retract like any run a link cannot reach, as below.
+
 A loop the tool is not already at - the first of a stack, a run, or a
 loop a link could not reach - is entered after a retract, never by coming in
 from the side into a full cut and never by plunging into material: a side
@@ -2072,7 +2079,23 @@ start moves to the first one (`moved_entries`). Otherwise the ball plunges at
 the loop start to the lowest height the stock under it there is clear at (at
 most the feed height, so in air) and ramps down along the loop to the level at
 the ramp angle as above; an open run goes along itself to half the depth and
-back to its start, at the same angle - then cuts it (`helical_entries`). If no entry exists the
+back to its start, at the same angle - then cuts it (`helical_entries`). An
+open run too short for that ramp (see above) ramps the same way along the
+level's whole contour instead: from the run's start in the cut direction,
+through the run and on along the contour, then back to the start, with every
+reversal on at least `min_length_mm` (`contour_ramp_entries`, also counted in
+`helical_entries`). This is the ramp along "the path that comes after the
+plunge" of FreeCAD's ramp entry dressup, whose back-and-forth method turns
+round wherever its path ends; the run is one stretch of that contour, and the
+slope or region limits that cut it out choose what is finished, not where the
+tool may travel above the level. The ramp stays over the contour at or above
+its level and carries the same part-clearance and machining-limit proofs as
+every entry, so a region limit the contour leaves refuses it by name. Where
+the stock under the ball at the run's start is at or below the level, the
+plunge comes straight down in air and no ramp is needed. There is no plunge
+into material: a contour too short for the ramp as well is refused, naming
+the run, the level and the XY; rough or rest-rough there down to the level, or
+declare the steeper angle or smaller `min_length_mm` the tool allows. If no entry exists the
 operation is refused, naming the level and the XY: rough or rest-rough there
 first. Where an entry reaches its level in stock more than three
 `stepdown_mm` deep, or a link more than three `stepdown_mm` beyond the level

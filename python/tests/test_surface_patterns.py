@@ -233,6 +233,82 @@ class SteepAndShallowTest(unittest.TestCase):
                 coolant="flood",
             )
 
+    def test_runs_too_short_to_reverse_a_ramp_on_are_entered_after_a_retract(self):
+        # #392: steep_and_shallow with a ramp entry that declares the
+        # shortest span the tool may reverse on. The slope limit leaves runs
+        # on the end walls shorter than 2 mm near the ridge; a ramp along such
+        # a run and back does not exist. The whole job used to be refused
+        # ("open ramp span ... shorter than min_length_mm ... for a
+        # reversal"). Now a link onto such a run is not taken and the run is
+        # entered after a retract, its ramp running along the level's contour
+        # and back.
+        import math
+
+        config = roof().parallel_job()
+        tool, surface = config["tools"][0], config["operations"][0].surface
+        minimum = 2
+        steep, shallow = camlib.steep_and_shallow(
+            "finish",
+            tool,
+            surface,
+            0,
+            12,
+            top_z_mm=7.5,
+            bottom_z_mm=0.5,
+            stepdown_mm=0.5,
+            stepover_mm=0.75,
+            threshold_deg=30,
+            overlap_deg=5,
+            entry=camlib.RampEntry(angle_deg=3, min_length_mm=minimum),
+            feed_mm_min=600,
+            plunge_mm_min=150,
+            spindle_rpm=12000,
+            tool_number=1,
+            length_register=1,
+            coolant="flood",
+        )
+        values = dict(
+            config,
+            stock=roughed_roof_stock(),
+            operations=(steep, shallow),
+            verification=camlib.StreamChecks(stock_contact=camlib.StockContactOptions()),
+        )
+        reports, plunges = {}, []
+        with Simulation(**values) as sim:
+            for update in sim.run_operations():
+                if isinstance(update, OperationUpdate) and update.stage == "end":
+                    reports[update.operation] = update.report
+                motion = getattr(update, "motion", None)
+                if motion is not None and motion["operation"] == "finish-steep":
+                    plunges.append(motion if motion["kind"] == "plunge" else None)
+            self.assertTrue(sim.state.finished)
+        report = reports["finish-steep"]
+        self.assertGreater(report["links_refused_short_run"], 0)
+        self.assertGreater(report["contour_ramp_entries"], 0)
+        # Independently of the plan: every travelling plunge keeps the 3
+        # degree angle, and every ramp that turns back does so only after
+        # travelling at least min_length_mm.
+        legs, leg, last = [], [], None
+        for motion in plunges + [None]:
+            start, end = (motion["curve"]["start"], motion["curve"]["end"]) if motion else (None, None)
+            run = math.dist(start[:2], end[:2]) if motion else 0
+            if run <= 1e-9:
+                legs += leg if len(leg) > 1 else []
+                leg, last = [], None
+                continue
+            self.assertLessEqual(start[2] - end[2], math.tan(math.radians(3)) * run + 1e-9)
+            direction = ((end[0] - start[0]) / run, (end[1] - start[1]) / run)
+            if last is not None and last[1] == start and last[0][0] * direction[0] + last[0][1] * direction[1] >= -0.5:
+                leg[-1] += run
+            elif last is not None and last[1] == start:
+                leg.append(run)
+            else:
+                legs += leg if len(leg) > 1 else []
+                leg = [run]
+            last = (direction, end)
+        self.assertTrue(legs)
+        self.assertGreaterEqual(min(legs), minimum - 1e-6)
+
 
 class RestFinishingTest(unittest.TestCase):
     def test_rest_passes_follow_the_stock_left_by_the_previous_finish(self):
