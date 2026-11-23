@@ -415,6 +415,14 @@ class WinCNCPlasmaPost(GCodePost):
                         'the control applies it'
                     )
             self._stretch_open = True
+        elif event.side != 'off' and m.control_kerf == 'material':
+            # Wear compensation (G41/G42 with the D register) on a control that
+            # offsets every cut by its material setup's kerf: it would offset
+            # twice (#391).
+            raise ValueError(
+                'WinCNC plasma: this control applies its material setup\'s kerf itself (control_kerf="material"): '
+                'plan the cut with compensation="control", not wear compensation'
+            )
         return super().on_cutter_compensation(event)
 
     def on_beam_mark(self, event):
@@ -595,10 +603,23 @@ class WinCNCPlasmaDecoder(NativeGCodeDecoder):
             self._edge_delay = False
             return [Dwell(seconds)]
         self._edge_delay = False
-        if text.split(' ')[0] in ('G41', 'G42') and m.control_kerf != 'g41':
-            raise ValueError(
-                'WinCNC plasma: this machine declares no G41/G42 in its programs (control_kerf="g41" writes them)'
-            )
+        words = text.split(' ')
+        if words[0] in ('G41', 'G42'):
+            # What the machine's declaration rules out (#391): any G41/G42 on a
+            # control that applies its material setup's kerf itself (it would
+            # offset twice), and an amount word (O) unless the control is
+            # declared to take it. Wear compensation, G41/G42 with the head's
+            # D register, stays the generic decoder's to check.
+            if m.control_kerf == 'material':
+                raise ValueError(
+                    'WinCNC plasma: this control applies its material setup\'s kerf itself (control_kerf="material"): '
+                    'a program for it carries no G41/G42'
+                )
+            if m.control_kerf != 'g41' and any(w.startswith('O') for w in words[1:]):
+                raise ValueError(
+                    'WinCNC plasma: G41/G42 with an amount (O) needs control_kerf="g41" (the control offsetting by '
+                    'the written amount)'
+                )
         if text == 'G92' and m.local_coordinates == 'cancel':
             # No local coordinates: WinCNC's work coordinates, offset 1.
             self.ready.add('frame_reset')

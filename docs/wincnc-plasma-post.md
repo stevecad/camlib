@@ -100,6 +100,11 @@ control. How the control takes it is declared, as the table's owner knows it:
 | `control_kerf="material", material_kerf_mm=...` | No compensation word | **The owner's declaration of their control**, not a WinCNC manual fact: the control applies half the kerf of the material setup chosen at it, to the left of travel, from the first move after the torch fires (`M61`) to the last before it goes off (`M62`), and the parts come out on size. Only `compensation="control"` loops can be cut on such a table (no crop, skeleton, chain or micro-joint cuts, which the control would offset too), in the usual direction (`reverse=False`), with the torch's kerf equal to `material_kerf_mm` |
 | `control_kerf=None` (default) | | `compensation="control"` is refused |
 
+Wear compensation (`compensation="wear"`, `G41/G42 D<register>` with the head's diameter register, the control trimming
+only the wear) posts on a table that declares no `control_kerf` or `control_kerf="g41"`. It is refused with
+`control_kerf="material"`: that control offsets every cut by its material setup's kerf, so it would offset twice. The
+decoder refuses an amount word (`O`) unless `control_kerf="g41"`, and any G41/G42 with `control_kerf="material"` (#391).
+
 The G41/G42 `O#` behaviour cited is documented for revision 3.1.04 of the
 Users Guide (Controller 3.1); earlier WinCNC versions are not covered by
 that citation, and no claim is made for them.

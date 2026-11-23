@@ -60,9 +60,15 @@ def setup_job(compensation="control", parts=None, **cut):
     return tool, camlib.Job("plasma", "1", (setup,))
 
 
-def wincnc_machine(w, j, tool, units="inch", **declared):
+def wincnc_machine(w, j, tool, units="inch", diameter_register=None, **declared):
     header = j.compile().setup("sheet").program_header()
-    setting = ToolSetting.for_tool(tool, number=1, length_register=1, position_after_mm=header.initial_position_mm)
+    setting = ToolSetting.for_tool(
+        tool,
+        number=1,
+        length_register=1,
+        position_after_mm=header.initial_position_mm,
+        **({} if diameter_register is None else {"diameter_register": diameter_register}),
+    )
     return w.define_machine(
         "table",
         setting,
@@ -203,6 +209,28 @@ class ControllerKerfTest(unittest.TestCase):
                 values.update(declared)
                 with self.assertRaisesRegex(Exception, message):
                     post(self.w, j, wincnc_machine(self.w, j, tool, **values))
+
+    def test_wear_compensation_still_posts_and_decodes(self):
+        # #391: G41/G42 with the head's D register (wear) on a WinCNC table
+        # that declares no control kerf, as before #384; refused where the
+        # control applies its material setup's kerf (it would offset twice).
+        tool, j = setup_job(compensation="wear")
+        lines = post(self.w, j, wincnc_machine(self.w, j, tool, diameter_register=3))
+        starts = [line for line in lines if line.startswith(("G41", "G42"))]
+        self.assertTrue(starts, lines)
+        self.assertTrue(all(line.split(" ")[:2] == ["G41", "D3"] for line in starts), starts)
+        self.assertIn("G40", lines[lines.index(starts[0]) :])
+        machine = wincnc_machine(
+            self.w,
+            j,
+            tool,
+            diameter_register=3,
+            control_kerf="material",
+            material_kerf_mm=KERF,
+            cutcomp_full_circle_mm=0,
+        )
+        with self.assertRaisesRegex(Exception, "applies its material setup's kerf itself"):
+            post(self.w, j, machine)
 
     def test_the_decoder_replays_the_offset_of_what_was_written(self):
         w = self.w
