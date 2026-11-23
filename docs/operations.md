@@ -2130,7 +2130,12 @@ the parent contour whose greatest contact angle satisfies
 `sin(t) < P / D - 1e-9`, with `P` the parent level spacing of that gap (so a
 short last gap needs fewer levels), which keeps passes at most `D` apart
 along the surface. An exactly vertical wall never gets a sub-level (the 1e-9
-tie). The report's `scallop_levels` counts the sub-levels that cut, and
+tie). Under `slope_from_deg` a part is kept only where its greatest contact
+angle is at least that angle, so a sub-level whose bound `P / D - 1e-9` is at
+most `sin(slope_from_deg)` keeps nothing and is not planned at all (#398): on
+the steep half of `steep_and_shallow` only the shallow depths that can still
+cut are contoured (the toolpath is the same; the planning time is not spent
+on empty levels). The report's `scallop_levels` counts the sub-levels that cut, and
 `scallop_from_deg` is the contact angle below which the bound is NOT claimed
 (`asin(min(1, stepdown_mm / (2^K D)))`, K the deepest sub-level); ball end
 mills only — flat and bull-nose reports have neither field. The cost: at

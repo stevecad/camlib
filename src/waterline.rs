@@ -1846,6 +1846,18 @@ impl WaterlinePlan {
                         }
                     }
                 }
+                // Under a slope limit a sample is kept only where its
+                // greatest contact angle tg is at least slope_from_deg (less
+                // the keep test's 1e-9 tie). Contact angles lie in 0..=90
+                // degrees: the part is a downward-extruded surface, so the
+                // point of it nearest a ball centre is never above the centre
+                // (`level_contact`'s normals point up). sin is increasing
+                // there, so sin(tg) >= sin(slope_from). A depth-k level whose
+                // bound sin(tg) < keep_below is at most that keeps no sample
+                // anywhere: its contours would be computed for nothing
+                // (#398). The 1e-12 covers the rounding of sin. Exact: the
+                // levels left out are the ones the keep test empties.
+                let slope_floor = limits.map(|(lo, _)| (lo - 1e-9).max(0.).sin() - 1e-12);
                 for gap in 0..gaps {
                     let (za, zb) = (main_z[gap], main_z[gap + 1]);
                     for k in 1..=k_max {
@@ -1858,6 +1870,9 @@ impl WaterlinePlan {
                         // sin(tg) < P / D - 1e-9, P the parent spacing of
                         // this gap (#46).
                         let keep_below = (za - zb) / 2f64.powi(k as i32 - 1) / d - 1e-9;
+                        if slope_floor.is_some_and(|floor| keep_below <= floor) {
+                            continue;
+                        }
                         let mut j = 1;
                         while za - j as f64 * step > zb {
                             schedule.push(LevelSlot {
@@ -3803,6 +3818,77 @@ mod entry_tests {
         );
     }
 
+    #[test]
+    fn slope_limits_leave_out_in_between_levels_that_keep_nothing() {
+        // #398: the roof of tests/waterline.rs (20.6 degree planes, ball
+        // R2, stepdown 0.4) wants in-between levels down to depth 2: on its
+        // planes sin(t) = 0.352 is below the depth-2 bound 0.355. Under
+        // slope_from_deg 25 a sample is kept only where sin(tg) >= sin(25) =
+        // 0.423, and a depth-2 level keeps only sin(tg) < 0.355: it keeps
+        // nothing, so it is not planned (its contours are the work). Depth 1
+        // (bound 0.709) stays. The toolpath is the same either way; the
+        // roof's integration tests pin it.
+        let m: crate::stream::StreamManifest =
+            serde_json::from_str(include_str!("../fixtures/operations/waterline.json")).unwrap();
+        let crate::pocket::Operation::Waterline(op) = &m.operations[0] else {
+            panic!("fixture");
+        };
+        let mut op = op.clone();
+        let (a, b, c, d, e, f) = (
+            [4., 4., 4.],
+            [12., 4., 7.],
+            [20., 4., 4.],
+            [4., 12., 4.],
+            [12., 12., 7.],
+            [20., 12., 4.],
+        );
+        op.surface = crate::surface::SurfaceMesh {
+            version: 1,
+            units: "mm".into(),
+            surface_error_mm: 0.,
+            source: serde_json::Value::Null,
+            triangles: vec![[a, b, e], [a, e, d], [b, c, f], [b, f, e]].into(),
+        };
+        op.top_z_mm = 6.8;
+        op.bottom_z_mm = 4.4;
+        op.stepdown_mm = 0.4;
+        let spec = m.stock.height().unwrap().clone();
+        let plan = |slope_from_deg: f64| {
+            let mut op = op.clone();
+            op.slope_from_deg = slope_from_deg;
+            WaterlinePlan::prepare(
+                op,
+                &m.tools[0],
+                &spec,
+                m.initial_position_mm,
+                1,
+                &AtomicBool::new(false),
+            )
+            .unwrap()
+        };
+        let depths = |p: &WaterlinePlan| {
+            let mut count = [0usize; 8];
+            for slot in &p.schedule {
+                count[slot.depth.min(7)] += 1;
+            }
+            count
+        };
+        let unlimited = plan(0.);
+        let limited = plan(25.);
+        let (all, kept) = (depths(&unlimited), depths(&limited));
+        // Main levels Z6.8 .. Z4.4 either way.
+        assert_eq!((all[0], kept[0]), (7, 7));
+        // Without a slope limit the planes need depth 2 (and depth 1).
+        assert!(all[1] > 0 && all[2] > 0, "{all:?}");
+        // Under the limit depth 1 stays whole and nothing deeper is planned.
+        assert_eq!(kept[1], all[1], "{kept:?}");
+        assert_eq!(kept[2..].iter().sum::<usize>(), 0, "{kept:?}");
+        // Every planned in-between level can keep a sample.
+        let floor = (25f64.to_radians() - 1e-9).sin();
+        for slot in limited.schedule.iter().filter(|s| s.depth > 0) {
+            assert!(slot.keep_below > floor, "{}", slot.keep_below);
+        }
+    }
     fn stock_with_wall_and_isolated_cell(isolated_lower: f64) -> (WaterlinePlan, Stock) {
         let m: crate::stream::StreamManifest =
             serde_json::from_str(include_str!("../fixtures/operations/waterline.json")).unwrap();
