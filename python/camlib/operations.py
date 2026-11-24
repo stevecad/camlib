@@ -1984,11 +1984,58 @@ class VCarve:
 
 @dataclass(frozen=True)
 class Lead:
-    """Thermal cut lead: a straight part of ``length_mm`` and a tangent arc
-    of ``radius_mm`` (either may be zero), always on the scrap side."""
+    """Thermal cut lead, always on the scrap side. ``Lead(length_mm,
+    radius_mm)``: a straight part square to the edge and a quarter-turn arc
+    tangent to the cut (either may be zero). The other shapes:
+
+    - ``Lead.line(length_mm, angle_deg)``: straight, at ``angle_deg`` to the
+      edge's tangent: 90 square to it, 0 in line with it (along the edge's
+      extension; at a corner, past the corner).
+    - ``Lead.arc(radius_mm, sweep_deg)``: a tangent arc of that sweep (up to
+      180).
+    - ``Lead.line_arc(length_mm, radius_mm, sweep_deg=90)``: a straight part
+      tangent to an arc of that sweep: the lead-in runs the line, then the
+      arc onto the cut.
+    - ``Lead.arc_line(radius_mm, length_mm, sweep_deg=90)``: the same shape
+      as a lead-out reads it: the arc off the cut, then the line.
+
+    A ``Lead`` is read from the cut outward, so one value describes a
+    lead-in or a lead-out."""
 
     length_mm: float = 0
     radius_mm: float = 0
+    sweep_deg: float | None = None
+    angle_deg: float | None = None
+
+    @classmethod
+    def line(cls, length_mm, angle_deg):
+        """A straight lead of ``length_mm`` at ``angle_deg`` (0..90) to the
+        edge's tangent."""
+        return cls(length_mm, 0, angle_deg=angle_deg)
+
+    @classmethod
+    def arc(cls, radius_mm, sweep_deg):
+        """A tangent arc of ``radius_mm`` sweeping ``sweep_deg`` (0..180)."""
+        return cls(0, radius_mm, sweep_deg=sweep_deg)
+
+    @classmethod
+    def line_arc(cls, length_mm, radius_mm, sweep_deg=90):
+        """A straight part of ``length_mm`` tangent to an arc of
+        ``radius_mm`` and ``sweep_deg`` (a lead-in: line, then arc)."""
+        return cls(length_mm, radius_mm, sweep_deg=sweep_deg)
+
+    @classmethod
+    def arc_line(cls, radius_mm, length_mm, sweep_deg=90):
+        """An arc of ``radius_mm`` and ``sweep_deg``, then a straight part of
+        ``length_mm`` tangent to it (a lead-out: arc, then line)."""
+        return cls(length_mm, radius_mm, sweep_deg=sweep_deg)
+
+    def to_dict(self):
+        result = dict(length_mm=self.length_mm, radius_mm=self.radius_mm)
+        for key in ("sweep_deg", "angle_deg"):
+            if getattr(self, key) is not None:
+                result[key] = getattr(self, key)
+        return result
 
 
 @dataclass(frozen=True)
@@ -2366,8 +2413,8 @@ class ThermalCut:
             kind="thermal_cut",
             tool=getattr(self.tool, "id", self.tool),
             parts=self.parts.to_dict() if hasattr(self.parts, "to_dict") else self.parts,
-            lead_in=dict(length_mm=self.lead_in.length_mm, radius_mm=self.lead_in.radius_mm),
-            lead_out=dict(length_mm=self.lead_out.length_mm, radius_mm=self.lead_out.radius_mm),
+            lead_in=self.lead_in.to_dict(),
+            lead_out=self.lead_out.to_dict(),
         )
         if self.small_holes is not None:
             h = self.small_holes

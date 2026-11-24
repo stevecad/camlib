@@ -2368,13 +2368,83 @@ cut = camlib.ThermalCut("plasma", torch, parts, feed_mm_min=2500, cut_height_mm=
 - **Direction**: outlines clockwise, holes counter-clockwise (the part on the
   right of travel, the good side of a plasma arc with clockwise swirl);
   `reverse=True` swaps both.
-- **Leads**: `Lead(length_mm, radius_mm)`: a straight part and a tangent arc,
-  both in the scrap. `overcut_mm` cuts past the start; a negative value starts
-  the lead-out that far before the loop closes (negative overburn, the
-  Hypertherm recommendation for holes with an arc lead-in). A loop starts at
-  its first vertex; where the leads there would leave the scrap (a corner of a
-  straight-edged hole), they move to the middle of the longest edge whose
-  leads are clear (reported).
+- **Leads**: a lead-in runs from the pierce point onto the loop, a lead-out
+  from the loop into the scrap; one `Lead` describes either, read from the cut
+  outward, and both lie in the scrap. The shapes are those cutting CAM offers
+  (#400):
+  - `Lead(length_mm, radius_mm)`: a straight part square to the edge, then a
+    quarter-turn arc tangent to the cut (either may be zero). Its programs
+    are what they were before the other shapes.
+  - `Lead.line(length_mm, angle_deg)`: straight, at `angle_deg` to the edge's
+    tangent, from 0 (in line with the edge, along its extension) to 90 (square
+    to it). An in-line lead-out is the in-line overrun along the cut. An
+    in-line lead-in belongs at a corner (below): on a straight edge its
+    pierce would lie on the kerf path, against the part, and is refused by
+    the pierce clearance.
+  - `Lead.arc(radius_mm, sweep_deg)`: a tangent arc of that sweep, more than 0
+    and at most 180 degrees (beyond a half turn the arc turns back towards the
+    cut).
+  - `Lead.line_arc(length_mm, radius_mm, sweep_deg=90)`: a straight part
+    tangent to an arc of that sweep: the lead-in runs the line, then the arc
+    onto the cut. `Lead.arc_line(radius_mm, length_mm, sweep_deg=90)` is the
+    same shape as a lead-out reads it, arc off the cut, then the line.
+    With the default quarter turn its leads are `Lead(length_mm, radius_mm)`'s.
+
+  Sources: Aerotech CADFusion 3.00.000 help, "Lead Moves" ("A lead move can be
+  a line or it can be a circular arc": a line with its angle and length, an
+  arc with the "full angle that the lead move sweeps through" and its radius);
+  Autodesk Fusion, "2D Contour reference", Linking tab (Lead-In Sweep Angle,
+  Horizontal Lead-In Radius, the Linear Lead-In Distance tangent to the arc
+  that the controller switches compensation on over, and the lead-out alike);
+  eCam, "Generic cutting module" (tangent arc, perpendicular, slant line and
+  "Extension", which puts the leads at a corner). How long: Hypertherm,
+  *Thick metal cutting techniques*, white paper 807850 r2, p. 8 ("as a general
+  rule lead-in length should be equal to the material thickness"); its p. 3
+  "dogleg" lead-out turns about 120 degrees into the skeleton, which these
+  shapes do not offer (an angle beyond 90 to the edge). None is assumed: the
+  lengths, radii, angles and sweeps are the caller's.
+
+  - **At a corner**: an in-line lead-in that meets the loop at a corner of the
+    kerf path (the arc the offset puts round a drawn outside corner, or its
+    end) starts the loop where that arc ends and comes in along the next
+    edge's extension, past the corner, through the scrap. With an in-line
+    lead-out too, the corner's arc is not cut: the lead-out runs on along the
+    previous edge's extension, and the two straight kerfs cross beyond the
+    corner. Each must run at least half a kerf past where the two edges' kerf
+    paths meet, so the corner is cut through, or the cut is refused naming the
+    lengths needed; `overcut_mm` must be 0 there (the lead-out is the overrun),
+    and wear or control compensation is refused with it (the path crosses
+    itself). A rectangle started at a corner with `Lead.line(6, 0)` both ways
+    cuts a square corner: lead-in along the bottom edge's extension, lead-out
+    down the side edge's.
+  - **Placement**: every shape is placed and proven like the plain lead: its
+    kerf clear of every part and its pierce keeping `pierce_clearance_mm`, at
+    the loop's start, at the start `lead_placement` chooses or at a declared
+    start (`starts=`), refused by name where it is not clear. A loop starts at
+    its first vertex; where the leads there would leave the scrap (a corner
+    of a straight-edged hole), they move to the middle of the longest edge
+    whose leads are clear, or, for an in-line lead-in, to the first of the
+    loop's corners where they are (reported). In a hole too small for its leads only
+    `Lead(length_mm, radius_mm)` moves its pierce to the hole's centre; a
+    shape of its own is refused there, by name. A common line is entered
+    straight along its line, `lead_in.length_mm` long, whatever the shape.
+  - **Compensation**: `compensation="wear"` turns G41/G42 on over the lead-in's
+    straight part and off over the lead-out's, so both need one (`Lead.arc`
+    has none and is refused). `compensation="control"` also needs the written
+    lead to run tangent into the cut: a straight part and an arc, so
+    `Lead.line` is refused there; its lead arcs are cut in pieces of at most a
+    quarter turn, like the loop's arcs.
+  - **Overcut and overrun**: `overcut_mm` cuts on round the loop past the
+    start (the loop's own path: on a straight edge, in line with it); a
+    negative value starts the lead-out that far before the loop closes
+    (negative overburn: Hypertherm, "Troubleshooting cut quality problems: hole
+    quality", a radiused lead-in "with a very small or negative lead-out"; a
+    short straight lead-in with "a small leadout (positive overburn)";
+    Hypertherm FAQ "How can I cut better holes?": "Don't program a lead-out;
+    instead, use an overburn technique ... staying on the hole radius").
+    `Lead.line(length_mm, 0)` as the lead-out is the straight overrun: at a
+    straight edge it continues along the cut, at a corner along the previous
+    edge's extension.
 - **Pierce**: each pierce point keeps `pierce_clearance_mm` (default one kerf)
   beyond half a kerf from every part. In a hole too small for the leads, the
   pierce moves to the hole center (reported).

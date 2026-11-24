@@ -61,7 +61,11 @@ A thermal cut runs the beam center half a kerf plus an allowance (the parts'
 part. A lead starts where its loop starts; its pierce point lies the lead's arc
 radius along the loop and radius + length away from it, so at most
 `hypot(radius, radius + length)` from the loop, and the pierce crater reaches
-`pierce_clearance_mm` beyond half a kerf round it. The larger of the lead-in's
+`pierce_clearance_mm` beyond half a kerf round it. The other lead shapes
+(`Lead.line`, `Lead.arc`, `Lead.line_arc`, [operations](operations.md)) reach
+no further from the loop than their farthest point: their length for a
+straight lead, the far end of the arc or the straight part tangent to it
+otherwise. The larger of the lead-in's
 and the lead-out's reach is the result's `lead_reach_mm`; with the cut's
 `corner_loops` declared it is at least the loops' reach too (a loop's far
 side is `overshoot / tan(t / 4)` from the point where the kerf path's edges
@@ -117,7 +121,13 @@ one), its first vertex. The room is a rectangle on the edge there:
   `lead_out radius + length + kerf / 2`.
 
 That holds the lead-in, the pierce crater and the lead-out exactly as the cut
-builds them. The nest then keeps
+builds them. For the other lead shapes the room is the same with each lead's
+own reach: along the edge, the farthest its points lie along it from the
+start (half a kerf beyond, or the pierce clearance beyond half a kerf round
+the pierce), and out from it the farthest they lie out. With in-line leads
+both ways (`Lead.line(length, 0)`), which at a corner start leave along the
+previous edge's extension, the lead-out's room is its length and the kerf
+path's offset every way from the start. The nest then keeps
 
 - any two parts at least `2 × (kerf + allowance) + part_spacing_mm` apart
   (plus the reach of `corner_loops`, which need room at every corner);

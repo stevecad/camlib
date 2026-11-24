@@ -439,6 +439,14 @@ fn clearances(request: &NestRequest) -> Result<Clearances, String> {
     let lead_ok = |l: &Lead| {
         l.length_mm.is_finite() && l.radius_mm.is_finite() && l.length_mm >= 0. && l.radius_mm >= 0.
     };
+    for (which, lead) in [
+        ("lead_in", &request.lead_in),
+        ("lead_out", &request.lead_out),
+    ] {
+        if lead_ok(lead) {
+            lead.validate(which).map_err(|e| format!("nest: {e}"))?;
+        }
+    }
     let within = |v: f64, max: f64| v.is_finite() && (0. ..=max).contains(&v);
     crate::heights::require(
         "nest",
@@ -532,7 +540,9 @@ fn clearances(request: &NestRequest) -> Result<Clearances, String> {
     );
     // A lead starts where its loop starts: the pierce point lies its arc
     // radius along the loop's tangent and radius + length along its normal
-    // from there (thermal.rs), and the crater reaches the pierce clearance
+    // from there (thermal.rs; for the other shapes, no further from it than
+    // the farthest point of the lead, `Lead::reach_mm`), and the crater
+    // reaches the pierce clearance
     // beyond half a kerf round it. Leads shortened to fit a hole come
     // closer to the loop. The one exception is the cut's center pierce in a
     // hole too small for its leads: it stays inside that hole, where only a
@@ -552,6 +562,8 @@ fn clearances(request: &NestRequest) -> Result<Clearances, String> {
         let none = Lead {
             length_mm: 0.,
             radius_mm: 0.,
+            sweep_deg: None,
+            angle_deg: None,
         };
         let (_, body) = cut_reach(
             kerf,
@@ -573,16 +585,46 @@ fn clearances(request: &NestRequest) -> Result<Clearances, String> {
         let offset = kerf / 2. + allowance;
         let crater = kerf / 2. + request.pierce_clearance_mm.unwrap_or(kerf);
         let (lin, lout) = (&request.lead_in, &request.lead_out);
+        // Other shapes (thermal/leads.rs): the lead-in's points reach back
+        // along the cut and out from it at most its extent, half a kerf
+        // beyond for the kerf and the crater's reach round the pierce; the
+        // lead-out likewise from the overcut. In-line leads at a corner
+        // leave along the previous edge's extension, from the kerf path
+        // round the drawn corner: their room is the lead's length and the
+        // offset every way from the start.
+        let (lead_in_width, lead_in_height) = if lin.plain() {
+            (
+                lin.radius_mm + crater,
+                lin.radius_mm + lin.length_mm + crater,
+            )
+        } else {
+            let ([t, n], p) = (lin.extent(), lin.pierce_tn());
+            (
+                (t + kerf / 2.).max(p[0].abs() + crater),
+                (n + kerf / 2.).max(p[1] + crater),
+            )
+        };
+        let (lead_out_width, lead_out_height) = if lout.plain() {
+            (
+                request.overcut_mm.abs() + lout.radius_mm + kerf / 2.,
+                lout.radius_mm + lout.length_mm + kerf / 2.,
+            )
+        } else if lin.in_line() && lout.in_line() {
+            (
+                request.overcut_mm.abs() + offset + lout.length_mm + kerf / 2.,
+                lout.length_mm + kerf / 2.,
+            )
+        } else {
+            let [t, n] = lout.extent();
+            (request.overcut_mm.abs() + t + kerf / 2., n + kerf / 2.)
+        };
         return Ok(Clearances {
             lead_reach_mm,
             part_distance_mm: 2. * body + request.part_spacing_mm,
             sheet_distance_mm: body + request.edge_margin_mm + request.sheet.boundary_error_mm,
             zones: Some(Zones {
-                half_width_mm: (lin.radius_mm + crater)
-                    .max(request.overcut_mm.abs() + lout.radius_mm + kerf / 2.),
-                height_mm: offset
-                    + (lin.radius_mm + lin.length_mm + crater)
-                        .max(lout.radius_mm + lout.length_mm + kerf / 2.),
+                half_width_mm: lead_in_width.max(lead_out_width),
+                height_mm: offset + lead_in_height.max(lead_out_height),
                 part_distance_mm: body + request.part_spacing_mm,
                 zone_distance_mm: request.part_spacing_mm,
                 sheet_distance_mm: request.edge_margin_mm + request.sheet.boundary_error_mm,
@@ -611,7 +653,7 @@ pub(crate) fn cut_reach(
     corner_loops: Option<&crate::thermal::CornerLoops>,
 ) -> (f64, f64) {
     let allowance = error + boundary_tolerance / 2.;
-    let reach = |l: &Lead| l.radius_mm.hypot(l.radius_mm + l.length_mm);
+    let reach = |l: &Lead| l.reach_mm();
     // A corner loop's kerf, from the edge of the kerf of the cut it leaves
     // (thermal/corners.rs), at the cut's own offset.
     let loops = corner_loops.map_or(0., |l| {

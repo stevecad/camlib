@@ -31,6 +31,7 @@ mod common_line;
 mod control;
 mod corners;
 mod lead_placement;
+mod leads;
 mod skeleton;
 mod tip_up;
 pub use bridges::{BridgeReport, Bridges};
@@ -54,7 +55,12 @@ pub enum HeightMode {
 }
 
 /// A lead: a straight part of `length_mm` and a tangent arc of `radius_mm`
-/// (either may be zero), always on the scrap side.
+/// (either may be zero), always on the scrap side. Without `sweep_deg` or
+/// `angle_deg` the straight part is square to the edge and the arc a
+/// quarter turn; `sweep_deg` sets the arc's sweep (the straight part then
+/// tangent to the arc), and `angle_deg` makes it a straight lead alone at
+/// that angle to the edge's tangent (0: in line with the edge, 90: square to
+/// it). See `thermal/leads.rs`.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Lead {
@@ -62,6 +68,10 @@ pub struct Lead {
     pub length_mm: f64,
     #[serde(default)]
     pub radius_mm: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sweep_deg: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle_deg: Option<f64>,
 }
 
 /// Small holes: a reduced feed and, by default, height control off
@@ -190,9 +200,11 @@ pub struct ThermalCutOperation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avoid_cut_parts: Option<AvoidCutParts>,
     /// Edges that must not carry a lead, and where leads are preferred
-    /// (see `thermal/lead_placement.rs`). Off unless set.
+    /// (see `thermal/lead_placement.rs`). Off unless set. Boxed, as
+    /// `skeleton` is, to keep the operation's size near its neighbours' in
+    /// `pocket::Operation`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lead_placement: Option<LeadPlacement>,
+    pub lead_placement: Option<Box<LeadPlacement>>,
     /// Loops into the scrap at the parts' outside corners, so both edges
     /// are cut straight through the corner (see `thermal/corners.rs`). Off
     /// unless set.
@@ -456,6 +468,48 @@ fn add(p: [f64; 2], v: [f64; 2], k: f64) -> [f64; 2] {
     [p[0] + k * v[0], p[1] + k * v[1]]
 }
 
+/// A lead's arc as it is cut: one arc, or with `split` (the controller
+/// offsets it, `compensation="control"`) pieces of at most a quarter turn
+/// each, like the loop's own arcs there (`thermal/control.rs`).
+fn lead_arcs(
+    from: [f64; 2],
+    to: [f64; 2],
+    center: [f64; 2],
+    sweep_rad: f64,
+    z: f64,
+    split: bool,
+) -> Vec<Curve> {
+    let pieces = if split {
+        (sweep_rad.abs() / FRAC_PI_2 - 1e-9).ceil().max(1.) as usize
+    } else {
+        1
+    };
+    let u = [from[0] - center[0], from[1] - center[1]];
+    let at = |k: usize| {
+        if k == pieces {
+            return to;
+        }
+        let angle = sweep_rad * k as f64 / pieces as f64;
+        let (c, s) = (angle.cos(), angle.sin());
+        [
+            center[0] + c * u[0] - s * u[1],
+            center[1] + s * u[0] + c * u[1],
+        ]
+    };
+    (0..pieces)
+        .map(|k| {
+            let (a, b) = (if k == 0 { from } else { at(k) }, at(k + 1));
+            Curve::Arc {
+                start: [a[0], a[1], z],
+                end: [b[0], b[1], z],
+                center: [center[0], center[1], z],
+                plane: Plane::Xy,
+                sweep_rad: sweep_rad / pieces as f64,
+            }
+        })
+        .collect()
+}
+
 /// A flat cylinder tool used only to prove clearance from the parts.
 fn probe_tool(diameter: f64, reach: f64) -> ToolAssembly {
     ToolAssembly {
@@ -568,12 +622,12 @@ impl ThermalCutPlan {
                 (
                     op.compensation == Compensation::Computer
                         || (op.lead_in.length_mm > guard && op.lead_out.length_mm > guard),
-                    "cutter compensation (wear or control) turns G41/G42 on over the straight lead-in and off over the straight lead-out: set both lead length_mm".into(),
+                    "cutter compensation (wear or control) turns G41/G42 on over the straight lead-in and off over the straight lead-out: set both lead length_mm (a lead with a straight part: Lead(length_mm, radius_mm), Lead.line or Lead.line_arc / Lead.arc_line; Lead.arc has none)".into(),
                 ),
                 (
                     op.compensation != Compensation::Control
                         || (op.lead_in.radius_mm > guard && op.lead_out.radius_mm > guard),
-                    "compensation=\"control\" turns the controller's offset on and off over straight leads that run tangent into the cut: set both lead radius_mm (where a controller ends its start-up at a corner differs between controllers)".into(),
+                    "compensation=\"control\" turns the controller's offset on and off over straight leads that run tangent into the cut: set both lead radius_mm (where a controller ends its start-up at a corner differs between controllers; a Lead.line meets the cut at its angle, with no arc: use Lead(length_mm, radius_mm) or Lead.line_arc / Lead.arc_line)".into(),
                 ),
                 (
                     op.compensation != Compensation::Control || op.edge_starts.is_none(),
@@ -639,6 +693,10 @@ impl ThermalCutPlan {
                 ),
             ],
         )?;
+        for (which, lead) in [("lead_in", &op.lead_in), ("lead_out", &op.lead_out)] {
+            lead.validate(which)
+                .map_err(|e| format!("thermal cut {}: {e}", op.id))?;
+        }
         let z_cut = top + op.cut_height_mm;
         let (z_pierce, z_travel) = if program {
             (top + pierce_h, top + travel_h)
@@ -1245,6 +1303,7 @@ impl ThermalCutPlan {
             let lead = |l: Lead| Lead {
                 length_mm: l.length_mm.min(limit),
                 radius_mm: l.radius_mm.min(limit),
+                ..l
             };
             let (mut lin, lout) = (lead(op.lead_in), lead(op.lead_out));
             if lin.length_mm < op.lead_in.length_mm || lin.radius_mm < op.lead_in.radius_mm {
@@ -1278,13 +1337,64 @@ impl ThermalCutPlan {
             // corner (a straight-edged hole) sends the tangent lead back
             // past the corner, out of the scrap.
             let mut strokes = lp.strokes.clone();
+            // An in-line lead-in at a corner of the kerf path comes in along
+            // the next edge's extension: the loop starts where the corner's
+            // arc ends (`thermal/leads.rs`).
+            let settle = |strokes: &[Stroke], lin: &Lead| -> Option<Vec<Stroke>> {
+                lin.in_line()
+                    .then(|| leads::corner(strokes, offset, guard))
+                    .flatten()
+            };
+            // An in-line lead-out after an in-line lead-in at a corner: the
+            // corner's arc (the loop's last stroke) is not cut, the lead-out
+            // runs on along the previous edge's extension and the two
+            // straight kerfs cross beyond the corner. Each must run on half a
+            // kerf past where they meet, so the corner is cut through.
+            let skips = |strokes: &[Stroke], lin: &Lead| {
+                lin.in_line() && lout.in_line() && leads::ends_at_corner(strokes, offset, guard)
+            };
+            let crossing = |round: &Stroke, lin: &Lead| -> Result<(), String> {
+                if op.compensation != Compensation::Computer {
+                    return Err("in-line leads at a corner cross each other beyond it, which cutter compensation (wear or control) is not proven over: start the loop on an edge, or use compensation=\"computer\"".into());
+                }
+                if op.overcut_mm != 0. {
+                    return Err(format!(
+                        "an in-line lead-out at a corner is itself the overrun, along the previous edge's extension: overcut_mm {} would cut on round the corner instead; set overcut_mm to 0, or start the loop on an edge",
+                        op.overcut_mm
+                    ));
+                }
+                let Some((x, from_start, from_end)) =
+                    leads::crossing(round.a, round.tangent(false), round.b, round.tangent(true))
+                else {
+                    return Err("the edges at the corner the in-line leads start at are too near parallel for their extensions to cross".into());
+                };
+                if lin.length_mm < from_start + kerf / 2. || lout.length_mm < from_end + kerf / 2. {
+                    return Err(format!(
+                        "the in-line leads at the corner near ({:.3}, {:.3}) must each run half a kerf past where the two edges' kerf paths meet, {:.3} mm from the start along the lead-in and {:.3} mm from the end along the lead-out, so the corner is cut through: lengthen them to at least {:.3} and {:.3} mm",
+                        x[0],
+                        x[1],
+                        from_start,
+                        from_end,
+                        from_start + kerf / 2.,
+                        from_end + kerf / 2.
+                    ));
+                }
+                Ok(())
+            };
             let clear_with = |strokes: &[Stroke], lin: Lead, crater: bool| -> Result<(), String> {
+                let settled = settle(strokes, &lin);
+                let strokes = settled.as_deref().unwrap_or(strokes);
                 let (start, t) = (strokes[0].a, strokes[0].tangent(false));
                 let n = scrap(t);
-                let center = add(start, n, lin.radius_mm);
-                let a = add(center, t, -lin.radius_mm);
-                let pierce = beside(add(a, n, lin.length_mm), [-n[0], -n[1]]);
+                let lead = leads::lead_in(start, t, n, &lin);
+                let (center, a) = (lead.center, lead.a);
+                let pierce = beside(lead.pierce, lead.dir);
                 let low = |p: [f64; 2]| at_z(p, z_check);
+                // In-line leads at a corner: first that they cross.
+                let skip = skips(strokes, &lin);
+                if skip {
+                    crossing(&strokes[strokes.len() - 1], &lin)?;
+                }
                 if crater {
                     probe(
                         &crater_probe,
@@ -1301,30 +1411,35 @@ impl ThermalCutPlan {
                         end: low(start),
                         center: low(center),
                         plane: Plane::Xy,
-                        sweep_rad: side * FRAC_PI_2,
+                        sweep_rad: side * lin.sweep_rad(),
                     };
                     probe(&kerf_probe, arc, "lead")?;
                 }
-                // The lead-out from the loop's close (without overcut).
+                // The lead-out from the loop's close (without overcut): where
+                // the corner's arc begins when it is not cut.
                 let last = strokes[strokes.len() - 1];
-                let te = last.tangent(true);
+                let (close, te) = if skip {
+                    (last.a, last.tangent(false))
+                } else {
+                    (start, last.tangent(true))
+                };
                 let ne = scrap(te);
-                let c_out = add(start, ne, lout.radius_mm);
-                let b = add(c_out, te, lout.radius_mm);
+                let out = leads::lead_out(close, te, ne, &lout);
+                let b = out.b;
                 if lout.radius_mm > 0. {
                     let arc = Curve::Arc {
-                        start: low(start),
+                        start: low(close),
                         end: low(b),
-                        center: low(c_out),
+                        center: low(out.center),
                         plane: Plane::Xy,
-                        sweep_rad: side * FRAC_PI_2,
+                        sweep_rad: side * lout.sweep_rad(),
                     };
                     probe(&kerf_probe, arc, "lead")?;
                 }
                 if lout.length_mm > 0. {
                     probe(
                         &kerf_probe,
-                        line(low(b), low(beside(add(b, ne, lout.length_mm), ne))),
+                        line(low(b), low(beside(out.q, out.dir))),
                         "lead",
                     )?;
                 }
@@ -1366,13 +1481,11 @@ impl ThermalCutPlan {
                 let from = [pos[0], pos[1]];
                 let n = strokes.len();
                 let lead_in_start = |r: &[Stroke]| {
+                    let settled = settle(r, &lin);
+                    let r = settled.as_deref().unwrap_or(r);
                     let (start, t) = (r[0].a, r[0].tangent(false));
-                    let normal = scrap(t);
-                    let center = add(start, normal, lin.radius_mm);
-                    beside(
-                        add(add(center, t, -lin.radius_mm), normal, lin.length_mm),
-                        [-normal[0], -normal[1]],
-                    )
+                    let lead = leads::lead_in(start, t, scrap(t), &lin);
+                    beside(lead.pierce, lead.dir)
                 };
                 let mut reachable: Vec<(f64, Vec<Stroke>)> = (0..n)
                     .map(Start::End)
@@ -1459,9 +1572,13 @@ impl ThermalCutPlan {
                     spec.max_mm[1],
                 ];
                 for r in candidates {
-                    let (start, t) = (r[0].a, r[0].tangent(false));
-                    let normal = scrap(t);
-                    let from = add(add(start, normal, lin.radius_mm), t, -lin.radius_mm);
+                    let settled = settle(&r, &lin);
+                    let at = settled.as_deref().unwrap_or(&r);
+                    let (start, t) = (at[0].a, at[0].tangent(false));
+                    // The straight part, from the arc's start outward.
+                    let lead = leads::lead_in(start, t, scrap(t), &lin);
+                    let normal = [-lead.dir[0], -lead.dir[1]];
+                    let from = lead.a;
                     // Along the lead's line to the sheet's edge, and on by
                     // the run-on measured square to that edge.
                     let mut reach = f64::INFINITY;
@@ -1499,7 +1616,7 @@ impl ThermalCutPlan {
                             &r,
                             Lead {
                                 length_mm: reach,
-                                radius_mm: lin.radius_mm,
+                                ..lin
                             },
                             false,
                         )
@@ -1577,15 +1694,38 @@ impl ThermalCutPlan {
                     });
                     r
                 };
-                let found = by_length
-                    .iter()
-                    .take(16)
-                    .map(|&k| rotated(k))
-                    .find(|r| clear_at(r).is_ok());
-                let fallback = (found.is_none() && lp.hole.is_some())
+                // An in-line lead-in belongs at a corner (on an edge its
+                // pierce is on the kerf path): the loop's corners first.
+                let n = strokes.len();
+                let at_corner = if lin.in_line() {
+                    (0..n)
+                        .map(|k| lead_placement::Start::End(k).rotate(&strokes))
+                        .filter(|r| leads::corner(r, offset, guard).is_some())
+                        .take(16)
+                        .find(|r| clear_at(r).is_ok())
+                } else {
+                    None
+                };
+                let found = at_corner.as_ref().map_or_else(
+                    || {
+                        by_length
+                            .iter()
+                            .take(16)
+                            .map(|&k| rotated(k))
+                            .find(|r| clear_at(r).is_ok())
+                    },
+                    |_| None,
+                );
+                let fallback = (found.is_none() && at_corner.is_none() && lp.hole.is_some())
                     .then(|| by_length.first().map(|&k| rotated(k)))
                     .flatten();
-                if let Some(r) = found {
+                if let Some(r) = at_corner {
+                    strokes = r;
+                    diagnostics.push(format!(
+                        "part {} hole {:?}: in-line leads moved from the loop's start to a corner, where they are clear of the parts",
+                        lp.part, lp.hole
+                    ));
+                } else if let Some(r) = found {
                     strokes = r;
                     diagnostics.push(format!(
                         "part {} hole {:?}: leads moved from the loop's start to the middle of an edge, where they are clear of the parts",
@@ -1597,6 +1737,9 @@ impl ThermalCutPlan {
                     strokes = r;
                 }
             }
+            if let Some(at) = settle(&strokes, &lin) {
+                strokes = at;
+            }
             // Corner loops, once the start is settled (the corner the loop
             // starts at keeps its leads instead).
             let mut in_loop = vec![false; strokes.len()];
@@ -1605,14 +1748,29 @@ impl ThermalCutPlan {
                 (strokes, in_loop) = (with, flags);
                 corner_loops += count;
             }
+            // In-line leads at a corner: the corner's arc, last, is not cut.
+            let mut loop_length = lp.length;
+            if skips(&strokes, &lin) {
+                let round = strokes[strokes.len() - 1];
+                crossing(&round, &lin).map_err(|e| {
+                    format!(
+                        "thermal cut {}: part {} {}: {e}",
+                        op.id,
+                        lp.part,
+                        lp.hole.map_or("outline".into(), |h| format!("hole {h}"))
+                    )
+                })?;
+                strokes.pop();
+                in_loop.pop();
+                loop_length -= crate::profiles::stroke_length(&round);
+            }
             let s0 = strokes[0];
             let start = s0.a;
             let t = s0.tangent(false);
             let n = scrap(t);
             let geometry = |l: Lead| {
-                let center = add(start, n, l.radius_mm);
-                let a = add(center, t, -l.radius_mm);
-                (center, a, beside(add(a, n, l.length_mm), [-n[0], -n[1]]))
+                let lead = leads::lead_in(start, t, n, &l);
+                (lead.center, lead.a, beside(lead.pierce, lead.dir))
             };
             let crater = |p: [f64; 2]| line(at_z(p, top + 1.), at_z(p, z_check));
             let (mut center, mut a, mut pierce) = geometry(lin);
@@ -1626,6 +1784,16 @@ impl ThermalCutPlan {
                 // In a hole: pierce at its center instead (Hypertherm's
                 // small-hole practice), with a smaller arc if needed.
                 let reach = lp.length / (2. * PI);
+                // Only for the plain lead: a shape of its own is placed as
+                // declared, or refused.
+                if !lin.plain() && lp.hole.is_some() {
+                    return Err(format!(
+                        "thermal cut {}: part {} {}: {error}; this lead_in shape does not fit here (a hole too small for it): shorten it, or use Lead(length_mm, radius_mm), which pierces a small hole at its centre",
+                        op.id,
+                        lp.part,
+                        lp.hole.map_or("outline".into(), |h| format!("hole {h}"))
+                    ));
+                }
                 let fallback = lp.hole.and_then(|_| {
                     [0.45, 0.25, 0.1, 0.]
                         .into_iter()
@@ -1634,6 +1802,8 @@ impl ThermalCutPlan {
                             Lead {
                                 radius_mm: r,
                                 length_mm: (reach - r).max(0.),
+                                sweep_deg: None,
+                                angle_deg: None,
                             }
                         })
                         .find(|l| {
@@ -1781,7 +1951,7 @@ impl ThermalCutPlan {
                 CompensationSide::Left
             };
             let amount = control.then_some(kerf / 2.);
-            if control && lin.radius_mm <= guard {
+            if control && (lin.radius_mm <= guard || lin.angle_deg.is_some()) {
                 return Err(format!(
                     "thermal cut {}: part {} {}: the lead-in has no arc here (a hole too small for one): compensation=\"control\" needs the straight lead to run tangent into the cut; use compensation=\"computer\" or a larger hole",
                     op.id,
@@ -1817,20 +1987,13 @@ impl ThermalCutPlan {
                 cuts.push((line(at_z(pierce, z_cut), at_z(a, z_cut)), MoveKind::Lead));
             }
             if lin.radius_mm > 0. {
-                cuts.push((
-                    Curve::Arc {
-                        start: at_z(a, z_cut),
-                        end: at_z(start, z_cut),
-                        center: at_z(center, z_cut),
-                        plane: Plane::Xy,
-                        sweep_rad: side * FRAC_PI_2,
-                    },
-                    MoveKind::Lead,
-                ));
+                for arc in lead_arcs(a, start, center, side * lin.sweep_rad(), z_cut, control) {
+                    cuts.push((arc, MoveKind::Lead));
+                }
             }
             let lead_in_moves = cuts.len();
             // A negative overcut stops that far before the loop closes.
-            let mut short = (-op.overcut_mm).clamp(0., 0.5 * lp.length);
+            let mut short = (-op.overcut_mm).clamp(0., 0.5 * loop_length);
             let mut end = (start, t);
             let mut kept = strokes.len();
             while short > guard && kept > 0 {
@@ -1868,7 +2031,7 @@ impl ThermalCutPlan {
                 tags.push(if in_loop[k] { LOOP } else { 0 });
             }
             // Overcut: on around the loop from its start.
-            let mut left = op.overcut_mm.clamp(0., lp.length);
+            let mut left = op.overcut_mm.clamp(0., loop_length);
             for s in &strokes {
                 if left <= guard {
                     break;
@@ -1923,20 +2086,13 @@ impl ThermalCutPlan {
             // Lead-out: the tangent arc, then straight into the scrap.
             let (e, te) = end;
             let ne = scrap(te);
-            let c_out = add(e, ne, lout.radius_mm);
-            let b = add(c_out, te, lout.radius_mm);
-            let q = beside(add(b, ne, lout.length_mm), ne);
+            let out = leads::lead_out(e, te, ne, &lout);
+            let (c_out, b) = (out.center, out.b);
+            let q = beside(out.q, out.dir);
             if lout.radius_mm > 0. {
-                cuts.push((
-                    Curve::Arc {
-                        start: at_z(e, z_cut),
-                        end: at_z(b, z_cut),
-                        center: at_z(c_out, z_cut),
-                        plane: Plane::Xy,
-                        sweep_rad: side * FRAC_PI_2,
-                    },
-                    MoveKind::Lead,
-                ));
+                for arc in lead_arcs(e, b, c_out, side * lout.sweep_rad(), z_cut, control) {
+                    cuts.push((arc, MoveKind::Lead));
+                }
             }
             if lout.length_mm > 0. {
                 cuts.push((line(at_z(b, z_cut), at_z(q, z_cut)), MoveKind::Lead));
@@ -1945,19 +2101,19 @@ impl ThermalCutPlan {
             let mut joints = 0;
             if let Some(j) = op.micro_joints.filter(|j| lp.hole.is_none() || j.holes) {
                 let n = j.count.map_or_else(
-                    || (lp.length / j.spacing_mm.unwrap()).round().max(1.) as usize,
+                    || (loop_length / j.spacing_mm.unwrap()).round().max(1.) as usize,
                     |n| n as usize,
                 );
                 let half = (j.width_mm + kerf) / 2.;
-                if lp.length / (2. * n as f64) <= half + guard {
+                if loop_length / (2. * n as f64) <= half + guard {
                     return Err(format!(
                         "{n} micro-joints of width {} do not fit a loop {:.3} mm long",
-                        j.width_mm, lp.length
+                        j.width_mm, loop_length
                     ));
                 }
                 let gaps: Vec<(f64, f64)> = (0..n)
                     .map(|k| {
-                        let c = (k as f64 + 0.5) * lp.length / n as f64;
+                        let c = (k as f64 + 0.5) * loop_length / n as f64;
                         (c - half, c + half)
                     })
                     .collect();

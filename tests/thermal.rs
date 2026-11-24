@@ -1343,3 +1343,302 @@ fn edge_start_refuses_a_kerf_not_proven_open_by_stock() {
         }
     }
 }
+
+// Lead shapes (#400): each measured from the planned moves with the test's
+// own geometry, not the planner's.
+
+/// The distance from p to the rectangle x0..x1, y0..y1 (0 inside it).
+fn to_rect(p: [f64; 2], r: [f64; 4]) -> f64 {
+    let dx = (r[0] - p[0]).max(p[0] - r[2]).max(0.);
+    let dy = (r[1] - p[1]).max(p[1] - r[3]).max(0.);
+    dx.hypot(dy)
+}
+
+/// Points along a line or an arc of the XY plane.
+fn samples(c: &Curve) -> Vec<[f64; 2]> {
+    (0..=64)
+        .map(|k| {
+            let f = k as f64 / 64.;
+            match c {
+                Curve::Line { start, end } => [
+                    start[0] + f * (end[0] - start[0]),
+                    start[1] + f * (end[1] - start[1]),
+                ],
+                Curve::Arc {
+                    start,
+                    center,
+                    sweep_rad,
+                    ..
+                } => {
+                    let (s, co) = (f * sweep_rad).sin_cos();
+                    let u = [start[0] - center[0], start[1] - center[1]];
+                    [
+                        center[0] + co * u[0] - s * u[1],
+                        center[1] + s * u[0] + co * u[1],
+                    ]
+                }
+                Curve::Helix { .. } => unreachable!(),
+            }
+        })
+        .collect()
+}
+
+/// The moves of each loop's lead-in and lead-out: the lead moves before its
+/// first cut and after its last.
+fn leads_by_loop(events: &[Event]) -> Vec<(Vec<Curve>, Vec<Curve>)> {
+    let mut out = vec![];
+    let (mut lead_in, mut cut, mut lead_out) = (vec![], false, vec![]);
+    for e in events {
+        match e {
+            Event::Motion { motion } if motion.kind == MoveKind::Lead => {
+                if cut {
+                    lead_out.push(motion.curve.clone());
+                } else {
+                    lead_in.push(motion.curve.clone());
+                }
+            }
+            Event::Motion { motion } if motion.kind == MoveKind::Cut => cut = true,
+            Event::Beam { power_percent } if *power_percent == 0. && cut => {
+                out.push((std::mem::take(&mut lead_in), std::mem::take(&mut lead_out)));
+                cut = false;
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn xy(p: [f64; 3]) -> [f64; 2] {
+    [p[0], p[1]]
+}
+fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
+    (a[0] - b[0]).hypot(a[1] - b[1])
+}
+/// The direction of travel of a curve at its start (`end`: its end).
+fn heading(c: &Curve, end: bool) -> [f64; 2] {
+    match c {
+        Curve::Line { start, end: e } => {
+            let l = dist(xy(*start), xy(*e));
+            [(e[0] - start[0]) / l, (e[1] - start[1]) / l]
+        }
+        Curve::Arc {
+            start,
+            end: e,
+            center,
+            sweep_rad,
+            ..
+        } => {
+            let p = if end { e } else { start };
+            let r = dist(xy(*p), xy(*center));
+            let s = sweep_rad.signum();
+            [-s * (p[1] - center[1]) / r, s * (p[0] - center[0]) / r]
+        }
+        Curve::Helix { .. } => unreachable!(),
+    }
+}
+fn angle_deg(a: [f64; 2], b: [f64; 2]) -> f64 {
+    (a[0] * b[0] + a[1] * b[1]).clamp(-1., 1.).acos().to_degrees()
+}
+
+const PLATE: [f64; 4] = [40., 40., 70., 60.];
+/// The kerf path's offset: half a kerf and half the boundary tolerance.
+const OFFSET: f64 = KERF / 2. + 0.005;
+
+fn plate_region(extra: Vec<Boundary>) -> PlanarRegion {
+    PlanarRegion {
+        components: std::iter::once(rect(PLATE[0], PLATE[1], PLATE[2], PLATE[3]))
+            .chain(extra)
+            .map(|outer| Component { outer, holes: vec![] })
+            .collect(),
+        ..row()
+    }
+}
+
+fn shaped(lead_in: serde_json::Value, lead_out: serde_json::Value, start: [f64; 2], extra: Vec<Boundary>, more: serde_json::Value) -> Result<Vec<Event>, String> {
+    let mut values = serde_json::json!({
+        "lead_in": lead_in, "lead_out": lead_out, "overcut_mm": 0.,
+        "lead_placement": {"keep_off_distance_mm": 0., "starts": [start]},
+        "small_holes": null,
+    });
+    for (k, v) in more.as_object().unwrap() {
+        values[k] = v.clone();
+    }
+    let mut op = operation(values);
+    op.parts = plate_region(extra);
+    run(op).map(|(events, _, _)| events)
+}
+
+#[test]
+fn each_lead_shape_lies_as_declared_and_in_the_scrap() {
+    use serde_json::json;
+    // The plate's outline is cut clockwise: along its bottom edge towards
+    // -x, the scrap below. Its loop starts in the middle of that edge.
+    let s = [55., PLATE[1] - OFFSET];
+    let (t, n) = ([-1., 0.], [0., -1.]);
+    let along = |p: [f64; 2]| [(p[0] - s[0]) * t[0] + (p[1] - s[1]) * t[1], (p[0] - s[0]) * n[0] + (p[1] - s[1]) * n[1]];
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+    let cases = [
+        // A line at 30 degrees in, at 60 out.
+        (json!({"length_mm": 5., "angle_deg": 30.}), json!({"length_mm": 4., "angle_deg": 60.})),
+        // Arcs of 45 and 150 degrees.
+        (json!({"radius_mm": 6., "sweep_deg": 45.}), json!({"radius_mm": 3., "sweep_deg": 150.})),
+        // Line then arc in, arc then line out.
+        (json!({"length_mm": 3., "radius_mm": 2., "sweep_deg": 60.}), json!({"length_mm": 3., "radius_mm": 2., "sweep_deg": 120.})),
+        // In line with the edge out: the overrun along the cut.
+        (json!({"length_mm": 2., "radius_mm": 3., "sweep_deg": 90.}), json!({"length_mm": 5., "angle_deg": 0.})),
+    ];
+    for (lead_in, lead_out) in cases {
+        let events = shaped(lead_in.clone(), lead_out.clone(), [55., 40.], vec![], json!({})).unwrap();
+        let loops = leads_by_loop(&events);
+        assert_eq!(loops.len(), 1);
+        let (lin, lout) = &loops[0];
+        // Every lead in the scrap: its kerf off the plate.
+        for c in lin.iter().chain(lout) {
+            for p in samples(c) {
+                assert!(to_rect(p, PLATE) >= KERF / 2., "{lead_in} {lead_out}: {p:?}");
+            }
+        }
+        // The lead-in ends where the cut starts, running along the cut.
+        let last = lin.last().unwrap();
+        assert!(dist(xy(last.end()), s) < 1e-9, "{:?}", last.end());
+        assert!(angle_deg(heading(last, true), t) < 1e-6 || lead_in.get("angle_deg").is_some());
+        let first = &lout[0];
+        assert!(dist(xy(first.start()), s) < 1e-9);
+        for (lead, moves, inward) in [(&lead_in, lin, true), (&lead_out, lout, false)] {
+            let length = lead.get("length_mm").and_then(|v| v.as_f64()).unwrap_or(0.);
+            let radius = lead.get("radius_mm").and_then(|v| v.as_f64()).unwrap_or(0.);
+            if let Some(angle) = lead.get("angle_deg").and_then(|v| v.as_f64()) {
+                assert_eq!(moves.len(), 1);
+                let (a, b) = (xy(moves[0].start()), xy(moves[0].end()));
+                assert!(near(dist(a, b), length));
+                // Its angle to the edge's tangent, on the scrap side.
+                let far = if inward { a } else { b };
+                let [u, v] = along(far);
+                assert!(near(v.atan2(u.abs()).to_degrees(), angle), "{lead}: {u} {v}");
+                assert!(if inward { u <= 1e-9 } else { u >= -1e-9 });
+                continue;
+            }
+            let sweep = lead["sweep_deg"].as_f64().unwrap();
+            let arc = moves.iter().find(|c| matches!(c, Curve::Arc { .. })).unwrap();
+            let Curve::Arc { start, end, center, sweep_rad, .. } = arc else { unreachable!() };
+            assert!(near(dist(xy(*start), xy(*center)), radius) && near(dist(xy(*end), xy(*center)), radius));
+            assert!(near(sweep_rad.abs().to_degrees(), sweep), "{lead}");
+            // Tangent to the cut, its centre on the scrap side.
+            let [u, v] = along(xy(*center));
+            assert!(near(u, 0.) && near(v, radius));
+            let lines: Vec<&Curve> = moves.iter().filter(|c| matches!(c, Curve::Line { .. })).collect();
+            assert_eq!(lines.len(), usize::from(length > 0.));
+            if let Some(line) = lines.first() {
+                assert!(near(dist(xy(line.start()), xy(line.end())), length));
+                // Tangent to the arc where they meet.
+                let (h_line, h_arc) = if inward {
+                    (heading(line, false), heading(arc, false))
+                } else {
+                    (heading(line, false), heading(arc, true))
+                };
+                assert!(angle_deg(h_line, h_arc) < 1e-6, "{lead}");
+            }
+        }
+    }
+}
+
+#[test]
+fn in_line_leads_at_a_corner_run_along_both_edges_extensions() {
+    use serde_json::json;
+    let line = |l: f64| json!({"length_mm": l, "angle_deg": 0.});
+    // The corner (70, 40): the outline, clockwise, comes down the right
+    // edge and leaves along the bottom edge. A neighbour lies below and to
+    // the right, clear of the leads' reach.
+    let neighbour = [72.5, 10., 100., 36.];
+    let events = shaped(line(6.), line(6.), [70., 40.], vec![rect(neighbour[0], neighbour[1], neighbour[2], neighbour[3])], json!({})).unwrap();
+    let loops = leads_by_loop(&events);
+    // The plate's outline: its loop starts at the corner.
+    let (lin, lout) = loops
+        .iter()
+        .find(|(lin, _)| lin.iter().any(|c| xy(c.end())[0] < 71.))
+        .unwrap();
+    assert_eq!((lin.len(), lout.len()), (1, 1));
+    let (p, s) = (xy(lin[0].start()), xy(lin[0].end()));
+    let (e, q) = (xy(lout[0].start()), xy(lout[0].end()));
+    let y = PLATE[1] - OFFSET;
+    let x = PLATE[2] + OFFSET;
+    // The lead-in comes in along the bottom edge's extension, from beyond
+    // the corner, onto the bottom edge.
+    assert!((p[1] - y).abs() < 1e-9 && (s[1] - y).abs() < 1e-9, "{p:?} {s:?}");
+    assert!((s[0] - PLATE[2]).abs() < 1e-9 && (p[0] - (PLATE[2] + 6.)).abs() < 1e-9);
+    // The lead-out runs on down the right edge's extension past the corner.
+    assert!((e[0] - x).abs() < 1e-9 && (q[0] - x).abs() < 1e-9, "{e:?} {q:?}");
+    assert!((e[1] - PLATE[1]).abs() < 1e-9 && (q[1] - (PLATE[1] - 6.)).abs() < 1e-9);
+    // The two kerfs cross at the kerf path's corner (x, y), each running on
+    // more than half a kerf past it: the corner is cut through, and no arc
+    // round it is cut.
+    assert!(p[0] - x >= KERF / 2. && y - q[1] >= KERF / 2.);
+    let corner_arcs = events.iter().filter(|e| matches!(e, Event::Motion { motion } if motion.kind == MoveKind::Cut && matches!(motion.curve, Curve::Arc { center, .. } if (center[0] - PLATE[2]).abs() < 1e-9 && (center[1] - PLATE[1]).abs() < 1e-9))).count();
+    assert_eq!(corner_arcs, 0);
+    // Both clear of the neighbour and of the plate.
+    for c in [&lin[0], &lout[0]] {
+        for point in samples(c) {
+            assert!(to_rect(point, neighbour) >= KERF / 2. && to_rect(point, PLATE) >= KERF / 2. - 1e-9);
+        }
+    }
+    // A neighbour inside the lead-in's reach, beyond the corner: refused,
+    // named.
+    let error = shaped(line(6.), line(6.), [70., 40.], vec![rect(74., 30., 100., 50.)], json!({})).unwrap_err();
+    assert!(error.contains("declared start (70.000, 40.000)") && error.contains("not clear"), "{error}");
+    // Leads too short to cross: refused, naming the lengths needed.
+    let error = shaped(line(1.), line(6.), [70., 40.], vec![], json!({})).unwrap_err();
+    assert!(error.contains("half a kerf past") && error.contains("1.505"), "{error}");
+    // The overrun is the lead-out's: no overcut with it.
+    let error = shaped(line(6.), line(6.), [70., 40.], vec![], json!({"overcut_mm": 1.})).unwrap_err();
+    assert!(error.contains("overcut_mm"), "{error}");
+    // An in-line lead-in alone at the corner: along the bottom edge's
+    // extension, and the corner's arc is cut before the lead-out leaves.
+    let events = shaped(line(6.), json!({"length_mm": 1., "radius_mm": 2.}), [70., 40.], vec![], json!({})).unwrap();
+    let (lin, lout) = &leads_by_loop(&events)[0];
+    assert!((xy(lin[0].start())[1] - y).abs() < 1e-9);
+    assert!(dist(xy(lout[0].start()), xy(lin[0].end())) < 1e-9);
+}
+
+#[test]
+fn lead_shapes_need_their_parameters_and_compensation_its_straight_part() {
+    use serde_json::json;
+    let plain = json!({"length_mm": 2., "radius_mm": 2.});
+    for (lead_in, more, message) in [
+        (json!({"length_mm": 3., "angle_deg": 120.}), json!({}), "angle_deg"),
+        (json!({"length_mm": 3., "radius_mm": 1., "angle_deg": 30.}), json!({}), "no radius_mm"),
+        (json!({"radius_mm": 0., "sweep_deg": 30.}), json!({}), "sweep_deg"),
+        (json!({"radius_mm": 2., "sweep_deg": 200.}), json!({}), "at most 180"),
+        // Wear: G41 goes on over a straight lead-in.
+        (json!({"radius_mm": 2., "sweep_deg": 90.}), json!({"compensation": "wear"}), "Lead.arc has none"),
+        // Control: the written lead runs tangent into the cut.
+        (json!({"length_mm": 3., "angle_deg": 45.}), json!({"compensation": "control"}), "Lead.line meets the cut"),
+        // In line with a straight edge, the pierce would be on the kerf
+        // path, against the part: refused (in line belongs at a corner).
+        (json!({"length_mm": 5., "angle_deg": 0.}), json!({}), "pierce point"),
+    ] {
+        let error = shaped(lead_in, plain.clone(), [55., 40.], vec![], more).unwrap_err();
+        assert!(error.contains(message), "{message}: {error}");
+    }
+    // In-line leads at a corner cross each other: not with wear.
+    let line = json!({"length_mm": 6., "angle_deg": 0.});
+    let error = shaped(line.clone(), line.clone(), [70., 40.], vec![], json!({"compensation": "wear"})).unwrap_err();
+    assert!(error.contains("cutter compensation"), "{error}");
+    // Wear with straight leads at an angle: G41 on over the lead-in, G40
+    // before the lead-out.
+    let events = shaped(json!({"length_mm": 4., "angle_deg": 45.}), json!({"length_mm": 3., "angle_deg": 60.}), [55., 40.], vec![], json!({"compensation": "wear"})).unwrap();
+    let comp: Vec<_> = events.iter().filter_map(|e| match e { Event::CutterCompensation { side, .. } => Some(*side), _ => None }).collect();
+    assert_eq!(comp, [CompensationSide::Left, CompensationSide::Off]);
+}
+
+#[test]
+fn controller_kerf_lead_arcs_are_cut_in_quarter_turns() {
+    use serde_json::json;
+    let lead = json!({"length_mm": 3., "radius_mm": 2., "sweep_deg": 150.});
+    let events = shaped(lead.clone(), lead, [55., 40.], vec![], json!({"compensation": "control"})).unwrap();
+    let (lin, lout) = &leads_by_loop(&events)[0];
+    for moves in [lin, lout] {
+        let arcs: Vec<f64> = moves.iter().filter_map(|c| match c { Curve::Arc { sweep_rad, .. } => Some(sweep_rad.abs()), _ => None }).collect();
+        assert_eq!(arcs.len(), 2);
+        assert!(arcs.iter().all(|w| (w.to_degrees() - 75.).abs() < 1e-9), "{arcs:?}");
+    }
+}

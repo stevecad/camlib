@@ -214,6 +214,12 @@ pub fn remnant(request: &RemnantRequest) -> Result<Remnant, String> {
         .prepare(options)
         .map_err(|e| format!("remnant sheet: {e}"))?;
     let sheet_area_mm2 = super::component_area(&request.sheet.components[0]);
+    for (which, lead) in [
+        ("lead_in", &request.lead_in),
+        ("lead_out", &request.lead_out),
+    ] {
+        lead.validate(which).map_err(|e| format!("remnant: {e}"))?;
+    }
     let (_, cut_reach_mm) = cut_reach(
         request.kerf_mm,
         request.parts.boundary_error_mm + request.sheet.boundary_error_mm,
