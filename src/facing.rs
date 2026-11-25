@@ -515,6 +515,33 @@ impl FacingPlan {
         Ok(motion)
     }
 
+    /// Whether every move of this plan is proven allowed by `limits` (#411),
+    /// by the same proof region operations and the run's link guard use: the
+    /// whole cutter disk (radius `radius`) at each sampled position, each
+    /// sample clearing by at least half its spacing. Containment applies to
+    /// every feed move; avoid areas to every move whose tip is below their
+    /// top. A move that cannot be proven (including one too long to prove at
+    /// the minimum sample spacing) answers false; nothing is assumed.
+    pub(crate) fn proven_within(
+        &self,
+        limits: &crate::limits::Limits,
+        radius: f64,
+        cancel: &impl CancelSignal,
+    ) -> Result<bool, String> {
+        let prepared = crate::limits::PreparedLimits::new(limits, radius, self.op.tolerance_mm)?;
+        let mut plan = self.clone();
+        while let Some(motion) = plan.next_motion(cancel)? {
+            let cutting = motion.kind != MoveKind::Rapid;
+            if !prepared
+                .allows_curve(&motion.curve, cutting)
+                .unwrap_or(false)
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     fn route_seconds(mut self, rapid: f64, cancel: &impl CancelSignal) -> Result<f64, String> {
         let mut seconds = 0_f64;
         while let Some(motion) = self.next_motion(cancel)? {

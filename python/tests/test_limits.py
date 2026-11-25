@@ -125,6 +125,56 @@ class LimitsTest(unittest.TestCase):
                 self.assertTrue(any(m["kind"] == "cut" for m in moves))
                 assert_clear(self, moves, CLAMP, 12)
 
+    def test_facing_limits_that_cannot_reach_it_leave_the_native_facing(self):
+        # A 1 mm skim with a 12 mm end mill, the setup's jaw areas beside the
+        # stock with their tops below the facing floor (#411): the native
+        # one-way facing runs move for move, plunging outside the stock.
+        cutter = camlib.EndMill("e12", diameter=12, flute_length=36, overall_length=72)
+        holders = (camlib.HolderSection(42, 72, 17.5, 17.5), camlib.HolderSection(72, 112, 19.5, 23))
+        t = camlib.ToolAssembly("em12", cutter, 42, 112, holders)
+        stock = camlib.StockSpec((-52, -32, -21), (52, 32, 0), 0.5)
+        config = dict(stock=stock, tools=(t,), revision="1", initial_position_mm=(-200, -150, 300))
+        face = camlib.Facing(
+            "face",
+            t,
+            -1,
+            12,
+            3,
+            12.7,
+            feed_mm_min=2486,
+            plunge_mm_min=1243,
+            mode="one_way",
+            spindle_rpm=9311,
+            tool_number=1,
+            length_register=1,
+            coolant="flood",
+        )
+        jaws = Limits(
+            avoid=(AvoidArea(square(-60, -50, 60, -33, name="jaw"), -18), AvoidArea(square(-60, 33, 60, 50), -1))
+        )
+        plain = run(config, (face.to_dict(),))
+        self.assertEqual(run(config, (limited(face, jaws),)), plain)
+        plunge = next(m for m in plain if m["kind"] == "plunge")
+        self.assertAlmostEqual(plunge["curve"]["start"][0], -59, places=3)
+        # A clamp reaching into the facing: planned around it, every entry a
+        # plunge with the whole cutter in air; one-way rows are refused by name.
+        clamp = Limits(avoid=(AvoidArea(square(-10, -10, 10, 10, name="clamp"), 5),))
+        with self.assertRaisesRegex(SimulationError, r'facing face: .*mode "one_way" is unavailable'):
+            run(config, (limited(face, clamp),))
+        zigzag = dict(limited(face, clamp), mode="zigzag")
+        moves = run(config, (zigzag,))
+        self.assertFalse(any(m["curve"]["kind"] == "helix" for m in moves))
+        entries = [m for m in moves if m["curve"]["start"][2] >= 0 > m["curve"]["end"][2]]
+        self.assertTrue(entries)
+        for m in entries:
+            x, y, _ = m["curve"]["end"]
+            outside = math.hypot(max(-52 - x, 0, x - 52), max(-32 - y, 0, y - 32))
+            self.assertGreaterEqual(outside, 6 + 1, m)
+        for m in moves:
+            for p in points(m):
+                if p[2] < 5:
+                    self.assertGreaterEqual(distance_to_box(p, (-10, -10, 10, 10)), 6 - 1e-3, (m["kind"], p))
+
     def test_contour_lifts_over_a_clamp(self):
         t, config = base()
         part = square(10, 10, 30, 30, name="part")

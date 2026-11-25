@@ -340,3 +340,145 @@ fn facing_one_way_rows_link_at_retract_height_and_end_at_clearance() {
         .contains("stock top")
     );
 }
+
+/// One rectangular avoid area (#411).
+fn avoid(lo: [f64; 2], hi: [f64; 2], top: f64) -> camlib::limits::Limits {
+    serde_json::from_value(serde_json::json!({"avoid": [{
+        "region": {"version": 1, "units": "mm", "name": "jaw", "boundary_error_mm": 0.,
+            "components": [{"outer": {"vertices": [
+                [lo[0], lo[1], 0.], [hi[0], lo[1], 0.], [hi[0], hi[1], 0.], [lo[0], hi[1], 0.]]},
+                "holes": []}]},
+        "top_z_mm": top}]}))
+    .unwrap()
+}
+/// The operation as a run plans it (limits included), its moves committed to
+/// the stock, and its report.
+fn run_limited(
+    op: FacingOperation,
+    m: &StreamManifest,
+) -> Result<(Vec<serde_json::Value>, serde_json::Value), String> {
+    let cancel = AtomicBool::new(false);
+    let mut stock = Stock::new(m.stock.height().unwrap().clone()).unwrap();
+    let mut plan = camlib::operation::OperationPlan::prepare_with_stock(
+        Operation::Facing(op),
+        &m.tools[0],
+        &stock,
+        m.initial_position_mm,
+        1,
+        &cancel,
+    )?;
+    let mut moves = vec![];
+    while let Some(motion) = plan.next_motion_with_stock(&stock, &cancel)? {
+        commit(&mut stock, &motion, m);
+        moves.push(serde_json::to_value(&motion).unwrap());
+    }
+    Ok((moves, serde_json::to_value(plan.report()).unwrap()))
+}
+
+#[test]
+fn facing_limits_that_cannot_reach_the_passes_leave_the_native_facing_unchanged() {
+    let m = fixture();
+    // A jaw beside the stock whose top is at or below the floor (8): no
+    // facing move has its tip below it. Another above everything, but far
+    // from every move; and one just past the cutter's reach across the rows.
+    let cases = [
+        avoid([-10., -9.], [50., -1.], 8.),
+        avoid([-10., -9.], [50., 30.], 2.),
+        avoid([100., 0.], [110., 24.], 50.),
+        avoid([-10., 25.], [50., 30.], 50.),
+    ];
+    for axis in [TraverseAxis::X, TraverseAxis::Y] {
+        for mode in [FacingMode::Zigzag, FacingMode::OneWay] {
+            for reverse in [false, true] {
+                let mut op = operation();
+                (op.axis, op.mode, op.reverse) = (axis, mode, reverse);
+                let plain = run_limited(op.clone(), &m).unwrap();
+                assert_eq!(plain.1["strategy"], "facing");
+                for (i, limits) in cases.iter().enumerate() {
+                    if axis == TraverseAxis::Y && i == 3 {
+                        // Rows along Y run out to Y 29, into that area.
+                        continue;
+                    }
+                    let mut limited = op.clone();
+                    limited.limits = Some(limits.clone());
+                    let got = run_limited(limited, &m).unwrap();
+                    assert_eq!(got, plain, "{axis:?} {mode:?} {reverse} case {i}");
+                }
+            }
+        }
+    }
+    // Automatic axis selection runs too once the limits are left out.
+    let mut op = operation();
+    op.axis = TraverseAxis::Auto;
+    op.auto_rapid_mm_min = Some(6000.);
+    let plain = run_limited(op.clone(), &m).unwrap();
+    op.limits = Some(cases[0].clone());
+    assert_eq!(run_limited(op.clone(), &m).unwrap(), plain);
+    // An area that reaches the passes still refuses automatic selection.
+    op.limits = Some(avoid([15., 8.], [25., 16.], 12.));
+    let error = run_limited(op, &m).unwrap_err();
+    assert!(error.contains("automatic facing axis"), "{error}");
+}
+
+#[test]
+fn facing_around_a_clamp_enters_in_air_and_refuses_what_it_cannot_honour() {
+    let m = fixture();
+    let spec = m.stock.height().unwrap().clone();
+    let r = m.tools[0].cutter.diameter_mm / 2.;
+    let clamp = avoid([15., 8.], [25., 16.], 12.);
+    for gap in [1., 0.25, 3.] {
+        let mut op = operation();
+        op.stepover_mm = 3.;
+        op.entry_air_gap_mm = gap;
+        op.limits = Some(clamp.clone());
+        let (moves, report) = run_limited(op, &m).unwrap();
+        assert_ne!(report["strategy"], "facing");
+        let mut descents = 0;
+        let mut position = m.initial_position_mm;
+        for v in &moves {
+            let motion: Motion = serde_json::from_value(v.clone()).unwrap();
+            assert!(
+                !matches!(motion.curve, Curve::Helix { .. }),
+                "no helical entry: {v}"
+            );
+            let (a, b) = (motion.curve.start(), motion.curve.end());
+            assert_eq!(a, position);
+            position = b;
+            // Every move that takes the tip below the stock top from above
+            // it (an entry) does so with the whole cutter at least the air
+            // gap outside the stock.
+            if a[2] >= spec.max_mm[2] && b[2] < spec.max_mm[2] {
+                descents += 1;
+                assert_eq!((a[0], a[1]), (b[0], b[1]), "vertical entry: {v}");
+                let d = [0, 1]
+                    .map(|k| (spec.min_mm[k] - b[k]).max(b[k] - spec.max_mm[k]).max(0.));
+                assert!(
+                    d[0].hypot(d[1]) >= r + gap,
+                    "entry at {b:?} with gap {gap}: {v}"
+                );
+            }
+        }
+        assert!(descents > 0);
+    }
+    let refused = |change: &dyn Fn(&mut FacingOperation)| {
+        let mut op = operation();
+        op.stepover_mm = 3.;
+        op.limits = Some(clamp.clone());
+        change(&mut op);
+        run_limited(op, &m).unwrap_err()
+    };
+    for (change, name) in [
+        (
+            &(|op: &mut FacingOperation| op.mode = FacingMode::OneWay) as &dyn Fn(&mut _),
+            "mode \"one_way\"",
+        ),
+        (&|op: &mut FacingOperation| op.reverse = true, "reverse"),
+        (&|op: &mut FacingOperation| op.axis = TraverseAxis::Y, "axis \"y\""),
+    ] {
+        let error = refused(change);
+        assert!(
+            error.contains(name) && error.contains("facing face"),
+            "{error}"
+        );
+    }
+}

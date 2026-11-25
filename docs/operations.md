@@ -68,7 +68,7 @@ How each operation honours them:
 | Operation | Behaviour |
 | --- | --- |
 | Pocket, adaptive, roughing | The region to clear becomes (region ∩ containment) − avoid areas, so the planner routes around them; a 0.02 mm clearance is kept from their edges |
-| Facing | Planned as a raster pocket over the stock (grown so the tool still runs past its edges) restricted by the limits, entering from the stock edge; needs `stepover_mm` at most the tool radius |
+| Facing | Limits that cannot reach the facing are left out and the native facing runs, move for move: avoid areas whose top is at or below `floor_z_mm`, and any limits every native move is proven clear of (setup jaws beside the stock, say). Limits that reach it make it a raster pocket over the stock restricted by them, its rows along X running 2 × radius + `entry_air_gap_mm` past the stock so every entry is a plunge with the whole cutter that far in air (an area with no such entry is refused, never entered by a helix); it needs `stepover_mm` at most the tool radius, and refuses `axis="y"`, `axis="auto"`, `mode="one_way"` and `reverse` by name |
 | Contour, chamfer, trace | Blocked stretches of a loop are lifted over (to the highest avoid top, at least the retract height); blocked starts, leads and entries are refused, as is lifting with wear compensation |
 | Parallel and its patterns, waterline, flat areas | Pass stretches whose cutter is not proven inside the limits are left out; the rest is cut as separate runs |
 | Drilling, bore, reaming, tapping, thread milling, slots | A hole or slot whose footprint enters an avoid area or leaves the containment is refused, naming it |
@@ -97,8 +97,8 @@ in X, Y order. An unavailable axis has a null score and a reason in
 If neither can be planned, the operation reports the refusal. These are
 nominal distance/rate estimates, with no acceleration
 or controller effects, and a tie within 1 ns selects X. Python still defaults
-to X. Automatic mode requires whole rectangular stock, refuses active
-in-plane limits, and refuses when either route reaches the 100,000-motion
+to X. Automatic mode requires whole rectangular stock, refuses in-plane
+limits that reach the facing (see the limits table above), and refuses when either route reaches the 100,000-motion
 scoring budget. An explicit axis remains available for larger routes. Only
 the selected route streams, through the same independent geometry and posting
 checks. Scoring cannot establish fixture or machine clearance.
