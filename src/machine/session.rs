@@ -68,6 +68,12 @@ pub struct Session {
     replay: StreamProducer,
     tools: BTreeMap<String, PreparedAssembly>,
     tool_shapes: BTreeMap<String, Vec<Shape>>,
+    /// Each tool's lowest point along the tool axis, in its own frame (tip
+    /// at the origin), before the gauge offset (`Session::floor_rise`).
+    tool_low_z: BTreeMap<String, f64>,
+    /// The stock replay's vertical guard on a floor it cuts: a cell cut flat
+    /// at Z keeps the upper bound Z + this (`SweepOptions.tolerance_mm`).
+    floor_guard_mm: f64,
     active: Option<String>,
     axes: Vec3,
     /// Each machine axis still at the declared machine-axis position that
@@ -144,6 +150,7 @@ impl Session {
         };
         let mut tools = BTreeMap::new();
         let mut tool_shapes = BTreeMap::new();
+        let mut tool_low_z = BTreeMap::new();
         for t in &manifest.tools {
             let c = model
                 .tools
@@ -239,6 +246,13 @@ impl Session {
                     )?);
                 }
             }
+            tool_low_z.insert(
+                t.id.clone(),
+                shapes
+                    .iter()
+                    .flat_map(|s| s.vertices.iter().map(|v| v[2]))
+                    .fold(f64::INFINITY, f64::min),
+            );
             let g = gauge(c);
             let shapes = shapes
                 .into_iter()
@@ -248,6 +262,7 @@ impl Session {
             tool_shapes.insert(t.id.clone(), shapes);
         }
         manifest.verification = None;
+        let floor_guard_mm = manifest.sweep.tolerance_mm;
         // This replay consumes checked events, not the manifest's planner operations.
         let mut replay = StreamProducer::new(manifest)?;
         if model.process == Process::Milling {
@@ -287,6 +302,8 @@ impl Session {
             replay,
             tools,
             tool_shapes,
+            tool_low_z,
+            floor_guard_mm,
             report,
             failed: true,
             finished: false,
@@ -698,6 +715,60 @@ impl Session {
         }
         Ok(())
     }
+    /// For a decoded move that only lifts the tool along the tool axis (#412):
+    /// the work Z of the tool's lowest point where the move starts, plus the
+    /// stock replay's own vertical guard on a floor it cut (a cell cut flat
+    /// at Z keeps the bound Z + `SweepOptions.tolerance_mm`). A height-field
+    /// cell whose upper bound is at or below it is the floor the tool already
+    /// stood on: the move touches it only within the calibration interval
+    /// and that guard, as the move that brought the tool there did, so it is
+    /// decided clear.
+    ///
+    /// Why: each cell bounds its material by the column from the stock bottom
+    /// up to its upper bound. The move translates the tool rigidly by +Z
+    /// only (work and machine XY are unchanged, and the work frame's Z is the
+    /// machine Z exactly), and the calibration interval is the same box at
+    /// every instant, so every pose the tool may take during the move is a
+    /// pose it may take at the start, raised. The column's top therefore
+    /// never comes nearer the tool than at the start, where it is no higher
+    /// than the guard above the tool's lowest point: any overlap is the one
+    /// the tool had where the move began, a band at its bottom no deeper than
+    /// the interval and the guard, which is the end of the move that brought
+    /// it there and was checked (or cut) as that move. Everything else is
+    /// checked as before: a cell above that (material beside or above the
+    /// tool's start), any XY change, an arc, a route between declared
+    /// machine positions, a rotated work frame or a lathe.
+    fn floor_rise(&self, body: &Placed, path: &Path) -> Option<f64> {
+        let f = &self.prepared.model.work_to_machine;
+        if !body.tip
+            || path.curve.is_some()
+            || f.x[2] != 0.
+            || f.y[2] != 0.
+            || f.z != [0., 0., 1.]
+            || path.from[0] != path.to[0]
+            || path.from[1] != path.to[1]
+        {
+            return None;
+        }
+        let Curve::Line { start, end } = *path.work.as_ref()?.curve() else {
+            return None;
+        };
+        if start[0] != end[0]
+            || start[1] != end[1]
+            || end[2].partial_cmp(&start[2]) != Some(std::cmp::Ordering::Greater)
+        {
+            return None;
+        }
+        let low = *self.tool_low_z.get(self.active.as_deref()?)?;
+        // Never above the exact sum (a tip-low tool adds nothing).
+        let z = if low == 0. {
+            start[2]
+        } else {
+            (start[2] + low).next_down()
+        };
+        let z = z + self.floor_guard_mm;
+        z.is_finite().then_some(z)
+    }
     fn check_stock(
         &mut self,
         body: &Placed,
@@ -741,9 +812,10 @@ impl Session {
                 }
                 let (nx, _, _) = spec.grid()?;
                 let widths = stock.cell_widths_mm();
+                let floor = self.floor_rise(body, path);
                 for (i, h) in stock.cells().iter().enumerate() {
                     work.tick()?;
-                    if h.upper_mm <= spec.min_mm[2] {
+                    if h.upper_mm <= spec.min_mm[2] || floor.is_some_and(|z| h.upper_mm <= z) {
                         continue;
                     }
                     let lo = [

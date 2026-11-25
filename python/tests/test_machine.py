@@ -101,11 +101,41 @@ class MachineTest(unittest.TestCase):
             findings = [f for group in refused.exception.findings for f in group['findings']]
             hit = next(f for f in findings if set(f['bodies']) == {'head', 'clamp'})
             self.assertEqual(hit['motion_id'], 1)
+            # Each severity's group is at its earliest move, and the refusal
+            # counts moves, not groups (#412).
+            for group in refused.exception.findings:
+                ids = [f['motion_id'] for f in group['findings'] if f['motion_id'] is not None]
+                self.assertEqual(group['completed'], min(ids))
+            self.assertRegex(str(refused.exception), r"^export refused: 1 move\(s\) with .*\(first at move 1: ")
             self.assertEqual(hit['status'], 'violation')
             self.assertGreater(hit['fraction'], 0)
             self.assertLess(hit['fraction'], 1)
             released = run.export(accept={'violation'})
             self.assertEqual(released['accepted'], ('violation',))
+
+    def test_a_refusal_counts_and_names_moves_and_routes(self):
+        def finding(motion_id, route=None):
+            return dict(
+                status='uncertain',
+                kind='machine_contact',
+                bodies=['@tool', 'clamp'],
+                motion_id=motion_id,
+                event_index=None,
+                route=route,
+                fraction=0.5,
+                detail='overlap',
+            )
+
+        groups = (
+            dict(completed=3, status='violation', findings=[finding(3), finding(5)]),
+            dict(completed=2, status='uncertain', findings=[finding(2), finding(3), finding(None, 'program_end')]),
+        )
+        error = ExportRefused(groups, {'violation', 'uncertain'})
+        self.assertRegex(str(error), r"^export refused: 3 move\(s\) and 1 route\(s\) with .*\(first at move 3: ")
+        route = ExportRefused(
+            (dict(completed=None, status='uncertain', findings=[finding(None, 'program_end')]),), {'uncertain'}
+        )
+        self.assertRegex(str(route), r"^export refused: 0 move\(s\) and 1 route\(s\) .*first at route program_end: ")
 
     def test_independent_axis_rapid_refuses_clamp_off_nominal_diagonal(self):
         p, m = fixture()

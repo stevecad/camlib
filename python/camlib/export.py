@@ -22,12 +22,42 @@ class ExportRefused(ValueError):
         self.findings = tuple(findings)
         self.statuses = tuple(sorted(statuses))
         first = self.findings[0] if self.findings else {}
+        moves, routes = located(self.findings)
+        count = f"{len(moves)} move(s)" + (f" and {len(routes)} route(s)" if routes else "")
         super().__init__(
-            f"export refused: {len(self.findings)} move(s) with unaccepted "
-            f"{'/'.join(self.statuses)} verification results (first at move {first.get('completed')}: "
+            f"export refused: {count} with unaccepted "
+            f"{'/'.join(self.statuses)} verification results (first at {_at(first)}: "
             f"{describe(first)}); fix the job, or pass "
             f"accept={{{', '.join(repr(s) for s in self.statuses)}}} to release it anyway"
         )
+
+
+def located(results):
+    """The distinct moves and routes gated results are at.
+
+    A machine-check result groups findings of one severity, each at its own
+    move (``motion_id``) or declared route; any other result is at its
+    ``completed`` move."""
+    moves, routes = set(), set()
+    for result in results:
+        details = [d for d in result.get("findings") or () if isinstance(d, dict) and "motion_id" in d]
+        if not details:
+            if result.get("completed") is not None:
+                moves.add(result["completed"])
+            continue
+        for detail in details:
+            if detail["motion_id"] is not None:
+                moves.add(detail["motion_id"])
+            elif detail.get("route") is not None:
+                routes.add(detail["route"])
+    return moves, routes
+
+
+def _at(result):
+    if result.get("completed") is not None:
+        return f"move {result['completed']}"
+    route = next((d.get("route") for d in result.get("findings") or () if isinstance(d, dict) and d.get("route")), None)
+    return f"route {route}" if route is not None else "no move"
 
 
 def describe(result):

@@ -978,3 +978,131 @@ fn a_z_home_tool_change_places_z_until_a_block_writes_it() {
         out["program"]
     );
 }
+
+/// A decoded move between two work positions of the tip.
+fn line(id: u64, start: Vec3, end: Vec3, kind: MoveKind) -> Event {
+    Event::Motion {
+        motion: Motion {
+            id,
+            operation: "face".into(),
+            tool: "t1".into(),
+            kind,
+            curve: Curve::Line { start, end },
+            feed_mm_min: (kind != MoveKind::Rapid).then_some(100.),
+        },
+    }
+}
+
+/// The program's own error intervals (#412): the work frame known to
+/// +-0.0254 mm on every axis, and rapids moving each axis independently (the
+/// machine checker boxes the whole move) or together (the native stock
+/// kernel checks the tool against the stock).
+fn floor_model(rapid_mode: RapidMode) -> Model {
+    let mut m = model();
+    m.rapid_mode = rapid_mode;
+    m.work_error_min_mm = [-0.0254; 3];
+    m.work_error_max_mm = [0.0254; 3];
+    m
+}
+
+/// Face the whole stock top (100..110 square, top 10) down to Z 8 in rows
+/// 1 mm apart that run past both edges, then feed back over the stock corner
+/// (the cutter overlapping it, its tip on the faced floor) and make `last`
+/// from there. Returns the session's report and the last move's ID.
+fn faced_then(m: Model, last: impl Fn(Vec3) -> (Vec3, MoveKind)) -> (Report, u64) {
+    let mut s = session(m);
+    let mut steps = vec![
+        ([98.5, 100., 35.], MoveKind::Rapid),
+        ([98.5, 100., 8.], MoveKind::Plunge),
+    ];
+    for row in 0..=10 {
+        let y = 100. + row as f64;
+        let (from, to) = if row % 2 == 0 { (98.5, 111.5) } else { (111.5, 98.5) };
+        if row > 0 {
+            steps.push(([from, y, 8.], MoveKind::Cut));
+        }
+        steps.push(([to, y, 8.], MoveKind::Cut));
+    }
+    steps.push(([109.5, 109.5, 8.], MoveKind::Cut));
+    steps.push(last([109.5, 109.5, 8.]));
+    let mut at = [0., 0., 35.];
+    let n = steps.len();
+    for (i, (to, kind)) in steps.into_iter().enumerate() {
+        s.event(line(i as u64 + 1, at, to, kind), i, &|| false).unwrap();
+        at = to;
+    }
+    (s.finish(n as u64, &|| false).unwrap().clone(), n as u64)
+}
+
+fn stock_findings(r: &Report, id: u64) -> Vec<&Finding> {
+    r.findings
+        .iter()
+        .filter(|f| f.motion_id == Some(id) && f.bodies.contains(&"@stock".to_string()))
+        .collect()
+}
+
+fn run(m: Model, moves: Vec<Event>) -> Report {
+    let mut s = session(m);
+    let n = moves.len();
+    for (i, e) in moves.into_iter().enumerate() {
+        s.event(e, i, &|| false).unwrap();
+    }
+    s.finish(n as u64, &|| false).unwrap().clone()
+}
+
+#[test]
+fn a_straight_lift_off_the_floor_the_tool_cut_is_clear() {
+    // The tool stands on the floor it has just cut, overlapping the stock
+    // corner; nothing above that floor is under it. Only the work-error
+    // interval reaches below the floor: the contact the cut itself made.
+    // Lifting straight up adds none. Before #412 the independent-axis lift
+    // was undecided (its outer bounds overlap the floor cells).
+    for mode in [RapidMode::AxisIndependent, RapidMode::Linear] {
+        let (r, id) = faced_then(floor_model(mode), |at| ([at[0], at[1], 35.], MoveKind::Rapid));
+        assert!(stock_findings(&r, id).is_empty(), "{mode:?}: {r:?}");
+        assert_eq!(r.status, Status::Clear, "{mode:?}: {r:?}");
+    }
+}
+
+#[test]
+fn a_lift_past_material_above_its_start_is_still_found() {
+    for mode in [RapidMode::AxisIndependent, RapidMode::Linear] {
+        let m = floor_model(mode);
+        // From the faced floor, a lift that also moves sideways (by one
+        // micrometre) is checked as before.
+        let (r, id) = faced_then(m.clone(), |at| ([at[0] + 0.001, at[1], 35.], MoveKind::Rapid));
+        if mode == RapidMode::AxisIndependent {
+            assert!(!stock_findings(&r, id).is_empty(), "{mode:?}: {r:?}");
+        }
+        // A rapid that ends inside unfaced stock and lifts out of it again:
+        // the lift starts with material above its tip, under and beside it.
+        let r = run(
+            m.clone(),
+            vec![
+                line(1, [0., 0., 35.], [105.5, 105.5, 35.], MoveKind::Rapid),
+                line(2, [105.5, 105.5, 35.], [105.5, 105.5, 8.], MoveKind::Rapid),
+                line(3, [105.5, 105.5, 8.], [105.5, 105.5, 35.], MoveKind::Rapid),
+            ],
+        );
+        assert!(!stock_findings(&r, 2).is_empty(), "{mode:?}: {r:?}");
+        let lift = stock_findings(&r, 3);
+        if mode == RapidMode::AxisIndependent {
+            assert!(!lift.is_empty(), "{mode:?}: {r:?}");
+            assert!(lift.iter().all(|f| f.status != Status::Clear));
+        }
+    }
+    // A plunge cut below the top, then straight up out of the hole past its
+    // unfaced walls: the walls' cells stand above the tip, so the lift stays
+    // undecided (the cutter's outer bounds overlap them).
+    let r = run(
+        floor_model(RapidMode::AxisIndependent),
+        vec![
+            line(1, [0., 0., 35.], [105.5, 105.5, 35.], MoveKind::Rapid),
+            line(2, [105.5, 105.5, 35.], [105.5, 105.5, 7.], MoveKind::Plunge),
+            line(3, [105.5, 105.5, 7.], [105.5, 105.5, 35.], MoveKind::Rapid),
+        ],
+    );
+    let lift = stock_findings(&r, 3);
+    assert!(!lift.is_empty(), "{r:?}");
+    assert!(lift.iter().all(|f| f.status == Status::Uncertain));
+}

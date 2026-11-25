@@ -975,7 +975,9 @@ class PostedRun(RecordedRun):
                 status = finding.get("status", machine["status"])
                 groups.setdefault(status, []).append(finding)
             for status, detail in groups.items():
-                findings.append(dict(completed=None, status=status, findings=detail))
+                # A group is at its earliest move (a route has none).
+                moves = [f["motion_id"] for f in detail if f.get("motion_id") is not None]
+                findings.append(dict(completed=min(moves, default=None), status=status, findings=detail))
         gate(findings, kinds)
         released_statuses = {f["status"] for f in findings}
         # Missing-model acceptance has its own explicit machine report and

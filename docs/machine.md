@@ -134,6 +134,22 @@ physical collision merely because their outer bounds overlap. Milling stock
 lower bounds can establish definite machine-body penetration. Unresolved
 contact, tangency and budget exhaustion are uncertain and refused by default.
 
+One case is decided rather than left to the outer bounds (#412): a decoded
+line or independent-axis rapid that only lifts the tool (its work and machine
+X and Y unchanged, its Z rising, the work frame's Z the machine Z exactly)
+does not touch a milling stock cell whose upper bound is at or below the
+tool's lowest point where the move starts, plus the stock replay's own vertical
+guard on a floor it cut (a cell cut flat at Z keeps the bound Z +
+`SweepOptions.tolerance_mm`). Each cell bounds its material by a
+column up to that bound, the lift raises every pose the calibration interval
+allows, and so the only overlap is the interval reaching below the floor the
+tool already stood on: the overlap the move that brought it there made, and
+that move's own check (or cut). A cell above that point under or beside the
+tool, a lift that moves sideways at all, an arc, a route between declared
+machine positions and a lathe are checked as before. Lifting straight up off
+a faced or pocketed floor is therefore clear, while a lift out of a hole past
+its walls, or out of stock it started in, is still found.
+
 Stock simulation reuses the existing native stock and turning kernels.
 
 ## Limits and external premises
