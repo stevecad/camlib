@@ -282,3 +282,174 @@ fn a_grip_is_checked_against_the_stock_and_the_part() {
         assert!(with(-44., bad).err().unwrap().contains("must be positive"));
     }
 }
+
+/// The same shaft turned around: its 30 mm diameter first, then the 20 mm
+/// diameter the first chucking finished.
+const LONG_TURNED: [[f64; 3]; 5] = [
+    [0., 0., 0.],
+    [15., 0., 0.],
+    [15., -40., 0.],
+    [10., -40., 0.],
+    [10., -60., 0.],
+];
+
+#[test]
+fn the_second_chucking_starts_from_the_stock_the_first_left() {
+    let operations = json!([face(), rough(), finish()]);
+    // First chucking: the bar held by 18 mm, turned to z -42.
+    let first = job(bar(), &LONG, -44., Some([18., 16.]), operations.clone());
+    let left = planned(&first).unwrap().stock;
+    // Turned end for end: the part's chuck-side end (z -60) becomes the
+    // front face (z 0), the 2 mm of bar behind it the stock to face off.
+    let spec = left.carried(true, -60.).unwrap();
+    assert_eq!([spec.z_min_mm, spec.z_max_mm], [-60., 2.]);
+    assert_eq!([spec.bore_radius_mm, spec.outer_radius_mm], [0., 16.]);
+    // It is what the first left, cell for cell, in the other order (less
+    // the faced-off front, which holds nothing).
+    let material: Vec<_> = left
+        .cells()
+        .iter()
+        .filter(|c| c.outer.upper_mm > c.inner.lower_mm)
+        .rev()
+        .copied()
+        .collect();
+    let stock = TurnStock::new(spec.clone()).unwrap();
+    assert_eq!(stock.cells(), &material[..]);
+    radius_is(&stock, -17., 2., 16.); // the bar the jaws held
+    radius_is(&stock, -39.5, -18.5, 15.); // turned in the first chucking
+    radius_is(&stock, -59.5, -41.5, 10.);
+    // Second chucking: gripped on the finished 20 mm diameter by 18 mm, the
+    // jaw face 2 mm (the clearance) behind the shoulder.
+    let carried = serde_json::to_value(&spec).unwrap();
+    let second = job(
+        carried.clone(),
+        &LONG_TURNED,
+        -42.,
+        Some([18., 10.]),
+        operations.clone(),
+    );
+    let plan = planned(&second).unwrap();
+    // The stock against the part, independently of the planner: the whole
+    // part is at size, both ends, and no more material is left than the
+    // 0.8 mm nose's fillet at the shoulder.
+    radius_is(&plan.stock, -39.5, -0.5, 15.);
+    radius_is(&plan.stock, -59.5, -41.5, 10.);
+    let part = std::f64::consts::PI * (15f64.powi(2) * 40. + 10f64.powi(2) * 20.);
+    let [lower, upper] = plan.stock.volume();
+    // (The certain bound loses the cell at each faced end and shoulder,
+    // the possible bound holds the nose's fillets.)
+    assert!(
+        lower <= part && lower > 0.985 * part && upper >= part && upper < part + 25.,
+        "{lower} {upper} {part}"
+    );
+    let material = material_report(&second, &plan.stock).unwrap();
+    assert_eq!(material["gouge"]["definite_cells"], 0);
+    assert_eq!(
+        material["held"],
+        json!({"z_mm": [-60., -42.], "definite_cells": 0, "possible_only_cells": 0})
+    );
+    let leftover: Vec<&Value> = material["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["residual"] == "definite_excess")
+        .collect();
+    assert!(!leftover.is_empty());
+    for finding in leftover {
+        let z = [
+            finding["z_mm"][0].as_f64().unwrap(),
+            finding["z_mm"][1].as_f64().unwrap(),
+        ];
+        assert!(z[0] >= -41.05 && z[1] <= -40., "{finding}");
+    }
+    // The held end is this chucking's to leave alone, and says so.
+    assert_eq!(
+        plan.reports[2].left_for_another_setup_z_mm,
+        vec![[-60., -40.]]
+    );
+    // Every planned move replays on the carried stock (as a posted program
+    // read back does) and ends with the planned stock.
+    let mut replay = TurnReplay::new(second.clone()).unwrap();
+    let mut replayed = TurnStock::new(spec).unwrap();
+    for event in &plan.events {
+        if let Event::Motion { motion } = event {
+            let delta = replay.motion(motion).unwrap();
+            replayed.apply_move(&delta.changes, &delta.rings).unwrap();
+        }
+    }
+    assert_eq!(replayed.cells(), plan.stock.cells());
+    // A wrong stock model is refused, not planned around. The untouched
+    // bar where the first chucking's stock should be: the jaws would close
+    // on 32 mm, not on the 20 mm declared.
+    let mut blank = bar();
+    blank["z_min_mm"] = json!(-60.0);
+    let error = planned(&job(
+        blank,
+        &LONG_TURNED,
+        -42.,
+        Some([18., 10.]),
+        operations.clone(),
+    ))
+    .err()
+    .unwrap();
+    assert!(
+        error.contains("jaws hold a parallel diameter")
+            && error.contains("a radius between 16 and 16"),
+        "{error}"
+    );
+    // A chuck face set onto the shoulder: the jaws would be on its fillet
+    // and on the 30 mm diameter.
+    let error = planned(&job(
+        carried,
+        &LONG_TURNED,
+        -39.,
+        Some([18., 10.]),
+        operations,
+    ))
+    .err()
+    .unwrap();
+    assert!(error.contains("jaws hold a parallel diameter"), "{error}");
+}
+
+#[test]
+fn a_declared_stepped_blank_is_the_stock() {
+    // A forging: 34 mm diameter for 22 mm, then 24 mm.
+    let blank = json!({
+        "version": 1, "units": "mm", "z_min_mm": -62.0, "z_max_mm": 2.0,
+        "outer_radius_mm": 17.0, "cell_mm": 0.25, "max_cells": 10000,
+        "sections": [
+            {"z_mm": [-62.0, -20.0], "outer_mm": [17.0, 17.0], "inner_mm": [0.0, 0.0]},
+            {"z_mm": [-20.0, 2.0], "outer_mm": [12.0, 12.0], "inner_mm": [0.0, 0.0]},
+        ],
+    });
+    let shaft = &LONG[..4];
+    let mut profile = shaft.to_vec();
+    profile.push([15., -40., 0.]);
+    let forged = job(
+        blank,
+        &profile,
+        -50.,
+        None,
+        json!([face(), rough(), finish()]),
+    );
+    let plan = planned(&forged).unwrap();
+    radius_is(&plan.stock, -18.5, -1.5, 10.);
+    radius_is(&plan.stock, -38.5, -21.5, 15.);
+    // The stock started as the blank, not as a bar of its largest
+    // diameter: less was there to remove.
+    let mut on_bar = bar();
+    on_bar["outer_radius_mm"] = json!(17.0);
+    let bar_job = job(
+        on_bar,
+        &profile,
+        -50.,
+        None,
+        json!([face(), rough(), finish()]),
+    );
+    let bar_plan = planned(&bar_job).unwrap();
+    assert_eq!(plan.stock.cells()[100..], bar_plan.stock.cells()[100..]);
+    let removed = |job: &TurningJob, plan: &TurnPlan| {
+        TurnStock::new(job.stock.clone()).unwrap().volume()[1] - plan.stock.volume()[1]
+    };
+    assert!(removed(&forged, &plan) < 0.7 * removed(&bar_job, &bar_plan));
+}

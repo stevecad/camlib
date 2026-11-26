@@ -517,6 +517,33 @@ fn turn_proxy_tools(setup: &str) -> PyResult<String> {
     serde_json::to_string(&setup.proxy_tools()).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
+/// A turning stock (a lathe stock state's `stock()` as JSON: its spec,
+/// cells and rings) as the stock spec of the next chucking
+/// (`TurnStock::carried`): moved along the axis, turned end for end first
+/// when `reversed`. JSON out.
+#[pyfunction]
+fn turn_stock_carried(stock: &str, reversed: bool, z_shift_mm: f64) -> PyResult<String> {
+    #[derive(serde::Deserialize)]
+    struct Turned {
+        spec: camlib::turning::stock::TurnStockSpec,
+        cells: Vec<camlib::turning::stock::TurnCell>,
+        #[serde(default)]
+        rings: Vec<[f64; 4]>,
+    }
+    let turned: Turned = serde_json::from_str(stock).map_err(|e| {
+        PyValueError::new_err(format!(
+            "a turned stock is a lathe stock state's stock() (spec, cells, rings): {e}"
+        ))
+    })?;
+    let stock =
+        camlib::turning::stock::TurnStock::from_parts(turned.spec, turned.cells, turned.rings)
+            .map_err(PyValueError::new_err)?;
+    let spec = stock
+        .carried(reversed, z_shift_mm)
+        .map_err(PyValueError::new_err)?;
+    serde_json::to_string(&spec).map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
 /// An ISO-style turning insert outline (`Insert::iso_turning`), as JSON.
 #[pyfunction]
 fn turning_iso_insert(
@@ -2974,6 +3001,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(grbl_start_mm, module)?)?;
     module.add_function(wrap_pyfunction!(apply_delta, module)?)?;
     module.add_function(wrap_pyfunction!(turn_proxy_tools, module)?)?;
+    module.add_function(wrap_pyfunction!(turn_stock_carried, module)?)?;
     module.add_function(wrap_pyfunction!(turning_iso_insert, module)?)?;
     module.add_function(wrap_pyfunction!(turning_taper_section, module)?)?;
     module.add_function(wrap_pyfunction!(turning_iso_code, module)?)?;

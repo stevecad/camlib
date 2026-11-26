@@ -20,17 +20,89 @@ import json
 from ._buffers import native
 
 
+def _bounds(value, what):
+    """A radius known exactly (a number) or within [lower, upper]."""
+    try:
+        lower, upper = (float(value),) * 2 if isinstance(value, (int, float)) else (float(v) for v in value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{what} is a radius in mm, or its (lower, upper) bounds") from None
+    return [lower, upper]
+
+
+@dataclass(frozen=True)
+class TurnStockSection:
+    """A stretch of turning stock along z (``TurnStockSpec(sections=...)``):
+    from ``z_mm[0]`` to ``z_mm[1]`` the outer radius is ``outer_mm`` and the
+    bore radius ``inner_mm`` (0: solid). Each is a radius, or the (lower,
+    upper) bounds the radius is known within, as a stock cell's are. A
+    stretch with no material has its outer radius at or below its bore's."""
+
+    z_mm: tuple
+    outer_mm: object
+    inner_mm: object = 0
+
+    def to_dict(self):
+        z0, z1 = (float(v) for v in self.z_mm)
+        return dict(
+            z_mm=[z0, z1], outer_mm=_bounds(self.outer_mm, "outer_mm"), inner_mm=_bounds(self.inner_mm, "inner_mm")
+        )
+
+
 @dataclass(frozen=True)
 class TurnStockSpec:
+    """Turning stock: a bar (or tube, ``bore_radius_mm``) from ``z_min_mm``
+    to ``z_max_mm``, in bins ``cell_mm`` long.
+
+    ``sections`` (``TurnStockSection``): stock that is not a plain bar, such
+    as a stepped blank, or what an earlier chucking left
+    (``TurnStockSpec.from_turned``). They tile ``z_min_mm..z_max_mm`` in
+    ascending order, every radius within ``bore_radius_mm..outer_radius_mm``
+    (then the largest and smallest radius of the stock)."""
+
     z_min_mm: float
     z_max_mm: float
     outer_radius_mm: float
     bore_radius_mm: float = 0
     cell_mm: float = 0.25
     max_cells: int = 1_000_000
+    sections: tuple = ()
+
+    @classmethod
+    def from_turned(cls, stock, *, reversed=False, z_shift_mm=0.0):
+        """The stock of the next chucking: what a lathe run left
+        (``state.stock()`` of its finished stock state, for example
+        ``JobRun.states[setup_id].stock()`` or ``Player.state.stock()``),
+        moved along the spindle axis by ``z_shift_mm``, and turned end for
+        end first with ``reversed=True`` (z becomes ``z_shift_mm - z``: the
+        part taken out, turned around and gripped on its other end).
+
+        The ends with no material left (a faced-off front) are dropped. The
+        cells keep their radius bounds: on the same ``cell_mm`` the new
+        stock is the old one cell for cell where the two grids line up, and
+        otherwise each bin holds the bounds of the cells it overlaps (the
+        same stock, known less sharply; never less material). Removed face
+        groove rings are not carried: they count as possible material."""
+        spec = json.loads(
+            native.turn_stock_carried(
+                json.dumps(dict(spec=stock["spec"], cells=stock["cells"], rings=stock.get("rings", []))),
+                bool(reversed),
+                float(z_shift_mm),
+            )
+        )
+        return cls(
+            spec["z_min_mm"],
+            spec["z_max_mm"],
+            spec["outer_radius_mm"],
+            spec["bore_radius_mm"],
+            spec["cell_mm"],
+            spec["max_cells"],
+            tuple(
+                TurnStockSection(tuple(s["z_mm"]), tuple(s["outer_mm"]), tuple(s["inner_mm"])) for s in spec["sections"]
+            ),
+        )
 
     def to_dict(self):
-        return dict(
+        result = dict(
             version=1,
             units="mm",
             z_min_mm=self.z_min_mm,
@@ -40,6 +112,9 @@ class TurnStockSpec:
             cell_mm=self.cell_mm,
             max_cells=self.max_cells,
         )
+        if self.sections:
+            result["sections"] = [s.to_dict() for s in self.sections]
+        return result
 
 
 # Turning tools. Every geometric value is stated: nothing defaults to a tool

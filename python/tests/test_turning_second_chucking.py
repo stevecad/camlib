@@ -163,5 +163,101 @@ class JawsOnThePartTest(unittest.TestCase):
                 job(stock=BAR, profile=LONG, chuck_z_mm=-44, grip=grip).plan()
 
 
+# The LONG shaft turned around: its 30 mm diameter first, then the 20 mm
+# diameter the first chucking finished.
+LONG_TURNED = ((0, 0, 0), (15, 0, 0), (15, -40, 0), (10, -40, 0), (10, -60, 0))
+
+
+class CarriedStockTest(unittest.TestCase):
+    """The stock carried between the setups: ``TurnStockSpec.from_turned``
+    makes the second setup's stock from what the first left, turned end for
+    end; ``TurnStockSection`` declares a blank that is not a bar."""
+
+    def setUp(self):
+        # First chucking: the bar held by 18 mm, turned to z -42.
+        self.first = job(stock=BAR, profile=LONG, chuck_z_mm=-44, grip=camlib.ChuckGrip(18, 16)).plan()
+
+    def test_the_second_setup_starts_from_what_the_first_left(self):
+        left = self.first.stock
+        # Turned end for end: the part's chuck-side end (z -60) becomes the
+        # front face (z 0); the faced-off front of the first setup is gone.
+        stock = camlib.TurnStockSpec.from_turned(left, reversed=True, z_shift_mm=-60)
+        self.assertEqual((stock.z_min_mm, stock.z_max_mm, stock.outer_radius_mm, stock.cell_mm), (-60, 2, 16, 0.25))
+        second = job(stock=stock, profile=LONG_TURNED, chuck_z_mm=-42, grip=camlib.ChuckGrip(18, 10))
+        # Before any move, the run's stock is the first setup's final stock,
+        # cell for cell, in the other order.
+        start, final, material = recorded(second.job)
+        self.assertEqual(start["cells"], material_cells(left)[::-1])
+        self.assertAlmostEqual(start["remaining_upper_mm3"], left["remaining_upper_mm3"], places=6)
+        self.assertAlmostEqual(start["remaining_lower_mm3"], left["remaining_lower_mm3"], places=6)
+        # The whole part is at size, both ends: the stock against the part,
+        # independently of the planner.
+        self.assertTrue(all(abs(lo - 15) < 1e-6 and abs(hi - 15) < 1e-6 for lo, hi in outer(final, -39.5, -0.5)))
+        self.assertTrue(all(abs(lo - 10) < 1e-6 and abs(hi - 10) < 1e-6 for lo, hi in outer(final, -59.5, -41.5)))
+        part = math.pi * (15**2 * 40 + 10**2 * 20)
+        # (The certain bound loses the cell at each faced end and shoulder,
+        # the possible bound holds the nose's fillets.)
+        self.assertTrue(0.985 * part < final["remaining_lower_mm3"] <= part <= final["remaining_upper_mm3"])
+        self.assertLess(final["remaining_upper_mm3"], part + 25)
+        # Leftover only in the fillet the 0.8 mm nose leaves at the
+        # shoulder; nothing behind the chuck face, where the first setup
+        # finished the diameter the jaws are on.
+        self.assertEqual(material["held"], dict(z_mm=[-60, -42], definite_cells=0, possible_only_cells=0))
+        leftover = [f for f in material["findings"] if f["residual"] == "definite_excess"]
+        self.assertTrue(leftover)
+        self.assertTrue(all(-41.05 <= f["z_mm"][0] and f["z_mm"][1] <= -40 for f in leftover), leftover)
+        # The second setup releases on both lathe posts: its posted
+        # program, read back, replays on the carried stock.
+        for name in ("fanuc_lathe_post", "centroid_lathe_post"):
+            with self.subTest(post=name):
+                posted = release(second.job, name)
+                self.assertEqual(posted.material["held"], material["held"])
+                self.assertGreaterEqual(min(z_words(posted.text)), -40.8 - 1e-9)
+
+    def test_a_wrong_stock_model_is_refused(self):
+        # The second setup on an untouched bar instead of what the first
+        # left: the jaws would close on 32 mm, not on the 20 mm declared.
+        with self.assertRaisesRegex(Exception, "jaws hold a parallel diameter"):
+            job(
+                stock=camlib.TurnStockSpec(-60, 2, 16),
+                profile=LONG_TURNED,
+                chuck_z_mm=-42,
+                grip=camlib.ChuckGrip(18, 10),
+            ).plan()
+        # The chuck face set onto the shoulder of the carried stock.
+        stock = camlib.TurnStockSpec.from_turned(self.first.stock, reversed=True, z_shift_mm=-60)
+        with self.assertRaisesRegex(Exception, "jaws hold a parallel diameter"):
+            job(stock=stock, profile=LONG_TURNED, chuck_z_mm=-39, grip=camlib.ChuckGrip(18, 10)).plan()
+
+    def test_a_declared_stepped_blank(self):
+        # A forging: 34 mm diameter for 42 mm, then 24 mm to its front end.
+        blank = camlib.TurnStockSpec(
+            -62,
+            2,
+            17,
+            sections=(
+                camlib.TurnStockSection((-62, -20), outer_mm=17),
+                camlib.TurnStockSection((-20, 2), outer_mm=(12, 12), inner_mm=0),
+            ),
+        )
+        plan = job(stock=blank).plan()
+        self.assertEqual(set(outer(plan.stock, -18.5, -1.5)), {(10, 10)})
+        # Sections that do not tile the stock are refused by name.
+        gap = camlib.TurnStockSpec(-62, 2, 17, sections=(camlib.TurnStockSection((-62, -20), outer_mm=17),))
+        with self.assertRaisesRegex(Exception, "sections end at z -20"):
+            job(stock=gap).plan()
+        # A bar's manifest carries no sections.
+        self.assertNotIn("sections", camlib.TurnStockSpec(-62, 2, 17).to_dict())
+        with self.assertRaisesRegex(ValueError, "outer_mm is a radius"):
+            camlib.TurnStockSection((-62, 2), outer_mm="wide").to_dict()
+
+    def test_a_stock_with_nothing_left_is_refused(self):
+        empty = dict(self.first.stock)
+        cell = dict(outer=dict(lower_mm=0, upper_mm=0), inner=dict(lower_mm=0, upper_mm=0))
+        empty["cells"] = [cell] * len(empty["cells"])
+        with self.assertRaisesRegex(ValueError, "no material left"):
+            camlib.TurnStockSpec.from_turned(empty)
+
+
 if __name__ == "__main__":
     unittest.main()

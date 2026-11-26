@@ -32,7 +32,30 @@ pub struct TurnStockSpec {
     /// Bin length along Z.
     pub cell_mm: f64,
     pub max_cells: usize,
+    /// Stock that is not a plain bar or tube (#418): what an earlier
+    /// chucking left (`TurnStock::carried`), or a declared stepped blank.
+    /// The sections tile `z_min_mm..z_max_mm` in ascending order, every
+    /// radius within `bore_radius_mm..outer_radius_mm`. Empty: the bar.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sections: Vec<TurnStockSection>,
 }
+
+/// A stretch of turning stock along z: over `z_mm` the outer radius lies
+/// within `outer_mm` and the bore radius within `inner_mm` (each [lower,
+/// upper], as a stock cell's bounds: a turned diameter has both equal, a
+/// solid stretch has inner [0, 0]). A stretch with no material has its
+/// outer upper bound at or below its inner lower bound.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TurnStockSection {
+    pub z_mm: [f64; 2],
+    pub outer_mm: [f64; 2],
+    pub inner_mm: [f64; 2],
+}
+
+/// Section ends this close are the same z (a carried stock's sections are
+/// cell boundaries moved by a shift: exact up to rounding).
+const JOIN: f64 = 1e-9;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RadiusBounds {
@@ -102,6 +125,34 @@ impl TurnStockSpec {
                 self.max_cells
             ));
         }
+        // Sections tile the stock's length, each within its radial extent.
+        let mut z = self.z_min_mm;
+        for s in &self.sections {
+            let within = |b: [f64; 2]| {
+                b.iter().all(|v| v.is_finite())
+                    && self.bore_radius_mm <= b[0]
+                    && b[0] <= b[1]
+                    && b[1] <= self.outer_radius_mm
+            };
+            if !(s.z_mm.iter().all(|v| v.is_finite())
+                && (s.z_mm[0] - z).abs() <= JOIN
+                && s.z_mm[1] > s.z_mm[0] + JOIN
+                && within(s.outer_mm)
+                && within(s.inner_mm))
+            {
+                return Err(format!(
+                    "turning stock sections must tile z_min_mm..z_max_mm in ascending order without gaps, each with bore_radius_mm <= lower <= upper <= outer_radius_mm for its outer and inner radius bounds; the section from z {} to z {} (outer {:?}, inner {:?}) does not, after z {z}",
+                    s.z_mm[0], s.z_mm[1], s.outer_mm, s.inner_mm
+                ));
+            }
+            z = s.z_mm[1];
+        }
+        if !self.sections.is_empty() && (z - self.z_max_mm).abs() > JOIN {
+            return Err(format!(
+                "turning stock sections end at z {z}, not at z_max_mm {}",
+                self.z_max_mm
+            ));
+        }
         Ok(n)
     }
 }
@@ -168,12 +219,137 @@ impl TurnStock {
                 upper_mm: spec.bore_radius_mm,
             },
         };
-        Ok(Self {
+        let mut stock = Self {
             cells: vec![cell; n],
             spec,
             generation: 0,
             rings: vec![],
-        })
+        };
+        // Declared sections (#418): each bin holds the bounds of every
+        // section it shares length with (both bounds hold for every z of
+        // the bin). Sections on the stock's own bins come back exactly;
+        // others are widened to the bin, never narrowed.
+        let mut first = 0;
+        let cells = if stock.spec.sections.is_empty() { 0 } else { n };
+        for i in 0..cells {
+            let [za, zb] = stock.bin(i);
+            let sections = &stock.spec.sections;
+            while first + 1 < sections.len() && sections[first].z_mm[1] <= za + JOIN {
+                first += 1;
+            }
+            let mut bounds: Option<TurnCell> = None;
+            for s in sections[first..]
+                .iter()
+                .take_while(|s| s.z_mm[0] < zb - JOIN)
+            {
+                let (o, b) = (s.outer_mm, s.inner_mm);
+                bounds = Some(match bounds {
+                    None => TurnCell {
+                        outer: RadiusBounds {
+                            lower_mm: o[0],
+                            upper_mm: o[1],
+                        },
+                        inner: RadiusBounds {
+                            lower_mm: b[0],
+                            upper_mm: b[1],
+                        },
+                    },
+                    Some(c) => TurnCell {
+                        outer: RadiusBounds {
+                            lower_mm: c.outer.lower_mm.min(o[0]),
+                            upper_mm: c.outer.upper_mm.max(o[1]),
+                        },
+                        inner: RadiusBounds {
+                            lower_mm: c.inner.lower_mm.min(b[0]),
+                            upper_mm: c.inner.upper_mm.max(b[1]),
+                        },
+                    },
+                });
+            }
+            stock.cells[i] = bounds.ok_or("turning stock sections leave a cell without one")?;
+        }
+        Ok(stock)
+    }
+
+    /// This stock as the stock of the next chucking (#418): moved along the
+    /// axis by `z_shift_mm`, and turned end for end first when `reversed`
+    /// (z becomes `z_shift_mm - z`: the part taken out, turned around and
+    /// put back; a rigid move that keeps the spindle axis). The ends with
+    /// no material left are dropped, so the new stock ends where material
+    /// may remain. Removed rings (face grooves) are not carried: the radius
+    /// bounds count them as possible material, as they did.
+    ///
+    /// On the same cell length the new stock's bins are this stock's cells,
+    /// exactly, wherever the two grids line up (always when not reversed;
+    /// reversed, unless a last cell shorter than the others still holds
+    /// material); otherwise each bin holds the bounds of the cells it
+    /// overlaps, which is the same stock known less sharply.
+    pub fn carried(&self, reversed: bool, z_shift_mm: f64) -> Result<TurnStockSpec, String> {
+        if !z_shift_mm.is_finite() {
+            return Err("z_shift_mm must be finite".into());
+        }
+        let holds = |c: &TurnCell| c.outer.upper_mm > c.inner.lower_mm;
+        let (Some(first), Some(last)) = (
+            self.cells.iter().position(holds),
+            self.cells.iter().rposition(holds),
+        ) else {
+            return Err("the stock has no material left to carry to another setup".into());
+        };
+        // One expression per boundary, so neighbours share their ends
+        // exactly.
+        let boundary = |k: usize| {
+            let z = if k > last {
+                self.bin(last)[1]
+            } else {
+                self.bin(k)[0]
+            };
+            if reversed {
+                z_shift_mm - z
+            } else {
+                z + z_shift_mm
+            }
+        };
+        let mut sections: Vec<TurnStockSection> = vec![];
+        let cells: Box<dyn Iterator<Item = usize>> = if reversed {
+            Box::new((first..=last).rev())
+        } else {
+            Box::new(first..=last)
+        };
+        for i in cells {
+            let c = self.cells[i];
+            let (a, b) = if reversed {
+                (boundary(i + 1), boundary(i))
+            } else {
+                (boundary(i), boundary(i + 1))
+            };
+            let (outer_mm, inner_mm) = (
+                [c.outer.lower_mm, c.outer.upper_mm],
+                [c.inner.lower_mm, c.inner.upper_mm],
+            );
+            match sections.last_mut() {
+                // A run of equal cells is one section.
+                Some(s) if s.outer_mm == outer_mm && s.inner_mm == inner_mm => s.z_mm[1] = b,
+                _ => sections.push(TurnStockSection {
+                    z_mm: [a, b],
+                    outer_mm,
+                    inner_mm,
+                }),
+            }
+        }
+        let radii = || sections.iter().flat_map(|s| [s.outer_mm, s.inner_mm]);
+        let spec = TurnStockSpec {
+            version: 1,
+            units: "mm".into(),
+            z_min_mm: sections[0].z_mm[0],
+            z_max_mm: sections[sections.len() - 1].z_mm[1],
+            outer_radius_mm: radii().map(|b| b[1]).fold(0., f64::max),
+            bore_radius_mm: radii().map(|b| b[0]).fold(f64::INFINITY, f64::min),
+            cell_mm: self.spec.cell_mm,
+            max_cells: self.spec.max_cells,
+            sections,
+        };
+        spec.validate()?;
+        Ok(spec)
     }
     pub fn spec(&self) -> &TurnStockSpec {
         &self.spec
@@ -725,6 +901,7 @@ mod tests {
             bore_radius_mm: 0.,
             cell_mm: 0.5,
             max_cells: 10_000,
+            sections: vec![],
         }
     }
     fn line(a: [f64; 2], b: [f64; 2]) -> Curve {
@@ -1185,5 +1362,211 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 3);
+    }
+
+    fn section(z: [f64; 2], outer: [f64; 2], inner: [f64; 2]) -> TurnStockSection {
+        TurnStockSection {
+            z_mm: z,
+            outer_mm: outer,
+            inner_mm: inner,
+        }
+    }
+    fn bounds(cell: &TurnCell) -> [[f64; 2]; 2] {
+        [
+            [cell.outer.lower_mm, cell.outer.upper_mm],
+            [cell.inner.lower_mm, cell.inner.upper_mm],
+        ]
+    }
+
+    #[test]
+    fn sections_declare_stock_that_is_not_a_bar() {
+        // A stepped blank with a hole in its front 4 mm.
+        let stepped = |split: f64| TurnStockSpec {
+            z_min_mm: -10.,
+            cell_mm: 1.,
+            sections: vec![
+                section([-10., split], [8., 8.], [0., 0.]),
+                section([split, 0.], [5., 5.], [2., 2.]),
+            ],
+            ..spec()
+        };
+        let stock = TurnStock::new(stepped(-4.)).unwrap();
+        assert_eq!(stock.cells().len(), 10);
+        for (i, cell) in stock.cells().iter().enumerate() {
+            let expected = if i < 6 {
+                [[8., 8.], [0., 0.]]
+            } else {
+                [[5., 5.], [2., 2.]]
+            };
+            assert_eq!(bounds(cell), expected, "cell {i}");
+        }
+        // A step inside a bin: the bin holds both sections' bounds (every
+        // z of it lies within them), its neighbours their own.
+        let stock = TurnStock::new(stepped(-4.5)).unwrap();
+        assert_eq!(bounds(&stock.cells()[4]), [[8., 8.], [0., 0.]]);
+        assert_eq!(bounds(&stock.cells()[5]), [[5., 8.], [0., 2.]]);
+        assert_eq!(bounds(&stock.cells()[6]), [[5., 5.], [2., 2.]]);
+        // A bar's wire form is what it was; sections read back.
+        let bar = serde_json::to_value(spec()).unwrap();
+        assert!(bar.get("sections").is_none(), "{bar}");
+        let wire = serde_json::to_string(&stepped(-4.)).unwrap();
+        assert_eq!(
+            serde_json::from_str::<TurnStockSpec>(&wire).unwrap(),
+            stepped(-4.)
+        );
+        // Refused: a gap, sections out of order, a radius outside the
+        // stock's own, an end short of the stock's.
+        let refused = |sections: Vec<TurnStockSection>| {
+            TurnStock::new(TurnStockSpec {
+                z_min_mm: -10.,
+                cell_mm: 1.,
+                sections,
+                ..spec()
+            })
+            .unwrap_err()
+        };
+        let solid = [0., 0.];
+        for sections in [
+            vec![
+                section([-10., -5.], [8., 8.], solid),
+                section([-4., 0.], [5., 5.], solid),
+            ],
+            vec![
+                section([-4., 0.], [5., 5.], solid),
+                section([-10., -4.], [8., 8.], solid),
+            ],
+            vec![section([-10., 0.], [8., 21.], solid)],
+            vec![section([-10., 0.], [8., 5.], solid)],
+            vec![section([-10., 0.], [8., 8.], [-1., 0.])],
+        ] {
+            let error = refused(sections);
+            assert!(error.contains("sections must tile"), "{error}");
+        }
+        let error = refused(vec![section([-10., -2.], [8., 8.], solid)]);
+        assert!(error.contains("not at z_max_mm 0"), "{error}");
+    }
+
+    /// A turned stock: faced off in front of z 0, a 10 mm diameter to z -4
+    /// (drilled 2 mm deep at r 2), one cell known only within bounds, the
+    /// rest the bar.
+    fn turned(z_max: f64) -> TurnStock {
+        let spec = TurnStockSpec {
+            z_min_mm: -10.,
+            z_max_mm: z_max,
+            ..spec()
+        };
+        let stock = TurnStock::new(spec.clone()).unwrap();
+        let cells = (0..stock.cells().len())
+            .map(|i| {
+                let [za, zb] = stock.bin(i);
+                let (outer, inner) = if za >= 0. {
+                    ([0., 0.], [0., 0.])
+                } else if za >= -2. {
+                    ([5., 5.], [2., 2.])
+                } else if za >= -4. {
+                    ([5., 5.], [0., 0.])
+                } else if zb > -4.5 {
+                    ([5., 20.], [0., 0.])
+                } else {
+                    ([20., 20.], [0., 0.])
+                };
+                TurnCell {
+                    outer: RadiusBounds {
+                        lower_mm: outer[0],
+                        upper_mm: outer[1],
+                    },
+                    inner: RadiusBounds {
+                        lower_mm: inner[0],
+                        upper_mm: inner[1],
+                    },
+                }
+            })
+            .collect();
+        TurnStock::from_parts(spec, cells, vec![]).unwrap()
+    }
+
+    #[test]
+    fn a_turned_stock_is_carried_to_the_next_chucking_cell_for_cell() {
+        let first = turned(2.);
+        let held = |c: &&TurnCell| c.outer.upper_mm > c.inner.lower_mm;
+        let material: Vec<TurnCell> = first.cells().iter().filter(held).copied().collect();
+        assert_eq!(material.len(), 20);
+        // Turned end for end about z -5: the faced-off front is dropped, the
+        // stock runs from the old back end (now the front) to the old face.
+        let spec = first.carried(true, -10.).unwrap();
+        assert_eq!([spec.z_min_mm, spec.z_max_mm], [-10., 0.]);
+        assert_eq!([spec.bore_radius_mm, spec.outer_radius_mm], [0., 20.]);
+        // Runs of equal cells are one section each.
+        assert_eq!(spec.sections.len(), 4);
+        let second = TurnStock::new(spec.clone()).unwrap();
+        let reversed: Vec<TurnCell> = material.iter().rev().copied().collect();
+        assert_eq!(second.cells(), &reversed[..]);
+        // The same material: equal volume bounds.
+        for (a, b) in first.volume().iter().zip(second.volume()) {
+            assert!((a - b).abs() < 1e-9 * a.max(1.), "{a} {b}");
+        }
+        // Turned back, it is the first stock again (less its empty front).
+        let back = TurnStock::new(second.carried(true, -10.).unwrap()).unwrap();
+        assert_eq!(back.cells(), &material[..]);
+        assert_eq!(back.spec().z_max_mm, 0.);
+        // Moved along the axis only.
+        let moved = first.carried(false, 3.).unwrap();
+        assert_eq!([moved.z_min_mm, moved.z_max_mm], [-7., 3.]);
+        assert_eq!(TurnStock::new(moved).unwrap().cells(), &material[..]);
+        // The carried stock's wire form reads back to itself.
+        let wire = serde_json::to_string(&spec).unwrap();
+        assert_eq!(serde_json::from_str::<TurnStockSpec>(&wire).unwrap(), spec);
+        // Nothing left: nothing to carry.
+        let mut gone = first.clone();
+        for cell in &mut gone.cells {
+            cell.outer = cell.inner;
+        }
+        let error = gone.carried(true, 0.).unwrap_err();
+        assert!(error.contains("no material left"), "{error}");
+        assert!(first.carried(true, f64::NAN).is_err());
+    }
+
+    #[test]
+    fn a_stock_carried_onto_another_grid_is_bounded_on_both_sides() {
+        // 11.7 mm long: the last cell is 0.2 mm, and reversed the cells no
+        // longer fall on the new stock's bins.
+        let mut first = turned(1.7);
+        // Material up to the very end, so the short cell is carried.
+        for cell in &mut first.cells {
+            if cell.outer.upper_mm == 0. {
+                cell.outer.upper_mm = 3.;
+                cell.outer.lower_mm = 3.;
+            }
+        }
+        let shift = -8.3;
+        let second = TurnStock::new(first.carried(true, shift).unwrap()).unwrap();
+        assert_eq!(second.spec().z_min_mm, shift - 1.7);
+        let mut widened = 0;
+        for (i, new) in second.cells().iter().enumerate() {
+            let [za, zb] = second.bin(i);
+            // Every old cell this bin shares length with lies within its
+            // bounds, and the bounds are attained (nothing looser).
+            let mut hull: Option<[[f64; 2]; 2]> = None;
+            for (k, old) in first.cells().iter().enumerate() {
+                let [a, b] = first.bin(k);
+                let (a, b) = (shift - b, shift - a);
+                if b.min(zb) - a.max(za) <= 1e-9 {
+                    continue;
+                }
+                let o = bounds(old);
+                hull = Some(match hull {
+                    None => o,
+                    Some(h) => [
+                        [h[0][0].min(o[0][0]), h[0][1].max(o[0][1])],
+                        [h[1][0].min(o[1][0]), h[1][1].max(o[1][1])],
+                    ],
+                });
+            }
+            assert_eq!(bounds(new), hull.unwrap(), "bin {i}");
+            widened += usize::from(new.outer.lower_mm < new.outer.upper_mm);
+        }
+        // More bins are known only within bounds than the one cell of the
+        // first stock: each step now falls inside a bin.
+        assert!(widened > 1, "{widened}");
     }
 }

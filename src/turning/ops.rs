@@ -4436,6 +4436,7 @@ mod tests {
                 bore_radius_mm: 0.,
                 cell_mm: 0.25,
                 max_cells: 10_000,
+                sections: vec![],
             },
             part: TurnProfile {
                 points: vec![
