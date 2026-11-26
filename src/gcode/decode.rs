@@ -1659,6 +1659,22 @@ impl Decoder {
                     );
                 }
             }
+            "preserve_carriage" => {
+                // A lathe T word that only applies the new offset: the
+                // carriage stays, the controlled point moves by the offset
+                // difference. The first tool starts at the program's
+                // declared position.
+                if let Some(old) = &self.active {
+                    self.position = super::machine::carriage_kept_tip(
+                        self.position,
+                        old.carriage_to_tip_mm
+                            .ok_or("the tool table entry has no carriage_to_tip_mm")?,
+                        active
+                            .carriage_to_tip_mm
+                            .ok_or("the tool table entry has no carriage_to_tip_mm")?,
+                    );
+                }
+            }
             _ => {}
         }
         self.active = Some(active);

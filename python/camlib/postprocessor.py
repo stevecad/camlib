@@ -239,9 +239,11 @@ _BORE_CYCLES = frozenset(('bore_cycle', 'bore_dwell_cycle', 'bore_stop_cycle', '
 # The axes a tool change leaves where the controller placed them, by
 # tool_change_position_mode: z_home sends Z to its home (LinuxCNC
 # TOOL_CHANGE_QUILL_UP, Centroid CNC12 M6), table moves every axis to the
-# tool-change pose (TOOL_CHANGE_POSITION, G30). The other modes move no axis
-# to a machine position.
-_TOOL_CHANGE_PLACES = {'z_home': (2,), 'table': (0, 1, 2)}
+# tool-change pose (TOOL_CHANGE_POSITION, G30). A lathe's preserve_carriage
+# moves no axis and puts every axis under the new tool's offset: each stands
+# where the controller holds it, at a work position no block has commanded
+# (#416). The other modes move no axis to a machine position.
+_TOOL_CHANGE_PLACES = {'z_home': (2,), 'table': (0, 1, 2), 'preserve_carriage': (0, 1, 2)}
 
 
 def _uncommented(line, parentheses):
@@ -696,8 +698,11 @@ class Machine:
     # Tip pose after a tool change: 'table' (each ToolSetting states it),
     # 'preserve_tip' (it stays where it was), 'preserve_spindle' (the
     # spindle stays where it was: the tip moves along Z by the old gauge
-    # length minus the new one), or 'z_home' (M6 sends the spindle gauge line
-    # to machine Z tool_change_home_z_mm, XY unchanged).
+    # length minus the new one), 'z_home' (M6 sends the spindle gauge line
+    # to machine Z tool_change_home_z_mm, XY unchanged), or, on a lathe,
+    # 'preserve_carriage' (the T word only applies the new offset and no axis
+    # moves: the controlled point moves by the new tool's
+    # ToolSetting.carriage_to_tip_mm minus the old one's).
     tool_change_position_mode: str = field(kw_only=True)
     tool_change_home_z_mm: float | None = None
     # The machine's rapid traverse rate: nominal time of G0 moves in playback.
@@ -732,6 +737,10 @@ class Machine:
             t if t.position_after_mm is None else replace(t, position_after_mm=tuple(t.position_after_mm))
             for t in self.tools
         )
+        tools = tuple(
+            t if t.carriage_to_tip_mm is None else replace(t, carriage_to_tip_mm=tuple(t.carriage_to_tip_mm))
+            for t in tools
+        )
         object.__setattr__(self, 'tools', tools)
         for name in ('frame', 'work_to_machine'):
             value = getattr(self, name)
@@ -747,8 +756,39 @@ class Machine:
             raise ValueError('machine needs bounded name/revision')
         if not tools or not isinstance(self.dialect, GCodeDialect):
             raise ValueError('machine needs at least one tool and a declared dialect')
-        if self.tool_change_position_mode not in ('table', 'preserve_tip', 'preserve_spindle', 'z_home'):
-            raise ValueError('tool_change_position_mode must be table, preserve_tip, preserve_spindle or z_home')
+        if self.tool_change_position_mode not in (
+            'table',
+            'preserve_tip',
+            'preserve_spindle',
+            'preserve_carriage',
+            'z_home',
+        ):
+            raise ValueError(
+                'tool_change_position_mode must be table, preserve_tip, preserve_spindle, preserve_carriage or z_home'
+            )
+        if self.tool_change_position_mode == 'preserve_carriage':
+            # A lathe whose T word only applies the new tool's offset: the
+            # carriage stays, the controlled point moves by the difference
+            # of the two tools' offsets from the carriage reference.
+            if self.dialect.tool_change != 'lathe_t':
+                raise ValueError(
+                    'tool_change_position_mode preserve_carriage is a lathe tool change (a T<nn><oo> word that '
+                    'only applies the new offset); a milling spindle that stays is preserve_spindle'
+                )
+            for t in tools:
+                offset = t.carriage_to_tip_mm
+                if offset is None:
+                    raise ValueError(
+                        'tool_change_position_mode "preserve_carriage" needs each ToolSetting.carriage_to_tip_mm '
+                        "(the tool's controlled point from the carriage reference, x radius and z), and tool "
+                        f'{t.tool!r} has none: camlib assumes no offset; state it'
+                    )
+                if (
+                    len(offset) != 2
+                    or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in offset)
+                    or not all(math.isfinite(v) and abs(v) <= 1e6 for v in offset)
+                ):
+                    raise ValueError(f'tool {t.tool!r}: carriage_to_tip_mm must be finite (x radius, z) values')
         if self.tool_change_position_mode == 'preserve_spindle':
             # The tip moves along the spindle axis by the difference of the
             # gauge lengths: the tool axis must be work Z, and the tool must
@@ -869,6 +909,9 @@ class Machine:
                 data.pop(key)
         if not self.schedule_post_feeds:
             data.pop('schedule_post_feeds')
+        for tool in data['tools']:
+            if tool['carriage_to_tip_mm'] is None:
+                tool.pop('carriage_to_tip_mm')
         if data['dialect']['beam_mark'] is None:
             data['dialect'].pop('beam_mark')
         if not data['dialect']['arc_word_mismatch_mm']:
@@ -1263,7 +1306,9 @@ class PostProcessor(_TransactionCopy):
         At the program start the controller holds every axis where it is
         (the header moves none: PostEngine refuses one that does). A tool
         change whose declared mode moves axes to machine positions places
-        those axes again, at its change block. Any block that names an axis
+        those axes again, at its change block (as does a lathe's change
+        that only applies a new offset: no block has commanded the axes in
+        the new tool's coordinates). Any block that names an axis
         word commands that axis to a work position, through the
         controller's actual work offset, so the axis leaves that state,
         except a block the decoder read as moving no axis (``held``, one
@@ -3321,6 +3366,15 @@ class GCodeDecoder(_TransactionCopy):
             # program's declared position.
             x, y, z = self.position
             self.position = (x, y, z + (old.gauge_length_mm - self.active.gauge_length_mm))
+        if self.machine.tool_change_position_mode == 'preserve_carriage' and old is not None:
+            # A lathe T word that only applies the new offset (#416): the
+            # carriage stays, so the controlled point moves by the new
+            # tool's offset from the carriage reference minus the old one's
+            # (the stream's expression, in its order: they agree exactly).
+            # The first tool starts at the program's declared position.
+            x, y, z = self.position
+            a, b = old.carriage_to_tip_mm, self.active.carriage_to_tip_mm
+            self.position = (x - a[0] + b[0], y, z - a[1] + b[1])
         if self.machine.tool_change_position_mode == 'table':
             self.position = tuple(self.active.position_after_mm)
         elif self.machine.tool_change_position_mode == 'z_home':

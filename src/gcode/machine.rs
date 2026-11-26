@@ -104,6 +104,24 @@ pub struct ToolSetting {
     pub position_after_mm: Option<Vec3>,
     #[serde(deserialize_with = "present")]
     pub diameter_register: Option<u32>,
+    /// A lathe tool's controlled point from the carriage reference, work
+    /// (x radius, z). Required by `tool_change_position_mode =
+    /// "preserve_carriage"`; the other modes do not read it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carriage_to_tip_mm: Option<[f64; 2]>,
+}
+
+/// The tip after a lathe tool change that moves no axis (#416): the carriage
+/// stays, so the controlled point moves by the new tool's offset from the
+/// carriage reference minus the old one's. The same expression, in the same
+/// order, as the planner's and the stream's
+/// (`turning::ops::TurnToolChange::tip_after`), so they agree exactly.
+pub fn carriage_kept_tip(position: Vec3, old: [f64; 2], new: [f64; 2]) -> Vec3 {
+    [
+        position[0] - old[0] + new[0],
+        position[1],
+        position[2] - old[1] + new[1],
+    ]
 }
 
 /// `camlib.post.Machine`: a real machine as its owner declares it.
@@ -626,13 +644,44 @@ impl Machine {
         if self.tools.is_empty() {
             return Err("machine needs at least one tool and a declared dialect".into());
         }
-        if !["table", "preserve_tip", "preserve_spindle", "z_home"]
-            .contains(&self.tool_change_position_mode.as_str())
+        if ![
+            "table",
+            "preserve_tip",
+            "preserve_spindle",
+            "preserve_carriage",
+            "z_home",
+        ]
+        .contains(&self.tool_change_position_mode.as_str())
         {
             return Err(
-                "tool_change_position_mode must be table, preserve_tip, preserve_spindle or z_home"
+                "tool_change_position_mode must be table, preserve_tip, preserve_spindle, preserve_carriage or z_home"
                     .into(),
             );
+        }
+        if self.tool_change_position_mode == "preserve_carriage" {
+            // A lathe whose T word only applies the new tool's offset: the
+            // carriage stays, the controlled point moves by the difference
+            // of the two tools' offsets from the carriage reference.
+            if self.dialect.tool_change != "lathe_t" {
+                return Err("tool_change_position_mode preserve_carriage is a lathe tool change (a T<nn><oo> word that only applies the new offset); a milling spindle that stays is preserve_spindle".into());
+            }
+            for t in &self.tools {
+                match t.carriage_to_tip_mm {
+                    None => {
+                        return Err(format!(
+                            "tool_change_position_mode \"preserve_carriage\" needs each ToolSetting.carriage_to_tip_mm (the tool's controlled point from the carriage reference, x radius and z), and tool {:?} has none: camlib assumes no offset; state it",
+                            t.tool
+                        ));
+                    }
+                    Some(o) if !o.iter().all(|v| v.is_finite() && v.abs() <= 1e6) => {
+                        return Err(format!(
+                            "tool {:?}: carriage_to_tip_mm must be finite (x radius, z) values",
+                            t.tool
+                        ));
+                    }
+                    _ => {}
+                }
+            }
         }
         if self.tool_change_position_mode == "preserve_spindle" {
             // The tip moves along the spindle axis by the difference of the

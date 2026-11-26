@@ -545,7 +545,9 @@ class ToolChangeInPlaceTest(unittest.TestCase):
     def test_machine_refuses_the_mode_where_it_is_not_modelled(self):
         with self.assertRaisesRegex(ValueError, "work Z axis along machine Z"):
             in_place_machine(("short", "long"), work_to_machine=WorkFrame(x=(1, 0, 0), y=(0, 0, 1), z=(0, -1, 0)))
-        with self.assertRaisesRegex(ValueError, "must be table, preserve_tip, preserve_spindle or z_home"):
+        with self.assertRaisesRegex(
+            ValueError, "must be table, preserve_tip, preserve_spindle, preserve_carriage or z_home"
+        ):
             in_place_machine(("short", "long"), mode="in_place")
         self.assertEqual(ToolChangeInPlace().to_dict(), {"in_place": True})
 

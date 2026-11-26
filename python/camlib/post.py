@@ -27,10 +27,32 @@ class ToolSetting:
     position_after_mm: tuple | None = None
     # D register holding this tool's wear for cutter compensation (G41/G42).
     diameter_register: int | None = None
+    # A lathe tool's controlled point from the carriage reference, work
+    # (x radius, z): the same value as its TurnToolSetting.carriage_to_tip_mm.
+    # Required by Machine(tool_change_position_mode="preserve_carriage") (the
+    # T word only applies the new offset, no axis moves); not read otherwise.
+    carriage_to_tip_mm: tuple | None = None
 
     @classmethod
-    def for_tool(cls, tool, *, number, length_register, position_after_mm=None, diameter_register=None):
-        return cls(tool.id, number, length_register, tool.gauge_length_mm, position_after_mm, diameter_register)
+    def for_tool(
+        cls,
+        tool,
+        *,
+        number,
+        length_register,
+        position_after_mm=None,
+        diameter_register=None,
+        carriage_to_tip_mm=None,
+    ):
+        return cls(
+            tool.id,
+            number,
+            length_register,
+            tool.gauge_length_mm,
+            position_after_mm,
+            diameter_register,
+            carriage_to_tip_mm,
+        )
 
 
 def _json(value):

@@ -444,7 +444,10 @@ impl DefaultPost {
                 let d = &self.machine.dialect;
                 let places: &[usize] = match self.machine.tool_change_position_mode.as_str() {
                     "z_home" => &[2],
-                    "table" => &[0, 1, 2],
+                    // A lathe's preserve_carriage moves no axis and puts
+                    // each under the new tool's offset: no block has
+                    // commanded them in the new tool's coordinates (#416).
+                    "table" | "preserve_carriage" => &[0, 1, 2],
                     _ => &[],
                 };
                 for (i, line) in self.lines.iter().enumerate() {
