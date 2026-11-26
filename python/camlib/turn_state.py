@@ -77,15 +77,18 @@ class TurnStockState:
     @position.setter
     def position(self, value):
         # A tool change puts the controlled point where the setup's declared
-        # tool-change mode leaves it; the receiver accepts the next tool's
-        # first move from there itself (it measures from its own last tool).
+        # tool-change mode leaves it, and nowhere else; the receiver accepts
+        # the next tool's first move from there itself.
         value = tuple(value)
-        if value != tuple(self._receiver.position) and not any(
-            self.tool_change_tip(tool) == value for tool in sorted(self._tools)
-        ):
+        change = self._manifest["turning"].get("tool_change") or {"mode": "tip_kept"}
+        if change["mode"] == "tip_kept":
+            # The tip kept: every tool starts at the start position.
+            if value != tuple(self._manifest["initial_position_mm"]):
+                raise ProtocolError("a lathe tool change starts at the turret (start) position")
+        elif not any(self.tool_change_tip(tool) == value for tool in sorted(self._tools)):
+            # Measured from the receiver's own last position and tool.
             raise ProtocolError(
-                "a lathe tool change starts where the setup's tool-change mode leaves the tool "
-                "(the start position unless the setup declares another)"
+                f"a lathe tool change starts where the setup's {change['mode']} tool change leaves the tool"
             )
 
     @property

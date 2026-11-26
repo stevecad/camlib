@@ -361,6 +361,51 @@ class LatheToolChangeTest(unittest.TestCase):
             with self.assertRaises(ProtocolError):
                 state.tool_change_tip("other")
 
+    def test_a_tool_change_is_placed_nowhere_but_where_the_mode_leaves_it(self):
+        from camlib.simulation import ProtocolError, Update
+
+        def mid_run(change):
+            """The committed state after the turning tool's first moves."""
+            setup = two_tools(change).job.compile().setup("lathe")
+            with Simulation(**setup.simulation_options()) as sim:
+                moves = 0
+                for update in sim.run_operations():
+                    moves += isinstance(update, Update)
+                    if moves == 5:
+                        return sim.state.clone()
+
+        # The tip kept, as on main: only the start position, in main's words;
+        # not where the last move ended, nor anywhere else.
+        state = mid_run(None)
+        here = tuple(state.position)
+        self.assertNotEqual(here, START)
+        state.position = START
+        for away in (here, BLADE_START, (30.0, 0.0, 21.0)):
+            with self.assertRaisesRegex(
+                ProtocolError, r"^a lathe tool change starts at the turret \(start\) position$"
+            ):
+                state.position = away
+        self.assertEqual(tuple(state.position), here)
+        # The carriage kept: only the last position moved by an offset
+        # difference (the same tool again: where it is); not the start.
+        state = mid_run(TurnToolChange.carriage_kept())
+        here = tuple(state.position)
+        blade = state.tool_change_tip("groove2")
+        self.assertEqual(blade, (here[0] + 3.0, 0.0, here[2] - 12.0))
+        state.position = blade
+        state.position = here
+        for away in (START, BLADE_START, (here[0], 0.0, here[2] + 1.0)):
+            with self.assertRaisesRegex(ProtocolError, "carriage_kept tool change leaves the tool"):
+                state.position = away
+        # A machine position: only each tool's own point.
+        state = mid_run(TurnToolChange.machine_position(*CARRIAGE))
+        here = tuple(state.position)
+        state.position = START
+        state.position = BLADE_START
+        for away in (here, (30.0, 0.0, 21.0)):
+            with self.assertRaisesRegex(ProtocolError, "machine_position tool change leaves the tool"):
+                state.position = away
+
 
 # The programs this test's tip-kept setup posted on main before #416 (the
 # Centroid CNC12 and FANUC lathe posts).
