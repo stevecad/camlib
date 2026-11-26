@@ -1116,7 +1116,14 @@ class TurnFace:
 class TurnRough:
     """Outside roughing in axial passes of ``depth_of_cut_mm`` (G71 type I),
     leaving ``allowance_mm``; each pass ends where the part (plus allowance)
-    is reached and retracts ``retract_mm`` at 45 degrees."""
+    is reached and retracts ``retract_mm`` at 45 degrees.
+
+    ``z_from_mm``, ``z_to_mm``: the stretch of the profile this operation
+    turns (its nose centre works between them; either may be left out). The
+    passes end at ``z_to_mm`` at the latest, and start a clearance in front
+    of a ``z_from_mm`` inside the stock. The rest of the profile is left for
+    another operation or chucking, and the operation's report lists it
+    (``left_for_another_setup_z_mm``)."""
 
     id: str
     tool: str
@@ -1126,6 +1133,8 @@ class TurnRough:
     rpm: float = field(kw_only=True)
     surface_speed_m_min: float | None = None
     retract_mm: float = 0.5
+    z_from_mm: float | None = field(default=None, kw_only=True)
+    z_to_mm: float | None = field(default=None, kw_only=True)
 
     def to_dict(self):
         return _op("rough", self.__dict__)
@@ -1313,7 +1322,14 @@ class TurnBoreFinish:
 @dataclass(frozen=True)
 class TurnFinish:
     """Outside finishing along the profile (front face first), the nose
-    center ``nose radius + allowance_mm`` outside it."""
+    center ``nose radius + allowance_mm`` outside it.
+
+    ``z_from_mm``, ``z_to_mm``: the stretch of the profile this operation
+    turns (either may be left out). The path is followed between them, cut
+    exactly at both: with ``z_from_mm`` inside the profile the tool feeds in
+    radially at it, and it leaves radially at ``z_to_mm``. The rest of the
+    profile is left for another operation or chucking, and the operation's
+    report lists it (``left_for_another_setup_z_mm``)."""
 
     id: str
     tool: str
@@ -1324,6 +1340,8 @@ class TurnFinish:
     # control applying only the wear in its offset's nose radius.
     compensation: str = "computer"
     surface_speed_m_min: float | None = None
+    z_from_mm: float | None = field(default=None, kw_only=True)
+    z_to_mm: float | None = field(default=None, kw_only=True)
 
     def to_dict(self):
         return _op("finish", self.__dict__)

@@ -213,6 +213,15 @@ pub enum TurnOperation {
         surface_speed_m_min: Option<f64>,
         #[serde(default = "retract")]
         retract_mm: f64,
+        /// The stretch of the profile this operation turns (#418): its
+        /// nose centre works from `z_from_mm` (default: from in front of
+        /// the stock) to `z_to_mm` (default: the clearance in front of the
+        /// chuck). The rest of the profile is left for another operation
+        /// or chucking and reported as such.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        z_from_mm: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        z_to_mm: Option<f64>,
     },
     /// Grooving with a grooving insert: plunges across the groove from
     /// `z_from_mm` to `z_to_mm` (its two side walls) down to
@@ -366,6 +375,14 @@ pub enum TurnOperation {
         /// control applies the wear in its offset's nose radius only).
         #[serde(default)]
         compensation: crate::contour::Compensation,
+        /// The stretch of the profile this operation turns (#418), as
+        /// `Rough`'s: the path is followed from `z_from_mm` (default: from
+        /// the front face) to `z_to_mm` (default: the clearance in front of
+        /// the chuck), cut exactly at both.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        z_from_mm: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        z_to_mm: Option<f64>,
     },
 }
 fn retract() -> f64 {
@@ -2569,6 +2586,8 @@ impl<'a> TurnSession<'a> {
                 allowance_mm,
                 feed_mm_rev,
                 retract_mm,
+                z_from_mm,
+                z_to_mm,
                 ..
             } => {
                 let feed = feed_of(*feed_mm_rev)?;
@@ -2584,10 +2603,11 @@ impl<'a> TurnSession<'a> {
                 }
                 let path = job.part.offset(rn + allowance_mm)?;
                 let points = chain(&path, tol / 4.);
-                // Where the passes work: to the clearance in front of the
-                // chuck (#418: with a grip, what lies behind is reported as
-                // left for another chucking).
-                let window = chucking::window(&id, job, None, None)?;
+                // Where the passes work (#418): between the operation's
+                // bounds, at most to the clearance in front of the chuck.
+                // With bounds or a grip, the rest of the profile is
+                // reported as left for another operation or chucking.
+                let window = chucking::window(&id, job, *z_from_mm, *z_to_mm)?;
                 report.left_for_another_setup_z_mm = window.left.clone();
                 let z_end = window.lo;
                 // The passes start beyond the stock end, or the clearance in
@@ -3355,6 +3375,8 @@ impl<'a> TurnSession<'a> {
                 allowance_mm,
                 feed_mm_rev,
                 compensation,
+                z_from_mm,
+                z_to_mm,
                 ..
             } => {
                 if *compensation == crate::contour::Compensation::Control {
@@ -3364,11 +3386,12 @@ impl<'a> TurnSession<'a> {
                 }
                 let feed = feed_of(*feed_mm_rev)?;
                 let path = job.part.offset(rn + allowance_mm)?;
-                // Where the path is followed: to the clearance in front of
-                // the chuck (#418: with a grip the path is cut exactly
-                // there, and what lies behind is reported as left for
-                // another chucking).
-                let window = chucking::window(&id, job, None, None)?;
+                // Where the path is followed (#418): between the operation's
+                // bounds, at most to the clearance in front of the chuck.
+                // With bounds or a grip the path is cut exactly there, and
+                // the rest of the profile is reported as left for another
+                // operation or chucking.
+                let window = chucking::window(&id, job, *z_from_mm, *z_to_mm)?;
                 report.left_for_another_setup_z_mm = window.left.clone();
                 let limit = window.lo;
                 let begin = path[0].start();
@@ -4475,6 +4498,8 @@ mod tests {
                     rpm: 1200.,
                     surface_speed_m_min: None,
                     retract_mm: 0.5,
+                    z_from_mm: None,
+                    z_to_mm: None,
                 },
                 TurnOperation::Finish {
                     id: "finish".into(),
@@ -4484,6 +4509,8 @@ mod tests {
                     rpm: 1500.,
                     surface_speed_m_min: None,
                     compensation: Default::default(),
+                    z_from_mm: None,
+                    z_to_mm: None,
                 },
             ],
             initial_position_mm: [30., 20.],
