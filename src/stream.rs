@@ -355,13 +355,18 @@ impl StreamManifest {
         position: Vec3,
         previous: Option<&str>,
     ) -> Result<Option<Vec3>, String> {
-        if self.turning.is_some() {
-            // A lathe indexes the turret at the start position: every tool's
-            // controlled point arrives there.
-            if !self.tools.iter().any(|t| t.id == tool) {
-                return Err("tool change to an undeclared tool".into());
-            }
-            return Ok(Some(self.initial_position_mm));
+        if let Some(turning) = &self.turning {
+            // A lathe's declared tool-change mode (`TurnToolChange`): the
+            // tip kept at the start position (the default), the carriage
+            // kept, or the carriage at a machine position.
+            let initial = self.initial_position_mm;
+            let tip = turning.tool_change_tip(
+                [initial[0], initial[2]],
+                tool,
+                [position[0], position[2]],
+                previous,
+            )?;
+            return Ok(Some([tip[0], 0., tip[1]]));
         }
         let Some(pose) = &self.tool_change else {
             return Ok(None);
@@ -405,6 +410,13 @@ impl StreamManifest {
     /// The manifest's tool changes leave the spindle where it stands.
     pub fn tool_change_in_place(&self) -> bool {
         matches!(self.tool_change, Some(ToolChangePose::InPlace(_)))
+    }
+    /// A lathe run whose tool changes leave the carriage where it stands:
+    /// like a change in place, each is measured from the tool before it.
+    pub fn tool_change_carriage_kept(&self) -> bool {
+        self.turning
+            .as_ref()
+            .is_some_and(|t| t.tool_change == crate::turning::ops::TurnToolChange::CarriageKept)
     }
     /// The stated gauge Z of the retract before a tool change in place.
     pub fn tool_change_retract_gauge_z(&self) -> Option<f64> {
@@ -510,6 +522,9 @@ impl StreamManifest {
                 if turning.operations.is_empty() {
                     return Err("a lathe run needs at least one turning operation".into());
                 }
+                turning
+                    .tool_change
+                    .validate(&turning.tools, &turning.operations)?;
             }
         }
         self.sweep.validate()?;
@@ -908,6 +923,10 @@ pub struct StreamReceiver {
     /// False only after restoring a checkpoint that does not record its
     /// spindle tool (written before #168): the tool is then unknown.
     last_tool_known: bool,
+    /// The tool a producer's `change_tool` has already placed at `position`
+    /// (until its first move commits): its first move starts there, and the
+    /// change is not applied a second time.
+    placed_tool: Option<String>,
     /// Retained cells are not evidence of raw stock, even at cursor zero.
     restored_from_checkpoint: bool,
     /// The per-move proof states a producer checkpoint kept (#108), until
@@ -1164,6 +1183,27 @@ impl StreamProducer {
     pub fn change_tool(&mut self, tool: &str) -> Result<Vec3, String> {
         self.writable()?;
         let mut previous = None;
+        if self.state.manifest.tool_change_carriage_kept() {
+            // A lathe change with the carriage kept is measured from the
+            // tool that made the last move, like a change in place.
+            let mounted = self
+                .spindle_tool
+                .as_deref()
+                .or(self.state.last_tool.as_deref());
+            match mounted {
+                None if !self.state.last_tool_known => {
+                    return Err(format!(
+                        "tool change to {tool} with the carriage kept: {UNKNOWN_SPINDLE_TOOL}"
+                    ));
+                }
+                Some(old) if old != tool && self.state.last_tool.as_deref() != Some(old) => {
+                    return Err(format!(
+                        "tool change to {tool} with the carriage kept: tool {old} made no move since its own change, so the position it leaves is not part of the run; remove the operation that makes no move"
+                    ));
+                }
+                _ => previous = mounted.map(str::to_string),
+            }
+        }
         if self.state.manifest.tool_change_in_place() {
             // The gauge line is known from the tool that made the last
             // move. A tool that never moved leaves no committed pose the
@@ -1231,6 +1271,7 @@ impl StreamProducer {
                 return Err("tool change pose out of range".into());
             }
             self.state.position = tip;
+            self.state.placed_tool = Some(tool.to_string());
         }
         Ok(self.state.position)
     }
@@ -1767,6 +1808,7 @@ impl StreamReceiver {
             finished: false,
             last_tool: None,
             last_tool_known: true,
+            placed_tool: None,
             restored_from_checkpoint: false,
             restored_proofs: None,
         })
@@ -1866,6 +1908,7 @@ impl StreamReceiver {
         self.position = chunk.motion.curve.end();
         self.last_motion_id = Some(chunk.motion.id);
         self.last_tool = Some(chunk.motion.tool.clone());
+        self.placed_tool = None;
         Ok(chunk.motion)
     }
     fn commit_turn_chunk(&mut self, chunk: TurnMotionChunk) -> Result<Motion, String> {
@@ -1890,6 +1933,7 @@ impl StreamReceiver {
         self.position = chunk.motion.curve.end();
         self.last_motion_id = Some(chunk.motion.id);
         self.last_tool = Some(chunk.motion.tool.clone());
+        self.placed_tool = None;
         Ok(chunk.motion)
     }
     pub fn accept_end(&mut self, bytes: &[u8], limit: usize) -> Result<(), String> {
@@ -1929,7 +1973,7 @@ impl StreamReceiver {
                     .iter()
                     .any(|op| op.id() == motion.operation && op.tool() == motion.tool)
             })
-            || (motion.curve.start() != self.position && !self.tool_change_start(motion)?)
+            || !self.starts_in_place(motion)?
             || self.last_motion_id.is_some_and(|id| motion.id <= id)
         {
             return Err(
@@ -1943,6 +1987,25 @@ impl StreamReceiver {
         }
         Ok(())
     }
+    /// A motion starts where the last one ended; the first with a new tool
+    /// may start at the manifest's declared tool-change pose instead. On a
+    /// lathe whose tool change moves the controlled point (the carriage
+    /// kept, or at a machine position: #416) a new tool starts only where
+    /// its change leaves it: the previous end is the old tool's point.
+    fn starts_in_place(&self, motion: &Motion) -> Result<bool, String> {
+        let placed = self
+            .manifest
+            .turning
+            .as_ref()
+            .is_some_and(|t| !t.tool_change.is_tip_kept());
+        if placed && self.last_tool.as_deref() != Some(motion.tool.as_str()) {
+            if self.placed_tool.as_deref() == Some(motion.tool.as_str()) {
+                return Ok(motion.curve.start() == self.position);
+            }
+            return self.tool_change_start(motion);
+        }
+        Ok(motion.curve.start() == self.position || self.tool_change_start(motion)?)
+    }
     /// The first motion with a new tool may start at the manifest's declared
     /// tool-change pose instead of the previous end.
     fn tool_change_start(&self, motion: &Motion) -> Result<bool, String> {
@@ -1950,7 +2013,9 @@ impl StreamReceiver {
             return Ok(false);
         }
         let start = motion.curve.start();
-        if !self.last_tool_known && self.manifest.tool_change_in_place() {
+        if !self.last_tool_known
+            && (self.manifest.tool_change_in_place() || self.manifest.tool_change_carriage_kept())
+        {
             // A change in place is measured from exactly the tool in the
             // spindle; a checkpoint that does not record it cannot place it.
             return Err(format!(
@@ -1974,6 +2039,7 @@ impl StreamReceiver {
         self.position = chunk.motion.curve.end();
         self.last_motion_id = Some(chunk.motion.id);
         self.last_tool = Some(chunk.motion.tool.clone());
+        self.placed_tool = None;
         Ok(chunk.motion)
     }
     pub fn checkpoint(&self, limit: usize) -> Result<Vec<u8>, String> {
@@ -2150,6 +2216,7 @@ impl StreamReceiver {
             controls: fields.controls,
             last_tool,
             last_tool_known,
+            placed_tool: None,
             restored_from_checkpoint: true,
             restored_proofs: None,
         })
@@ -2187,6 +2254,7 @@ impl StreamReceiver {
             controls: fields.controls,
             last_tool,
             last_tool_known,
+            placed_tool: None,
             // A retained snapshot, with no kept proof states (tri-dexel
             // checkpoints carry none): the history before it is unseen.
             restored_from_checkpoint: true,
@@ -2326,6 +2394,7 @@ impl StreamReceiver {
             controls: fields.controls,
             last_tool,
             last_tool_known,
+            placed_tool: None,
             restored_from_checkpoint: true,
             restored_proofs,
         })

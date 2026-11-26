@@ -32,6 +32,151 @@ pub struct TurnToolSetting {
     /// T word and offset (wear/geometry) number: T0101 = number 1, offset 1.
     pub number: u32,
     pub offset: u32,
+    /// The tool's controlled point from the carriage reference, [radius, z]
+    /// in the work axes' directions (see `TurnToolChange`). Declared by the
+    /// caller; read only by the tool-change modes that need it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carriage_to_tip_mm: Option<[f64; 2]>,
+}
+
+/// Where a lathe tool change leaves the new tool's controlled point (#416).
+///
+/// The carriage (cross slide and tool post, or turret) carries one reference
+/// point R; a mounted tool's controlled point is at R + its
+/// `carriage_to_tip_mm`, a vector fixed by how the tool is held. A tool
+/// change replaces that vector; what the machine does with R meanwhile is
+/// the mode:
+///
+/// - `TipKept`: the new controlled point is where every tool starts, the
+///   setup's start position (a turret whose tool change brings each tool to
+///   one programmed point). No offset is read.
+/// - `CarriageKept`: no axis moves (the T word only applies the new offset;
+///   a quick-change tool post, the holder swapped by hand). R stays, so
+///   new point = old point - old `carriage_to_tip_mm` + new `carriage_to_tip_mm`.
+/// - `MachinePosition`: the change brings R to `position_mm`, so
+///   new point = `position_mm` + new `carriage_to_tip_mm`.
+///
+/// camlib never assumes an offset: a mode that reads one refuses a tool
+/// without it, by name.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TurnToolChange {
+    #[default]
+    TipKept,
+    CarriageKept,
+    MachinePosition {
+        /// The carriage reference at the change, [radius, z], in the frame
+        /// each `carriage_to_tip_mm` leads from to work coordinates.
+        position_mm: [f64; 2],
+    },
+}
+
+impl TurnToolChange {
+    pub fn is_tip_kept(&self) -> bool {
+        *self == Self::TipKept
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Self::TipKept => "tip_kept",
+            Self::CarriageKept => "carriage_kept",
+            Self::MachinePosition { .. } => "machine_position",
+        }
+    }
+
+    /// `tool`'s declared offset, or a refusal naming the tool.
+    fn offset(&self, tools: &[TurnToolSetting], tool: &str) -> Result<[f64; 2], String> {
+        let setting = tools
+            .iter()
+            .find(|t| t.tool.id == tool)
+            .ok_or_else(|| format!("tool change to an undeclared tool {tool:?}"))?;
+        let offset = setting.carriage_to_tip_mm.ok_or_else(|| {
+            format!(
+                "tool {tool:?} has no carriage_to_tip_mm: a {} tool change places each tool by its offset from the carriage reference (radius, z), and camlib assumes none; declare TurnToolSetting(carriage_to_tip_mm=...) for it",
+                self.name()
+            )
+        })?;
+        if !offset.iter().all(|v| v.is_finite() && v.abs() <= 1e6) {
+            return Err(format!(
+                "tool {tool:?}: carriage_to_tip_mm {offset:?} must be finite (radius, z) values"
+            ));
+        }
+        Ok(offset)
+    }
+
+    /// The setup's declaration is complete: every tool an operation uses has
+    /// the offset its mode reads, and a stated position is finite.
+    pub fn validate(
+        &self,
+        tools: &[TurnToolSetting],
+        operations: &[TurnOperation],
+    ) -> Result<(), String> {
+        if let Self::MachinePosition { position_mm } = self
+            && !position_mm.iter().all(|v| v.is_finite() && v.abs() <= 1e6)
+        {
+            return Err(format!(
+                "the machine_position tool change needs a finite position_mm (radius, z), not {position_mm:?}"
+            ));
+        }
+        if !self.is_tip_kept() {
+            for op in operations {
+                self.offset(tools, op.tool())?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The controlled point of `tool` ([radius, z]) after a change to it.
+    /// `position`: the controlled point of the tool mounted before, exactly
+    /// where its last move ended; `previous`: that tool (None: the run's
+    /// first tool, which `CarriageKept` leaves at `position`, the start).
+    /// Planner, stream receiver and replay all use this one expression, so
+    /// they agree exactly.
+    pub fn tip_after(
+        &self,
+        tools: &[TurnToolSetting],
+        initial: [f64; 2],
+        tool: &str,
+        position: [f64; 2],
+        previous: Option<&str>,
+    ) -> Result<[f64; 2], String> {
+        match self {
+            Self::TipKept => {
+                if !tools.iter().any(|t| t.tool.id == tool) {
+                    return Err("tool change to an undeclared tool".into());
+                }
+                Ok(initial)
+            }
+            Self::CarriageKept => {
+                let new = self.offset(tools, tool)?;
+                let Some(previous) = previous else {
+                    return Ok(position);
+                };
+                let old = self.offset(tools, previous)?;
+                Ok([position[0] - old[0] + new[0], position[1] - old[1] + new[1]])
+            }
+            Self::MachinePosition { position_mm } => {
+                let new = self.offset(tools, tool)?;
+                Ok([position_mm[0] + new[0], position_mm[1] + new[1]])
+            }
+        }
+    }
+
+    /// Where the planner puts `tool` away before a change, and leaves the
+    /// last tool: the start position; with `MachinePosition` the tool's own
+    /// change position, so the carriage is already where the change wants
+    /// it and the change itself moves nothing unchecked.
+    pub fn park(
+        &self,
+        tools: &[TurnToolSetting],
+        initial: [f64; 2],
+        tool: &str,
+    ) -> Result<[f64; 2], String> {
+        match self {
+            Self::TipKept | Self::CarriageKept => Ok(initial),
+            Self::MachinePosition { .. } => self.tip_after(tools, initial, tool, initial, None),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -249,6 +394,9 @@ pub struct TurnSetup {
     pub face_grooves: Vec<FaceGroove>,
     #[serde(default)]
     pub controlled_point: ControlledPoint,
+    /// Where a tool change leaves the new tool (default: the tip kept).
+    #[serde(default, skip_serializing_if = "TurnToolChange::is_tip_kept")]
+    pub tool_change: TurnToolChange,
 }
 
 impl TurnSetup {
@@ -273,7 +421,21 @@ impl TurnSetup {
             feed_per_rev: self.feed_per_rev,
             face_grooves: self.face_grooves.clone(),
             controlled_point: self.controlled_point,
+            tool_change: self.tool_change,
         }
+    }
+
+    /// The controlled point ([radius, z]) after a change to `tool`
+    /// (`TurnToolChange::tip_after` on this setup's tools).
+    pub fn tool_change_tip(
+        &self,
+        initial: [f64; 2],
+        tool: &str,
+        position: [f64; 2],
+        previous: Option<&str>,
+    ) -> Result<[f64; 2], String> {
+        self.tool_change
+            .tip_after(&self.tools, initial, tool, position, previous)
     }
 }
 
@@ -341,6 +503,9 @@ pub struct TurningJob {
     /// offsets are touched off on a diameter and a face) or its nose center.
     #[serde(default)]
     pub controlled_point: ControlledPoint,
+    /// Where a tool change leaves the new tool (default: the tip kept).
+    #[serde(default, skip_serializing_if = "TurnToolChange::is_tip_kept")]
+    pub tool_change: TurnToolChange,
 }
 
 /// An annular groove in the part's front face: between `inner_radius_mm`
@@ -524,6 +689,17 @@ struct Planner<'a> {
     /// The stock change of each planned move, in order.
     deltas: Vec<TurnDelta>,
     position: [f64; 2], // (u, v) = (z, r) of the nose center
+    /// The controlled point ([radius, z], program coordinates) where the
+    /// tool is: where the last emitted move ended, or where a tool change
+    /// left the tool (the start position before any). What a receiver of
+    /// the moves holds: every emitted move starts exactly here, and a tool
+    /// change is measured from here. `position` translated by the tip
+    /// offset is the same point up to rounding ((32 + 0.8) - 0.8 is not
+    /// 32), which is why the program's point is carried, not recomputed.
+    emitted: [f64; 2],
+    /// Set by `stand`: the move kernel checks the tool where it stands (a
+    /// rapid of no length) and emits nothing.
+    standing: bool,
     next_id: u64,
     guard: f64,
     /// The last cutting move (from, to), for retracing rapids.
@@ -845,6 +1021,18 @@ impl Planner<'_> {
         tool_geometry(t, self.job.controlled_point)
     }
 
+    /// Check the tool standing where it is, with a rapid's checks (no tool
+    /// part behind the chuck face, in the part or touching the stock):
+    /// where a tool change placed it, before its first move. A move from
+    /// there checks the same pose again as its start; a tool that makes no
+    /// move is checked only here. Nothing is emitted.
+    fn stand(&mut self, tool: &ToolGeom, op: &str, report: &mut TurnReport) -> Result<(), String> {
+        self.standing = true;
+        let result = self.travel(tool, op, None, self.position, MoveKind::Rapid, None, report);
+        self.standing = false;
+        result
+    }
+
     /// Check and emit one straight move of the nose center.
     fn emit(
         &mut self,
@@ -896,7 +1084,7 @@ impl Planner<'_> {
             return Err(CANCELLED.into());
         }
         let from = self.position;
-        if from == to && arc.is_none() {
+        if from == to && arc.is_none() && !self.standing {
             return Ok(());
         }
         let xz = |p: [f64; 2]| [p[1], 0., p[0]];
@@ -1526,6 +1714,10 @@ impl Planner<'_> {
                 to[1], to[0]
             ));
         }
+        if self.standing {
+            // The tool where it stands is clear; there is no move to emit.
+            return Ok(());
+        }
         // Only a straight cut's line can be retraced by a rapid.
         self.last_cut = (kind != MoveKind::Rapid && arc.is_none()).then_some((from, to));
         self.last_thread = (kind == MoveKind::Thread).then_some(to);
@@ -1557,14 +1749,24 @@ impl Planner<'_> {
         // offset, so an arc stays an arc of the same radius and sweep.
         let t = tool.tip;
         let tip = |p: [f64; 2]| [p[1] + t[1], 0., p[0] + t[0]];
+        let start = [self.emitted[0], 0., self.emitted[1]];
+        let mut end = tip(to);
+        if arc.is_none() {
+            // A line that keeps the nose's radius or z keeps the program's:
+            // it stays a move along one axis whatever the start's rounding.
+            if to[1] == from[1] {
+                end[0] = start[0];
+            }
+            if to[0] == from[0] {
+                end[2] = start[2];
+            }
+        }
+        self.emitted = [end[0], end[2]];
         let curve = match arc {
-            None => Curve::Line {
-                start: tip(from),
-                end: tip(to),
-            },
+            None => Curve::Line { start, end },
             Some((c, sweep)) => Curve::Arc {
-                start: tip(from),
-                end: tip(to),
+                start,
+                end,
                 center: tip(c),
                 plane: Plane::Xz,
                 sweep_rad: sweep,
@@ -1937,6 +2139,10 @@ pub struct TurnSession<'a> {
     z_hi: f64,
     reports: Vec<TurnReport>,
     active: Option<String>,
+    /// The tool the last change mounted, and the move id that change was
+    /// planned at (a tool that made no move since leaves no position a
+    /// receiver of the moves could measure the next change from).
+    mounted: Option<(String, u64)>,
     feed_rev: Option<f64>,
     coolant: bool,
 }
@@ -1952,6 +2158,7 @@ impl<'a> TurnSession<'a> {
         {
             return Err("turning tolerance_mm must be 1e-6..0.05 and clearance_mm positive".into());
         }
+        job.tool_change.validate(&job.tools, &job.operations)?;
         let [z_lo, z_hi] = job.part.z_range();
         if job.chuck_z_mm > z_lo || z_hi > job.stock.z_max_mm || z_lo < job.stock.z_min_mm {
             return Err("the part must lie within the stock and in front of the chuck face".into());
@@ -1993,6 +2200,8 @@ impl<'a> TurnSession<'a> {
             events: vec![Event::WorkOffset { number: 1 }],
             deltas: vec![],
             position: [job.initial_position_mm[1], job.initial_position_mm[0]],
+            emitted: job.initial_position_mm,
+            standing: false,
             next_id: 1,
             guard: tol,
             last_cut: None,
@@ -2008,6 +2217,7 @@ impl<'a> TurnSession<'a> {
             z_hi,
             reports: vec![],
             active: None,
+            mounted: None,
             feed_rev: None,
             coolant: false,
         })
@@ -2167,17 +2377,56 @@ impl<'a> TurnSession<'a> {
                     "{id}: the previous tool was not put away (plan each operation with the next one's tool)"
                 ));
             }
+            // Where the change leaves the new tool's controlled point,
+            // measured from where the tool before it stopped (#416).
+            let previous = self.mounted.as_ref().map(|(tool, _)| tool.as_str());
+            if job.tool_change == TurnToolChange::CarriageKept
+                && let Some((old, changed_at)) = &self.mounted
+                && *changed_at == planner.next_id
+            {
+                return Err(format!(
+                    "{id}: tool change to {tool_id:?} with the carriage kept: tool {old:?} made no move since its own change, so the position it leaves is not part of the run; remove the operation that makes no move"
+                ));
+            }
+            let tip = job.tool_change.tip_after(
+                &job.tools,
+                job.initial_position_mm,
+                &tool_id,
+                planner.emitted,
+                previous,
+            )?;
+            if previous.is_none()
+                && (0..2).any(|k| (tip[k] - job.initial_position_mm[k]).abs() > tol)
+            {
+                // Only a change at a machine position places the first tool.
+                return Err(format!(
+                    "{id}: the setup starts at radius {}, z {} (initial_position_mm), but its first tool change leaves {tool_id:?} at radius {}, z {} (the machine_position tool change's position_mm plus the tool's carriage_to_tip_mm): start the setup there",
+                    job.initial_position_mm[0], job.initial_position_mm[1], tip[0], tip[1]
+                ));
+            }
             planner.events.push(Event::ToolChange {
                 tool: tool_id.clone(),
                 number: setting.number,
                 length_register: setting.offset,
-                position_after_mm: [job.initial_position_mm[0], 0., job.initial_position_mm[1]],
+                position_after_mm: [tip[0], 0., tip[1]],
             });
-            // The new tool's controlled point arrives at the start position.
-            planner.position = [
-                job.initial_position_mm[1] - geom.tip[0],
-                job.initial_position_mm[0] - geom.tip[1],
-            ];
+            // The new tool's nose center; its first move starts at the
+            // stated point exactly.
+            planner.position = [tip[1] - geom.tip[0], tip[0] - geom.tip[1]];
+            planner.emitted = tip;
+            if !job.tool_change.is_tip_kept() {
+                // The new tool is somewhere the old one never was: checked
+                // where it stands, before any move.
+                planner.stand(&geom, &id, &mut report).map_err(|error| {
+                    format!(
+                        "{error}: that is where the {} tool change leaves tool {tool_id:?} before it moves (its controlled point at radius {}, z {}); put the tool before it away where the change clears the work, or check the tools' carriage_to_tip_mm",
+                        job.tool_change.name(),
+                        tip[0],
+                        tip[1]
+                    )
+                })?;
+            }
+            self.mounted = Some((tool_id.clone(), planner.next_id));
             active = Some(tool_id.clone());
         }
         // Spindle, feed mode and coolant only when they change.
@@ -3140,11 +3389,12 @@ impl<'a> TurnSession<'a> {
             .find(|t| t.tool.id == active)
             .ok_or("active tool missing")?;
         let geom = planner.geometry(&old.tool)?;
-        // The old tool's controlled point to the start position.
-        let home = [
-            job.initial_position_mm[1] - geom.tip[0],
-            job.initial_position_mm[0] - geom.tip[1],
-        ];
+        // The old tool's controlled point to where it is put away (the
+        // start position; its own change position with machine_position).
+        let park = job
+            .tool_change
+            .park(&job.tools, job.initial_position_mm, &active)?;
+        let home = [park[1] - geom.tip[0], park[0] - geom.tip[1]];
         let mut tmp = self
             .reports
             .last()
@@ -3175,10 +3425,10 @@ impl<'a> TurnSession<'a> {
                 .unwrap()
                 .tool;
             let geom = planner.geometry(t)?;
-            let home = [
-                job.initial_position_mm[1] - geom.tip[0],
-                job.initial_position_mm[0] - geom.tip[1],
-            ];
+            let park = job
+                .tool_change
+                .park(&job.tools, job.initial_position_mm, active)?;
+            let home = [park[1] - geom.tip[0], park[0] - geom.tip[1]];
             let mut tmp = self.reports.last().cloned().unwrap();
             let pos = planner.position;
             planner.emit(
@@ -3362,6 +3612,8 @@ impl TurnReplay {
             events: vec![],
             deltas: vec![],
             position: [0., 0.],
+            emitted: [start[0], start[2]],
+            standing: false,
             next_id: motion.id,
             guard: self.job.tolerance_mm,
             last_cut: self.last_cut,
@@ -3702,6 +3954,7 @@ mod tests {
             feed_per_rev: j.feed_per_rev,
             face_grooves: j.face_grooves.clone(),
             controlled_point: j.controlled_point,
+            tool_change: j.tool_change,
         };
         let manifest = StreamManifest {
             initial_stock: None,
@@ -4061,6 +4314,7 @@ mod tests {
                 tool,
                 number: 1,
                 offset: 1,
+                carriage_to_tip_mm: None,
             }],
             operations: vec![
                 TurnOperation::Face {
@@ -4097,6 +4351,7 @@ mod tests {
             tolerance_mm: 1e-3,
             feed_per_rev: false,
             controlled_point: ControlledPoint::Tip,
+            tool_change: TurnToolChange::TipKept,
             face_grooves: vec![],
         }
     }
@@ -4199,6 +4454,7 @@ mod tests {
             ),
             number: 2,
             offset: 2,
+            carriage_to_tip_mm: None,
         });
         j.operations.truncate(2); // face, rough
         j.operations.push(TurnOperation::Groove {
@@ -4275,6 +4531,7 @@ mod tests {
             ),
             number: 3,
             offset: 3,
+            carriage_to_tip_mm: None,
         });
         j.operations.push(TurnOperation::Thread {
             id: "thread".into(),
@@ -4352,6 +4609,7 @@ mod tests {
             ),
             number: 4,
             offset: 4,
+            carriage_to_tip_mm: None,
         });
         j.operations.truncate(1); // face
         j.operations.push(TurnOperation::Drill {
@@ -4408,6 +4666,7 @@ mod tests {
 test_tool("bar".into(), Insert::iso_turning(55., 95., 6., 0.4).unwrap(), 0.4, TurnSide::Inner, Hand::Right, 10., 80., 1.),
             number: 5,
             offset: 5,
+            carriage_to_tip_mm: None,
         });
         j.operations = vec![
             TurnOperation::BoreRough {
@@ -4510,6 +4769,7 @@ test_tool("bar".into(), Insert::iso_turning(55., 95., 6., 0.4).unwrap(), 0.4, Tu
             ),
             number: 6,
             offset: 6,
+            carriage_to_tip_mm: None,
         });
         // M24 x 1.5 internal, 20 mm long.
         j.operations = vec![TurnOperation::Thread {
@@ -4702,6 +4962,7 @@ test_tool("groove_in".into(), Insert::Groove { width_mm: 3.,
                     depth_mm: 4. }, 0.2, TurnSide::Inner, Hand::Right, 10., 80., 4.),
             number: 7,
             offset: 7,
+            carriage_to_tip_mm: None,
         });
         j.operations.truncate(1); // bore rough
         j.operations.push(TurnOperation::Groove {
@@ -4839,6 +5100,7 @@ test_tool("groove_in".into(), Insert::Groove { width_mm: 3.,
                 tool,
                 number: 8,
                 offset: 8,
+                carriage_to_tip_mm: None,
             });
             j.operations.truncate(1);
             j.operations.push(TurnOperation::FaceGroove {
@@ -4908,6 +5170,7 @@ test_tool("groove_in".into(), Insert::Groove { width_mm: 3.,
             ),
             number: 8,
             offset: 8,
+            carriage_to_tip_mm: None,
         });
         j.operations.truncate(1); // face
         j.operations.push(TurnOperation::FaceGroove {
@@ -5333,6 +5596,7 @@ test_tool("groove_in".into(), Insert::Groove { width_mm: 3.,
                 tool,
                 number: 5,
                 offset: 5,
+                carriage_to_tip_mm: None,
             });
             j
         };
@@ -6201,6 +6465,7 @@ test_tool("groove_in".into(), Insert::Groove { width_mm: 3.,
             tool: crate::turning::body::test_solid_bar(side_clearance_deg, min_bore_mm),
             number: 7,
             offset: 7,
+            carriage_to_tip_mm: None,
         }];
         j.initial_position_mm = [0.5, 20.];
         j.controlled_point = ControlledPoint::NoseCenter;
@@ -6675,6 +6940,7 @@ test_tool("groove_in".into(), Insert::Groove { width_mm: 3.,
                 ),
                 number: 3,
                 offset: 3,
+                carriage_to_tip_mm: None,
             });
             thread.operations.push(TurnOperation::Thread {
                 id: "thread".into(),
@@ -7402,6 +7668,437 @@ test_tool("groove_in".into(), Insert::Groove { width_mm: 3.,
                 pieces.len(),
                 dense.saturating_sub(plain) / moves as u32
             );
+        }
+    }
+
+    /// Lathe tool-change modes (#416): where each change leaves the new
+    /// tool's controlled point, and that every check starts from there.
+    mod tool_change {
+        use super::*;
+
+        /// The shaft with its groove: face and rough with the turning tool
+        /// (T1), groove and part off with the grooving blade (T2), from the
+        /// start at radius 30, z 20. The offsets from the carriage reference:
+        /// the turning tool's tip at (-25, -40), the blade's at `blade`.
+        fn two_tools(mode: TurnToolChange, blade: [f64; 2]) -> TurningJob {
+            let mut j = groove_job();
+            j.tool_change = mode;
+            j.tools[0].carriage_to_tip_mm = Some([-25., -40.]);
+            j.tools[1].carriage_to_tip_mm = Some(blade);
+            j
+        }
+        /// The carriage reference when the turning tool's tip is at the
+        /// start: (30, 20) - (-25, -40).
+        const CARRIAGE: [f64; 2] = [55., 60.];
+        /// A blade 3 mm shorter toward the axis and 12 mm longer toward the
+        /// chuck than the turning tool.
+        const BLADE: [f64; 2] = [-22., -52.];
+
+        fn changes(plan: &TurnPlan) -> Vec<(String, Vec3)> {
+            plan.events
+                .iter()
+                .filter_map(|e| match e {
+                    Event::ToolChange {
+                        tool,
+                        position_after_mm,
+                        ..
+                    } => Some((tool.clone(), *position_after_mm)),
+                    _ => None,
+                })
+                .collect()
+        }
+        fn motions(plan: &TurnPlan) -> Vec<&Motion> {
+            plan.events
+                .iter()
+                .filter_map(|e| match e {
+                    Event::Motion { motion } => Some(motion),
+                    _ => None,
+                })
+                .collect()
+        }
+        /// The first move of `tool` and the move before it.
+        fn around_change<'a>(plan: &'a TurnPlan, tool: &str) -> (&'a Motion, &'a Motion) {
+            let all = motions(plan);
+            let first = all.iter().position(|m| m.tool == tool).unwrap();
+            (all[first - 1], all[first])
+        }
+        type Vec3 = [f64; 3];
+
+        #[test]
+        fn the_tip_kept_is_the_default_and_reads_no_offset() {
+            let plain = groove_job();
+            assert_eq!(plain.tool_change, TurnToolChange::TipKept);
+            // Declared offsets change nothing: every tool starts at the start.
+            let declared = two_tools(TurnToolChange::TipKept, BLADE);
+            let (a, b) = (plan(&plain).unwrap(), plan(&declared).unwrap());
+            assert_eq!(
+                serde_json::to_string(&a.events).unwrap(),
+                serde_json::to_string(&b.events).unwrap()
+            );
+            assert_eq!(
+                changes(&a),
+                vec![
+                    ("cnmg".to_string(), [30., 0., 20.]),
+                    ("groove3".to_string(), [30., 0., 20.])
+                ]
+            );
+            let (before, first) = around_change(&a, "groove3");
+            assert_eq!(before.curve.end(), [30., 0., 20.]);
+            assert_eq!(first.curve.start(), [30., 0., 20.]);
+            // The default is not written: a setup without a mode reads and
+            // writes as it did before the mode existed.
+            let text = serde_json::to_string(&plain).unwrap();
+            assert!(!text.contains("tool_change") && !text.contains("carriage_to_tip_mm"));
+            let read: TurningJob = serde_json::from_str(&text).unwrap();
+            assert_eq!(read.tool_change, TurnToolChange::TipKept);
+            let manifest = lathe_manifest(&plain);
+            assert!(
+                !String::from_utf8(manifest.canonical_bytes().unwrap())
+                    .unwrap()
+                    .contains("tool_change")
+            );
+        }
+
+        #[test]
+        fn the_carriage_kept_moves_the_tip_by_the_offset_difference() {
+            let j = two_tools(TurnToolChange::CarriageKept, BLADE);
+            let plan = plan(&j).unwrap();
+            // The first tool starts at the declared start. The turning tool
+            // is put away with its tip at (30, 20): the carriage is at
+            // (55, 60), and stays; the blade's tip is at (55, 60) + (-22, -52).
+            assert_eq!(
+                changes(&plan),
+                vec![
+                    ("cnmg".to_string(), [30., 0., 20.]),
+                    ("groove3".to_string(), [33., 0., 8.])
+                ]
+            );
+            let (before, first) = around_change(&plan, "groove3");
+            assert_eq!(before.curve.end(), [30., 0., 20.]);
+            assert_eq!(
+                [CARRIAGE[0] + BLADE[0], 0., CARRIAGE[1] + BLADE[1]],
+                [33., 0., 8.]
+            );
+            assert_eq!(first.curve.start(), [33., 0., 8.]);
+            assert_eq!(first.kind, MoveKind::Rapid);
+            // The same cuts as with the tip kept: only the way in differs.
+            let kept = super::plan(&two_tools(TurnToolChange::TipKept, BLADE)).unwrap();
+            assert_eq!(plan.stock.cells(), kept.stock.cells());
+            assert_ne!(
+                around_change(&kept, "groove3").1.curve.start(),
+                first.curve.start()
+            );
+        }
+
+        #[test]
+        fn a_machine_position_places_each_tool_by_its_own_offset() {
+            let mode = TurnToolChange::MachinePosition {
+                position_mm: CARRIAGE,
+            };
+            let j = two_tools(mode, BLADE);
+            let plan = plan(&j).unwrap();
+            assert_eq!(
+                changes(&plan),
+                vec![
+                    ("cnmg".to_string(), [30., 0., 20.]),
+                    ("groove3".to_string(), [33., 0., 8.])
+                ]
+            );
+            // Each tool is put away at its own change position (the
+            // carriage at the stated position), so the change moves nothing
+            // that was not checked; the run ends there too.
+            let (before, first) = around_change(&plan, "groove3");
+            assert_eq!(before.curve.end(), [30., 0., 20.]);
+            assert_eq!(first.curve.start(), [33., 0., 8.]);
+            let end = motions(&plan).last().unwrap().curve.end();
+            assert!(
+                (end[0] - 33.).abs() < 1e-12 && (end[2] - 8.).abs() < 1e-12,
+                "{end:?}"
+            );
+            // The setup starts where the first change leaves the first tool.
+            let mut away = j.clone();
+            away.initial_position_mm = [31., 20.];
+            let error = super::plan(&away).err().unwrap();
+            assert!(
+                error.contains("initial_position_mm")
+                    && error.contains("\"cnmg\"")
+                    && error.contains("radius 30, z 20"),
+                "{error}"
+            );
+        }
+
+        #[test]
+        fn a_first_move_from_the_true_tip_into_the_stock_or_the_chuck_is_found() {
+            // A blade 18 mm longer toward the axis and 50 mm toward the
+            // chuck: with the carriage kept its tip is at (55, 60) +
+            // (-43, -90) = (12, -30), inside the part (radius 15 there).
+            // Judged as if the tip were kept, the same program starts the
+            // blade at (30, 20) and every move is clear.
+            let deep = [-43., -90.];
+            let assumed = two_tools(TurnToolChange::TipKept, deep);
+            let assumed_plan = plan(&assumed).expect("clear from the assumed start");
+            for mode in [
+                TurnToolChange::CarriageKept,
+                TurnToolChange::MachinePosition {
+                    position_mm: CARRIAGE,
+                },
+            ] {
+                let error = plan(&two_tools(mode, deep)).err().unwrap();
+                assert!(
+                    error.starts_with("groove:")
+                        && error.contains("into the part")
+                        && error.contains("tool change leaves tool \"groove3\" before it moves")
+                        && error.contains("radius 12, z -30"),
+                    "{mode:?}: {error}"
+                );
+            }
+            // The posted program read back: its first block after the T word
+            // ends where the plan's did. From the assumed start it is clear;
+            // from the true tip the same block crosses the bar.
+            let block = around_change(&assumed_plan, "groove3").1.clone();
+            let before = |j: &TurningJob| {
+                let mut replay = TurnReplay::new(j.clone()).unwrap();
+                for m in motions(&assumed_plan) {
+                    if m.id == block.id {
+                        break;
+                    }
+                    replay.motion(m).unwrap();
+                }
+                replay
+            };
+            before(&assumed).motion(&block).expect("clear as assumed");
+            let mut real = block.clone();
+            real.curve = Curve::Line {
+                start: [12., 0., -30.],
+                end: block.curve.end(),
+            };
+            let error = before(&assumed).motion(&real).err().unwrap();
+            assert!(error.contains("into the part"), "{error}");
+
+            // A blade whose tip is left at radius 15.25, z -30: outside the
+            // part (15) but in the roughing allowance the bar still has
+            // there (15.3). A tool standing in the stock is found too.
+            let shallow = [-39.75, -90.];
+            plan(&two_tools(TurnToolChange::TipKept, shallow))
+                .expect("clear from the assumed start");
+            let error = plan(&two_tools(TurnToolChange::CarriageKept, shallow))
+                .err()
+                .unwrap();
+            assert!(
+                error.starts_with("groove:")
+                    && error.contains("touch the stock")
+                    && error.contains("radius 15.25, z -30"),
+                "{error}"
+            );
+
+            // A blade 112 mm long toward the chuck: its tip at (30, -52),
+            // outside the bar but behind the chuck face (z -50).
+            let long = [-25., -112.];
+            plan(&two_tools(TurnToolChange::TipKept, long)).expect("clear from the assumed start");
+            let error = plan(&two_tools(TurnToolChange::CarriageKept, long))
+                .err()
+                .unwrap();
+            assert!(
+                error.starts_with("groove:")
+                    && error.contains("reach the chuck")
+                    && error.contains("radius 30, z -52"),
+                "{error}"
+            );
+        }
+
+        #[test]
+        fn a_missing_offset_is_refused_by_name() {
+            for mode in [
+                TurnToolChange::CarriageKept,
+                TurnToolChange::MachinePosition {
+                    position_mm: CARRIAGE,
+                },
+            ] {
+                let mut j = two_tools(mode, BLADE);
+                j.tools[1].carriage_to_tip_mm = None;
+                let error = plan(&j).err().unwrap();
+                assert!(
+                    error.contains("tool \"groove3\" has no carriage_to_tip_mm")
+                        && error.contains("camlib assumes none"),
+                    "{error}"
+                );
+                // Before any move, and in the stream's manifest too.
+                let never = std::sync::atomic::AtomicBool::new(false);
+                assert!(TurnSession::new(&j, &never).is_err());
+                let mut manifest = lathe_manifest(&two_tools(mode, BLADE));
+                manifest.turning.as_mut().unwrap().tools[1].carriage_to_tip_mm = None;
+                assert!(
+                    manifest
+                        .validate()
+                        .err()
+                        .unwrap()
+                        .contains("tool \"groove3\" has no carriage_to_tip_mm")
+                );
+                let mut j = two_tools(mode, BLADE);
+                j.tools[0].carriage_to_tip_mm = Some([f64::NAN, 0.]);
+                assert!(plan(&j).err().unwrap().contains("tool \"cnmg\""));
+                // A tool no operation uses needs none.
+                let mut j = two_tools(mode, BLADE);
+                j.tools.push(TurnToolSetting {
+                    tool: TurningTool {
+                        id: "spare".into(),
+                        ..j.tools[0].tool.clone()
+                    },
+                    number: 3,
+                    offset: 3,
+                    carriage_to_tip_mm: None,
+                });
+                plan(&j).unwrap();
+            }
+            let bad = TurnToolChange::MachinePosition {
+                position_mm: [f64::INFINITY, 0.],
+            };
+            assert!(
+                plan(&two_tools(bad, BLADE))
+                    .err()
+                    .unwrap()
+                    .contains("position_mm")
+            );
+        }
+
+        #[test]
+        fn the_stream_and_the_replay_start_each_tool_from_the_same_tip() {
+            use crate::stream::{DEFAULT_FRAME_LIMIT, StreamProducer, StreamReceiver};
+            let kind = |f: &[u8]| u16::from_le_bytes([f[10], f[11]]);
+            for (mode, tip) in [
+                (TurnToolChange::TipKept, [30., 0., 20.]),
+                (TurnToolChange::CarriageKept, [33., 0., 8.]),
+                (
+                    TurnToolChange::MachinePosition {
+                        position_mm: CARRIAGE,
+                    },
+                    [33., 0., 8.],
+                ),
+            ] {
+                let j = two_tools(mode, BLADE);
+                let manifest = lathe_manifest(&j);
+                assert_eq!(
+                    manifest
+                        .tool_change_tip("groove3", [30., 0., 20.], Some("cnmg"))
+                        .unwrap(),
+                    Some(tip),
+                    "{mode:?}"
+                );
+                let never = std::sync::atomic::AtomicBool::new(false);
+                let mut producer = StreamProducer::new(manifest.clone()).unwrap();
+                let mut frames = vec![];
+                crate::regeneration::run_turning(&mut producer, &never, |f| {
+                    frames.push(f.to_vec());
+                    Ok(())
+                })
+                .unwrap();
+                // An independent receiver accepts the blade's first move
+                // only from where the mode leaves it.
+                let mut receiver = StreamReceiver::new(manifest.clone()).unwrap();
+                let mut starts = vec![];
+                for f in &frames {
+                    match kind(f) {
+                        10 => {
+                            let last = receiver.last_tool().map(str::to_string);
+                            let motion = receiver.accept(f, DEFAULT_FRAME_LIMIT).unwrap();
+                            if last.as_deref() == Some("cnmg") && motion.tool == "groove3" {
+                                starts.push(motion.curve.start());
+                            }
+                        }
+                        4 => receiver.accept_end(f, DEFAULT_FRAME_LIMIT).unwrap(),
+                        _ => {}
+                    }
+                }
+                assert!(receiver.is_finished());
+                assert_eq!(starts, vec![tip], "{mode:?}");
+                // The planned moves replay as a posted program's would.
+                let plan = plan(&j).unwrap();
+                let mut replay = TurnReplay::new(j.clone()).unwrap();
+                for m in motions(&plan) {
+                    replay.motion(m).unwrap();
+                }
+                // A producer given the moves (the machine check's replay of
+                // a decoded program) places each tool once, at its change.
+                let mut given = StreamProducer::new(manifest.clone()).unwrap();
+                let mut mounted = None;
+                for m in motions(&plan) {
+                    if mounted != Some(m.tool.as_str()) {
+                        let placed = given.change_tool(&m.tool).unwrap();
+                        assert_eq!(placed, m.curve.start(), "{mode:?} {}", m.tool);
+                        mounted = Some(m.tool.as_str());
+                    }
+                    given
+                        .push_turn_replayed(m.clone(), DEFAULT_FRAME_LIMIT, &never)
+                        .unwrap();
+                }
+            }
+            // A receiver of the carriage-kept run refuses the blade's first
+            // move from the tip-kept start.
+            let j = two_tools(TurnToolChange::CarriageKept, BLADE);
+            let manifest = lathe_manifest(&j);
+            let mut frames = vec![];
+            let never = std::sync::atomic::AtomicBool::new(false);
+            let mut producer = StreamProducer::new(manifest.clone()).unwrap();
+            let plan = plan(&j).unwrap();
+            let mut session = TurnSession::new(&j, &never).unwrap();
+            for (i, op) in j.operations.iter().enumerate() {
+                session
+                    .operation(op, j.operations.get(i + 1).map(|o| o.tool()))
+                    .unwrap();
+            }
+            let mut deltas = session.take_deltas().into_iter();
+            let first = around_change(&plan, "groove3").1.id;
+            let mut refused = false;
+            for m in motions(&plan) {
+                let delta = deltas.next().unwrap();
+                let mut motion = m.clone();
+                if m.id == first {
+                    motion.curve = Curve::Line {
+                        start: [30., 0., 20.],
+                        end: m.curve.end(),
+                    };
+                    let error = producer
+                        .push_turn_motion(motion, delta, DEFAULT_FRAME_LIMIT, &never)
+                        .err()
+                        .unwrap();
+                    assert!(error.contains("continuity"), "{error}");
+                    refused = true;
+                    break;
+                }
+                frames.push(
+                    producer
+                        .push_turn_motion(motion, delta, DEFAULT_FRAME_LIMIT, &never)
+                        .unwrap(),
+                );
+            }
+            assert!(refused && !frames.is_empty());
+        }
+
+        #[test]
+        fn a_start_the_nose_offset_does_not_round_trip_still_starts_exactly() {
+            // (32 + 0.8) - 0.8 is not 32 in binary floating point (the 0.8 mm
+            // nose's tip offset): the program's point is carried from move
+            // to move, not recomputed from the nose center, so the first
+            // move starts at the stated position itself (a receiver of the
+            // moves refuses anything else as a jump).
+            assert_ne!((32.0_f64 + 0.8) - 0.8, 32.);
+            let mut j = job();
+            j.initial_position_mm = [32., 20.];
+            let plan = plan(&j).unwrap();
+            let first = motions(&plan)[0];
+            assert_eq!(first.curve.start(), [32., 0., 20.]);
+            // A move along Z keeps its X exactly (a post that writes one axis
+            // per rapid refuses a move of both).
+            assert_eq!(first.curve.end()[0], 32.);
+            assert_ne!(first.curve.end()[2], 20.);
+            // Every move starts exactly where the one before it ended.
+            for pair in motions(&plan).windows(2) {
+                assert_eq!(pair[0].curve.end(), pair[1].curve.start());
+            }
+            let manifest = lathe_manifest(&j);
+            let never = std::sync::atomic::AtomicBool::new(false);
+            let mut producer = crate::stream::StreamProducer::new(manifest).unwrap();
+            crate::regeneration::run_turning(&mut producer, &never, |_| Ok(())).unwrap();
         }
     }
 }
