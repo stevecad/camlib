@@ -1371,6 +1371,31 @@ impl TurnReceiver {
         let p = self.inner.position();
         (p[0], p[1], p[2])
     }
+    /// The tool that made the last committed move (None before any).
+    #[getter]
+    fn last_tool(&self) -> Option<String> {
+        self.inner.last_tool().map(str::to_string)
+    }
+    /// The controlled point after a tool change to `tool` (the manifest's
+    /// declared lathe tool-change mode), from `position` (default: where the
+    /// last committed move ended) with `previous` mounted (default: the
+    /// last move's tool).
+    #[pyo3(signature = (tool, previous=None, position=None))]
+    fn tool_change_tip(
+        &self,
+        tool: &str,
+        previous: Option<&str>,
+        position: Option<(f64, f64, f64)>,
+    ) -> PyResult<(f64, f64, f64)> {
+        let position = position.map_or(self.inner.position(), |p| [p.0, p.1, p.2]);
+        let tip = self
+            .inner
+            .manifest()
+            .tool_change_tip(tool, position, previous.or(self.inner.last_tool()))
+            .map_err(PyValueError::new_err)?
+            .ok_or_else(|| PyValueError::new_err("not a lathe run"))?;
+        Ok((tip[0], tip[1], tip[2]))
+    }
     fn stock_json(&self) -> PyResult<String> {
         turn_stock_json(
             self.inner

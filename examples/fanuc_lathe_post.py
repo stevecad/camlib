@@ -42,9 +42,14 @@ Premises (declared, not checked on the machine):
   direction (3 outside, 2 inside for right-hand tools on a rear turret).
 - Tool offsets are touched off on a diameter and a face: the program moves
   each tool's imaginary tip (TurningSetup controlled_point="tip").
-- The tool change T<tt><oo> needs no turret position: each tool's
-  ToolSetting.position_after_mm is the job's start position, where the
-  program parks the tool before the change.
+- Where T<tt><oo> leaves the new tool's controlled point is declared, never
+  assumed (docs/fanuc-lathe-post.md, Tool change):
+  tool_change_position_mode="table" (each ToolSetting.position_after_mm:
+  the job's start position, where the program parks the tool before the
+  change, when the new tool's point arrives where the old one's was), or
+  "preserve_carriage" (no axis moves and the new offset applies: the point
+  moves by the difference of the two tools' ToolSetting.carriage_to_tip_mm).
+  The T word written is the same.
 No controller connection; verify on the machine before cutting.
 """
 
@@ -112,9 +117,14 @@ class FanucLatheMachine(Machine):
         super().__post_init__()
         if self.dialect != _dialect() or self.planes != ("xz",):
             raise ValueError("dialect differs from the FANUC lathe subset (system A, XZ arcs, diameter X)")
-        if self.tool_change_position_mode != "table" or self.traverse_feed_mm_min is not None:
+        if (
+            self.tool_change_position_mode not in ("table", "preserve_carriage")
+            or self.traverse_feed_mm_min is not None
+        ):
             raise ValueError(
-                'declare each tool\'s position after its change (tool_change_position_mode="table"); rapids are G0'
+                'declare each tool\'s position after its change (tool_change_position_mode="table"), or that '
+                'the change moves no axis ("preserve_carriage", with each ToolSetting.carriage_to_tip_mm); '
+                "rapids are G0"
             )
         if type(self.program_number) is not int or not 1 <= self.program_number <= 9999:
             raise ValueError("FANUC program numbers are O1..O9999")
@@ -122,7 +132,9 @@ class FanucLatheMachine(Machine):
 
 def define_machine(name, tools, *, program_number=1001, **settings):
     """``tools``: ToolSetting per turret station (number = tt, length_register
-    = oo), position_after_mm where the program parks the tool for its change."""
+    = oo), position_after_mm where the program parks the tool for its change;
+    with tool_change_position_mode="preserve_carriage" (the change moves no
+    axis) each tool's carriage_to_tip_mm instead."""
     return FanucLatheMachine(
         name,
         tuple(tools),

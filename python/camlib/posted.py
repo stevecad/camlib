@@ -93,6 +93,7 @@ def check_tool_change_pose(machine, config):
             # A lathe run's tools are posting stand-ins: their gauge length
             # is not a turret tool's offset.
             raise ValueError("gauge_travel_mm is a milling spindle's gauge-line travel; a lathe declares tip_travel_mm")
+        _check_lathe_tool_change(machine, config)
         return
     mode = machine.tool_change_position_mode
     change = config.get('tool_change')
@@ -178,6 +179,67 @@ def check_tool_change_pose(machine, config):
                 f'tool {tool}: the setup starts it at {plan} after its tool change ({describe()}), '
                 f'but the machine leaves it at {shown} '
                 f'(tool_change_position_mode="{mode}", {source}); {fix}'
+            )
+
+
+def _check_lathe_tool_change(machine, config):
+    """A lathe setup's tool-change mode (``camlib.turning.TurnToolChange``)
+    against the machine's (#416). The carriage kept: the machine declares
+    ``preserve_carriage`` with the same offsets. The carriage at a machine
+    position: the machine's tool table states each tool's position after its
+    change, which must be the setup's. The tip kept (the default) is checked
+    as before, change by change, in the posted output."""
+    turning = config['turning']
+    change = turning.get('tool_change') or {'mode': 'tip_kept'}
+    mode = machine.tool_change_position_mode
+    kept = change['mode'] == 'carriage_kept'
+    if kept != (mode == 'preserve_carriage'):
+        if kept:
+            raise ValueError(
+                'the setup changes tools with the carriage kept (TurnToolChange.carriage_kept()), but the '
+                f'machine\'s tool_change_position_mode is "{mode}": declare tool_change_position_mode='
+                '"preserve_carriage" with each ToolSetting.carriage_to_tip_mm if its T word only applies the '
+                "new offset, or plan with the machine's tool change"
+            )
+        raise ValueError(
+            'the machine keeps the carriage where it is at a tool change '
+            f'(tool_change_position_mode="preserve_carriage"), but the setup\'s tool change is {change["mode"]}: '
+            'plan with Setup(tool_change=TurnToolChange.carriage_kept())'
+        )
+    if change['mode'] == 'tip_kept':
+        return
+    settings = {t['tool']['id']: t for t in turning['tools']}
+    table = {s.tool: s for s in machine.tools}
+    used = list(dict.fromkeys(op['tool'] for op in turning['operations']))
+    missing = [tool for tool in used if tool not in table]
+    if missing:
+        raise ValueError(f'the machine tool table has no entry for tool(s) {missing}: add a ToolSetting for each')
+    for tool in used:
+        offset = tuple(settings[tool]['carriage_to_tip_mm'])
+        if kept:
+            declared = table[tool].carriage_to_tip_mm
+            if tuple(float(v) for v in declared) != offset:
+                raise ValueError(
+                    f'tool {tool}: the setup places it by carriage_to_tip_mm {offset} '
+                    f'(TurnToolSetting), but the machine tool table states {tuple(declared)} '
+                    '(ToolSetting.carriage_to_tip_mm): one tool has one offset; state the same value in both'
+                )
+            continue
+        if mode != 'table':
+            raise ValueError(
+                'the setup changes tools at a machine position (TurnToolChange.machine_position), but the '
+                f'machine\'s tool_change_position_mode is "{mode}": declare "table" with each '
+                'ToolSetting.position_after_mm (TurnToolChange.tip_mm(setting))'
+            )
+        position = change['position_mm']
+        plan = (position[0] + offset[0], 0.0, position[1] + offset[1])
+        tip = tuple(float(v) for v in table[tool].position_after_mm)
+        if any(abs(a - b) > machine.tolerance_mm for a, b in zip(plan, tip)):
+            raise ValueError(
+                f'tool {tool}: the setup starts it at {plan} after its tool change (the machine_position '
+                f"tool change's position_mm {tuple(position)} plus its carriage_to_tip_mm {offset}), but the "
+                f'machine leaves it at {tip} (tool_change_position_mode="table", its tool table '
+                'position_after_mm); state position_after_mm=TurnToolChange.tip_mm(setting)'
             )
 
 

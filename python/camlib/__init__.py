@@ -194,6 +194,7 @@ _EXPORTS = {
             "GrooveInsert",
             "ThreadInsert",
             "TurnToolSetting",
+            "TurnToolChange",
             "TurnFace",
             "TurnRough",
             "TurnFinish",

@@ -160,8 +160,9 @@ class Setup:
     # A lathe setup: its turning definition (camlib.turning.TurningSetup:
     # the part's profile and bore, the chuck, clearance and tolerance). Its
     # stock is a TurnStockSpec, its tools TurnToolSetting and its operations
-    # the Turn* operations; initial_position_mm is (radius, 0, z), the turret
-    # index position every tool's controlled point starts from.
+    # the Turn* operations; initial_position_mm is (radius, 0, z), where the
+    # first tool's controlled point starts. tool_change is then a
+    # camlib.turning.TurnToolChange (None: every tool starts there too).
     turning: object | None = None
     initial_stock: object | None = None
     # Where a milling program ends (camlib.EndPosition): after the last
@@ -346,17 +347,24 @@ class Job:
             if not tools:
                 raise ValueError("setup requires at least one tool")
             lathe = setup.turning is not None
+            if lathe:
+                from .turning import TurnToolChange
+
+                lathe_change = setup.tool_change is None or isinstance(setup.tool_change, TurnToolChange)
             if lathe and (
                 setup.avoid
                 or setup.contain is not None
                 or setup.verification is not None
-                or setup.tool_change is not None
+                or not lathe_change
                 or setup.initial_stock is not None
             ):
                 raise ValueError(
                     "a lathe setup checks every move against its part, bore, chuck and stock; "
-                    "milling limits, checks and tool-change poses do not apply"
+                    "milling limits, checks and tool-change poses do not apply "
+                    "(a lathe's tool change is a camlib.turning.TurnToolChange)"
                 )
+            if not lathe and type(setup.tool_change).__name__ == "TurnToolChange":
+                raise ValueError("a TurnToolChange is a lathe setup's tool change (Setup(turning=...))")
             if lathe and setup.end_position is not None:
                 raise ValueError(
                     "a lathe setup already ends at its turret index position: after the last operation the tool "
@@ -439,7 +447,7 @@ class Job:
             if lathe:
                 from .turning import proxy_tools
 
-                turning = setup.turning.to_dict(tools, definitions)
+                turning = setup.turning.to_dict(tools, definitions, setup.tool_change)
                 config = dict(
                     stock=stock,
                     tools=proxy_tools(turning),

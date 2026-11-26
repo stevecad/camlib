@@ -76,10 +76,17 @@ class TurnStockState:
 
     @position.setter
     def position(self, value):
-        # A tool change puts the controlled point at the turret pose; the
-        # receiver accepts the next tool's first move from there itself.
-        if tuple(value) != tuple(self._manifest["initial_position_mm"]):
-            raise ProtocolError("a lathe tool change starts at the turret (start) position")
+        # A tool change puts the controlled point where the setup's declared
+        # tool-change mode leaves it; the receiver accepts the next tool's
+        # first move from there itself (it measures from its own last tool).
+        value = tuple(value)
+        if value != tuple(self._receiver.position) and not any(
+            self.tool_change_tip(tool) == value for tool in sorted(self._tools)
+        ):
+            raise ProtocolError(
+                "a lathe tool change starts where the setup's tool-change mode leaves the tool "
+                "(the start position unless the setup declares another)"
+            )
 
     @property
     def checkpoint_bytes(self):
@@ -100,11 +107,19 @@ class TurnStockState:
         return None
 
     def tool_change_tip(self, tool, position=None, previous=None):
-        """A lathe indexes the turret at the start position: every tool's
-        controlled point arrives there."""
+        """The controlled point after a change to ``tool``, by the setup's
+        declared tool-change mode (``camlib.turning.TurnToolChange``): the
+        start position (the tip kept, the default); the last position moved
+        by the new tool's offset minus the old one's (the carriage kept); or
+        the stated carriage position plus the tool's offset. ``previous``:
+        the tool mounted before (default: the last move's); ``position``:
+        where it stopped (default: where the last move ended)."""
         if tool not in self._tools:
             raise ProtocolError("tool change to an undeclared tool")
-        return tuple(self._manifest["initial_position_mm"])
+        try:
+            return tuple(self._receiver.tool_change_tip(tool, previous, None if position is None else tuple(position)))
+        except (ValueError, TypeError) as error:
+            raise ProtocolError(str(error)) from error
 
     def _identity(self, decoder):
         run = self._manifest["run"]

@@ -918,14 +918,101 @@ class TurningTool:
 
 @dataclass(frozen=True)
 class TurnToolSetting:
-    """The tool in the turret: T number and offset (T0101 = 1, 1)."""
+    """The tool in the turret: T number and offset (T0101 = 1, 1).
+
+    ``carriage_to_tip_mm``: the tool's controlled point from the carriage
+    reference, (radius, z) along the work axes, as the tool is held. Only a
+    ``TurnToolChange`` that places tools by it reads it (``carriage_kept``,
+    ``machine_position``), and refuses a tool without one: camlib never
+    assumes an offset."""
 
     tool: TurningTool
     number: int = 1
     offset: int = 1
+    carriage_to_tip_mm: tuple | None = None
 
     def to_dict(self):
-        return dict(tool=self.tool.to_dict(), number=self.number, offset=self.offset)
+        data = dict(tool=self.tool.to_dict(), number=self.number, offset=self.offset)
+        if self.carriage_to_tip_mm is not None:
+            data["carriage_to_tip_mm"] = _radius_z(self.carriage_to_tip_mm, "carriage_to_tip_mm")
+        return data
+
+
+def _radius_z(value, what):
+    try:
+        radius, z = (float(v) for v in value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{what} is (radius, z) in millimetres") from None
+    return [radius, z]
+
+
+@dataclass(frozen=True)
+class TurnToolChange:
+    """Where a lathe tool change leaves the new tool's controlled point
+    (``Setup(tool_change=...)`` of a lathe setup; ``None`` is ``tip_kept``).
+
+    The carriage carries one reference point; a mounted tool's controlled
+    point is at that point plus its ``TurnToolSetting.carriage_to_tip_mm``.
+
+    - ``TurnToolChange.tip_kept()``: every tool's controlled point starts at
+      the setup's start position (``initial_position_mm``). No offset is read.
+    - ``TurnToolChange.carriage_kept()``: the change moves no axis (the T
+      word only applies the new tool's offset; a quick-change tool post).
+      New point = old point - old tool's ``carriage_to_tip_mm`` + new tool's.
+    - ``TurnToolChange.machine_position(radius_mm, z_mm)``: the change
+      brings the carriage reference to that position. New point = position +
+      the new tool's ``carriage_to_tip_mm``; each tool is put away at its
+      own such point before a change, and the setup starts at the first
+      tool's.
+
+    See docs/operations.md (Lathe tool changes)."""
+
+    mode: str = "tip_kept"
+    position_mm: tuple | None = None
+
+    def __post_init__(self):
+        if self.mode not in ("tip_kept", "carriage_kept", "machine_position"):
+            raise ValueError("a lathe tool change is tip_kept, carriage_kept or machine_position")
+        if (self.mode == "machine_position") != (self.position_mm is not None):
+            raise ValueError("position_mm (radius, z) belongs to a machine_position tool change, and only to it")
+        if self.position_mm is not None:
+            object.__setattr__(self, "position_mm", tuple(_radius_z(self.position_mm, "position_mm")))
+
+    @classmethod
+    def tip_kept(cls):
+        return cls("tip_kept")
+
+    @classmethod
+    def carriage_kept(cls):
+        return cls("carriage_kept")
+
+    @classmethod
+    def machine_position(cls, radius_mm, z_mm):
+        return cls("machine_position", (radius_mm, z_mm))
+
+    def tip_mm(self, setting):
+        """Where a ``machine_position`` change leaves ``setting``'s tool: its
+        controlled point (radius, 0, z), for the setup's
+        ``initial_position_mm`` (the first tool's) and each machine
+        ``ToolSetting.position_after_mm``."""
+        if self.mode != "machine_position":
+            raise ValueError(
+                "only a machine_position tool change places a tool by itself: tip_kept starts every tool at the "
+                "setup's start, carriage_kept where the tool before it stopped"
+            )
+        if setting.carriage_to_tip_mm is None:
+            raise ValueError(
+                f"tool {setting.tool.id!r} has no carriage_to_tip_mm: camlib assumes no offset; declare "
+                "TurnToolSetting(carriage_to_tip_mm=(radius, z))"
+            )
+        radius, z = _radius_z(setting.carriage_to_tip_mm, "carriage_to_tip_mm")
+        return (self.position_mm[0] + radius, 0.0, self.position_mm[1] + z)
+
+    def to_dict(self):
+        data = dict(mode=self.mode)
+        if self.position_mm is not None:
+            data["position_mm"] = list(self.position_mm)
+        return data
 
 
 def _op(kind, data):
@@ -1206,8 +1293,9 @@ class TurningSetup:
         bore and face grooves; ``settings`` give the rest."""
         return cls(profile=section.profile, bore=section.bore, face_grooves=section.face_grooves, **settings)
 
-    def to_dict(self, tools, operations):
-        """The native turning setup with the setup's tools and operations."""
+    def to_dict(self, tools, operations, tool_change=None):
+        """The native turning setup with the setup's tools, operations and
+        tool-change mode (``TurnToolChange``; None: the tip kept)."""
         result = dict(
             part=dict(points=[list(p) for p in self.profile]),
             chuck_z_mm=self.chuck_z_mm,
@@ -1221,6 +1309,18 @@ class TurningSetup:
         )
         if self.bore is not None:
             result["bore"] = dict(points=[list(p) for p in self.bore])
+        if tool_change is not None and tool_change.mode != "tip_kept":
+            # Refused here, by name, before anything is planned (the engine
+            # refuses the same again).
+            offsets = {t["tool"]["id"]: t.get("carriage_to_tip_mm") for t in result["tools"]}
+            for operation in result["operations"]:
+                if offsets.get(operation["tool"]) is None:
+                    raise ValueError(
+                        f"tool {operation['tool']!r} has no carriage_to_tip_mm: a {tool_change.mode} tool change "
+                        "places each tool by its offset from the carriage reference (radius, z), and camlib "
+                        "assumes none; declare TurnToolSetting(carriage_to_tip_mm=...) for it"
+                    )
+            result["tool_change"] = tool_change.to_dict()
         return result
 
 

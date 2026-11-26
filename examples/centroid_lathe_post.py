@@ -29,10 +29,15 @@ Premises (declared, not checked on the machine):
 - Parameter 55 = 0: X words are diameters.
 - Tool offsets are touched off on a diameter and a face: the program moves
   each tool's imaginary tip (TurningSetup controlled_point="tip").
-- A new T number moves Z home and stops the spindle and coolant (the M6
-  macro): the job's initial position is where the change leaves the tool;
-  each tool's ToolSetting.position_after_mm is that position
-  (tool_change_position_mode="table").
+- A new T number runs the machine's tool-change macro, which stops the
+  spindle and coolant. Where it leaves the tool is the machine's own and is
+  declared, never assumed (docs/centroid-lathe-post.md, Tool change):
+  tool_change_position_mode="table" (each ToolSetting.position_after_mm is
+  the tool's controlled point after its change: the job's start position
+  for every tool, or each tool's own point when the macro goes to a machine
+  position), or "preserve_carriage" (the macro moves no axis and only
+  applies the new offset: a quick-change tool post; each
+  ToolSetting.carriage_to_tip_mm). The T word written is the same.
 - G0 runs each axis at its own maximum rate: a rapid moving both X and Z
   would not follow a straight line, so rapids move one axis at a time
   (refused otherwise; an axis that only settles onto its rounded word,
@@ -109,16 +114,22 @@ class CentroidLatheMachine(Machine):
         super().__post_init__()
         if self.dialect != _dialect() or self.planes != ('xz',):
             raise ValueError('dialect differs from the CNC12 lathe subset (XZ arcs, diameter X, T<tt><oo>)')
-        if self.tool_change_position_mode != 'table' or self.traverse_feed_mm_min is not None:
+        if (
+            self.tool_change_position_mode not in ('table', 'preserve_carriage')
+            or self.traverse_feed_mm_min is not None
+        ):
             raise ValueError(
-                'a new T number moves Z home: declare each tool\'s position after the change '
-                '(tool_change_position_mode="table"); rapids are G0'
+                'a new T number runs the tool-change macro: declare each tool\'s position after the change '
+                '(tool_change_position_mode="table"), or that the macro moves no axis '
+                '("preserve_carriage", with each ToolSetting.carriage_to_tip_mm); rapids are G0'
             )
 
 
 def define_machine(name, tools, **settings):
     """``tools``: ToolSetting per turret station (number = tt, length_register
-    = oo), position_after_mm where the tool change leaves the tool."""
+    = oo), position_after_mm where the tool change leaves the tool; with
+    tool_change_position_mode="preserve_carriage" (the change moves no
+    axis) each tool's carriage_to_tip_mm instead."""
     return CentroidLatheMachine(
         name, tuple(tools), dialect=_dialect(), planes=('xz',), **{'tool_change_position_mode': 'table', **settings}
     )
