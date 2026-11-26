@@ -208,6 +208,7 @@ _EXPORTS = {
             "FaceGroove",
             "FaceGrooveInsert",
             "TurnFaceGroove",
+            "ChuckGrip",
         ),
         "turning",
     ),

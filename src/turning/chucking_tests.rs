@@ -1,0 +1,284 @@
+//! A second chucking (#418): the jaws on the part itself.
+//!
+//! Jobs are read from their wire form, as a stream manifest's are, so these
+//! tests exercise what an application sends.
+use crate::{
+    motion::{Curve, Event, Motion, MoveKind},
+    turning::{
+        ops::{TurnPlan, TurnReplay, TurningJob, material_report, plan},
+        stock::{TurnSide, TurnStock},
+        tool::{Hand, Holder, Insert},
+    },
+};
+use serde_json::{Value, json};
+use std::sync::atomic::AtomicBool;
+
+/// An 80 degree insert on a 95 degree holder (the turning tests' tool).
+fn cnmg() -> Value {
+    let insert = Insert::iso_turning(80., 95., 12., 0.8).unwrap();
+    let holder = Holder::rectangle(&insert, 0.8, TurnSide::Outer, 20., 100., 0.).unwrap();
+    json!({
+        "tool": {
+            "id": "cnmg",
+            "insert": insert,
+            "nose_radius_mm": 0.8,
+            "side": TurnSide::Outer,
+            "hand": Hand::Right,
+            "holder": holder,
+            "body": {
+                "insert": {
+                    "insert_thickness_mm": 3.0,
+                    "insert_clearance_deg": 7.0,
+                    "rake_deg": 0.0,
+                    "inclination_deg": 0.0,
+                    "edge_deg": 5.0,
+                },
+                "holder_y_mm": [-10.0, 2.0],
+                "bar_axis_y_mm": 0.0,
+            },
+        },
+        "number": 1,
+        "offset": 1,
+    })
+}
+
+/// A sawn bar: 32 mm diameter, 64 mm long, 2 mm to face off each end.
+fn bar() -> Value {
+    json!({
+        "version": 1, "units": "mm", "z_min_mm": -62.0, "z_max_mm": 2.0,
+        "outer_radius_mm": 16.0, "cell_mm": 0.25, "max_cells": 10000,
+    })
+}
+
+fn job(
+    stock: Value,
+    profile: &[[f64; 3]],
+    chuck: f64,
+    grip: Option<[f64; 2]>,
+    operations: Value,
+) -> TurningJob {
+    let mut job = json!({
+        "id": "shaft",
+        "stock": stock,
+        "part": {"points": profile},
+        "chuck_z_mm": chuck,
+        "tools": [cnmg()],
+        "operations": operations,
+        "initial_position_mm": [30.0, 20.0],
+        "clearance_mm": 2.0,
+        "tolerance_mm": 1e-3,
+    });
+    if let Some([length, radius]) = grip {
+        job["grip"] = json!({"length_mm": length, "radius_mm": radius});
+    }
+    serde_json::from_value(job).unwrap()
+}
+
+fn face() -> Value {
+    json!({"kind": "face", "id": "face", "tool": "cnmg", "z_mm": 0.0, "stepdown_mm": 1.0,
+           "feed_mm_rev": 0.15, "rpm": 1200.0})
+}
+fn rough() -> Value {
+    json!({"kind": "rough", "id": "rough", "tool": "cnmg", "depth_of_cut_mm": 2.0,
+           "allowance_mm": 0.3, "feed_mm_rev": 0.25, "rpm": 1200.0})
+}
+fn finish() -> Value {
+    json!({"kind": "finish", "id": "finish", "tool": "cnmg", "feed_mm_rev": 0.1, "rpm": 1500.0})
+}
+
+fn planned(job: &TurningJob) -> Result<TurnPlan, String> {
+    plan(job, &AtomicBool::new(false))
+}
+
+/// A shaft 60 mm long whose 30 mm diameter runs on to its chuck-side end.
+const LONG: [[f64; 3]; 5] = [
+    [0., 0., 0.],
+    [10., 0., 0.],
+    [10., -20., 0.],
+    [15., -20., 0.],
+    [15., -60., 0.],
+];
+
+/// Every cell of `stock` between z0 and z1 has the outer radius `r`.
+fn radius_is(stock: &TurnStock, z0: f64, z1: f64, r: f64) {
+    let mut seen = 0;
+    for (i, c) in stock.cells().iter().enumerate() {
+        let [a, b] = stock.bin(i);
+        if a >= z0 && b <= z1 {
+            seen += 1;
+            assert!(
+                (c.outer.upper_mm - r).abs() < 1e-6 && (c.outer.lower_mm - r).abs() < 1e-6,
+                "z {a}..{b}: {c:?}, expected r {r}"
+            );
+        }
+    }
+    assert!(seen > 0, "no cell between z {z0} and z {z1}");
+}
+
+#[test]
+fn a_chuck_face_along_the_part_needs_a_declared_grip() {
+    // The jaws hold the bar from z -62 to -44; the part runs to z -60.
+    let operations = json!([face(), rough(), finish()]);
+    let undeclared = job(bar(), &LONG, -44., None, operations.clone());
+    let error = planned(&undeclared).err().unwrap();
+    assert!(
+        error.contains("in front of the chuck face") && error.contains("TurningJob.grip"),
+        "{error}"
+    );
+    // Declared: planned to the clearance in front of the chuck face, and
+    // not a hair further.
+    let held = job(bar(), &LONG, -44., Some([18., 16.]), operations);
+    let plan = planned(&held).unwrap();
+    radius_is(&plan.stock, -18.5, -1.5, 10.);
+    radius_is(&plan.stock, -41., -21.5, 15.);
+    // Behind the chuck face the bar is as it was: nothing was machined.
+    radius_is(&plan.stock, -62., -44., 16.);
+    // No move's programmed point (the tool tip, the nose's own extreme
+    // toward the chuck) is behind the clearance in front of the face.
+    let mut cuts = 0;
+    for event in &plan.events {
+        let Event::Motion { motion } = event else {
+            continue;
+        };
+        let (Curve::Line { start, end } | Curve::Arc { start, end, .. }) = motion.curve else {
+            panic!("{motion:?}");
+        };
+        assert!(start[2].min(end[2]) >= -42. - 0.8 - 1e-9, "{motion:?}");
+        cuts += usize::from(motion.kind == MoveKind::Cut);
+    }
+    assert!(cuts > 10);
+    // The finish ran to the clearance exactly (its nose centre at z -42).
+    let last_cut = plan
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Motion { motion }
+                if motion.operation == "finish" && motion.kind == MoveKind::Cut =>
+            {
+                Some(motion)
+            }
+            _ => None,
+        })
+        .next_back()
+        .unwrap();
+    let Curve::Line { end, .. } = last_cut.curve else {
+        panic!("{last_cut:?}");
+    };
+    assert!(
+        (end[2] + 42.8).abs() < 1e-9 && (end[0] - 15.).abs() < 1e-9,
+        "{end:?}"
+    );
+    // What the jaws hold is reported as left for another setup, by the
+    // operations and by the material check (leftover, not a failure).
+    for report in &plan.reports[1..] {
+        assert_eq!(
+            report.left_for_another_setup_z_mm,
+            vec![[-60., -42.]],
+            "{}",
+            report.id
+        );
+    }
+    assert!(plan.reports[0].left_for_another_setup_z_mm.is_empty());
+    let material = material_report(&held, &plan.stock).unwrap();
+    assert_eq!(material["held"]["z_mm"], json!([-62., -44.]));
+    assert!(
+        material["held"]["definite_cells"].as_u64().unwrap() > 50,
+        "{}",
+        material["held"]
+    );
+    assert_eq!(material["gouge"]["definite_cells"], 0);
+    for finding in material["findings"].as_array().unwrap() {
+        let z0 = finding["z_mm"][0].as_f64().unwrap();
+        assert_eq!(
+            finding.get("behind_chuck_face").is_some(),
+            z0 < -44.,
+            "{finding}"
+        );
+    }
+}
+
+#[test]
+fn a_cut_that_would_reach_the_jaws_is_refused_by_name() {
+    let held = |operations: Value| job(bar(), &LONG, -44., Some([18., 16.]), operations);
+    // An operation whose own target is behind the chuck face.
+    let groove = json!({"kind": "groove", "id": "groove", "tool": "cnmg", "z_from_mm": -47.0,
+        "z_to_mm": -50.0, "bottom_radius_mm": 12.0, "feed_mm_rev": 0.05, "rpm": 800.0});
+    let error = planned(&held(json!([face(), groove]))).err().unwrap();
+    assert!(
+        error.starts_with("groove: ")
+            && error.contains("behind the chuck face (z -44)")
+            && error.contains("jaws hold"),
+        "{error}"
+    );
+    let deep_face = json!({"kind": "face", "id": "face", "tool": "cnmg", "z_mm": -45.0,
+        "stepdown_mm": 1.0, "feed_mm_rev": 0.15, "rpm": 1200.0});
+    let error = planned(&held(json!([deep_face]))).err().unwrap();
+    assert!(
+        error.contains("behind the chuck face") && error.contains("jaws hold"),
+        "{error}"
+    );
+    // A move (as a posted program read back gives it) that would take the
+    // tool behind the chuck face: the move kernel names the jaws.
+    let j = held(json!([face(), rough(), finish()]));
+    let mut replay = TurnReplay::new(j.clone()).unwrap();
+    let into = |z: f64| Motion {
+        id: 1,
+        operation: "finish".into(),
+        tool: "cnmg".into(),
+        curve: Curve::Line {
+            start: [20., 0., 5.],
+            end: [20., 0., z],
+        },
+        kind: MoveKind::Rapid,
+        feed_mm_min: None,
+    };
+    let error = replay.motion(&into(-44.5)).unwrap_err();
+    assert!(
+        error.contains("reach the chuck")
+            && error.contains("jaws hold the work")
+            && error.contains("18 mm"),
+        "{error}"
+    );
+    // In front of the face the same move is taken.
+    replay.motion(&into(-40.)).unwrap();
+    // Without a grip the chuck's refusal reads as it always did.
+    let mut plain = job(bar(), &LONG[..4], -44., None, json!([face()]));
+    plain.part.points.push([15., -40., 0.]);
+    let mut replay = TurnReplay::new(plain).unwrap();
+    let error = replay.motion(&into(-44.5)).unwrap_err();
+    assert!(
+        error.contains("reach the chuck") && !error.contains("jaws"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_grip_is_checked_against_the_stock_and_the_part() {
+    let with = |chuck: f64, grip: [f64; 2]| {
+        planned(&job(bar(), &LONG, chuck, Some(grip), json!([face()])))
+    };
+    // The jaws close on the bar's own radius, not another.
+    let error = with(-44., [18., 15.]).err().unwrap();
+    assert!(
+        error.contains("parallel diameter") && error.contains("a radius between 16 and 16"),
+        "{error}"
+    );
+    // Not past the end of the stock.
+    let error = with(-44., [30., 16.]).err().unwrap();
+    assert!(error.contains("the stock ends at z -62"), "{error}");
+    // Something of the part is in front of the chuck clearance.
+    let error = with(-1., [18., 16.]).err().unwrap();
+    assert!(error.contains("in front of the chuck clearance"), "{error}");
+    // A part larger, inside the jaws, than the diameter they close on.
+    let mut fat = job(bar(), &LONG, -44., Some([18., 16.]), json!([face()]));
+    fat.part.points[3][0] = 16.5;
+    fat.part.points[4][0] = 16.5;
+    let error = planned(&fat).err().unwrap();
+    assert!(
+        error.contains("the jaws would be inside the part"),
+        "{error}"
+    );
+    for bad in [[0., 16.], [18., 0.], [-3., 16.]] {
+        assert!(with(-44., bad).err().unwrap().contains("must be positive"));
+    }
+}

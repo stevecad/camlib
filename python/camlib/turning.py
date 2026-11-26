@@ -1254,6 +1254,28 @@ class TurnFinish:
         return _op("finish", self.__dict__)
 
 
+@dataclass(frozen=True)
+class ChuckGrip:
+    """The jaws on the work (``TurningSetup(grip=...)``): they hold it over
+    ``length_mm`` behind the chuck face ``chuck_z_mm``, closed on
+    ``radius_mm``.
+
+    With a grip the chuck face may sit along the part: a second chucking,
+    the part turned around and held on a diameter the first one finished.
+    Nothing behind the chuck face is machined, and no tool part may go
+    there. The grip is checked before anything is planned: the stock must be
+    the cylinder of that radius over the whole held length (jaws hold a
+    parallel diameter), and the part no larger than it there; a chuck face
+    set onto a shoulder, a taper or no material is refused. camlib does not
+    judge whether the grip holds against the cut."""
+
+    length_mm: float
+    radius_mm: float
+
+    def to_dict(self):
+        return dict(length_mm=self.length_mm, radius_mm=self.radius_mm)
+
+
 @dataclass(frozen=True, kw_only=True)
 class TurningSetup:
     """The turning definition of a lathe ``camlib.jobs.Setup`` (whose stock
@@ -1263,7 +1285,11 @@ class TurningSetup:
     ``profile``: the part's half-section (radius, z, bulge) from the front
     face on the axis toward the chuck (``camlib.cadquery.turning_section``
     takes it from a solid). ``chuck_z_mm``: the chuck face; no tool part may
-    reach below it (plus the clearance). ``clearance_mm``: the approach and
+    reach below it (plus the clearance). The part lies in front of it,
+    unless ``grip`` (a ``ChuckGrip``) declares that the jaws hold the part
+    over part of its own length: a second chucking, whose roughing and
+    finishing stop at the clearance in front of the chuck face and report
+    the rest as left for another setup. ``clearance_mm``: the approach and
     retract clearance. ``tolerance_mm``: the tolerance of every move check.
     ``bore``: the part's hole (radius, z, bulge) from the front face to its
     deepest point; drilling and boring stay inside it.
@@ -1286,6 +1312,7 @@ class TurningSetup:
     feed_per_rev: bool = False
     controlled_point: str = "tip"
     face_grooves: tuple = ()
+    grip: ChuckGrip | None = None
 
     @classmethod
     def from_section(cls, section, **settings):
@@ -1307,6 +1334,8 @@ class TurningSetup:
             controlled_point=self.controlled_point,
             face_grooves=[g.to_dict() for g in self.face_grooves],
         )
+        if self.grip is not None:
+            result["grip"] = self.grip.to_dict()
         if self.bore is not None:
             result["bore"] = dict(points=[list(p) for p in self.bore])
         if tool_change is not None and tool_change.mode != "tip_kept":

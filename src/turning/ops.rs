@@ -14,6 +14,7 @@
 //! tangents: the same hulls, checks and stock steps as the chords it
 //! replaces (`arc_steps`).
 use super::{
+    chucking::{self, ChuckGrip, Piece},
     profile::{Envelope, Seg, TurnProfile},
     stock::{TurnChange, TurnSide, TurnStock, TurnStockSpec},
     tool::{Hand, TurningTool},
@@ -384,6 +385,9 @@ pub struct TurnSetup {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bore: Option<TurnProfile>,
     pub chuck_z_mm: f64,
+    /// The jaws on the work (#418): see `TurningJob::grip`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grip: Option<ChuckGrip>,
     pub tools: Vec<TurnToolSetting>,
     pub operations: Vec<TurnOperation>,
     pub clearance_mm: f64,
@@ -413,6 +417,7 @@ impl TurnSetup {
             part: self.part.clone(),
             bore: self.bore.clone(),
             chuck_z_mm: self.chuck_z_mm,
+            grip: self.grip,
             tools: self.tools.clone(),
             operations: self.operations.clone(),
             initial_position_mm: initial,
@@ -484,6 +489,13 @@ pub struct TurningJob {
     pub bore: Option<TurnProfile>,
     /// The chuck face: no tool part may reach below this z (plus clearance).
     pub chuck_z_mm: f64,
+    /// The jaws on the work (#418): how far behind the chuck face they
+    /// hold it and on what radius. With it the chuck face may sit along the
+    /// part (a second chucking: the part held on a diameter already
+    /// turned); the held length is not machined. Without it the part lies
+    /// wholly in front of the chuck face.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grip: Option<ChuckGrip>,
     pub tools: Vec<TurnToolSetting>,
     pub operations: Vec<TurnOperation>,
     /// Start (and tool change) position: [radius, z].
@@ -554,6 +566,12 @@ pub struct TurnReport {
     /// Caller-declared additional outward slice-hull error, when opted in.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_model_hull_error_mm: Option<f64>,
+    /// The z ranges of the part's profile a roughing or finishing operation
+    /// did not turn, because the jaws hold the work there or its own bounds
+    /// end before them (#418): left for another operation or chucking, not
+    /// a failure. Reported with a grip or bounds only.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub left_for_another_setup_z_mm: Vec<[f64; 2]>,
 }
 
 /// The exact stock change of one move: changed cells (ascending index) and
@@ -1225,8 +1243,17 @@ impl Planner<'_> {
             // No tool part below the chuck face.
             let chuck = self.job.chuck_z_mm + self.guard;
             if insert.iter().chain(&holder).flatten().any(|p| p[0] < chuck) {
+                // With a grip (#418) the jaws are on the work behind that
+                // face: say so.
+                let held = match &self.job.grip {
+                    Some(grip) => format!(
+                        ": its jaws hold the work over the {} mm behind that face (the setup's grip), which no tool may enter",
+                        grip.length_mm
+                    ),
+                    None => String::new(),
+                };
                 return Err(format!(
-                    "{op}: the tool would reach the chuck (z below {:.3}) moving to r {:.3}, z {:.3}",
+                    "{op}: the tool would reach the chuck (z below {:.3}) moving to r {:.3}, z {:.3}{held}",
                     self.job.chuck_z_mm, to[1], to[0]
                 ));
             }
@@ -2160,8 +2187,13 @@ impl<'a> TurnSession<'a> {
         }
         job.tool_change.validate(&job.tools, &job.operations)?;
         let [z_lo, z_hi] = job.part.z_range();
-        if job.chuck_z_mm > z_lo || z_hi > job.stock.z_max_mm || z_lo < job.stock.z_min_mm {
-            return Err("the part must lie within the stock and in front of the chuck face".into());
+        // The part in front of the chuck face, unless a declared grip says
+        // the jaws hold it over part of its own length (#418).
+        if (job.chuck_z_mm > z_lo && job.grip.is_none())
+            || z_hi > job.stock.z_max_mm
+            || z_lo < job.stock.z_min_mm
+        {
+            return Err("the part must lie within the stock and in front of the chuck face; a part the jaws hold over part of its own length (a second chucking) declares that grip (TurningJob.grip)".into());
         }
         // Face grooves lie within the flat front face (the profile's points at
         // the face z, from the axis out).
@@ -2208,6 +2240,10 @@ impl<'a> TurnSession<'a> {
             last_thread: None,
             spindle: Spin::Rpm(0.),
         };
+        // A declared grip against the stock it closes on and the part.
+        if let Some(grip) = &job.grip {
+            grip.check(job, &planner.part, &planner.stock)?;
+        }
         Ok(Self {
             job,
             planner,
@@ -2239,6 +2275,7 @@ impl<'a> TurnSession<'a> {
         if cancel.is_cancelled() {
             return Err(CANCELLED.into());
         }
+        chucking::in_front_of_jaws(op, job)?;
         let (id, tool_id, rpm, css) = match op {
             TurnOperation::Face {
                 id,
@@ -2370,6 +2407,7 @@ impl<'a> TurnSession<'a> {
                 .as_ref()
                 .and_then(|b| b.model.as_ref())
                 .and_then(|m| m.max_hull_error_mm),
+            left_for_another_setup_z_mm: vec![],
         };
         if active.as_deref() != Some(tool_id.as_str()) {
             if active.is_some() {
@@ -2546,30 +2584,68 @@ impl<'a> TurnSession<'a> {
                 }
                 let path = job.part.offset(rn + allowance_mm)?;
                 let points = chain(&path, tol / 4.);
-                let z_end = job.chuck_z_mm + job.clearance_mm;
-                let reach = |v: f64| first_reach(&points, v).map_or(z_end, |u| u.max(z_end));
+                // Where the passes work: to the clearance in front of the
+                // chuck (#418: with a grip, what lies behind is reported as
+                // left for another chucking).
+                let window = chucking::window(&id, job, None, None)?;
+                report.left_for_another_setup_z_mm = window.left.clone();
+                let z_end = window.lo;
+                // The passes start beyond the stock end, or the clearance in
+                // front of a front bound inside it.
+                let begin = window
+                    .hi
+                    .map_or(z_start, |hi| z_start.min(hi + job.clearance_mm));
+                // The path a pass can meet: all of it, or what lies behind
+                // the front bound.
+                let ahead = match window.hi {
+                    Some(hi) => chucking::clip(&points, f64::NEG_INFINITY, hi),
+                    None => vec![points.clone()],
+                };
+                let reach = |v: f64| {
+                    ahead
+                        .iter()
+                        .filter_map(|piece| first_reach(piece, v))
+                        .reduce(f64::max)
+                        .map_or(z_end, |u| u.max(z_end))
+                };
+                let z_top = window.hi.map_or(z_hi, |hi| hi.min(z_hi));
                 // The front face's offset is not a diameter to rough to.
-                let lowest = points
-                    .iter()
-                    .filter(|p| p[0] >= z_end && p[0] <= z_hi)
-                    .map(|p| p[1])
-                    .fold(f64::INFINITY, f64::min)
-                    .max(rn);
+                let lowest = if window.bounded {
+                    // Cut at the window's ends: a diameter or taper crossing
+                    // one counts where it crosses.
+                    chucking::clip(&points, z_end, z_top)
+                        .iter()
+                        .flatten()
+                        .map(|p| p[1])
+                        .fold(f64::INFINITY, f64::min)
+                } else {
+                    points
+                        .iter()
+                        .filter(|p| p[0] >= z_end && p[0] <= z_hi)
+                        .map(|p| p[1])
+                        .fold(f64::INFINITY, f64::min)
+                }
+                .max(rn);
+                if window.bounded && !lowest.is_finite() {
+                    return Err(format!(
+                        "{id}: no part of the profile lies between z {z_end} and z {z_top}, where this operation turns"
+                    ));
+                }
                 let mut first = true;
                 for v_pass in
-                    pass_levels(&points, [z_end, z_hi], top + rn, lowest, *depth_of_cut_mm)
+                    pass_levels(&points, [z_end, z_top], top + rn, lowest, *depth_of_cut_mm)
                 {
                     let stop = reach(v_pass);
-                    if stop < z_start - tol {
+                    if stop < begin - tol {
                         if first {
-                            approach(&mut *planner, &mut report, [z_start, v_pass])?;
+                            approach(&mut *planner, &mut report, [begin, v_pass])?;
                             first = false;
                         } else {
                             // Beyond the stock end: straight down to the pass.
                             planner.emit(
                                 &geom,
                                 &id,
-                                [z_start, v_pass],
+                                [begin, v_pass],
                                 MoveKind::Rapid,
                                 None,
                                 &mut report,
@@ -2595,7 +2671,7 @@ impl<'a> TurnSession<'a> {
                         planner.emit(
                             &geom,
                             &id,
-                            [z_start, pos[1]],
+                            [begin, pos[1]],
                             MoveKind::Rapid,
                             None,
                             &mut report,
@@ -3288,8 +3364,62 @@ impl<'a> TurnSession<'a> {
                 }
                 let feed = feed_of(*feed_mm_rev)?;
                 let path = job.part.offset(rn + allowance_mm)?;
-                let first = path[0].start();
-                approach(&mut *planner, &mut report, [z_start, first[1]])?;
+                // Where the path is followed: to the clearance in front of
+                // the chuck (#418: with a grip the path is cut exactly
+                // there, and what lies behind is reported as left for
+                // another chucking).
+                let window = chucking::window(&id, job, None, None)?;
+                report.left_for_another_setup_z_mm = window.left.clone();
+                let limit = window.lo;
+                let begin = path[0].start();
+                let (first, moves) = if window.bounded {
+                    chucking::follow(
+                        &path,
+                        &window,
+                        |seg| chain(std::slice::from_ref(seg), tol / 4.),
+                        |seg| native_arc(&geom, seg, tol / 4.),
+                    )
+                    .map_err(|e| format!("{id}: {e}"))?
+                } else {
+                    // Along the path to the clearance in front of the chuck.
+                    // An arc of the path (a fillet, a ball end, the nose
+                    // rolling round a corner) wholly in front of it is one
+                    // arc move (G2/G3, #14); any other as its chords.
+                    let mut moves = vec![];
+                    // Where the tool is as the path is followed (a point
+                    // it is already at is passed over before the limit is
+                    // looked at, as it always was).
+                    let mut at = begin;
+                    'path: for seg in &path {
+                        if let Seg::Arc { a, b, c, sweep } = *seg
+                            && native_arc(&geom, seg, tol / 4.)
+                            && seg_low(seg, 0) >= limit
+                        {
+                            moves.push(Piece::To(a));
+                            moves.push(Piece::Arc { c, sweep, b });
+                            at = b;
+                            continue;
+                        }
+                        for p in chain(std::slice::from_ref(seg), tol / 4.) {
+                            if p == at {
+                                continue;
+                            }
+                            if p[0] < limit {
+                                break 'path;
+                            }
+                            moves.push(Piece::To(p));
+                            at = p;
+                        }
+                    }
+                    (begin, moves)
+                };
+                if first == begin {
+                    approach(&mut *planner, &mut report, [z_start, first[1]])?;
+                } else {
+                    // From a front bound inside the profile: in over the
+                    // path's point there, radially from the safe radius.
+                    approach(&mut *planner, &mut report, [first[0], safe_r])?;
+                }
                 // Wear compensation: on over the straight entry, the tool on
                 // the right of the path outside (G42, cutting toward the
                 // chuck), off over the retract.
@@ -3302,37 +3432,24 @@ impl<'a> TurnSession<'a> {
                     });
                 }
                 planner.emit(&geom, &id, first, MoveKind::Plunge, feed, &mut report)?;
-                // Along the path to the clearance in front of the chuck. An
-                // arc of the path (a fillet, a ball end, the nose rolling
-                // round a corner) wholly in front of it is one arc move
-                // (G2/G3, #14); any other as its chords.
-                let limit = job.chuck_z_mm + job.clearance_mm;
-                'path: for seg in &path {
-                    if let Seg::Arc { a, b, c, sweep } = *seg
-                        && native_arc(&geom, seg, tol / 4.)
-                        && seg_low(seg, 0) >= limit
-                    {
-                        planner.emit(&geom, &id, a, MoveKind::Cut, feed, &mut report)?;
-                        planner.emit_arc(
-                            &geom,
-                            &id,
-                            c,
-                            sweep,
-                            b,
-                            MoveKind::Cut,
-                            feed,
-                            &mut report,
-                        )?;
-                        continue;
-                    }
-                    for p in chain(std::slice::from_ref(seg), tol / 4.) {
-                        if p == planner.position {
-                            continue;
+                // A point where the tool already is makes no move.
+                for piece in moves {
+                    match piece {
+                        Piece::To(p) => {
+                            planner.emit(&geom, &id, p, MoveKind::Cut, feed, &mut report)?;
                         }
-                        if p[0] < limit {
-                            break 'path;
+                        Piece::Arc { c, sweep, b } => {
+                            planner.emit_arc(
+                                &geom,
+                                &id,
+                                c,
+                                sweep,
+                                b,
+                                MoveKind::Cut,
+                                feed,
+                                &mut report,
+                            )?;
                         }
-                        planner.emit(&geom, &id, p, MoveKind::Cut, feed, &mut report)?;
                     }
                 }
                 let pos = planner.position;
@@ -3663,6 +3780,7 @@ impl TurnReplay {
                     .as_ref()
                     .and_then(|b| b.model.as_ref())
                     .and_then(|m| m.max_hull_error_mm),
+                left_for_another_setup_z_mm: vec![],
             };
             // Program point to nose center: a translation, the arc's center
             // with it.
@@ -3737,6 +3855,8 @@ pub fn material_report(job: &TurningJob, stock: &TurnStock) -> Result<serde_json
     let [z_lo, z_hi] = job.part.z_range();
     let pi = std::f64::consts::PI;
     let (mut definite, mut possible) = (0usize, 0usize);
+    // Of those, the cells behind a gripping chuck's face: [definite, possible].
+    let mut held = [0usize; 2];
     let mut volume = [0f64; 2];
     let mut findings = vec![];
     for (i, c) in stock.cells().iter().enumerate() {
@@ -3761,14 +3881,21 @@ pub fn material_report(job: &TurningJob, stock: &TurnStock) -> Result<serde_json
                 possible += 1;
             }
             volume[1] += excess[1];
-            findings.push(json!({
+            let mut finding = json!({
                 "cell_index": i,
                 "z_mm": [z0, z1],
                 "side": side,
                 "actual_radius_mm": actual,
                 "target_radius_mm": target,
                 "residual": if definite_excess { "definite_excess" } else { "possible_excess" },
-            }));
+            });
+            // With a grip (#418): leftover behind the chuck face is in the
+            // length the jaws hold, which this chucking cannot machine.
+            if job.grip.is_some() && z0 < job.chuck_z_mm {
+                finding["behind_chuck_face"] = json!(true);
+                held[usize::from(!definite_excess)] += 1;
+            }
+            findings.push(finding);
         };
         let actual = [c.outer.lower_mm, c.outer.upper_mm];
         // In front of the face the part has no material.
@@ -3855,7 +3982,7 @@ pub fn material_report(job: &TurningJob, stock: &TurnStock) -> Result<serde_json
     } else {
         "within_tolerance"
     };
-    Ok(json!({
+    let mut report = json!({
         "algorithm": "turn-radius-bounds-v1",
         "comparison_tolerance_mm": tol,
         "complete": true,
@@ -3873,7 +4000,17 @@ pub fn material_report(job: &TurningJob, stock: &TurnStock) -> Result<serde_json
             "proof": "every move's insert checked against the part and bore as it was made",
         },
         "findings": findings,
-    }))
+    });
+    // With a grip (#418): how much of the leftover lies behind the chuck
+    // face, where the jaws hold the work: another chucking's to machine.
+    if let Some(grip) = &job.grip {
+        report["held"] = json!({
+            "z_mm": grip.span(job.chuck_z_mm),
+            "definite_cells": held[0],
+            "possible_only_cells": held[1],
+        });
+    }
+    Ok(report)
 }
 
 /// Plan a turning job: every operation, then home.
@@ -3947,6 +4084,7 @@ mod tests {
             part: j.part.clone(),
             bore: j.bore.clone(),
             chuck_z_mm: j.chuck_z_mm,
+            grip: j.grip,
             tools: j.tools.clone(),
             operations: j.operations.clone(),
             clearance_mm: j.clearance_mm,
@@ -4310,6 +4448,7 @@ mod tests {
             },
             bore: None,
             chuck_z_mm: -50.,
+            grip: None,
             tools: vec![TurnToolSetting {
                 tool,
                 number: 1,
