@@ -37,7 +37,7 @@ nc = job.post_nc("lathe", machine=machine, post=c.CentroidLathePost,
 | Item | Output | Premise |
 | --- | --- | --- |
 | Header | `G21 G18 G98 G97 G40 G80`, `G52 X0 Z0`, `G61`, `M5 M9`, `G54` | No `G90`: on this lathe G90 is the diameter cutting cycle; X/Z are always absolute. No `G91.1`: I/K are always incremental |
-| Tool | `T<tt><oo>` (`T0101`) | A new tool number runs the tool change (Z home, spindle and coolant off): each tool's `position_after_mm` is where the change leaves it, the job's initial position. No `G43`/`G49` |
+| Tool | `T<tt><oo>` (`T0101`) | A new tool number runs the machine's tool-change macro (spindle and coolant off). Where it leaves the tool is declared, see [Tool change](#tool-change). No `G43`/`G49` |
 | Spindle | `M3 S<rpm>`, or `G50 S<max>` then `G96 S<m/min> M3`; `G97` before an rpm again | |
 | Feeds | `G99 F<mm/rev>` with `TurningSetup(feed_per_rev=True)`, else `G98` and `F` per minute | |
 | X words | Diameters; arc `I` and `K` radius values | Parameter 55 = 0 (diameter mode) |
@@ -49,6 +49,57 @@ nc = job.post_nc("lathe", machine=machine, post=c.CentroidLathePost,
 
 The planner switches coolant off before each tool change and on again after
 it.
+
+## Tool change
+
+The `T<tt><oo>` word is the same on every CNC12 lathe; what the tool-change
+macro behind it does is the machine's own (a turret that indexes, a gang
+plate, a quick-change tool post). camlib assumes none of them: declare it on
+the setup and on the machine (see
+[Lathe tool changes](operations.md#lathe-tool-changes)).
+
+| The macro | Setup | `define_machine(...)` |
+|---|---|---|
+| Brings each new tool's controlled point to the job's start position | `tool_change=None` (the tip kept) | `"table"` (the default here), each `position_after_mm=header.initial_position_mm`, as above |
+| Moves no axis and only applies the new offset; the operator swaps the holder while the program waits (a quick-change tool post) | `TurnToolChange.carriage_kept()` and each `TurnToolSetting.carriage_to_tip_mm` | `tool_change_position_mode="preserve_carriage"`, each `ToolSetting.carriage_to_tip_mm` |
+| Moves the carriage to a fixed machine X, Z | `TurnToolChange.machine_position(radius_mm, z_mm)` and each `carriage_to_tip_mm` | `"table"`, each `position_after_mm=change.tip_mm(setting)` |
+
+A quick-change tool post whose macro moves nothing:
+
+```python
+from camlib.turning import TurnToolChange
+
+settings = (camlib.TurnToolSetting(turning_tool, 1, 1, carriage_to_tip_mm=(-25, -40)),
+            camlib.TurnToolSetting(blade, 2, 2, carriage_to_tip_mm=(-22, -52)))
+lathe = camlib.Setup("lathe", tools=settings, tool_change=TurnToolChange.carriage_kept(), ...)
+offsets = {s.tool.id: s.carriage_to_tip_mm for s in settings}
+tools = tuple(ToolSetting.for_tool(t, number=i, length_register=i,
+                                   carriage_to_tip_mm=offsets[t.id])
+              for i, t in enumerate(header.tools, 1))
+machine = c.define_machine("Lathe", tools, tool_change_position_mode="preserve_carriage",
+                           max_spindle_rpm=4000, **declared)
+```
+
+`carriage_to_tip_mm` is each holder's controlled point from one common
+reference on the carriage, `(radius, z)` in millimetres along the program
+axes: the same geometry the control's Offset Library holds for the `T` word,
+stated to camlib in that form (X as a radius). With the carriage kept, only
+the differences between holders matter.
+
+The program text does not say where the tool is after `T0202`: the next
+block is an absolute move from wherever the change left the tool. With the
+carriage kept that is the old position moved by the offset difference. The
+planner checks the new tool standing there (against the bar, the part and
+the chuck) and starts its approach there, and the decoder reads the posted
+program back from the same point (a program planned for one tool change and
+read with another is refused). An axis the first blocks after the `T` word
+do not move gets no word, as after any tool change here: a word would
+command it through the new offset. So two setups that differ only in the
+tool change can post the same blocks; what differs is where camlib knows
+the tool to be while they run, and so what it refuses. Before each change
+the program stops the spindle and coolant and rapids the old tool to the
+start position; it does not write a stop for the swap: that wait is the
+macro's.
 
 Finishing follows the profile's arcs, and the nose rolling round sharp
 corners, with `G2`/`G3` blocks (`TurnFinish`, `TurnBoreFinish`). An arc

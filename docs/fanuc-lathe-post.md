@@ -39,7 +39,7 @@ nc = job.post_nc("lathe", machine=machine, post=f.FanucLathePost,
 | --- | --- | --- |
 | Framing | `%`, `O1001` … `M30`, `%` | |
 | Header | `G21 G18 G98 G97 G40 G80`, `M5 M9`, `G54` | System A: no `G90` (it is the diameter cutting cycle; X/Z absolute, U/W incremental); no G52 local system, nose-radius compensation or path smoothing active |
-| Tool | `T<tt><oo>` (`T0101`) | Offsets touched off on a diameter and a face (the program moves the imaginary tip); each tool parked at the job's start position for its change |
+| Tool | `T<tt><oo>` (`T0101`) | Offsets touched off on a diameter and a face (the program moves the imaginary tip); each tool parked at the job's start position for its change. Where the change leaves the new tool is declared, see [Tool change](#tool-change) |
 | Spindle | `M3 S<rpm>`, or `G50 S<max>` then `G96 S<m/min> M3`; `G97` before an rpm again | |
 | Feeds | `G99 F<mm/rev>` with `TurningSetup(feed_per_rev=True)`, else `G98` and `F` per minute | |
 | Words | X diameters, `I` and `K` radius values (incremental); every dimensional word with a decimal point | Parameter DIA (No. 1006#3) for X |
@@ -56,6 +56,24 @@ and `I`, `K` are radius values from the start to the centre. Premise: X+
 points from the spindle axis toward the tool (a rear turret as drawn in the
 manual, or a front turret whose picture is mirrored; the words are the
 same). Check the direction on your machine before cutting.
+
+## Tool change
+
+The `T<tt><oo>` word is written the same whatever the machine does with it.
+Where it leaves the new tool's controlled point is the machine's own, and is
+declared on the setup and the machine (see
+[Lathe tool changes](operations.md#lathe-tool-changes)):
+
+| At `T<tt><oo>` | Setup | `define_machine(...)` |
+|---|---|---|
+| The new tool's controlled point arrives where the old one's was parked (the job's start position) | `tool_change=None` (the tip kept) | `"table"` (the default here), each `position_after_mm=header.initial_position_mm`, as above |
+| No axis moves and the new offset applies: the point moves by the difference of the two tools' offsets | `TurnToolChange.carriage_kept()` and each `TurnToolSetting.carriage_to_tip_mm` | `tool_change_position_mode="preserve_carriage"`, each `ToolSetting.carriage_to_tip_mm` |
+| The carriage is at a fixed machine position | `TurnToolChange.machine_position(radius_mm, z_mm)` and each `carriage_to_tip_mm` | `"table"`, each `position_after_mm=change.tip_mm(setting)` |
+
+Which of these your control and turret do (how the geometry offset is
+applied, and whether the tool-change routine moves an axis) is in FANUC's
+manual and the machine builder's documentation: check it there, camlib
+assumes none.
 
 Arcs need exactly consistent words (`radius_tolerance_mm=0`): post with
 `LoweringOptions(native_arcs=True)` if an arc is refused (the arcs that

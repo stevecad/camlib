@@ -464,7 +464,8 @@ work refuses the move, independent of optional verification settings.
 | Lowering | Rewriting moves a controller can't take exactly (for example arcs) as checked segments |
 | Intent session | The native posting state machine that tracks modal state and source moves |
 | Wear compensation | Controller cutter compensation (G41/G42) carrying only the wear; camlib still plans the exact tool-centre path |
-| Turret pose | A lathe's tool-change position; every tool's controlled point starts there |
+| Turret pose | A lathe's start position; the first tool's controlled point starts there, and with the tip kept (the default lathe tool change) every tool's |
+| Lathe tool change | Where a lathe's tool change leaves the new tool's controlled point (`turning::ops::TurnToolChange`, `Setup(tool_change=TurnToolChange...)`): the tip kept at the start position, the carriage kept (the point moves by the difference of the two tools' declared `carriage_to_tip_mm`), or the carriage at a stated machine position (that position plus the tool's offset). `TurnToolChange::tip_after` is the one expression the planner, the stream receiver and the replay use; the posted program's decoder places it from the machine's own declaration (`tool_change_position_mode`) |
 | Tool change in place | A mill's tool change that moves no axis (`tool_change_position_mode="preserve_spindle"`, `ToolChangeInPlace`): the spindle gauge line stays, so the tip moves along Z by the old gauge length minus the new one. A stated `retract_gauge_z_mm` is a planned rapid of the old tool before the change, not part of the change |
 | End position | Where a milling setup states its program ends (`EndPosition`): a Z rapid to a spindle gauge height, then an XY rapid, planned after the last operation. A lathe run ends at its turret pose |
 | Export gate | Refusing to write a program while unaccepted check results remain |

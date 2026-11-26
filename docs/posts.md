@@ -87,7 +87,13 @@ Key settings:
   with `Setup(tool_change=ToolChangeInPlace())`, or with
   `ToolChangeInPlace(retract_gauge_z_mm=...)` to have the program retract Z
   to a stated height before each change (see
-  [LinuxCNC tool changes](#linuxcnc-tool-changes)). `job.post` and
+  [LinuxCNC tool changes](#linuxcnc-tool-changes)). On a lathe,
+  `tool_change_position_mode="preserve_carriage"` declares a `T<nn><oo>`
+  word that moves no axis and only applies the new tool's offset: the
+  controlled point moves by the new tool's `ToolSetting.carriage_to_tip_mm`
+  (x as a radius, z) minus the old one's, which the mode requires of every
+  tool. Plan with `Setup(tool_change=TurnToolChange.carriage_kept())` (see
+  [Lathe tool changes](operations.md#lathe-tool-changes)). `job.post` and
   `job.post_nc` refuse a setup whose tool-change pose disagrees with the
   machine's, before planning.
 - **`diameter_register`** (per `ToolSetting`): the D register holding the
@@ -355,7 +361,10 @@ while that axis is still where the controller placed it itself (#367):
   them again, from its change block (`M6`, or the `T` word with
   `tool_change="direct_t"`/`"lathe_t"`): Z with
   `tool_change_position_mode="z_home"`, every axis with `"table"`.
-  `"preserve_tip"` and `"preserve_spindle"` place none.
+  `"preserve_tip"` and `"preserve_spindle"` place none. A lathe's
+  `"preserve_carriage"` moves no axis but puts every axis under the new
+  tool's offset, at a work position no block has commanded: every axis
+  counts as placed after its `T` word.
 - An axis leaves that state with the first block that writes its word: a
   move that changes it, an arc or helix (they always name their plane's
   axes), a canned cycle, a tapping or threading block, or a block a

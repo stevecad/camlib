@@ -2843,8 +2843,9 @@ axis outside, away from it in a bore) and toward the face it cuts toward
 the point offsets touched off on a diameter and a face measure, so a finish
 along a diameter is posted at that diameter. `controlled_point="nose_center"`
 posts the nose center instead. The start position `initial_position_mm`
-(radius, 0, z) names the controlled point; each tool's arrives there after
-its change (the turret index position).
+(radius, 0, z) names the controlled point: the first tool's starts there,
+and each later tool's too unless the setup declares another tool change
+(see [Lathe tool changes](#lathe-tool-changes)).
 The part is its half-section `profile`: points `(radius, z, bulge)` from the
 front face (on the axis) toward the chuck; the bulge is tan(sweep/4) of the
 arc to the next point (positive: G3). A part with a hole also declares its
@@ -2889,6 +2890,70 @@ with job.record("lathe", rapid_mm_min=6000) as run:   # playback: Player(run)
     run.wait()
 program = job.post_nc("lathe", machine=machine)        # checked NC text
 ```
+
+### Lathe tool changes
+
+What a lathe does at a tool change is the machine's own (a turret, a gang
+plate, a quick-change tool post; whatever its tool-change macro does), so
+camlib assumes none: the setup declares it in `Setup(tool_change=...)` with a
+`camlib.turning.TurnToolChange`, and the machine in
+`Machine(tool_change_position_mode=...)`. `job.post` and `job.post_nc` refuse
+a setup and a machine that declare different changes.
+
+The model: the carriage carries one reference point. A mounted tool's
+controlled point is at that point plus the tool's
+`TurnToolSetting.carriage_to_tip_mm`, a vector `(radius, z)` along the work
+axes, fixed by how the tool is held. A tool change swaps that vector; the
+mode says what happens to the carriage meanwhile.
+
+| The machine at a tool change | `Setup(tool_change=...)` | The new tool's controlled point | Machine |
+|---|---|---|---|
+| The new tool's point arrives where every tool starts | `None` or `TurnToolChange.tip_kept()` (the default) | the start position `initial_position_mm` | `"table"`, each `ToolSetting.position_after_mm` the start position (or `"preserve_tip"`) |
+| No axis moves: the T word only applies the new tool's offset, and the holder is swapped where the carriage stands (a quick-change tool post) | `TurnToolChange.carriage_kept()` | old point - old tool's `carriage_to_tip_mm` + new tool's | `"preserve_carriage"`, each `ToolSetting.carriage_to_tip_mm` |
+| The carriage goes to one fixed machine position | `TurnToolChange.machine_position(radius_mm, z_mm)` | that position + the new tool's `carriage_to_tip_mm` | `"table"`, each `ToolSetting.position_after_mm` its own point (`change.tip_mm(setting)`) |
+
+```python
+change = camlib.turning.TurnToolChange.carriage_kept()
+lathe = camlib.Setup(
+    "lathe", stock=stock, operations=operations, initial_position_mm=(30, 0, 20),
+    tools=(camlib.TurnToolSetting(turning_tool, 1, 1, carriage_to_tip_mm=(-25, -40)),
+           camlib.TurnToolSetting(blade, 2, 2, carriage_to_tip_mm=(-22, -52))),
+    tool_change=change, turning=turning)
+```
+
+Here the turning tool is put away with its tip at the start (radius 30,
+z 20), so the carriage reference is at (55, 60) and stays there; the blade's
+tip is then at (55, 60) + (-22, -52) = radius 33, z 8. Its first moves are
+planned and checked from that point, against the stock, the part and the
+chuck, like every other move: a blade long enough to reach the bar or the
+chuck from where the carriage stands is refused before any program is
+written. The posted program is read back the same way: the decoder places
+the tool after each `T` word by the machine's declaration and the result is
+compared with the plan and replayed on the stock.
+
+`carriage_to_tip_mm` is yours to state. camlib never assumes it: a tool
+change that reads it refuses a tool without one, by name. Its X is a radius,
+whatever the control's X words are.
+
+- With `carriage_kept` only the differences between tools matter: any
+  reference point will do, as long as every tool is measured from the same
+  one.
+- With `machine_position` the reference is the point the stated position
+  names, so that position plus a tool's `carriage_to_tip_mm` is that tool's
+  controlled point in program coordinates. Where the control stores, for
+  each tool, the machine position at which its tip is at the program zero,
+  that tool's `carriage_to_tip_mm` is minus that value (X halved if it is a
+  diameter), and `machine_position` takes the carriage's machine position at
+  the change (X as a radius).
+
+Before a tool change the program puts the old tool away with checked rapids
+(outward first, then along Z): at the start position with `tip_kept` and
+`carriage_kept`, and with `machine_position` at the tool's own change point
+(the carriage at the stated position), so the change itself has nothing left
+to move. A `machine_position` setup starts at the first tool's change point
+(`initial_position_mm=change.tip_mm(first_setting)`, refused otherwise) and
+ends at the last tool's. The path a tool-change macro takes on its own is
+never part of the program and is not checked.
 
 The seat's angles are the holder catalogue's, with its signs: a negative
 P-clamp holder is `TurningSeat(-6, -6)`. Negative rake tilts the face up away
