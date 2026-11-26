@@ -1,0 +1,589 @@
+{
+ "program": {
+  "version": 1,
+  "id": "post-job",
+  "revision": "r1",
+  "units": "mm",
+  "tolerance_mm": 1e-06,
+  "frame": {
+   "origin_mm": [
+    0,
+    0,
+    0
+   ],
+   "x": [
+    1,
+    0,
+    0
+   ],
+   "y": [
+    0,
+    1,
+    0
+   ],
+   "z": [
+    0,
+    0,
+    1
+   ]
+  },
+  "initial_position_mm": [
+   20,
+   0,
+   5
+  ],
+  "tools": [
+   {
+    "id": "t1",
+    "cutter": {
+     "id": "em4",
+     "name": "em4",
+     "shape": {
+      "kind": "flat"
+     },
+     "diameter_mm": 4,
+     "cutting_length_mm": 30,
+     "overall_length_mm": 50,
+     "shank_diameter_mm": 4,
+     "flutes": 3,
+     "center_cutting": true,
+     "material": "carbide",
+     "neck": null
+    },
+    "stickout_mm": 35,
+    "gauge_length_mm": 60,
+    "holders": [
+     {
+      "z_min_mm": 35,
+      "z_max_mm": 60,
+      "radius_min_mm": 4,
+      "radius_max_mm": 4
+     }
+    ]
+   },
+   {
+    "id": "t2",
+    "cutter": {
+     "id": "em4",
+     "name": "em4",
+     "shape": {
+      "kind": "flat"
+     },
+     "diameter_mm": 4,
+     "cutting_length_mm": 30,
+     "overall_length_mm": 50,
+     "shank_diameter_mm": 4,
+     "flutes": 3,
+     "center_cutting": true,
+     "material": "carbide",
+     "neck": null
+    },
+    "stickout_mm": 35,
+    "gauge_length_mm": 60,
+    "holders": [
+     {
+      "z_min_mm": 35,
+      "z_max_mm": 60,
+      "radius_min_mm": 4,
+      "radius_max_mm": 4
+     }
+    ]
+   }
+  ],
+  "events": [
+   {
+    "kind": "work_offset",
+    "number": 1
+   },
+   {
+    "kind": "tool_change",
+    "tool": "t1",
+    "number": 2,
+    "length_register": 3,
+    "position_after_mm": [
+     20,
+     0,
+     5
+    ]
+   },
+   {
+    "kind": "spindle",
+    "rpm": 800,
+    "direction": "cw"
+   },
+   {
+    "kind": "motion",
+    "motion": {
+     "id": 1,
+     "operation": "face",
+     "tool": "t1",
+     "curve": {
+      "kind": "line",
+      "start": [
+       20,
+       0,
+       5
+      ],
+      "end": [
+       20,
+       0,
+       2
+      ]
+     },
+     "feed_mm_min": null,
+     "kind": "rapid"
+    }
+   },
+   {
+    "kind": "motion",
+    "motion": {
+     "id": 2,
+     "operation": "face",
+     "tool": "t1",
+     "curve": {
+      "kind": "line",
+      "start": [
+       20,
+       0,
+       2
+      ],
+      "end": [
+       12,
+       0,
+       2
+      ]
+     },
+     "feed_mm_min": 200,
+     "kind": "cut"
+    }
+   },
+   {
+    "kind": "motion",
+    "motion": {
+     "id": 3,
+     "operation": "face",
+     "tool": "t1",
+     "curve": {
+      "kind": "line",
+      "start": [
+       12,
+       0,
+       2
+      ],
+      "end": [
+       12,
+       0,
+       5
+      ]
+     },
+     "feed_mm_min": null,
+     "kind": "rapid"
+    }
+   },
+   {
+    "kind": "motion",
+    "motion": {
+     "id": 4,
+     "operation": "face",
+     "tool": "t1",
+     "curve": {
+      "kind": "line",
+      "start": [
+       12,
+       0,
+       5
+      ],
+      "end": [
+       20,
+       0,
+       5
+      ]
+     },
+     "feed_mm_min": null,
+     "kind": "rapid"
+    }
+   },
+   {
+    "kind": "spindle",
+    "rpm": 0,
+    "direction": "cw"
+   },
+   {
+    "kind": "tool_change",
+    "tool": "t2",
+    "number": 4,
+    "length_register": 4,
+    "position_after_mm": [
+     20,
+     0,
+     5
+    ]
+   },
+   {
+    "kind": "spindle",
+    "rpm": 600,
+    "direction": "cw"
+   },
+   {
+    "kind": "motion",
+    "motion": {
+     "id": 5,
+     "operation": "groove",
+     "tool": "t2",
+     "curve": {
+      "kind": "line",
+      "start": [
+       20,
+       0,
+       5
+      ],
+      "end": [
+       20,
+       0,
+       3
+      ]
+     },
+     "feed_mm_min": null,
+     "kind": "rapid"
+    }
+   },
+   {
+    "kind": "motion",
+    "motion": {
+     "id": 6,
+     "operation": "groove",
+     "tool": "t2",
+     "curve": {
+      "kind": "line",
+      "start": [
+       20,
+       0,
+       3
+      ],
+      "end": [
+       20,
+       0,
+       5
+      ]
+     },
+     "feed_mm_min": null,
+     "kind": "rapid"
+    }
+   },
+   {
+    "kind": "spindle",
+    "rpm": 0,
+    "direction": "cw"
+   }
+  ]
+ },
+ "machine": {
+  "name": "explicit",
+  "tools": [
+   {
+    "tool": "t1",
+    "number": 2,
+    "length_register": 3,
+    "gauge_length_mm": 60,
+    "position_after_mm": null,
+    "diameter_register": null
+   },
+   {
+    "tool": "t2",
+    "number": 4,
+    "length_register": 4,
+    "gauge_length_mm": 60,
+    "position_after_mm": null,
+    "diameter_register": null
+   }
+  ],
+  "dialect": {
+   "commands": [
+    {
+     "effect": "rapid",
+     "code": "G0"
+    },
+    {
+     "effect": "linear",
+     "code": "G1"
+    },
+    {
+     "effect": "arc_cw",
+     "code": "G2"
+    },
+    {
+     "effect": "arc_ccw",
+     "code": "G3"
+    },
+    {
+     "effect": "units_mm",
+     "code": "G21"
+    },
+    {
+     "effect": "units_inch",
+     "code": "G20"
+    },
+    {
+     "effect": "absolute",
+     "code": "G90"
+    },
+    {
+     "effect": "center_incremental",
+     "code": "G91.1"
+    },
+    {
+     "effect": "plane_xy",
+     "code": "G17"
+    },
+    {
+     "effect": "plane_xz",
+     "code": "G18"
+    },
+    {
+     "effect": "plane_yz",
+     "code": "G19"
+    },
+    {
+     "effect": "feed_per_minute",
+     "code": "G94"
+    },
+    {
+     "effect": "rpm_mode",
+     "code": "G97"
+    },
+    {
+     "effect": "radius_off",
+     "code": "G40"
+    },
+    {
+     "effect": "radius_left",
+     "code": "G41"
+    },
+    {
+     "effect": "radius_right",
+     "code": "G42"
+    },
+    {
+     "effect": "length_off",
+     "code": "G49"
+    },
+    {
+     "effect": "cycles_off",
+     "code": "G80"
+    },
+    {
+     "effect": "frame_reset",
+     "code": "G92.1"
+    },
+    {
+     "effect": "exact_stop",
+     "code": "G61.1"
+    },
+    {
+     "effect": "spindle_cw",
+     "code": "M3"
+    },
+    {
+     "effect": "spindle_ccw",
+     "code": "M4"
+    },
+    {
+     "effect": "spindle_off",
+     "code": "M5"
+    },
+    {
+     "effect": "mist",
+     "code": "M7"
+    },
+    {
+     "effect": "flood",
+     "code": "M8"
+    },
+    {
+     "effect": "coolant_off",
+     "code": "M9"
+    },
+    {
+     "effect": "stop",
+     "code": "M0"
+    },
+    {
+     "effect": "optional_stop",
+     "code": "M1"
+    },
+    {
+     "effect": "end",
+     "code": "M2"
+    },
+    {
+     "effect": "dwell",
+     "code": "G4"
+    },
+    {
+     "effect": "drill_cycle",
+     "code": "G81"
+    },
+    {
+     "effect": "drill_dwell_cycle",
+     "code": "G82"
+    },
+    {
+     "effect": "peck_cycle",
+     "code": "G83"
+    },
+    {
+     "effect": "chip_break_cycle",
+     "code": "G73"
+    },
+    {
+     "effect": "cycle_return_initial",
+     "code": "G98"
+    },
+    {
+     "effect": "bore_cycle",
+     "code": "G85"
+    },
+    {
+     "effect": "bore_dwell_cycle",
+     "code": "G89"
+    },
+    {
+     "effect": "bore_stop_cycle",
+     "code": "G86"
+    },
+    {
+     "effect": "tap_synchronized",
+     "code": "G33.1"
+    },
+    {
+     "effect": "cycle_return_r",
+     "code": "G99"
+    },
+    {
+     "effect": "lathe_diameter_mode",
+     "code": "G7"
+    }
+   ],
+   "work_offsets": [
+    "G54",
+    "G55",
+    "G56",
+    "G57",
+    "G58",
+    "G59"
+   ],
+   "axes": [
+    "X",
+    "Y",
+    "Z"
+   ],
+   "centers": [
+    "I",
+    "J",
+    "K"
+   ],
+   "tool_word": "T",
+   "length_word": "H",
+   "feed_word": "F",
+   "speed_word": "S",
+   "parentheses_comments": true,
+   "tool_change": "lathe_t",
+   "length_activation": "explicit",
+   "radius_tolerance_mm": 0.00127,
+   "radius_relative_tolerance": 0.001,
+   "fixed_modes": [],
+   "tap_pitch_word": null,
+   "compensation_word": "D",
+   "compensation_with_move": false,
+   "compensation_register": false,
+   "dwell_word": "P",
+   "dwell_resolution_s": 0.001,
+   "dwell_max_s": 100000.0,
+   "cycle_dwell_unit": "s",
+   "peck_reentry_mm": 0.254,
+   "chip_break_lift_mm": 0.254,
+   "oriented_edge_deg": null,
+   "beam_s_max": null,
+   "beam_effect": "spindle_cw",
+   "x_diameter": true,
+   "thread_lead_word": "K",
+   "height_control_word": null,
+   "css_limit_word": null,
+   "probing": null,
+   "probe_fast_feed_mm_min": null,
+   "probe_switching": false
+  },
+  "work_offset": 1,
+  "frame": {
+   "origin_mm": [
+    0,
+    0,
+    0
+   ],
+   "x": [
+    1,
+    0,
+    0
+   ],
+   "y": [
+    0,
+    1,
+    0
+   ],
+   "z": [
+    0,
+    0,
+    1
+   ]
+  },
+  "work_to_machine": {
+   "origin_mm": [
+    0,
+    0,
+    0
+   ],
+   "x": [
+    1,
+    0,
+    0
+   ],
+   "y": [
+    0,
+    1,
+    0
+   ],
+   "z": [
+    0,
+    0,
+    1
+   ]
+  },
+  "tip_travel_mm": null,
+  "output_units": "mm",
+  "decimals": 4,
+  "tolerance_mm": 0.01,
+  "feed_tolerance_mm_min": 0.1,
+  "traverse_feed_mm_min": null,
+  "max_feed_mm_min": 10000,
+  "max_spindle_rpm": 3000,
+  "planes": [
+   "xz"
+  ],
+  "arcs": true,
+  "helices": true,
+  "max_sweep_rad": 6.283185307179586,
+  "max_tool_number": 99,
+  "max_length_register": 99,
+  "tool_changes": true,
+  "flood": true,
+  "mist": true,
+  "revision": "1",
+  "tool_change_position_mode": "preserve_carriage",
+  "tool_change_home_z_mm": null,
+  "rapid_mm_min": 6000,
+  "tool_change_tip_within_mm": [
+   5.0,
+   5.0
+  ]
+ }
+}

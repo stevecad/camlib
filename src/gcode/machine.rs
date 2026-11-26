@@ -173,6 +173,15 @@ pub struct Machine {
     pub motion_policy: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub schedule_post_feeds: bool,
+    /// With `tool_change_position_mode = "preserve_carriage"`, when the
+    /// tools' offsets are only in the control's offset table (#421):
+    /// [x radius, z] mm, how far any tool's controlled point on the tool
+    /// post can be from any other's. After a T word the new tool's point is
+    /// then known only to be within that of where the old one's was: the
+    /// next block must be the rapid of X and Z to the program's start
+    /// position, and no `carriage_to_tip_mm` is read. Never assumed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_change_tip_within_mm: Option<[f64; 2]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crash_model: Option<serde_json::Value>,
 }
@@ -667,9 +676,12 @@ impl Machine {
             }
             for t in &self.tools {
                 match t.carriage_to_tip_mm {
+                    // The stated bound stands in for the offsets: none is
+                    // read.
+                    None if self.tool_change_tip_within_mm.is_some() => {}
                     None => {
                         return Err(format!(
-                            "tool_change_position_mode \"preserve_carriage\" needs each ToolSetting.carriage_to_tip_mm (the tool's controlled point from the carriage reference, x radius and z), and tool {:?} has none: camlib assumes no offset; state it",
+                            "tool_change_position_mode \"preserve_carriage\" needs each ToolSetting.carriage_to_tip_mm (the tool's controlled point from the carriage reference, x radius and z), and tool {:?} has none: camlib assumes no offset; state it, or state how far any tool's tip can be from any other's on the tool post (tool_change_tip_within_mm)",
                             t.tool
                         ));
                     }
@@ -681,6 +693,17 @@ impl Machine {
                     }
                     _ => {}
                 }
+            }
+        }
+        if let Some(bound) = self.tool_change_tip_within_mm {
+            if self.tool_change_position_mode != "preserve_carriage" {
+                return Err("tool_change_tip_within_mm bounds where a tool change that moves no axis leaves the new tool: it belongs to tool_change_position_mode \"preserve_carriage\", and only to it".into());
+            }
+            if !bound
+                .iter()
+                .all(|v| v.is_finite() && (0. ..=1e6).contains(v))
+            {
+                return Err("tool_change_tip_within_mm is (x radius, z): two finite distances in millimetres, not negative (how far any tool's tip can be from any other's on the tool post)".into());
             }
         }
         if self.tool_change_position_mode == "preserve_spindle" {

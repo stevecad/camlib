@@ -48,7 +48,10 @@ Premises (declared, not checked on the machine):
   the job's start position, where the program parks the tool before the
   change, when the new tool's point arrives where the old one's was), or
   "preserve_carriage" (no axis moves and the new offset applies: the point
-  moves by the difference of the two tools' ToolSetting.carriage_to_tip_mm).
+  moves by the difference of the two tools' ToolSetting.carriage_to_tip_mm;
+  or, when the offsets are only in the control's offset table, one bound
+  for the tool post, tool_change_tip_within_mm: the T word is then followed
+  by one rapid of X and Z to the start position).
   The T word written is the same.
 No controller connection; verify on the machine before cutting.
 """
@@ -123,7 +126,8 @@ class FanucLatheMachine(Machine):
         ):
             raise ValueError(
                 'declare each tool\'s position after its change (tool_change_position_mode="table"), or that '
-                'the change moves no axis ("preserve_carriage", with each ToolSetting.carriage_to_tip_mm); '
+                'the change moves no axis ("preserve_carriage", with each ToolSetting.carriage_to_tip_mm or '
+                "the tool post's tool_change_tip_within_mm); "
                 "rapids are G0"
             )
         if type(self.program_number) is not int or not 1 <= self.program_number <= 9999:
@@ -134,7 +138,8 @@ def define_machine(name, tools, *, program_number=1001, **settings):
     """``tools``: ToolSetting per turret station (number = tt, length_register
     = oo), position_after_mm where the program parks the tool for its change;
     with tool_change_position_mode="preserve_carriage" (the change moves no
-    axis) each tool's carriage_to_tip_mm instead."""
+    axis) each tool's carriage_to_tip_mm instead, or
+    tool_change_tip_within_mm=(x radius, z) for the tool post."""
     return FanucLatheMachine(
         name,
         tuple(tools),
@@ -243,7 +248,11 @@ class FanucLatheDecoder(NativeGCodeDecoder):
         if bare:
             raise ValueError(f"dimensional word without a decimal point: {bare[0]}")
         words = text.split(" ")
-        if words[0] == d.code("rapid"):
+        # (The regroup rapid after a T word under tool_change_tip_within_mm
+        # is the one rapid that moves both axes: the tool was checked over
+        # the whole box that holds every path it can take. The generic
+        # decoder reads it and refuses anything else in its place.)
+        if words[0] == d.code("rapid") and not self.regroup_pending:
             x = next((float(w[1:]) for w in words if w.startswith("X")), None)
             z = next((float(w[1:]) for w in words if w.startswith("Z")), None)
             if (

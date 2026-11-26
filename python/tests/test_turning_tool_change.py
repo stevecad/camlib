@@ -6,6 +6,7 @@ posting and the decoded program all start each tool from that point."""
 import hashlib
 import math
 import unittest
+from dataclasses import replace
 
 import camlib
 from camlib.motion import Motion, ToolChange
@@ -407,11 +408,374 @@ class LatheToolChangeTest(unittest.TestCase):
                 state.position = away
 
 
+def bare_tools():
+    """The two tools with no carriage_to_tip_mm: the offsets are the
+    control's alone."""
+    groove = tool("groove2", camlib.GrooveInsert(2, 22), nose_radius_mm=0.2, width_mm=2, length_mm=60)
+    return (camlib.TurnToolSetting(cnmg(), 1, 1), camlib.TurnToolSetting(groove, 2, 2))
+
+
+# A start far enough out for a tool post whose tips are within 30 mm (radius)
+# and 40 mm (z) of each other: the box spans radius 30..90, z 40..120.
+BOUND = (30.0, 40.0)
+FAR = (60.0, 80.0)
+FAR_START = (60.0, 0.0, 80.0)
+
+
+def within(bound=BOUND, start=FAR, **changes):
+    values = dict(tools=bare_tools(), initial_position_mm=start)
+    values.update(changes)
+    return two_tools(TurnToolChange.carriage_kept(tip_within_mm=bound), **values)
+
+
+def bounded(module, plan, bound=BOUND, **settings):
+    """The post's machine for a tool post that states only its bound."""
+    return machine(module, plan, mode="preserve_carriage", tool_change_tip_within_mm=bound, **settings)
+
+
+def regroup_block(module, start=FAR_START):
+    """The rapid of X (a diameter) and Z to the start, as each post writes it."""
+    if module.__name__ == "fanuc_lathe_post":
+        return f"G0 X{2 * start[0]:g}. Z{start[2]:g}."
+    return f"G0 X{2 * start[0]:g} Z{start[2]:g}"
+
+
+class LatheToolChangeWithinABoundTest(unittest.TestCase):
+    """#421: the carriage kept, the tools' offsets known only to the control,
+    one stated bound on how far any tool's tip can be from any other's."""
+
+    def test_a_start_far_enough_out_is_released_with_the_regroup_after_the_t_word(self):
+        lathe = within()
+        config = lathe.job.compile().setup("lathe").config
+        self.assertEqual(
+            config["turning"]["tool_change"], {"mode": "carriage_kept_within", "tip_within_mm": [30.0, 40.0]}
+        )
+        self.assertTrue(all("carriage_to_tip_mm" not in t for t in config["turning"]["tools"]))
+        plan = lathe.plan()
+        # Every tool starts at the start position, exactly.
+        self.assertEqual(planned_changes(plan), [("cnmg", FAR_START), ("groove2", FAR_START)])
+        self.assertEqual(first_move(plan, "groove2").curve.start, FAR_START)
+        # From the start position on, the plan is the tip-kept plan.
+        kept = two_tools(None, tools=bare_tools(), initial_position_mm=FAR).plan()
+        self.assertEqual([e.to_dict() for e in plan.program.events], [e.to_dict() for e in kept.program.events])
+        self.assertEqual(plan.stock, kept.stock)
+        for module, post, decoder in posts():
+            m = bounded(module, plan)
+            self.assertEqual(m.to_dict()["tool_change_tip_within_mm"], BOUND)
+            self.assertTrue(all("carriage_to_tip_mm" not in t for t in m.to_dict()["tools"]))
+            text = nc(plan, m, post, decoder).splitlines()
+            # The T word, then the rapid of both axes to the start position.
+            i = text.index("T0202")
+            self.assertEqual(text[i + 1], regroup_block(module))
+            # The first tool is the one mounted at the start: no regroup.
+            j = text.index("T0101")
+            self.assertNotEqual(text[j + 1], regroup_block(module))
+            # Against the program of a turret that brings every tool to the
+            # start: that one block more, and the blade's first move then
+            # names X as well (the regroup commanded both axes under the new
+            # offset; after the turret's change X stands where the machine
+            # put it and gets no word). Every other block is the same, and
+            # so are the moves both programs decode to.
+            turret_machine = machine(module, kept)
+            turret = nc(kept, turret_machine, post, decoder).splitlines()
+            k = turret.index("T0202")
+            self.assertEqual(text[: i + 1], turret[: k + 1])
+            self.assertEqual(text[i + 2 : i + 4], turret[k + 1 : k + 3])
+            x = regroup_block(module).split(" ")[1]
+            self.assertEqual(text[i + 4].replace(f" {x}", ""), turret[k + 3])
+            self.assertNotEqual(text[i + 4], turret[k + 3])
+            self.assertEqual(text[i + 5 :], turret[k + 4 :])
+            self.assertEqual(
+                [e.to_dict() for e in decoded(plan, m, post, decoder)[1]],
+                [e.to_dict() for e in decoded(kept, turret_machine, post, decoder)[1]],
+            )
+            # Read back: the change is complete at the start position, and
+            # the blade's first move starts there.
+            changes, motions = decoded(plan, m, post, decoder)
+            self.assertEqual([(c.tool, tuple(c.position_after_mm)) for c in changes], planned_changes(plan))
+            first = next(e for e in motions if e.tool == "groove2")
+            self.assertEqual(tuple(first.curve.start), FAR_START)
+
+    def test_a_start_too_close_for_the_bound_is_refused_before_any_program(self):
+        # From the usual start (radius 30, z 20) the box spans radius 0..60,
+        # z -20..60: the bar is in it. A turret that brings every tool to
+        # the start is released from there.
+        close = (30, 20)
+        kept = two_tools(None, tools=bare_tools(), initial_position_mm=close).plan()
+        for module, post, decoder in posts():
+            self.assertIn("T0202", nc(kept, machine(module, kept), post, decoder))
+        lathe = within(start=close)
+        expected = (
+            'groove: the tool change from "cnmg" to "groove2" is not clear: .*'
+            r"within radius ±30 mm, z ±40 mm \(tip_within_mm\) of where the tool before it stopped "
+            r"\(radius 30, z 20\).*rapid from there to the start position \(radius 30, z 20\).*"
+            r"Start further from the work \(the setup's initial_position_mm\), or state a smaller tip_within_mm"
+        )
+        with self.assertRaisesRegex(Exception, expected):
+            lathe.plan()
+        # Posting plans the setup itself: no program text is returned.
+        header = lathe.job.compile().setup("lathe").program_header()
+
+        class Header:
+            program = header
+
+        for module, post, decoder in posts():
+            m = bounded(module, Header)
+            with self.assertRaisesRegex(Exception, "tool change from .cnmg. to .groove2. is not clear"):
+                lathe.job.post_nc("lathe", machine=m, post=post, decoder=decoder, accept={"unchecked_machine"})
+        # A smaller bound, if it is true of the tool post, is the other fix.
+        within(bound=(5, 10), start=close).plan()
+
+    def test_the_chuck_and_the_jaws_inside_the_box_are_refused(self):
+        # The start at radius 60, z 30. A bound of 85 mm along z reaches
+        # z -55, behind the chuck face (z -50); the radius stays 30..90,
+        # clear of the bar.
+        within(bound=(30, 20), start=(60, 30)).plan()
+        with self.assertRaisesRegex(
+            Exception,
+            'tool change from "cnmg" to "groove2" is not clear: the tool would reach the chuck '
+            r"\(z below -50.000\)\. .*z ±85 mm.*start position \(radius 60, z 30\)",
+        ):
+            within(bound=(30, 85), start=(60, 30)).plan()
+        # With a grip the jaws hold the bar behind a chuck face further
+        # forward: a bound that cleared the bare chuck reaches them.
+        operations = (
+            camlib.TurnFace("face", "cnmg", 0, feed_mm_rev=0.15, rpm=1000),
+            camlib.TurnRough("rough", "cnmg", feed_mm_rev=0.25, rpm=1000),
+            camlib.TurnGroove("groove", "groove2", -25, -28, 12, peck_mm=1, feed_mm_rev=0.05, rpm=800),
+        )
+        within(bound=(30, 76), start=(60, 30), operations=operations).plan()
+        jaws = dict(chuck_z_mm=-44, grip=camlib.ChuckGrip(16, 20), operations=operations)
+        two_tools(None, tools=bare_tools(), initial_position_mm=(60, 30), **jaws).plan()
+        with self.assertRaisesRegex(
+            Exception,
+            r"is not clear: the tool would reach the chuck \(z below -44.000\): its jaws hold the work over the "
+            "16 mm behind that face.*tip_within_mm",
+        ):
+            within(bound=(30, 76), start=(60, 30), **jaws).plan()
+
+    def test_a_program_whose_block_after_the_t_word_is_not_the_regroup_is_refused(self):
+        plan = within().plan()
+
+        def edited(post, edit):
+            """The post with the blocks of its second tool change edited."""
+
+            class Edited(post):
+                def on_tool_change(self, event):
+                    super().on_tool_change(event)
+                    if len(self._lines) > 1:
+                        self._lines = edit(list(self._lines))
+
+            return Edited
+
+        for module, post, decoder in posts():
+            m = bounded(module, plan)
+            block = regroup_block(module)
+            x, z = block.split(" ")[1:]
+            rapid = block.split(" ")[0]
+            far = block.replace(x, x.replace("120", "100"))
+            self.assertNotEqual(far, block)
+            cases = {
+                # The rapid left out: the next block is the spindle.
+                "without": (lambda lines: lines[:1], "the tool change was written without it"),
+                # One axis at a time, as every other rapid here.
+                "x only": (lambda lines: [lines[0], f"{rapid} {x}", f"{rapid} {z}"], "this block is not that rapid"),
+                "z only": (lambda lines: [lines[0], f"{rapid} {z}"], "this block is not that rapid"),
+                # A feed move to the same point.
+                "fed": (
+                    lambda lines: [lines[0], lines[1].replace(rapid, "G1" if rapid == "G0" else "G01") + " F100."],
+                    "this block is not that rapid",
+                ),
+                # A rapid of both axes to somewhere else.
+                "elsewhere": (lambda lines: [lines[0], far], "this rapid goes to radius 50, z 80 mm instead"),
+                # Another block first.
+                "late": (lambda lines: [lines[0], "M8", lines[1]], "this block is not that rapid"),
+            }
+            for name, (edit, problem) in cases.items():
+                with self.subTest(post=module.__name__, case=name):
+                    with self.assertRaises(Exception) as refused:
+                        nc(plan, m, edited(post, edit), decoder)
+                    message = str(refused.exception)
+                    self.assertIn("after the tool change to 'groove2' its tip is only known to be within", message)
+                    self.assertIn("radius ±30 mm, z ±40 mm", message)
+                    self.assertIn("to the start position, radius 60, z 80 mm", message)
+                    self.assertIn(problem, message)
+            # The post's own blocks, unedited, are read back and released.
+            self.assertIn(block, nc(plan, m, edited(post, lambda lines: lines), decoder).splitlines())
+            # Read as an exact carriage-kept or a turret machine, the regroup
+            # block is a rapid of X and Z together, which those refuse; read
+            # by this machine, a program without it is refused (above).
+            exact = machine(module, plan, mode="preserve_carriage", offsets={"cnmg": TURNING_TOOL, "groove2": BLADE})
+            self.assertIsNone(exact.tool_change_tip_within_mm)
+            self.assertNotIn("tool_change_tip_within_mm", exact.to_dict())
+
+    def test_the_replay_of_the_posted_program_checks_the_box_again(self):
+        # The plan is released for a 30 x 40 mm bound. Its events, posted
+        # for and read back by a setup and machine that state a larger one
+        # (60 x 90: radius 0..120, z -10..170 holds the bar's front), are
+        # refused when the decoded program is replayed on the stock: the
+        # check does not rest on the planner's.
+        from camlib.posted import PostedRun
+
+        plan = within().plan()
+        wide = within(bound=(60, 90))
+        with self.assertRaisesRegex(Exception, 'tool change from "cnmg" to "groove2" is not clear'):
+            wide.plan()
+        config = wide.job.compile().setup("lathe").config
+        for module, post, decoder in posts():
+            m = bounded(module, plan, bound=(60.0, 90.0))
+            with self.assertRaisesRegex(Exception, 'tool change from "cnmg" to "groove2" is not clear'):
+                with PostedRun(
+                    replace(plan.program, revision=config["revision"]),
+                    machine=m,
+                    stock=config["stock"],
+                    post=post,
+                    decoder=decoder,
+                    sweep=config["sweep"],
+                    turning=config["turning"],
+                ) as run:
+                    run.export(None, accept={"unchecked_machine"})
+            # The same events for the bound they were planned with replay.
+            narrow = within().job.compile().setup("lathe").config
+            with PostedRun(
+                replace(plan.program, revision=narrow["revision"]),
+                machine=bounded(module, plan),
+                stock=narrow["stock"],
+                post=post,
+                decoder=decoder,
+                sweep=narrow["sweep"],
+                turning=narrow["turning"],
+            ) as run:
+                self.assertIn("T0202", run.export(None, accept={"unchecked_machine"})["text"])
+
+    def test_the_bound_is_declared_on_both_sides_and_never_assumed(self):
+        plan = within().plan()
+        exact_plan = two_tools(TurnToolChange.carriage_kept(), initial_position_mm=FAR).plan()
+        kept = two_tools(None, tools=bare_tools(), initial_position_mm=FAR).plan()
+        # The setup's side.
+        change = TurnToolChange.carriage_kept(tip_within_mm=(30, 40))
+        self.assertEqual((change.mode, change.tip_within_mm, change.position_mm), ("carriage_kept", BOUND, None))
+        self.assertIsNone(TurnToolChange.carriage_kept().tip_within_mm)
+        self.assertEqual(TurnToolChange.carriage_kept().to_dict(), {"mode": "carriage_kept"})
+        for bad in ((-1, 40), (30, math.nan), (30, math.inf), (30,), (30, 40, 1), 30, ("30", 40), (True, 40)):
+            with self.assertRaisesRegex(ValueError, "tip_within_mm is .radius, z.: two finite distances"):
+                TurnToolChange.carriage_kept(tip_within_mm=bad)
+        for mode in ("tip_kept", "machine_position"):
+            with self.assertRaisesRegex(ValueError, "tip_within_mm .* belongs to a carriage_kept tool change"):
+                TurnToolChange(mode, (1, 2) if mode == "machine_position" else None, (30, 40))
+        # Without a bound and without offsets the carriage kept is refused,
+        # as before: no bound is assumed.
+        with self.assertRaisesRegex(ValueError, "tool 'cnmg' has no carriage_to_tip_mm.*camlib assumes none"):
+            two_tools(TurnToolChange.carriage_kept(), tools=bare_tools()).job.compile()
+        # Declared offsets are not read, but two further apart than the
+        # bound say the bound is false (the blade is 3 and 12 mm from the
+        # turning tool).
+        with self.assertRaisesRegex(
+            Exception, 'tools "cnmg" and "groove2".*radius 3, z 12 mm apart.*the bound does not hold'
+        ):
+            two_tools(TurnToolChange.carriage_kept(tip_within_mm=(30, 10)), initial_position_mm=FAR).plan()
+        declared = two_tools(TurnToolChange.carriage_kept(tip_within_mm=BOUND), initial_position_mm=FAR).plan()
+        self.assertEqual([e.to_dict() for e in declared.program.events], [e.to_dict() for e in plan.program.events])
+        for module, post, decoder in posts():
+            # The machine's side: the bound belongs to preserve_carriage,
+            # and stands in for the offsets there.
+            with self.assertRaisesRegex(ValueError, "tool_change_tip_within_mm .* belongs to .*preserve_carriage"):
+                machine(module, plan, tool_change_tip_within_mm=BOUND)
+            for bad in ((-1, 40), (30, math.nan), (30,), 30, ("30", 40)):
+                with self.assertRaisesRegex(ValueError, "tool_change_tip_within_mm is .x radius, z."):
+                    bounded(module, plan, bound=bad)
+            with self.assertRaisesRegex(ValueError, "tool 'cnmg' has none.*tool_change_tip_within_mm"):
+                machine(module, plan, mode="preserve_carriage")
+            # Setup and machine state the same thing.
+            m = bounded(module, plan)
+            with self.assertRaisesRegex(ValueError, "the machine states only a bound for its tool post"):
+                nc(exact_plan, m, post, decoder)
+            with self.assertRaisesRegex(ValueError, "preserve_carriage.*tool change is tip_kept"):
+                nc(kept, m, post, decoder)
+            exact = machine(module, plan, mode="preserve_carriage", offsets={"cnmg": TURNING_TOOL, "groove2": BLADE})
+            with self.assertRaisesRegex(ValueError, "within a bound .*but the machine states no bound"):
+                nc(plan, exact, post, decoder)
+            with self.assertRaisesRegex(ValueError, 'carriage kept.*tool_change_position_mode is "table"'):
+                nc(plan, machine(module, plan), post, decoder)
+            with self.assertRaisesRegex(ValueError, "one tool post has one bound"):
+                nc(plan, bounded(module, plan, bound=(30, 41)), post, decoder)
+
+    def test_the_committed_stock_state_starts_each_tool_at_the_start(self):
+        from camlib.jobs import JobRun
+
+        run = JobRun(within().job.compile(), None)
+        for _ in run:
+            pass
+        state = run.states["lathe"]
+        self.assertEqual(state.tool_change_tip("groove2", position=FAR_START, previous="cnmg"), FAR_START)
+        self.assertEqual(state.tool_change_tip("cnmg", position=FAR_START, previous="cnmg"), FAR_START)
+
+
+class ByteIdentityTest(unittest.TestCase):
+    def test_the_other_modes_post_what_they_posted_before_the_bound_existed(self):
+        # The compiled setup, the machine definition and the program of the
+        # tip-kept, the exact carriage-kept and the machine-position jobs,
+        # as the commit before #421 wrote them (657ce97).
+        import json
+
+        after = {"cnmg": START, "groove2": BLADE_START}
+        jobs = {
+            "tip_kept": (None, dict()),
+            "carriage_kept": (TurnToolChange.carriage_kept(), dict(mode="preserve_carriage", offsets=OFFSETS)),
+            "machine_position": (TurnToolChange.machine_position(*CARRIAGE), dict(after=after)),
+        }
+
+        def sha(value):
+            raw = (
+                value
+                if isinstance(value, bytes)
+                else json.dumps(value, sort_keys=True, indent=1, default=list).encode()
+            )
+            return hashlib.sha256(raw).hexdigest()
+
+        for name, (change, settings) in jobs.items():
+            lathe = two_tools(change)
+            got = {"setup": sha(lathe.job.compile().setup("lathe").config)}
+            plan = lathe.plan()
+            for module, post, decoder in posts():
+                m = machine(module, plan, **settings)
+                got[module.__name__ + ".machine"] = sha(m.to_dict())
+                got[module.__name__ + ".nc"] = sha(nc(plan, m, post, decoder).encode())
+            self.assertEqual(got, BEFORE_421[name], name)
+
+
 # The programs this test's tip-kept setup posted on main before #416 (the
 # Centroid CNC12 and FANUC lathe posts).
 TIP_KEPT_SHA256 = {
     "centroid_lathe_post": "10982777b5c20581751af7a7e52386db0ac3a7f0b185f8f07bc3e3876d686f6b",
     "fanuc_lathe_post": "fa14250eee23c2855837517676be9ab7feca74d1d2853c66a047ac357812e846",
+}
+
+# What the three modes that existed before #421 compiled, declared and posted
+# at the commit before it (657ce97): SHA-256 of the compiled setup, of each
+# machine definition and of each program, for this file's two-tool job.
+BEFORE_421 = {
+    "tip_kept": {
+        "setup": "5292485d88d9bb47446b3139321c57bb0c092ade2fdb196e23228966b224d539",
+        "centroid_lathe_post.machine": "c36c22928be5ea05f0b6b7a8b96f335f9806b05d8c2d26de464ed83776dec4a1",
+        "centroid_lathe_post.nc": "10982777b5c20581751af7a7e52386db0ac3a7f0b185f8f07bc3e3876d686f6b",
+        "fanuc_lathe_post.machine": "f58cfaccd754a96cff39968a3631e07179daf1630604058874076a43083263f3",
+        "fanuc_lathe_post.nc": "fa14250eee23c2855837517676be9ab7feca74d1d2853c66a047ac357812e846",
+    },
+    "carriage_kept": {
+        "setup": "3ab045d70e0af676672ecaaf4021cd18882f9d493fec8da0a1cff2158d6439d3",
+        "centroid_lathe_post.machine": "517dad99fd66f45055fd631480776a940839a52e0ae3df6abbeb5cf2c5bd4673",
+        "centroid_lathe_post.nc": "10982777b5c20581751af7a7e52386db0ac3a7f0b185f8f07bc3e3876d686f6b",
+        "fanuc_lathe_post.machine": "21ba39d7ab04c3645edfa73c90c3494cdbd223f7f2a47ec7b0fc1f804ab103d6",
+        "fanuc_lathe_post.nc": "fa14250eee23c2855837517676be9ab7feca74d1d2853c66a047ac357812e846",
+    },
+    "machine_position": {
+        "setup": "552421501f7ce69405672bca6cc217bf17502a949978127312952ccf00b69fe9",
+        "centroid_lathe_post.machine": "23d9d70bb2eda84ec37e54afb60ed36b718f936371d3fd2d4d08c5a738e18d6f",
+        "centroid_lathe_post.nc": "61d9b3d2f594387a76f99842bfd30761404e1d4087987c38f6cc5dd15c5f4ad7",
+        "fanuc_lathe_post.machine": "321b899734cd1110ae4599607570039bcd0d6e241c4901d0ba0ec8adf08f7c22",
+        "fanuc_lathe_post.nc": "3776a3ba9ba8f88b8675d494e42761a10068de77dfbeb8acc621c06d7f49ac88",
+    },
 }
 
 

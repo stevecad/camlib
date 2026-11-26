@@ -192,6 +192,13 @@ pub struct Decoder {
     /// (`hold_axes`; `post::Line::holds_axes`). Empty when none was.
     pub held: Vec<bool>,
     holding: bool,
+    /// The program's declared start, and the tool change whose regroup
+    /// rapid is still to be read (a lathe's `preserve_carriage` with
+    /// `tool_change_tip_within_mm`, #421): until that block is read the new
+    /// tool's point is known only within the bound, and every other block
+    /// is refused.
+    start: Vec3,
+    regroup: Option<Event>,
 }
 
 impl Decoder {
@@ -238,6 +245,8 @@ impl Decoder {
         })?;
         Ok(Self {
             position: initial_position,
+            start: initial_position,
+            regroup: None,
             units: None,
             plane: None,
             ready: d
@@ -340,6 +349,13 @@ impl Decoder {
             result.extend(self.read_line(line, context)?);
             self.held.push(self.holding);
         }
+        if self.regroup.is_some() {
+            // The tool change's blocks end without its regroup rapid.
+            return Err(format!(
+                "{}the tool change was written without it. The post must write it right after the T word",
+                self.regroup_problem()
+            ));
+        }
         if !self.held.contains(&true) {
             self.held.clear();
         }
@@ -412,6 +428,7 @@ impl Decoder {
             && !self.cycle_active
             && !self.machine.dialect.x_diameter
             && self.feed_rev.is_none()
+            && self.regroup.is_none()
         {
             // NativeGCodeDecoder: single motion blocks through the compiled
             // motion grammar; everything else through the full reader.
@@ -543,6 +560,9 @@ impl Decoder {
                 .find(|(k, _)| k.to_string() == w)
                 .map(|(_, v)| *v)
         };
+        if self.regroup.is_some() {
+            return self.read_regroup(only("rapid"), &values);
+        }
         if self.tap_return.is_some() && !only("cycles_off") {
             return Err(
                 "a tapping cycle must be followed by its return (and G80 for a canned cycle)"
@@ -930,8 +950,17 @@ impl Decoder {
             if d.tool_change == "lathe_t" {
                 // T<nn><oo>: tool nn with its offset oo, in one word.
                 self.selected = Some((number / 100) as u32);
-                self.activate((number / 100) as u32)?;
-                output.push(self.length(Some((number % 100) as f64))?);
+                let regroup = self.activate((number / 100) as u32)?;
+                let change = self.length(Some((number % 100) as f64))?;
+                if regroup {
+                    // The tool's point is not known until its regroup rapid
+                    // is read: the change is reported with that block, and
+                    // until then the tool transition is not complete.
+                    self.regroup = Some(change);
+                    self.tool_pending = true;
+                } else {
+                    output.push(change);
+                }
             } else if d.tool_change == "direct_t" {
                 self.activate(number as u32)?;
             }
@@ -1614,7 +1643,82 @@ impl Decoder {
         ))
     }
 
-    fn activate(&mut self, number: u32) -> Result<(), String> {
+    /// What a program owes after a T word under `tool_change_tip_within_mm`
+    /// (`GCodeDecoder._regroup_problem`).
+    fn regroup_problem(&self) -> String {
+        let d = &self.machine.dialect;
+        let within = self.machine.tool_change_tip_within_mm.unwrap_or_default();
+        let tool = match &self.regroup {
+            Some(Event::ToolChange { tool, .. }) => tool.as_str(),
+            _ => "",
+        };
+        format!(
+            "after the tool change to {tool:?} its tip is only known to be within radius ±{} mm, z ±{} mm of where the tool before it stopped (the machine keeps the carriage and states tool_change_tip_within_mm), so the next block must be the rapid of both axes to the start position, radius {}, z {} mm ({} {}.. {}..), and nothing else; ",
+            within[0],
+            within[1],
+            self.start[0],
+            self.start[2],
+            d.code("rapid").unwrap_or("G0"),
+            d.axes[0],
+            d.axes[2]
+        )
+    }
+
+    /// The block after a T word under `tool_change_tip_within_mm`: the
+    /// regroup rapid, and nothing else (`GCodeDecoder._read_regroup`). Only
+    /// then is the position known.
+    fn read_regroup(&mut self, rapid: bool, values: &[(char, f64)]) -> Result<Vec<Event>, String> {
+        let d = self.machine.dialect.clone();
+        let get = |w: &str| {
+            values
+                .iter()
+                .find(|(k, _)| k.to_string() == w)
+                .map(|(_, v)| *v)
+        };
+        let (Some(x), Some(z), true, 2) = (get(&d.axes[0]), get(&d.axes[2]), rapid, values.len())
+        else {
+            return Err(format!(
+                "{}this block is not that rapid. Post the program again; do not edit the blocks of a tool change",
+                self.regroup_problem()
+            ));
+        };
+        self.validate_initialized()?;
+        let units = self.units.ok_or("NC units are not set")?;
+        let target = [
+            x * units * if d.x_diameter { 0.5 } else { 1. },
+            self.start[1],
+            z * units,
+        ];
+        if (0..3).any(|k| (target[k] - self.start[k]).abs() > self.machine.tolerance_mm) {
+            return Err(format!(
+                "{}this rapid goes to radius {}, z {} mm instead. Post the program again; do not edit the blocks of a tool change",
+                self.regroup_problem(),
+                target[0],
+                target[2]
+            ));
+        }
+        let Some(Event::ToolChange {
+            tool,
+            number,
+            length_register,
+            ..
+        }) = self.regroup.take()
+        else {
+            return Err("no tool change awaits its regroup rapid".into());
+        };
+        self.position = target;
+        self.tool_pending = false;
+        Ok(vec![Event::ToolChange {
+            tool,
+            number,
+            length_register,
+            position_after_mm: target,
+        }])
+    }
+
+    /// Returns whether the change leaves the new tool's point unknown until
+    /// its regroup rapid (`tool_change_tip_within_mm`).
+    fn activate(&mut self, number: u32) -> Result<bool, String> {
         if self.rpm != 0. {
             return Err("stop spindle before selecting tool".into());
         }
@@ -1630,6 +1734,7 @@ impl Decoder {
             .or(choices.first())
             .map(|t| (*t).clone())
             .ok_or("NC tool absent from machine table")?;
+        let mut regroup = false;
         match self.machine.tool_change_position_mode.as_str() {
             "table" => {
                 self.position = active
@@ -1659,6 +1764,14 @@ impl Decoder {
                     );
                 }
             }
+            // The same T word on a machine that states only a bound for
+            // its tool post (#421): the new tool's point is somewhere
+            // within it of where the old one's was, and nothing more is
+            // known until the regroup rapid is read. No offset is read.
+            // The first tool starts at the program's declared position.
+            "preserve_carriage" if self.machine.tool_change_tip_within_mm.is_some() => {
+                regroup = self.active.is_some();
+            }
             "preserve_carriage" => {
                 // A lathe T word that only applies the new offset: the
                 // carriage stays, the controlled point moves by the offset
@@ -1680,7 +1793,7 @@ impl Decoder {
         self.active = Some(active);
         self.length = None;
         self.tool_pending = true;
-        Ok(())
+        Ok(regroup)
     }
 
     fn length(&mut self, number: Option<f64>) -> Result<Event, String> {

@@ -93,7 +93,14 @@ Key settings:
   controlled point moves by the new tool's `ToolSetting.carriage_to_tip_mm`
   (x as a radius, z) minus the old one's, which the mode requires of every
   tool. Plan with `Setup(tool_change=TurnToolChange.carriage_kept())` (see
-  [Lathe tool changes](operations.md#lathe-tool-changes)). `job.post` and
+  [Lathe tool changes](operations.md#lathe-tool-changes)). Where the
+  offsets are only in the control, `tool_change_tip_within_mm=(x radius, z)`
+  on the same mode states one bound instead (how far any tool's controlled
+  point on the tool post can be from any other's): no `carriage_to_tip_mm`
+  is read, each `T` word after the first is followed by a rapid of X and Z
+  to the start position, and the decoder refuses any other block there.
+  Plan with `TurnToolChange.carriage_kept(tip_within_mm=...)`, the same
+  value. `job.post` and
   `job.post_nc` refuse a setup whose tool-change pose disagrees with the
   machine's, before planning.
 - **`diameter_register`** (per `ToolSetting`): the D register holding the

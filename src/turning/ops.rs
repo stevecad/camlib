@@ -56,11 +56,22 @@ pub struct TurnToolSetting {
 ///   new point = old point - old `carriage_to_tip_mm` + new `carriage_to_tip_mm`.
 /// - `MachinePosition`: the change brings R to `position_mm`, so
 ///   new point = `position_mm` + new `carriage_to_tip_mm`.
+/// - `CarriageKeptWithin` (#421): no axis moves, as with `CarriageKept`, but
+///   the tools' offsets are known only to the control. What is declared is a
+///   bound for the tool post: no tool's controlled point is more than
+///   `tip_within_mm` ([radius, z]) from where any other tool's is. After the
+///   T word the new point is somewhere in the box `old point ± tip_within_mm`
+///   and nothing more is known; the program's next block is a rapid of that
+///   point to the start position (the regroup), after which the position is
+///   exact again. No `carriage_to_tip_mm` is read. The planner and the replay
+///   of a posted program check the new tool over the whole box (see
+///   `regroup_region`); the moves themselves start every tool at the start
+///   position, as with `TipKept`.
 ///
-/// camlib never assumes an offset: a mode that reads one refuses a tool
-/// without it, by name.
+/// camlib never assumes an offset or a bound: a mode that reads one refuses
+/// a setup without it, by name.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "mode", rename_all = "snake_case", try_from = "ToolChangeWire")]
 pub enum TurnToolChange {
     #[default]
     TipKept,
@@ -70,6 +81,80 @@ pub enum TurnToolChange {
         /// each `carriage_to_tip_mm` leads from to work coordinates.
         position_mm: [f64; 2],
     },
+    CarriageKeptWithin {
+        /// How far any tool's controlled point can be from any other's on
+        /// this tool post, [radius, z], each a distance (not negative).
+        tip_within_mm: [f64; 2],
+    },
+}
+
+/// A `TurnToolChange` as it is written: read whole, so that a mode with a
+/// value that is not its own is refused instead of read as the mode without
+/// it (a `carriage_kept` carrying a `tip_within_mm` is not the exact form).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToolChangeWire {
+    mode: String,
+    #[serde(default)]
+    position_mm: Option<[f64; 2]>,
+    #[serde(default)]
+    tip_within_mm: Option<[f64; 2]>,
+}
+
+impl TryFrom<ToolChangeWire> for TurnToolChange {
+    type Error = String;
+    fn try_from(wire: ToolChangeWire) -> Result<Self, String> {
+        match (wire.mode.as_str(), wire.position_mm, wire.tip_within_mm) {
+            ("tip_kept", None, None) => Ok(Self::TipKept),
+            ("carriage_kept", None, None) => Ok(Self::CarriageKept),
+            ("machine_position", Some(position_mm), None) => {
+                Ok(Self::MachinePosition { position_mm })
+            }
+            ("carriage_kept_within", None, Some(tip_within_mm)) => {
+                Ok(Self::CarriageKeptWithin { tip_within_mm })
+            }
+            (mode, ..) => Err(format!(
+                "a lathe tool change is tip_kept, carriage_kept, machine_position with its position_mm (and nothing else), or carriage_kept_within with its tip_within_mm (and nothing else), not {mode:?} with these values: no value is assumed and none is ignored"
+            )),
+        }
+    }
+}
+
+/// Where a new tool's controlled point can be between the T word of a
+/// `CarriageKeptWithin` change and the end of its regroup rapid (#421): the
+/// corners ([radius, z]) of the axis-aligned rectangle that holds the box
+/// `old ± bound` and the regroup's target `to`.
+///
+/// Why this rectangle holds every case. `old` is where the tool before
+/// stopped; the T word moves no axis, so the new tool's point p is in the
+/// box B = `old ± bound` (the declared bound, nothing else is known). That
+/// is the state at the swap, before any move. The regroup is one rapid from
+/// p to `to` that moves both axes. Only the lathe posts' own premise for a
+/// rapid is used (examples/centroid_lathe_post.py, fanuc_lathe_post.py: G0
+/// runs each axis at its own rate, which keeps the tool inside the rectangle
+/// of the two moves; the path inside it is not known, which is why they
+/// refuse every other two-axis rapid): the whole path lies in the rectangle
+/// spanned by p and `to`, which lies in the rectangle spanned by B and `to`.
+/// So the point is in this rectangle Q from the T word until the regroup
+/// ends: the swap and the move are one region, checked once.
+///
+/// The tool is rigid about its controlled point, so the tool over all of Q
+/// is the union of piece + q for q in Q and every convex piece of the insert
+/// and the holder. For a convex piece, piece + Q is convex and is the hull of
+/// the piece at Q's four corners (conv(P + {c_i}) = P + conv{c_i} = P + Q):
+/// exactly what the move kernel checks when its step's points are the four
+/// corners. An obstacle met only from the middle of an edge or from the
+/// interior of Q is inside that hull, not only those met at a corner.
+pub(crate) fn regroup_region(old: [f64; 2], bound: [f64; 2], to: [f64; 2]) -> [[f64; 2]; 4] {
+    let lo = [
+        (old[0] - bound[0]).min(to[0]),
+        (old[1] - bound[1]).min(to[1]),
+    ];
+    let hi = [
+        (old[0] + bound[0]).max(to[0]),
+        (old[1] + bound[1]).max(to[1]),
+    ];
+    [lo, [hi[0], lo[1]], hi, [lo[0], hi[1]]]
 }
 
 impl TurnToolChange {
@@ -82,6 +167,23 @@ impl TurnToolChange {
             Self::TipKept => "tip_kept",
             Self::CarriageKept => "carriage_kept",
             Self::MachinePosition { .. } => "machine_position",
+            Self::CarriageKeptWithin { .. } => "carriage_kept",
+        }
+    }
+
+    /// The modes that move the controlled point by the tools' declared
+    /// offsets (a new tool then starts only where its change leaves it).
+    /// `TipKept` and `CarriageKeptWithin` start every tool at the start
+    /// position.
+    pub fn places_by_offset(&self) -> bool {
+        matches!(self, Self::CarriageKept | Self::MachinePosition { .. })
+    }
+
+    /// The declared bound of a `CarriageKeptWithin` change.
+    pub fn tip_within(&self) -> Option<[f64; 2]> {
+        match self {
+            Self::CarriageKeptWithin { tip_within_mm } => Some(*tip_within_mm),
+            _ => None,
         }
     }
 
@@ -119,6 +221,36 @@ impl TurnToolChange {
                 "the machine_position tool change needs a finite position_mm (radius, z), not {position_mm:?}"
             ));
         }
+        if let Self::CarriageKeptWithin { tip_within_mm } = self {
+            if !tip_within_mm
+                .iter()
+                .all(|v| v.is_finite() && (0. ..=1e6).contains(v))
+            {
+                return Err(format!(
+                    "the carriage_kept tool change's tip_within_mm must be two finite distances in millimetres, not negative (radius, z): how far any tool's tip can be from any other's on the tool post, not {tip_within_mm:?}"
+                ));
+            }
+            // No offset is read. Offsets that are declared all the same must
+            // not contradict the bound: it would then be false for these tools.
+            let used: Vec<(&str, [f64; 2])> = tools
+                .iter()
+                .filter(|t| operations.iter().any(|op| op.tool() == t.tool.id))
+                .filter_map(|t| Some((t.tool.id.as_str(), t.carriage_to_tip_mm?)))
+                .collect();
+            for (i, (a, oa)) in used.iter().enumerate() {
+                for (b, ob) in &used[i + 1..] {
+                    let apart = [(oa[0] - ob[0]).abs(), (oa[1] - ob[1]).abs()];
+                    // (A value that is not a number is refused too.)
+                    if !(apart[0] <= tip_within_mm[0] && apart[1] <= tip_within_mm[1]) {
+                        return Err(format!(
+                            "tools {a:?} and {b:?}: their declared carriage_to_tip_mm are radius {}, z {} mm apart, more than the tool change's stated bound tip_within_mm (radius {}, z {}): the bound does not hold for these tools; state a bound that covers every tool on the tool post, or correct the offsets",
+                            apart[0], apart[1], tip_within_mm[0], tip_within_mm[1]
+                        ));
+                    }
+                }
+            }
+            return Ok(());
+        }
         if !self.is_tip_kept() {
             for op in operations {
                 self.offset(tools, op.tool())?;
@@ -142,7 +274,10 @@ impl TurnToolChange {
         previous: Option<&str>,
     ) -> Result<[f64; 2], String> {
         match self {
-            Self::TipKept => {
+            // With a stated bound (#421) the change is the T word and its
+            // regroup rapid to the start position: after it the new point is
+            // the start, as with the tip kept.
+            Self::TipKept | Self::CarriageKeptWithin { .. } => {
                 if !tools.iter().any(|t| t.tool.id == tool) {
                     return Err("tool change to an undeclared tool".into());
                 }
@@ -174,7 +309,7 @@ impl TurnToolChange {
         tool: &str,
     ) -> Result<[f64; 2], String> {
         match self {
-            Self::TipKept | Self::CarriageKept => Ok(initial),
+            Self::TipKept | Self::CarriageKept | Self::CarriageKeptWithin { .. } => Ok(initial),
             Self::MachinePosition { .. } => self.tip_after(tools, initial, tool, initial, None),
         }
     }
@@ -735,6 +870,10 @@ struct Planner<'a> {
     /// Set by `stand`: the move kernel checks the tool where it stands (a
     /// rapid of no length) and emits nothing.
     standing: bool,
+    /// Set by `stand_over` (with `standing`): the nose-center points whose
+    /// hull the tool may be anywhere in; the kernel's one step then has
+    /// these points instead of a move's two ends. Empty otherwise.
+    over: Vec<[f64; 2]>,
     next_id: u64,
     guard: f64,
     /// The last cutting move (from, to), for retracing rapids.
@@ -1068,6 +1207,72 @@ impl Planner<'_> {
         result
     }
 
+    /// Check the tool with its nose center anywhere in the hull of `points`
+    /// ((z, r)), with a rapid's checks against the stock as it is: every
+    /// convex piece of the insert and the holder swept into the hull of its
+    /// poses at `points`, which holds the piece at every point of their hull
+    /// (see `regroup_region`). Nothing is emitted and the tool stays where
+    /// it is.
+    fn stand_over(
+        &mut self,
+        tool: &ToolGeom,
+        op: &str,
+        points: &[[f64; 2]],
+        report: &mut TurnReport,
+    ) -> Result<(), String> {
+        self.standing = true;
+        self.over = points.to_vec();
+        let result = self.travel(tool, op, None, self.position, MoveKind::Rapid, None, report);
+        self.standing = false;
+        self.over.clear();
+        result
+    }
+
+    /// The check of a `CarriageKeptWithin` tool change (#421): `tool`
+    /// everywhere it can be from its T word to the end of its regroup rapid,
+    /// with `old` the controlled point where the tool before it (`previous`)
+    /// stopped and `to` the regroup's target, both [radius, z]. A refusal
+    /// names the change, the bound, the start position and what would fix it.
+    #[allow(clippy::too_many_arguments)]
+    fn regroup(
+        &mut self,
+        tool: &ToolGeom,
+        op: &str,
+        previous: &str,
+        old: [f64; 2],
+        bound: [f64; 2],
+        to: [f64; 2],
+        report: &mut TurnReport,
+    ) -> Result<(), String> {
+        // The region in the kernel's frame: (z, r) of the nose center.
+        let corners =
+            regroup_region(old, bound, to).map(|c| [c[1] - tool.tip[0], c[0] - tool.tip[1]]);
+        self.stand_over(tool, op, &corners, report).map_err(|error| {
+            let rest = error
+                .strip_prefix(op)
+                .and_then(|e| e.strip_prefix(": "))
+                .unwrap_or(&error);
+            // The kernel's own words name the position moved to, which is
+            // not where the contact is (the box is what matters here), and
+            // for the part a hint about the insert's angles that belongs to
+            // a cut: both are left out; anything said after them is kept.
+            let what = match rest.split_once(" moving to r ") {
+                Some((head, tail)) => {
+                    let after = tail.split_once(", z ").map_or("", |(_, z)| {
+                        z.trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == '-')
+                    });
+                    format!("{head}{after}")
+                }
+                None => rest.to_string(),
+            }
+            .replace("; check the insert's angles against the profile", "");
+            format!(
+                "{op}: the tool change from {previous:?} to {:?} is not clear: {what}. The change keeps the carriage where it is and the new tool's tip is only known to be within radius ±{} mm, z ±{} mm (tip_within_mm) of where the tool before it stopped (radius {}, z {}), so the new tool, insert and holder, is checked everywhere in that box and on its rapid from there to the start position (radius {}, z {}), against the stock, the part and the chuck. Start further from the work (the setup's initial_position_mm), or state a smaller tip_within_mm if every tool on the tool post is within it",
+                tool.id, bound[0], bound[1], old[0], old[1], to[0], to[1]
+            )
+        })
+    }
+
     /// Check and emit one straight move of the nose center.
     fn emit(
         &mut self,
@@ -1125,7 +1330,11 @@ impl Planner<'_> {
         let xz = |p: [f64; 2]| [p[1], 0., p[0]];
         let steps = match arc {
             None => vec![Step {
-                points: vec![from, to],
+                points: if self.over.is_empty() {
+                    vec![from, to]
+                } else {
+                    self.over.clone()
+                },
                 curves: vec![Curve::Line {
                     start: xz(from),
                     end: xz(to),
@@ -2251,6 +2460,7 @@ impl<'a> TurnSession<'a> {
             position: [job.initial_position_mm[1], job.initial_position_mm[0]],
             emitted: job.initial_position_mm,
             standing: false,
+            over: vec![],
             next_id: 1,
             guard: tol,
             last_cut: None,
@@ -2467,9 +2677,17 @@ impl<'a> TurnSession<'a> {
             });
             // The new tool's nose center; its first move starts at the
             // stated point exactly.
+            let old = planner.emitted;
             planner.position = [tip[1] - geom.tip[0], tip[0] - geom.tip[1]];
             planner.emitted = tip;
-            if !job.tool_change.is_tip_kept() {
+            if let (Some(bound), Some(previous)) = (job.tool_change.tip_within(), previous) {
+                // The carriage kept within a stated bound (#421): the new
+                // tool is somewhere in the box about where the old one
+                // stopped, then rapids to the start. Checked over that
+                // whole region, before any move (the tool standing at the
+                // start is one of its poses).
+                planner.regroup(&geom, &id, previous, old, bound, tip, &mut report)?;
+            } else if job.tool_change.places_by_offset() {
                 // The new tool is somewhere the old one never was: checked
                 // where it stands, before any move.
                 planner.stand(&geom, &id, &mut report).map_err(|error| {
@@ -3679,6 +3897,10 @@ pub struct TurnReplay {
     /// replay's own and never changes, so the entry's index is the whole
     /// key. A tool whose geometry is refused is not stored.
     geometry: Vec<Option<ToolGeom>>,
+    /// The tool of the last replayed move and the controlled point
+    /// ([radius, z]) where that move ended: what a `CarriageKeptWithin` tool
+    /// change (#421) is measured from.
+    last: Option<(String, [f64; 2])>,
 }
 
 impl TurnReplay {
@@ -3698,6 +3920,7 @@ impl TurnReplay {
             job,
             last_cut: None,
             last_thread: None,
+            last: None,
         })
     }
 
@@ -3754,6 +3977,7 @@ impl TurnReplay {
             position: [0., 0.],
             emitted: [start[0], start[2]],
             standing: false,
+            over: vec![],
             next_id: motion.id,
             guard: self.job.tolerance_mm,
             last_cut: self.last_cut,
@@ -3769,11 +3993,42 @@ impl TurnReplay {
             .find(|o| o.id() == motion.operation);
         let plain = (planner.part.clone(), planner.bore.clone());
         let slot = &mut self.geometry[index];
+        let last = self.last.clone();
         let result = (|| {
             let geom: &ToolGeom = match slot {
                 Some(geom) => geom,
                 None => slot.insert(planner.geometry(&setting.tool)?),
             };
+            if let (Some(bound), Some((previous, old))) = (self.job.tool_change.tip_within(), &last)
+                && *previous != motion.tool
+            {
+                // A tool change with the carriage kept within a stated bound
+                // (#421), as the planner checks it: the new tool everywhere
+                // it can be from its T word (the box about where the tool
+                // before it stopped) to the end of its regroup rapid, which
+                // is where this move, its first, starts. Before the move
+                // itself, on the stock as the old tool left it.
+                let mut report = TurnReport {
+                    id: motion.operation.clone(),
+                    passes: 0,
+                    moves: 0,
+                    cut_length_mm: 0.,
+                    min_part_clearance_mm: f64::INFINITY,
+                    min_holder_clearance_mm: f64::INFINITY,
+                    max_model_hull_error_mm: None,
+                    left_for_another_setup_z_mm: vec![],
+                };
+                planner.position = [start[2] - geom.tip[0], start[0] - geom.tip[1]];
+                planner.regroup(
+                    geom,
+                    &motion.operation,
+                    previous,
+                    *old,
+                    bound,
+                    [start[0], start[2]],
+                    &mut report,
+                )?;
+            }
             if let Some(op) = operation {
                 let (part, bore) = thread_relief(
                     op,
@@ -3826,6 +4081,9 @@ impl TurnReplay {
         self.stock = Some(planner.stock);
         self.last_cut = planner.last_cut;
         self.last_thread = planner.last_thread;
+        if result.is_ok() {
+            self.last = Some((motion.tool.clone(), [end[0], end[2]]));
+        }
         if let Err(error) = result {
             // The planner's hint is about the plan (an insert that does not
             // fit the profile). A move read back from a posted program was
@@ -8239,6 +8497,467 @@ test_tool("groove_in".into(), Insert::Groove { width_mm: 3.,
                 );
             }
             assert!(refused && !frames.is_empty());
+        }
+
+        /// The carriage kept within a stated bound (#421): no offsets, the
+        /// start far enough out for a bound of 30 mm on the radius and 40 mm
+        /// along z (the box then spans radius 30..90, z 40..120).
+        fn within(bound: [f64; 2]) -> TurningJob {
+            let mut j = groove_job();
+            j.tool_change = TurnToolChange::CarriageKeptWithin {
+                tip_within_mm: bound,
+            };
+            j.initial_position_mm = [60., 80.];
+            j
+        }
+
+        #[test]
+        fn a_stated_bound_regroups_every_new_tool_at_the_start() {
+            let j = within([30., 40.]);
+            // No tool declares an offset: none is read.
+            assert!(j.tools.iter().all(|t| t.carriage_to_tip_mm.is_none()));
+            let plan = plan(&j).unwrap();
+            assert_eq!(
+                changes(&plan),
+                vec![
+                    ("cnmg".to_string(), [60., 0., 80.]),
+                    ("groove3".to_string(), [60., 0., 80.])
+                ]
+            );
+            let (before, first) = around_change(&plan, "groove3");
+            assert_eq!(before.curve.end(), [60., 0., 80.]);
+            assert_eq!(first.curve.start(), [60., 0., 80.]);
+            // From the start position on, everything is as with the tip
+            // kept: the same events, move for move, and the same stock.
+            let mut kept = j.clone();
+            kept.tool_change = TurnToolChange::TipKept;
+            let kept = super::plan(&kept).unwrap();
+            assert_eq!(
+                serde_json::to_string(&plan.events).unwrap(),
+                serde_json::to_string(&kept.events).unwrap()
+            );
+            assert_eq!(plan.stock.cells(), kept.stock.cells());
+            // The mode and its bound are part of the setup and its manifest.
+            let text = serde_json::to_string(&j).unwrap();
+            assert!(
+                text.contains(
+                    r#""tool_change":{"mode":"carriage_kept_within","tip_within_mm":[30.0,40.0]}"#
+                ),
+                "{text}"
+            );
+            let read: TurningJob = serde_json::from_str(&text).unwrap();
+            assert_eq!(read.tool_change, j.tool_change);
+            // The exact form is written as it was.
+            let exact =
+                serde_json::to_string(&two_tools(TurnToolChange::CarriageKept, BLADE)).unwrap();
+            assert!(
+                exact.contains(r#""tool_change":{"mode":"carriage_kept"}"#),
+                "{exact}"
+            );
+            // An independent receiver accepts the run, and the planned moves
+            // replay as a posted program's would (the replay checks each
+            // change over its box again).
+            use crate::stream::{DEFAULT_FRAME_LIMIT, StreamProducer, StreamReceiver};
+            let manifest = lathe_manifest(&j);
+            manifest.validate().unwrap();
+            let never = std::sync::atomic::AtomicBool::new(false);
+            let mut producer = StreamProducer::new(manifest.clone()).unwrap();
+            let mut frames = vec![];
+            crate::regeneration::run_turning(&mut producer, &never, |f| {
+                frames.push(f.to_vec());
+                Ok(())
+            })
+            .unwrap();
+            let mut receiver = StreamReceiver::new(manifest).unwrap();
+            for f in &frames {
+                match u16::from_le_bytes([f[10], f[11]]) {
+                    10 => {
+                        receiver.accept(f, DEFAULT_FRAME_LIMIT).unwrap();
+                    }
+                    4 => receiver.accept_end(f, DEFAULT_FRAME_LIMIT).unwrap(),
+                    _ => {}
+                }
+            }
+            assert!(receiver.is_finished());
+            let mut replay = TurnReplay::new(j.clone()).unwrap();
+            for m in motions(&plan) {
+                replay.motion(m).unwrap();
+            }
+        }
+
+        #[test]
+        fn a_start_too_close_for_the_bound_is_refused_by_name() {
+            // From the shaft's usual start (radius 30, z 20) the box of a
+            // 30 x 40 mm bound spans radius 0..60, z -20..60: the bar is in
+            // it. With the tip kept the same job plans.
+            let mut j = within([30., 40.]);
+            j.initial_position_mm = [30., 20.];
+            let mut kept = j.clone();
+            kept.tool_change = TurnToolChange::TipKept;
+            super::plan(&kept).expect("clear when every tool starts at the start");
+            let error = plan(&j).err().unwrap();
+            for part in [
+                "groove: the tool change from \"cnmg\" to \"groove3\" is not clear",
+                "within radius ±30 mm, z ±40 mm (tip_within_mm)",
+                "where the tool before it stopped (radius 30, z 20)",
+                "to the start position (radius 30, z 20)",
+                "Start further from the work (the setup's initial_position_mm), or state a smaller tip_within_mm",
+            ] {
+                assert!(error.contains(part), "{part}: {error}");
+            }
+            // The refusal comes before any move of the new tool, and before
+            // any program: no plan is returned at all.
+            // A smaller bound that is true of the tool post fixes it too.
+            j.tool_change = TurnToolChange::CarriageKeptWithin {
+                tip_within_mm: [5., 10.],
+            };
+            plan(&j).expect("radius 25..35, z 10..30 is clear of the bar");
+        }
+
+        #[test]
+        fn the_chuck_and_its_jaws_inside_the_box_are_found() {
+            // The start at radius 60, z 30 with a bound of 85 mm along z: the
+            // box reaches z -55, behind the chuck face (z -50). The radius
+            // stays 30..90, clear of the bar (radius 20).
+            let mut j = within([30., 85.]);
+            j.initial_position_mm = [60., 30.];
+            let mut near = j.clone();
+            near.tool_change = TurnToolChange::CarriageKeptWithin {
+                tip_within_mm: [30., 20.],
+            };
+            plan(&near).expect("z 10..50 is in front of everything");
+            let error = plan(&j).err().unwrap();
+            assert!(
+                error.contains("the tool change from \"cnmg\" to \"groove3\" is not clear: the tool would reach the chuck (z below -50.000)")
+                    && error.contains("z ±85 mm")
+                    && error.contains("start position (radius 60, z 30)"),
+                "{error}"
+            );
+            // With a grip (#418) the jaws hold the bar behind a chuck face
+            // further forward: the same start and a bound that cleared the
+            // bare chuck now reach them, and the refusal says so.
+            let mut held = within([30., 76.]);
+            held.initial_position_mm = [60., 30.];
+            plan(&held).expect("z -46..106 is in front of the chuck face at z -50");
+            held.chuck_z_mm = -44.;
+            held.grip = Some(ChuckGrip {
+                length_mm: 16.,
+                radius_mm: 20.,
+            });
+            held.operations.truncate(3); // face, rough, groove (no part-off at the jaws)
+            let mut bare = held.clone();
+            bare.tool_change = TurnToolChange::TipKept;
+            super::plan(&bare).expect("the grip itself is in order");
+            let error = plan(&held).err().unwrap();
+            assert!(
+                error.contains("is not clear: the tool would reach the chuck (z below -44.000): its jaws hold the work over the 16 mm behind that face")
+                    && error.contains("tip_within_mm"),
+                "{error}"
+            );
+        }
+
+        /// The verdict of one tool change of `job` (a `CarriageKeptWithin`
+        /// setup) on `stock`: "cnmg" stopped with its point at `old`,
+        /// "groove3" regroups to `to`. Through the replay of a posted
+        /// program, with moves of no length (which check nothing
+        /// themselves).
+        fn change(
+            job: &TurningJob,
+            stock: &TurnStock,
+            old: [f64; 2],
+            bound: [f64; 2],
+            to: [f64; 2],
+        ) -> Result<(), String> {
+            let mut j = job.clone();
+            j.tool_change = TurnToolChange::CarriageKeptWithin {
+                tip_within_mm: bound,
+            };
+            let mut replay = TurnReplay::new(j)
+                .unwrap()
+                .with_stock(stock.clone())
+                .unwrap();
+            let stay = |id, tool: &str, at: [f64; 2]| Motion {
+                id,
+                operation: "groove".into(),
+                tool: tool.into(),
+                curve: Curve::Line {
+                    start: [at[0], 0., at[1]],
+                    end: [at[0], 0., at[1]],
+                },
+                kind: MoveKind::Rapid,
+                feed_mm_min: None,
+            };
+            replay.motion(&stay(1, "cnmg", old)).unwrap();
+            replay.motion(&stay(2, "groove3", to)).map(|_| ())
+        }
+        /// The blade standing with its point at `at` (a box of no size).
+        fn stands(job: &TurningJob, stock: &TurnStock, at: [f64; 2]) -> Result<(), String> {
+            change(job, stock, at, [0., 0.], at)
+        }
+        /// The shaft with its groove cut (radius 12 over z -28..-25, the
+        /// roughed shoulders at 15.3 either side) and where the 2 mm blade's
+        /// point is, along z, when the blade is in the middle of the 3 mm
+        /// groove.
+        fn grooved() -> (TurningJob, TurnStock, f64) {
+            let mut j = groove_job();
+            j.operations.truncate(3); // face, rough, groove
+            let plan = plan(&j).unwrap();
+            // The groove's two plunges end at its bottom, 1 mm apart.
+            let mut bottoms: Vec<f64> = motions(&plan)
+                .iter()
+                .filter(|m| m.operation == "groove" && m.kind != MoveKind::Rapid)
+                .map(|m| m.curve.end())
+                .filter(|end| (end[0] - 12.).abs() < 1e-9)
+                .map(|end| end[2])
+                .collect();
+            bottoms.sort_by(f64::total_cmp);
+            bottoms.dedup();
+            let (lo, hi) = (bottoms[0], *bottoms.last().unwrap());
+            assert!((hi - lo - 1.).abs() < 1e-9, "{bottoms:?}");
+            (j, plan.stock, (lo + hi) / 2.)
+        }
+
+        #[test]
+        fn a_collision_met_only_from_inside_the_box_is_refused() {
+            // A box whose four corners and whose centre are all clear, with
+            // material reaching into it across its lower edge. The lower
+            // left corner is the blade standing in the groove (0.5 mm from
+            // either wall, 1.5 mm above its bottom); from there the lower
+            // edge runs toward the face at radius 13.5, through the shoulder
+            // beside the groove (radius 15.3 over z -25..-20) and the shaft's
+            // step, and comes out in front of the face.
+            let (j, stock, z) = grooved();
+            let (lo, hi) = ([13.5, z], [40., 12.]);
+            let corners = [lo, [hi[0], lo[1]], hi, [lo[0], hi[1]]];
+            let centre = [(lo[0] + hi[0]) / 2., (lo[1] + hi[1]) / 2.];
+            for at in corners.iter().chain([&centre]) {
+                stands(&j, &stock, *at).unwrap_or_else(|e| panic!("{at:?}: {e}"));
+            }
+            // On the lower edge, between its corners: in the shoulder.
+            let edge = [13.5, -23.];
+            let error = stands(&j, &stock, edge).err().unwrap();
+            assert!(error.contains("is not clear"), "{error}");
+            // Inside the box, on no edge: in the shoulder too.
+            let inside = [14.5, -22.];
+            assert!(
+                lo[0] < inside[0] && inside[0] < hi[0] && lo[1] < inside[1] && inside[1] < hi[1]
+            );
+            stands(&j, &stock, inside).unwrap_err();
+            // The box is refused: checking its corners (or its corners and
+            // centre) would have released it.
+            let bound = [(hi[0] - lo[0]) / 2., (hi[1] - lo[1]) / 2.];
+            assert_eq!(regroup_region(centre, bound, centre), corners);
+            let error = change(&j, &stock, centre, bound, centre).err().unwrap();
+            assert!(
+                error.contains("the tool change from \"cnmg\" to \"groove3\" is not clear")
+                    && error.contains("tip_within_mm"),
+                "{error}"
+            );
+            // Without the shoulder in it the same kind of box is clear: one
+            // that stays in front of the face.
+            change(&j, &stock, [26.75, 20.], [13.25, 8.], [26.75, 20.]).unwrap();
+        }
+
+        #[test]
+        fn a_released_box_is_clear_at_every_point_and_on_every_way_to_the_start() {
+            // Boxes about the grooved shaft, many of them reaching into the
+            // groove, the shoulders, the face or the bar. Whenever the box
+            // check releases a change, the blade standing at every sampled
+            // point of the box is clear (corners, edges and interior), and
+            // so is every point of the rectangle between such a point and
+            // the regroup's target: whatever the two axes' rates, the rapid
+            // stays in it. A box may be refused though its samples are
+            // clear (the hull of a tool part over the box is a bound), never
+            // the other way round.
+            let (j, stock, groove_z) = grooved();
+            let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+            let mut next = move |lo: f64, hi: f64| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                lo + (hi - lo) * ((seed >> 11) as f64 / (1u64 << 53) as f64)
+            };
+            let (mut released, mut refused, mut corners_alone_would_pass) = (0, 0, 0);
+            for case in 0..60 {
+                // Every third box has its lower left corner in the groove.
+                let lo = if case % 3 == 0 {
+                    [next(12.6, 14.8), groove_z + next(-0.3, 0.3)]
+                } else {
+                    [next(8., 30.), next(-45., 10.)]
+                };
+                let size = [next(0.5, 30.), next(0.5, 40.)];
+                let hi = [lo[0] + size[0], lo[1] + size[1]];
+                let old = [(lo[0] + hi[0]) / 2., (lo[1] + hi[1]) / 2.];
+                let bound = [size[0] / 2., size[1] / 2.];
+                // The regroup's target: the box's centre, or a point beyond
+                // the box (the region then grows to hold it).
+                let to = if case % 4 == 0 {
+                    [hi[0] + next(0., 10.), hi[1] + next(0., 10.)]
+                } else {
+                    old
+                };
+                let region = regroup_region(old, bound, to);
+                let (lo, hi) = (region[0], region[2]);
+                let at =
+                    |fr: f64, fz: f64| [lo[0] + fr * (hi[0] - lo[0]), lo[1] + fz * (hi[1] - lo[1])];
+                let samples: Vec<[f64; 2]> = (0..=6)
+                    .flat_map(|a| (0..=6).map(move |b| (a as f64 / 6., b as f64 / 6.)))
+                    .map(|(a, b)| at(a, b))
+                    .collect();
+                match change(&j, &stock, old, bound, to) {
+                    Ok(()) => {
+                        released += 1;
+                        for p in &samples {
+                            stands(&j, &stock, *p).unwrap_or_else(|e| {
+                                panic!(
+                                    "case {case}: released box {lo:?}..{hi:?}, but at {p:?}: {e}"
+                                )
+                            });
+                        }
+                    }
+                    Err(error) => {
+                        assert!(error.contains("is not clear"), "{error}");
+                        refused += 1;
+                        let clear = |p: [f64; 2]| stands(&j, &stock, p).is_ok();
+                        if region.iter().all(|c| clear(*c)) {
+                            corners_alone_would_pass += 1;
+                        }
+                    }
+                }
+            }
+            assert!(released >= 5 && refused >= 5, "{released} {refused}");
+            assert!(corners_alone_would_pass >= 3, "{corners_alone_would_pass}");
+        }
+
+        #[test]
+        fn the_region_holds_the_box_and_the_way_to_a_target_outside_it() {
+            // The target in the box: the box itself.
+            assert_eq!(
+                regroup_region([30., 20.], [5., 10.], [30., 20.]),
+                [[25., 10.], [35., 10.], [35., 30.], [25., 30.]]
+            );
+            // A target outside it: the rectangle about both. From the
+            // corner (25, 10) a rapid to (50, 40) that runs z first passes
+            // (25, 40), which is in the region and not in the hull of the
+            // box and the target.
+            let region = regroup_region([30., 20.], [5., 10.], [50., 40.]);
+            assert_eq!(region, [[25., 10.], [50., 10.], [50., 40.], [25., 40.]]);
+            // The replay of a program whose old tool stopped away from where
+            // the new one starts checks that whole rectangle: here it
+            // reaches from in front of the face down beside the shoulder.
+            let (j, stock, _) = grooved();
+            stands(&j, &stock, [30., 20.]).unwrap();
+            stands(&j, &stock, [14., -23.]).unwrap_err();
+            change(&j, &stock, [30., 20.], [1., 1.], [30., 20.]).unwrap();
+            let error = change(&j, &stock, [14., 20.], [1., 1.], [30., -23.])
+                .err()
+                .unwrap();
+            assert!(error.contains("is not clear"), "{error}");
+        }
+
+        #[test]
+        fn the_read_back_program_is_held_to_the_same_box() {
+            // Planned and released with a bound of 30 x 40 mm from a start
+            // far out. The same moves read back for a tool post with a
+            // larger bound (60 x 90: radius 0..120, z -10..170 holds the
+            // bar's front) are refused at the blade's change, by the replay
+            // alone: no planner is asked.
+            let j = within([30., 40.]);
+            let plan = plan(&j).unwrap();
+            let first = around_change(&plan, "groove3").1.id;
+            let mut wide = j.clone();
+            wide.tool_change = TurnToolChange::CarriageKeptWithin {
+                tip_within_mm: [60., 90.],
+            };
+            let mut replay = TurnReplay::new(wide).unwrap();
+            let mut refused = None;
+            for m in motions(&plan) {
+                match replay.motion(m) {
+                    Ok(_) => assert!(m.id < first, "the change was let through"),
+                    Err(error) => {
+                        refused = Some((m.id, error));
+                        break;
+                    }
+                }
+            }
+            let (id, error) = refused.expect("the change is refused");
+            assert_eq!(id, first);
+            assert!(
+                error.contains("the tool change from \"cnmg\" to \"groove3\" is not clear")
+                    && error.contains("within radius ±60 mm, z ±90 mm"),
+                "{error}"
+            );
+            // The first tool has no tool before it: nothing to regroup, as
+            // in the plan.
+            assert_eq!(motions(&plan)[0].tool, "cnmg");
+        }
+
+        #[test]
+        fn a_bound_is_stated_whole_and_never_contradicted() {
+            for bad in [[-1., 40.], [30., f64::NAN], [f64::INFINITY, 1.]] {
+                let error = plan(&within(bad)).err().unwrap();
+                assert!(
+                    error.contains("tip_within_mm must be two finite distances"),
+                    "{error}"
+                );
+                let mut manifest = lathe_manifest(&within([30., 40.]));
+                manifest.turning.as_mut().unwrap().tool_change =
+                    TurnToolChange::CarriageKeptWithin { tip_within_mm: bad };
+                assert!(manifest.validate().is_err());
+            }
+            // A mode without its bound does not read: nothing is defaulted.
+            let text = serde_json::to_string(&within([30., 40.])).unwrap();
+            let bare = text.replace(r#","tip_within_mm":[30.0,40.0]"#, "");
+            assert_ne!(bare, text);
+            assert!(serde_json::from_str::<TurningJob>(&bare).is_err());
+            // Nor is a bound on the exact form dropped and the rest read.
+            let exact = text.replace("carriage_kept_within", "carriage_kept");
+            assert!(serde_json::from_str::<TurningJob>(&exact).is_err());
+            // The forms that existed read as they did.
+            for (wire, mode) in [
+                (r#"{"mode":"tip_kept"}"#, TurnToolChange::TipKept),
+                (r#"{"mode":"carriage_kept"}"#, TurnToolChange::CarriageKept),
+                (
+                    r#"{"mode":"machine_position","position_mm":[55.0,60.0]}"#,
+                    TurnToolChange::MachinePosition {
+                        position_mm: CARRIAGE,
+                    },
+                ),
+            ] {
+                assert_eq!(serde_json::from_str::<TurnToolChange>(wire).unwrap(), mode);
+                assert_eq!(serde_json::to_string(&mode).unwrap(), wire);
+            }
+            for wire in [
+                r#"{"mode":"machine_position"}"#,
+                r#"{"mode":"turret"}"#,
+                r#"{"mode":"tip_kept","position_mm":[55.0,60.0]}"#,
+                r#"{"mode":"carriage_kept","offset":1}"#,
+            ] {
+                assert!(
+                    serde_json::from_str::<TurnToolChange>(wire).is_err(),
+                    "{wire}"
+                );
+            }
+            // Offsets may still be declared; none is read, but two that are
+            // further apart than the bound say the bound is false.
+            let mut j = within([30., 40.]);
+            j.tools[0].carriage_to_tip_mm = Some([-25., -40.]);
+            j.tools[1].carriage_to_tip_mm = Some(BLADE); // 3 and 12 mm apart
+            let with = plan(&j).unwrap();
+            assert_eq!(
+                serde_json::to_string(&with.events).unwrap(),
+                serde_json::to_string(&plan(&within([30., 40.])).unwrap().events).unwrap()
+            );
+            j.tool_change = TurnToolChange::CarriageKeptWithin {
+                tip_within_mm: [30., 10.],
+            };
+            let error = plan(&j).err().unwrap();
+            assert!(
+                error.contains("tools \"cnmg\" and \"groove3\"")
+                    && error.contains("radius 3, z 12 mm apart")
+                    && error.contains("the bound does not hold for these tools"),
+                "{error}"
+            );
         }
 
         #[test]

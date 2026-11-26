@@ -85,6 +85,14 @@ class TurnStockState:
             # The tip kept: every tool starts at the start position.
             if value != tuple(self._manifest["initial_position_mm"]):
                 raise ProtocolError("a lathe tool change starts at the turret (start) position")
+        elif change["mode"] == "carriage_kept_within":
+            # The carriage kept within a stated bound: each change ends with
+            # its regroup rapid, at the start position.
+            if value != tuple(self._manifest["initial_position_mm"]):
+                raise ProtocolError(
+                    "a lathe tool change with the carriage kept within a stated bound ends at the start position "
+                    "(its regroup rapid)"
+                )
         elif not any(self.tool_change_tip(tool) == value for tool in sorted(self._tools)):
             # Measured from the receiver's own last position and tool.
             raise ProtocolError(
@@ -112,9 +120,11 @@ class TurnStockState:
     def tool_change_tip(self, tool, position=None, previous=None):
         """The controlled point after a change to ``tool``, by the setup's
         declared tool-change mode (``camlib.turning.TurnToolChange``): the
-        start position (the tip kept, the default); the last position moved
-        by the new tool's offset minus the old one's (the carriage kept); or
-        the stated carriage position plus the tool's offset. ``previous``:
+        start position (the tip kept, the default, and the carriage kept
+        within a stated bound, whose change ends with a rapid there); the
+        last position moved by the new tool's offset minus the old one's (the
+        carriage kept); or the stated carriage position plus the tool's
+        offset. ``previous``:
         the tool mounted before (default: the last move's); ``position``:
         where it stopped (default: where the last move ended)."""
         if tool not in self._tools:

@@ -37,7 +37,10 @@ Premises (declared, not checked on the machine):
   for every tool, or each tool's own point when the macro goes to a machine
   position), or "preserve_carriage" (the macro moves no axis and only
   applies the new offset: a quick-change tool post; each
-  ToolSetting.carriage_to_tip_mm). The T word written is the same.
+  ToolSetting.carriage_to_tip_mm, or, when the offsets are only in the
+  control's Offset Library, one bound for the tool post,
+  tool_change_tip_within_mm: the T word is then followed by one rapid of X
+  and Z to the start position). The T word written is the same.
 - G0 runs each axis at its own maximum rate: a rapid moving both X and Z
   would not follow a straight line, so rapids move one axis at a time
   (refused otherwise; an axis that only settles onto its rounded word,
@@ -121,7 +124,8 @@ class CentroidLatheMachine(Machine):
             raise ValueError(
                 'a new T number runs the tool-change macro: declare each tool\'s position after the change '
                 '(tool_change_position_mode="table"), or that the macro moves no axis '
-                '("preserve_carriage", with each ToolSetting.carriage_to_tip_mm); rapids are G0'
+                '("preserve_carriage", with each ToolSetting.carriage_to_tip_mm or the tool post\'s '
+                'tool_change_tip_within_mm); rapids are G0'
             )
 
 
@@ -129,7 +133,8 @@ def define_machine(name, tools, **settings):
     """``tools``: ToolSetting per turret station (number = tt, length_register
     = oo), position_after_mm where the tool change leaves the tool; with
     tool_change_position_mode="preserve_carriage" (the change moves no
-    axis) each tool's carriage_to_tip_mm instead."""
+    axis) each tool's carriage_to_tip_mm instead, or
+    tool_change_tip_within_mm=(x radius, z) for the tool post."""
     return CentroidLatheMachine(
         name, tuple(tools), dialect=_dialect(), planes=('xz',), **{'tool_change_position_mode': 'table', **settings}
     )
@@ -220,7 +225,11 @@ class CentroidLatheDecoder(NativeGCodeDecoder):
             self.hold_axes()
             return []
         words = text.split(' ')
-        if words[0] == d.code('rapid'):
+        # (The regroup rapid after a T word under tool_change_tip_within_mm
+        # is the one rapid that moves both axes: the tool was checked over
+        # the whole box that holds every path it can take. The generic
+        # decoder reads it and refuses anything else in its place.)
+        if words[0] == d.code('rapid') and not self.regroup_pending:
             x = next((float(w[1:]) for w in words if w.startswith('X')), None)
             z = next((float(w[1:]) for w in words if w.startswith('Z')), None)
             if (

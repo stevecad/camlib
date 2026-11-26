@@ -16,6 +16,7 @@ it makes, like a milling run: playback, posting and export work the same.
 
 from dataclasses import dataclass, field, replace
 import json
+import math
 
 from ._buffers import native
 
@@ -997,9 +998,9 @@ class TurnToolSetting:
 
     ``carriage_to_tip_mm``: the tool's controlled point from the carriage
     reference, (radius, z) along the work axes, as the tool is held. Only a
-    ``TurnToolChange`` that places tools by it reads it (``carriage_kept``,
+    ``TurnToolChange`` that places tools by it reads it (``carriage_kept()``,
     ``machine_position``), and refuses a tool without one: camlib never
-    assumes an offset."""
+    assumes an offset. ``carriage_kept(tip_within_mm=...)`` reads none."""
 
     tool: TurningTool
     number: int = 1
@@ -1021,6 +1022,25 @@ def _radius_z(value, what):
     return [radius, z]
 
 
+def _bound(value):
+    """A stated ``tip_within_mm``: two finite distances, not negative."""
+    problem = (
+        "tip_within_mm is (radius, z): two finite distances in millimetres, not negative (how far any tool's tip "
+        "can be from any other's on the tool post)"
+    )
+    try:
+        values = tuple(value)
+    except TypeError:
+        raise ValueError(problem) from None
+    if (
+        len(values) != 2
+        or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in values)
+        or not all(math.isfinite(v) and 0 <= v <= 1e6 for v in values)
+    ):
+        raise ValueError(f"{problem}, not {value!r}")
+    return (float(values[0]), float(values[1]))
+
+
 @dataclass(frozen=True)
 class TurnToolChange:
     """Where a lathe tool change leaves the new tool's controlled point
@@ -1034,6 +1054,17 @@ class TurnToolChange:
     - ``TurnToolChange.carriage_kept()``: the change moves no axis (the T
       word only applies the new tool's offset; a quick-change tool post).
       New point = old point - old tool's ``carriage_to_tip_mm`` + new tool's.
+    - ``TurnToolChange.carriage_kept(tip_within_mm=(radius, z))``: the same
+      machine when the tools' offsets are only in the control's offset table.
+      What is stated is one bound for the tool post: no tool's controlled
+      point is more than ``radius`` mm (along X, as a radius) and ``z`` mm
+      from where any other tool's is. No ``carriage_to_tip_mm`` is read.
+      After the T word the new tool's point is somewhere in the box
+      ``old point ± (radius, z)``; the program's next block is a rapid of
+      that point to the start position, and from there on every position is
+      exact. camlib checks the new tool, insert and holder, everywhere in
+      that box and on that rapid against the stock, the part and the chuck,
+      and refuses the change if it is not clear. The bound is never assumed.
     - ``TurnToolChange.machine_position(radius_mm, z_mm)``: the change
       brings the carriage reference to that position. New point = position +
       the new tool's ``carriage_to_tip_mm``; each tool is put away at its
@@ -1044,6 +1075,7 @@ class TurnToolChange:
 
     mode: str = "tip_kept"
     position_mm: tuple | None = None
+    tip_within_mm: tuple | None = None
 
     def __post_init__(self):
         if self.mode not in ("tip_kept", "carriage_kept", "machine_position"):
@@ -1052,14 +1084,27 @@ class TurnToolChange:
             raise ValueError("position_mm (radius, z) belongs to a machine_position tool change, and only to it")
         if self.position_mm is not None:
             object.__setattr__(self, "position_mm", tuple(_radius_z(self.position_mm, "position_mm")))
+        if self.tip_within_mm is not None:
+            if self.mode != "carriage_kept":
+                raise ValueError(
+                    "tip_within_mm (radius, z) belongs to a carriage_kept tool change: how far any tool's tip can "
+                    "be from any other's on a tool post whose T word moves no axis"
+                )
+            object.__setattr__(self, "tip_within_mm", _bound(self.tip_within_mm))
 
     @classmethod
     def tip_kept(cls):
         return cls("tip_kept")
 
     @classmethod
-    def carriage_kept(cls):
-        return cls("carriage_kept")
+    def carriage_kept(cls, *, tip_within_mm=None):
+        """The T word moves no axis. Without ``tip_within_mm`` every tool an
+        operation uses declares its ``carriage_to_tip_mm`` and each change is
+        placed exactly. With ``tip_within_mm=(radius, z)``, a bound on how
+        far any tool's controlled point can be from any other's, no offset
+        is read: each change is checked over the whole box and followed by a
+        rapid to the start position."""
+        return cls("carriage_kept", tip_within_mm=tip_within_mm)
 
     @classmethod
     def machine_position(cls, radius_mm, z_mm):
@@ -1084,6 +1129,9 @@ class TurnToolChange:
         return (self.position_mm[0] + radius, 0.0, self.position_mm[1] + z)
 
     def to_dict(self):
+        if self.tip_within_mm is not None:
+            # The engine's name for the carriage kept within a stated bound.
+            return dict(mode="carriage_kept_within", tip_within_mm=list(self.tip_within_mm))
         data = dict(mode=self.mode)
         if self.position_mm is not None:
             data["position_mm"] = list(self.position_mm)
@@ -1431,7 +1479,10 @@ class TurningSetup:
             result["grip"] = self.grip.to_dict()
         if self.bore is not None:
             result["bore"] = dict(points=[list(p) for p in self.bore])
-        if tool_change is not None and tool_change.mode != "tip_kept":
+        if tool_change is not None and tool_change.tip_within_mm is not None:
+            # The carriage kept within a stated bound: no offset is read.
+            result["tool_change"] = tool_change.to_dict()
+        elif tool_change is not None and tool_change.mode != "tip_kept":
             # Refused here, by name, before anything is planned (the engine
             # refuses the same again).
             offsets = {t["tool"]["id"]: t.get("carriage_to_tip_mm") for t in result["tools"]}

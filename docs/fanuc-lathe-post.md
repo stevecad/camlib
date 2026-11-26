@@ -68,12 +68,22 @@ declared on the setup and the machine (see
 |---|---|---|
 | The new tool's controlled point arrives where the old one's was parked (the job's start position) | `tool_change=None` (the tip kept) | `"table"` (the default here), each `position_after_mm=header.initial_position_mm`, as above |
 | No axis moves and the new offset applies: the point moves by the difference of the two tools' offsets | `TurnToolChange.carriage_kept()` and each `TurnToolSetting.carriage_to_tip_mm` | `tool_change_position_mode="preserve_carriage"`, each `ToolSetting.carriage_to_tip_mm` |
+| The same, with the offsets only in the control's offset table | `TurnToolChange.carriage_kept(tip_within_mm=(radius, z))`: one bound on how far any tool's tip can be from any other's | `tool_change_position_mode="preserve_carriage"`, `tool_change_tip_within_mm=(radius, z)` |
 | The carriage is at a fixed machine position | `TurnToolChange.machine_position(radius_mm, z_mm)` and each `carriage_to_tip_mm` | `"table"`, each `position_after_mm=change.tip_mm(setting)` |
 
 Which of these your control and turret do (how the geometry offset is
 applied, and whether the tool-change routine moves an axis) is in FANUC's
 manual and the machine builder's documentation: check it there, camlib
 assumes none.
+
+With `tool_change_tip_within_mm` each `T<tt><oo>` after the first is
+followed by the rapid of the new tool's tip to the job's start position
+(`T0202`, then `G0 X120. Z80.`): the one rapid here that may move both
+axes at once. The new tool has been checked everywhere
+within the bound of where the old one stopped, and so on every path that
+rapid can take (see
+[The carriage kept within a stated bound](operations.md#the-carriage-kept-within-a-stated-bound)).
+Read back, any other block after the `T` word is refused.
 
 Arcs need exactly consistent words (`radius_tolerance_mm=0`): post with
 `LoweringOptions(native_arcs=True)` if an arc is refused (the arcs that

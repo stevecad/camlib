@@ -2910,6 +2910,7 @@ mode says what happens to the carriage meanwhile.
 |---|---|---|---|
 | The new tool's point arrives where every tool starts | `None` or `TurnToolChange.tip_kept()` (the default) | the start position `initial_position_mm` | `"table"`, each `ToolSetting.position_after_mm` the start position (or `"preserve_tip"`) |
 | No axis moves: the T word only applies the new tool's offset, and the holder is swapped where the carriage stands (a quick-change tool post) | `TurnToolChange.carriage_kept()` | old point - old tool's `carriage_to_tip_mm` + new tool's | `"preserve_carriage"`, each `ToolSetting.carriage_to_tip_mm` |
+| The same machine, the tools' offsets only in the control's offset table | `TurnToolChange.carriage_kept(tip_within_mm=(radius, z))` | somewhere within the stated bound of the old point; then the start position, by a rapid the program makes ([below](#the-carriage-kept-within-a-stated-bound)) | `"preserve_carriage"` with `tool_change_tip_within_mm=(radius, z)` |
 | The carriage goes to one fixed machine position | `TurnToolChange.machine_position(radius_mm, z_mm)` | that position + the new tool's `carriage_to_tip_mm` | `"table"`, each `ToolSetting.position_after_mm` its own point (`change.tip_mm(setting)`) |
 
 ```python
@@ -2954,6 +2955,74 @@ to move. A `machine_position` setup starts at the first tool's change point
 (`initial_position_mm=change.tip_mm(first_setting)`, refused otherwise) and
 ends at the last tool's. The path a tool-change macro takes on its own is
 never part of the program and is not checked.
+
+#### The carriage kept within a stated bound
+
+`carriage_kept()` needs every tool's `carriage_to_tip_mm`: on a lathe with a
+quick-change tool post that is the control's own offset table, typed a
+second time and again after every touch-off. Where that second copy would
+not be kept, state what does not change with a touch-off instead: one bound
+for the tool post.
+
+```python
+change = camlib.turning.TurnToolChange.carriage_kept(tip_within_mm=(30, 40))
+lathe = camlib.Setup(
+    "lathe", stock=stock, operations=operations, initial_position_mm=(60, 0, 80),
+    tools=(camlib.TurnToolSetting(turning_tool, 1, 1), camlib.TurnToolSetting(blade, 2, 2)),
+    tool_change=change, turning=turning)
+machine = centroid_lathe_post.define_machine(
+    "Lathe", tools, tool_change_position_mode="preserve_carriage",
+    tool_change_tip_within_mm=(30, 40), **declared)
+```
+
+`tip_within_mm=(radius, z)` says: no tool on this tool post has its
+controlled point more than `radius` mm (along X, as a radius) or `z` mm
+(along the axis) from where any other tool's is. It is a statement about
+the machine, made once and generously; camlib never assumes it, never
+defaults it and reads no `carriage_to_tip_mm` with it. The setup and the
+machine state the same value, or posting is refused.
+
+What follows from it, for every tool that fits the bound:
+
+1. The old tool is put away at the start position, as with every mode.
+2. After the `T` word the carriage has not moved, so the new tool's
+   controlled point is somewhere in the box `start position ± (radius, z)`.
+   Nothing more is known.
+3. The program's next block is a rapid of X and Z to the start position
+   (`T0202`, then `G0 X120 Z80` on a diameter control). The control moves
+   the carriage by whatever the difference of the two offsets is.
+4. From the start position on every position is exact, and the program is
+   planned and checked as with the tip kept.
+
+The swap and that rapid are checked as one region. Until the rapid ends the
+new tool's point is somewhere in the box: where it is after the swap, and
+on the way to the start whatever the two axes' rates are (the lathe posts'
+premise for `G0`: each axis runs at its own rate, which keeps the point in
+the rectangle between where it started and the start position, and that
+rectangle is inside the box). camlib sweeps the new tool, its insert and its holder, over the
+whole box (the hull of each convex part of the tool at the box's four
+corners holds that part at every point of the box) and checks the result
+like a rapid: against the stock as the old tool left it, the part, the chuck
+face and, with a grip, the jaws behind it. If it is not clear the tool
+change is refused before any program is written, naming the two tools, the
+bound and the start position. Two things fix it: a start position further
+from the work, or a smaller bound if every tool on the post is within it.
+The check is a bound: a box can be refused although no tool would in fact
+touch anything; a released one is clear for every tool the bound allows.
+
+The posted program is held to the same rule when it is read back. After a
+`T` word the decoder knows the point only to be in the box: the next block
+must be the rapid of both axes to the start position, and anything else
+there (another move, a rapid of one axis, a rapid elsewhere, the spindle)
+is refused. The replay of the decoded program on the stock then checks the
+box of each tool change again, from where the old tool really stopped.
+
+The program's first tool is the one mounted when the program starts, with
+its point at the start position: there is no tool before it and nothing to
+regroup. Tools may still declare `carriage_to_tip_mm` (they are not read);
+two declared offsets further apart than the bound are refused, since the
+bound is then false. Without `tip_within_mm`, `carriage_kept()` is the
+exact form above and nothing about it changes.
 
 The seat's angles are the holder catalogue's, with its signs: a negative
 P-clamp holder is `TurningSeat(-6, -6)`. Negative rake tilts the face up away

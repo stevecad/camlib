@@ -702,7 +702,8 @@ class Machine:
     # to machine Z tool_change_home_z_mm, XY unchanged), or, on a lathe,
     # 'preserve_carriage' (the T word only applies the new offset and no axis
     # moves: the controlled point moves by the new tool's
-    # ToolSetting.carriage_to_tip_mm minus the old one's).
+    # ToolSetting.carriage_to_tip_mm minus the old one's; or, with
+    # tool_change_tip_within_mm, to somewhere within that bound).
     tool_change_position_mode: str = field(kw_only=True)
     tool_change_home_z_mm: float | None = None
     # The machine's rapid traverse rate: nominal time of G0 moves in playback.
@@ -713,6 +714,15 @@ class Machine:
     motion_policy: MotionPolicy | None = None
     schedule_post_feeds: bool = False
     crash_model: object | None = None
+    # With tool_change_position_mode='preserve_carriage', when the tools'
+    # offsets are only in the control's offset table: (x radius, z) mm, how
+    # far any tool's controlled point on this tool post can be from any
+    # other's. After a T word the new tool's point is then known only to be
+    # within that of where the old one's was: the next block must be the
+    # rapid of X and Z to the program's start position, and no
+    # ToolSetting.carriage_to_tip_mm is read. Never assumed: None (the
+    # default) is the exact form, placed by each tool's carriage_to_tip_mm.
+    tool_change_tip_within_mm: tuple | None = None
 
     def __post_init__(self):
         if self.dialect.beam_mark == 'mode' and not {'mark_mode', 'cut_mode'} <= {
@@ -777,11 +787,15 @@ class Machine:
                 )
             for t in tools:
                 offset = t.carriage_to_tip_mm
+                if offset is None and self.tool_change_tip_within_mm is not None:
+                    # The stated bound stands in for the offsets: none is read.
+                    continue
                 if offset is None:
                     raise ValueError(
                         'tool_change_position_mode "preserve_carriage" needs each ToolSetting.carriage_to_tip_mm '
                         "(the tool's controlled point from the carriage reference, x radius and z), and tool "
-                        f'{t.tool!r} has none: camlib assumes no offset; state it'
+                        f'{t.tool!r} has none: camlib assumes no offset; state it, or state how far any '
+                        "tool's tip can be from any other's on the tool post (tool_change_tip_within_mm)"
                     )
                 if (
                     len(offset) != 2
@@ -789,6 +803,26 @@ class Machine:
                     or not all(math.isfinite(v) and abs(v) <= 1e6 for v in offset)
                 ):
                     raise ValueError(f'tool {t.tool!r}: carriage_to_tip_mm must be finite (x radius, z) values')
+        if self.tool_change_tip_within_mm is not None:
+            if self.tool_change_position_mode != 'preserve_carriage':
+                raise ValueError(
+                    'tool_change_tip_within_mm bounds where a tool change that moves no axis leaves the new '
+                    'tool: it belongs to tool_change_position_mode "preserve_carriage", and only to it'
+                )
+            try:
+                bound = tuple(self.tool_change_tip_within_mm)
+            except TypeError:
+                bound = ()
+            if (
+                len(bound) != 2
+                or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in bound)
+                or not all(math.isfinite(v) and 0 <= v <= 1e6 for v in bound)
+            ):
+                raise ValueError(
+                    'tool_change_tip_within_mm is (x radius, z): two finite distances in millimetres, not '
+                    "negative (how far any tool's tip can be from any other's on the tool post)"
+                )
+            object.__setattr__(self, 'tool_change_tip_within_mm', (float(bound[0]), float(bound[1])))
         if self.tool_change_position_mode == 'preserve_spindle':
             # The tip moves along the spindle axis by the difference of the
             # gauge lengths: the tool axis must be work Z, and the tool must
@@ -904,6 +938,7 @@ class Machine:
             'motion_policy',
             'crash_model',
             'gauge_travel_mm',
+            'tool_change_tip_within_mm',
         ):
             if data[key] is None:
                 data.pop(key)
@@ -1595,6 +1630,21 @@ class GCodePost(PostProcessor):
             if not (1 <= event.number <= 99 and 1 <= event.length_register <= 99):
                 raise ValueError('T<nn><oo> needs a tool and an offset number of 1..99')
             self.emit(f'{d.tool_word}{event.number:02d}{event.length_register:02d}')
+            if getattr(self.machine, 'tool_change_tip_within_mm', None) is not None and getattr(
+                self, '_lathe_tool_mounted', False
+            ):
+                # The T word moved no axis and the new tool's point is known
+                # only to be within the machine's stated bound of where the
+                # old one's was (#421): regroup. One rapid of X and Z to
+                # where the plan starts this tool (the start position), both
+                # words written whatever the last block said: nothing has
+                # commanded either axis under the new offset. Each axis runs
+                # there at its own rate; the tool was checked over the whole
+                # box that holds every such path. (The program's first tool
+                # is the one mounted at the start: nothing to regroup.)
+                p = event.position_after_mm
+                self.emit(d.code('rapid'), *self.words((d.axes[0], d.axes[2]), (p[0], p[2])))
+            self._lathe_tool_mounted = True
             return
         self.emit(d.tool_word + str(event.number))
         if d.tool_change == 'm6':
@@ -2130,6 +2180,11 @@ class GCodeDecoder(_TransactionCopy):
         self.selected = None
         self.length = None
         self.tool_pending = False
+        # The program's declared start, and the tool change whose regroup
+        # rapid is still to be read (a lathe's preserve_carriage with
+        # tool_change_tip_within_mm: see regroup_pending).
+        self._start = tuple(program.initial_position_mm)
+        self._regroup = None
         self.offset = None
         self.rpm = 0
         self.coolant = 'off'
@@ -2191,6 +2246,54 @@ class GCodeDecoder(_TransactionCopy):
         required = self._required
         if not required <= self.ready:
             raise ValueError('incomplete explicit decoder modal initialization: ' + str(sorted(required - self.ready)))
+
+    @property
+    def regroup_pending(self):
+        """True after a T word that left the new tool's point unknown within
+        the machine's ``tool_change_tip_within_mm`` (a lathe whose tool
+        change moves no axis, #421), until the regroup block is read: the
+        rapid of X and Z to the program's start position. That one rapid may
+        move both axes off a straight line (the tool was checked over the
+        whole box holding every such path), so a decoder that refuses
+        two-axis rapids lets it through to ``GCodeDecoder.read_line``, which
+        refuses every other block while this is true."""
+        return self._regroup is not None
+
+    def _regroup_problem(self):
+        """What a program owes after a T word under
+        ``tool_change_tip_within_mm``, for a refusal."""
+        d = self.machine.dialect
+        within = self.machine.tool_change_tip_within_mm
+        return (
+            f'after the tool change to {self._regroup.tool!r} its tip is only known to be within radius '
+            f'±{within[0]:g} mm, z ±{within[1]:g} mm of where the tool before it stopped (the machine keeps the '
+            'carriage and states tool_change_tip_within_mm), so the next block must be the rapid of both axes to '
+            f'the start position, radius {self._start[0]:g}, z {self._start[2]:g} mm '
+            f'({d.code("rapid")} {d.axes[0]}.. {d.axes[2]}..), and nothing else; '
+        )
+
+    def _read_regroup(self, effects, values):
+        """The block after a T word under ``tool_change_tip_within_mm``: the
+        regroup rapid, and nothing else. Only then is the position known."""
+        d = self.machine.dialect
+        x, z = d.axes[0], d.axes[2]
+        if effects != ['rapid'] or set(values) != {x, z}:
+            raise ValueError(
+                self._regroup_problem() + 'this block is not that rapid. Post the program again; do not edit '
+                'the blocks of a tool change'
+            )
+        self.validate_initialized()
+        target = (values[x] * self.units * (0.5 if d.x_diameter else 1), self._start[1], values[z] * self.units)
+        if any(abs(a - b) > self.machine.tolerance_mm for a, b in zip(target, self._start)):
+            raise ValueError(
+                self._regroup_problem() + f'this rapid goes to radius {target[0]:g}, z {target[2]:g} mm instead. '
+                'Post the program again; do not edit the blocks of a tool change'
+            )
+        change = self._regroup
+        self.position = target
+        self._regroup = None
+        self.tool_pending = False
+        return [replace(change, position_after_mm=target)]
 
     def hold_axes(self):
         """Call from ``read_line`` while reading a block that sets an offset
@@ -2337,6 +2440,12 @@ class GCodeDecoder(_TransactionCopy):
             result.extend(self.read_line(line, context))
             held.append(self._holding)
         self._holding = False
+        if self._regroup is not None:
+            # The tool change's blocks end without its regroup rapid.
+            raise ValueError(
+                self._regroup_problem() + 'the tool change was written without it. The post must write it right '
+                'after the T word (GCodePost.on_tool_change does)'
+            )
         if any(held):
             self.held = tuple(held)
         if pending is not None:
@@ -2392,6 +2501,8 @@ class GCodeDecoder(_TransactionCopy):
                     if word in values:
                         raise ValueError('duplicate NC word')
                     values[word] = value
+        if self._regroup is not None:
+            return self._read_regroup(effects, values)
         if self.tap_return is not None and (len(effects) != 1 or effects[0] != 'cycles_off'):
             raise ValueError('a tapping cycle must be followed by its return (and G80 for a canned cycle)')
         if len(effects) == 1 and effects[0] in ('rapid', 'linear', 'arc_cw', 'arc_ccw'):
@@ -2614,8 +2725,16 @@ class GCodeDecoder(_TransactionCopy):
             if d.tool_change == 'lathe_t':
                 # T<nn><oo>: tool nn with its offset oo, in one word.
                 self.selected = int(number) // 100
-                self._activate(self.selected)
-                output.append(self._length(int(number) % 100))
+                regroup = self._activate(self.selected)
+                change = self._length(int(number) % 100)
+                if regroup:
+                    # The tool's point is not known until its regroup rapid
+                    # is read: the change is reported with that block, and
+                    # until then the tool transition is not complete.
+                    self._regroup = change
+                    self.tool_pending = True
+                else:
+                    output.append(change)
             elif d.tool_change == 'direct_t':
                 self._activate(self.selected)
         if d.length_word in values and d.length_word not in used:
@@ -3366,7 +3485,21 @@ class GCodeDecoder(_TransactionCopy):
             # program's declared position.
             x, y, z = self.position
             self.position = (x, y, z + (old.gauge_length_mm - self.active.gauge_length_mm))
-        if self.machine.tool_change_position_mode == 'preserve_carriage' and old is not None:
+        regroup = False
+        if (
+            self.machine.tool_change_position_mode == 'preserve_carriage'
+            and old is not None
+            and self.machine.tool_change_tip_within_mm is not None
+        ):
+            # The same T word on a machine that states only a bound for its
+            # tool post (#421): the carriage stays and the new tool's point
+            # is somewhere within tool_change_tip_within_mm of where the old
+            # one's was. Nothing more is known until the next block, which
+            # must be the regroup rapid to the start position
+            # (_read_regroup). No offset is read. The first tool starts at
+            # the program's declared position.
+            regroup = True
+        elif self.machine.tool_change_position_mode == 'preserve_carriage' and old is not None:
             # A lathe T word that only applies the new offset (#416): the
             # carriage stays, so the controlled point moves by the new
             # tool's offset from the carriage reference minus the old one's
@@ -3384,6 +3517,7 @@ class GCodeDecoder(_TransactionCopy):
             self.position = (self.position[0], self.position[1], gauge_z - self.active.gauge_length_mm)
         self.length = None
         self.tool_pending = True
+        return regroup
 
     def _length(self, number):
         if self.active is None:
@@ -3444,6 +3578,7 @@ class NativeGCodeDecoder(GCodeDecoder):
             or self.cycle_active
             or self.machine.dialect.x_diameter
             or self.feed_rev is not None
+            or self.regroup_pending
         ):
             return super().read_line(line, context)
         if self.ended:

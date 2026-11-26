@@ -436,6 +436,49 @@ def mill(tools, dialect=None, **settings):
     return Machine("explicit", tools, **values)
 
 
+def lathe_regroup():
+    """Two tools on a lathe whose tool change keeps the carriage and whose
+    tool post states only a bound (#421): the first tool faces and is put
+    away at the start, the second is changed in and makes two moves."""
+    from test_post import fixture
+
+    p, _ = fixture()
+    t1 = p.tools[0]
+    t2 = replace(t1, id="t2")
+    dialect = GCodeDialect.linuxcnc(x_diameter=True, tool_change="lathe_t", compensation_register=False).with_commands(
+        lathe_diameter_mode="G7", tool_change=None, length_on=None
+    )
+    start = (20, 0, 5)
+    events = (
+        WorkOffset(1),
+        ToolChange("t1", 2, 3, start),
+        Spindle(800, "cw"),
+        Motion(1, "face", "t1", Line(start, (20, 0, 2)), None, "rapid"),
+        Motion(2, "face", "t1", Line((20, 0, 2), (12, 0, 2)), 200, "cut"),
+        Motion(3, "face", "t1", Line((12, 0, 2), (12, 0, 5)), None, "rapid"),
+        Motion(4, "face", "t1", Line((12, 0, 5), start), None, "rapid"),
+        Spindle(0),
+        ToolChange("t2", 4, 4, start),
+        Spindle(600, "cw"),
+        Motion(5, "groove", "t2", Line(start, (20, 0, 3)), None, "rapid"),
+        Motion(6, "groove", "t2", Line((20, 0, 3), start), None, "rapid"),
+        Spindle(0),
+    )
+    program = Program(p.id, p.revision, (t1, t2), start, events, tolerance_mm=p.tolerance_mm)
+    tools = (
+        ToolSetting.for_tool(t1, number=2, length_register=3),
+        ToolSetting.for_tool(t2, number=4, length_register=4),
+    )
+    machine = mill(
+        tools,
+        dialect=dialect,
+        planes=("xz",),
+        tool_change_position_mode="preserve_carriage",
+        tool_change_tip_within_mm=(5, 5),
+    )
+    return program, machine
+
+
 def rust_program(program, machine, lowering=None):
     data = dict(program=program.to_dict(), machine=machine.to_dict())
     if lowering is not None:
@@ -652,6 +695,28 @@ class RustPostEventsTest(unittest.TestCase):
         text = self.assert_same(program, machine)
         self.assertIn("T0203", text)
         self.assertIn("G96 D2500 S150 M3", text)
+
+    def test_a_lathe_tool_change_within_a_bound_regroups_in_both_posts(self):
+        """#421: a lathe whose T word moves no axis and whose tool post
+        states only a bound (preserve_carriage with
+        tool_change_tip_within_mm): each T word after the first is followed
+        by the rapid of X and Z to the start, and each post's own decoder
+        reads it back."""
+        program, machine = lathe_regroup()
+        text = self.assert_same(program, machine).splitlines()
+        self.assertEqual(text[text.index("T0404") + 1], "G0 X40 Z5")
+        # The first tool is the one mounted at the start: nothing to regroup.
+        self.assertEqual(text[text.index("T0203") + 1], "M3 S800")
+        # tests/rust_post.rs reads this program with the Rust decoder alone;
+        # its input must stay what this test posts.
+        fixture = json.loads((ROOT / "fixtures/posts/rust/lathe-regroup.json").read_text())
+        self.assertEqual(fixture, plain(dict(program=program.to_dict(), machine=machine.to_dict())))
+        # The exact form of the same machine (every tool's offset declared)
+        # writes no such block, in either post.
+        tools = tuple(replace(t, carriage_to_tip_mm=(-25, -40)) for t in machine.tools)
+        exact = replace(machine, tools=tools, tool_change_tip_within_mm=None)
+        text = self.assert_same(program, exact).splitlines()
+        self.assertEqual(text[text.index("T0404") + 1], "M3 S600")
 
 
 if __name__ == "__main__":

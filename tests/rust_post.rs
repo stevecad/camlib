@@ -506,3 +506,105 @@ fn preserve_spindle_is_refused_where_it_is_not_modelled() {
     let error = Machine::from_json(machine).unwrap_err();
     assert!(error.contains("work Z axis along machine Z"), "{error}");
 }
+
+/// A lathe whose T word moves no axis and whose tool post states only a
+/// bound (#421): `preserve_carriage` with `tool_change_tip_within_mm`.
+/// fixtures/posts/rust/lathe-regroup.json is the program and machine
+/// python/tests/test_rust_post.py posts with both posts.
+const LATHE_REGROUP: &str = include_str!("../fixtures/posts/rust/lathe-regroup.json");
+
+#[test]
+fn a_t_word_within_a_stated_bound_must_be_followed_by_its_regroup_rapid() {
+    let report = camlib::gcode::post_program(LATHE_REGROUP, &AtomicBool::new(false)).unwrap();
+    let report: Value = serde_json::from_str(&report).unwrap();
+    let program: Vec<String> = report["program"]
+        .as_str()
+        .unwrap()
+        .lines()
+        .map(String::from)
+        .collect();
+    // The second T word, then the rapid of X (a diameter) and Z to the
+    // start position (radius 20, z 5); the first tool gets none.
+    let change = program.iter().position(|l| l == "T0404").unwrap();
+    assert_eq!(program[change + 1], "G0 X40 Z5");
+    let first = program.iter().position(|l| l == "T0203").unwrap();
+    assert_eq!(program[first + 1], "M3 S800");
+
+    // The decoder alone, on the same blocks as far as the T word.
+    let input: Value = serde_json::from_str(LATHE_REGROUP).unwrap();
+    let machine = Machine::from_json(input["machine"].clone()).unwrap();
+    let context = Context {
+        id: 1,
+        operation: "op".into(),
+        kind: MoveKind::Rapid,
+    };
+    let mut decoder = Decoder::new(&machine, [20., 0., 5.], Default::default()).unwrap();
+    for line in &program[..change] {
+        decoder
+            .read(std::slice::from_ref(line), Some(&context))
+            .unwrap_or_else(|e| panic!("{line}: {e}"));
+    }
+    let after = |blocks: &[&str]| {
+        let lines: Vec<String> = blocks.iter().map(|b| b.to_string()).collect();
+        decoder.clone().read(&lines, Some(&context))
+    };
+    // The post's own two blocks: one tool change, complete at the start.
+    let events = after(&["T0404", "G0 X40 Z5"]).unwrap();
+    assert!(
+        matches!(
+            events.as_slice(),
+            [camlib::motion::Event::ToolChange { tool, position_after_mm, .. }]
+                if tool == "t2" && *position_after_mm == [20., 0., 5.]
+        ),
+        "{events:?}"
+    );
+    // Anything else after the T word is refused: the position is not known.
+    for (blocks, problem) in [
+        (&["T0404"][..], "the tool change was written without it"),
+        (&["T0404", "G0 X40"], "this block is not that rapid"),
+        (&["T0404", "G0 Z5"], "this block is not that rapid"),
+        (&["T0404", "G1 X40 Z5 F100"], "this block is not that rapid"),
+        (&["T0404", "M3 S600"], "this block is not that rapid"),
+        (&["T0404", "M8", "G0 X40 Z5"], "this block is not that rapid"),
+        (
+            &["T0404", "G0 X30 Z5"],
+            "this rapid goes to radius 15, z 5 mm instead",
+        ),
+    ] {
+        let error = after(blocks).unwrap_err();
+        assert!(
+            error.contains(
+                "after the tool change to \"t2\" its tip is only known to be within radius ±5 mm, z ±5 mm"
+            ) && error.contains("the start position, radius 20, z 5 mm")
+                && error.contains(problem),
+            "{blocks:?}: {error}"
+        );
+    }
+
+    // The machine's declaration: the bound belongs to preserve_carriage and
+    // stands in for the offsets there; without it each tool states its own.
+    let mut bare = input["machine"].clone();
+    bare.as_object_mut()
+        .unwrap()
+        .remove("tool_change_tip_within_mm");
+    let error = Machine::from_json(bare).unwrap_err();
+    assert!(
+        error.contains("needs each ToolSetting.carriage_to_tip_mm")
+            && error.contains("tool_change_tip_within_mm"),
+        "{error}"
+    );
+    let mut table = input["machine"].clone();
+    table["tool_change_position_mode"] = "preserve_tip".into();
+    assert!(
+        Machine::from_json(table)
+            .unwrap_err()
+            .contains("belongs to tool_change_position_mode \"preserve_carriage\"")
+    );
+    let mut negative = input["machine"].clone();
+    negative["tool_change_tip_within_mm"] = serde_json::json!([-1.0, 5.0]);
+    assert!(
+        Machine::from_json(negative)
+            .unwrap_err()
+            .contains("two finite distances")
+    );
+}

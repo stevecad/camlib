@@ -192,7 +192,11 @@ def _check_lathe_tool_change(machine, config):
     turning = config['turning']
     change = turning.get('tool_change') or {'mode': 'tip_kept'}
     mode = machine.tool_change_position_mode
-    kept = change['mode'] == 'carriage_kept'
+    # The carriage kept within a stated bound (#421) is the carriage kept:
+    # the same machine mode, with the bound in place of the offsets.
+    within = change.get('tip_within_mm')
+    stated = getattr(machine, 'tool_change_tip_within_mm', None)
+    kept = change['mode'] in ('carriage_kept', 'carriage_kept_within')
     if kept != (mode == 'preserve_carriage'):
         if kept:
             raise ValueError(
@@ -206,6 +210,33 @@ def _check_lathe_tool_change(machine, config):
             f'(tool_change_position_mode="preserve_carriage"), but the setup\'s tool change is {change["mode"]}: '
             'plan with Setup(tool_change=TurnToolChange.carriage_kept())'
         )
+    if kept and (within is None) != (stated is None):
+        # One of them places each tool exactly by its offset, the other only
+        # within a bound: different programs (the bound's has a regroup
+        # rapid after each T word) and different checks.
+        if within is None:
+            raise ValueError(
+                f'the machine states only a bound for its tool post (tool_change_tip_within_mm={stated}), but '
+                'the setup changes tools by exact offsets (TurnToolChange.carriage_kept() with each '
+                "TurnToolSetting.carriage_to_tip_mm): plan with the machine's bound, "
+                f'TurnToolChange.carriage_kept(tip_within_mm={stated}), or declare the machine with each '
+                'ToolSetting.carriage_to_tip_mm and no tool_change_tip_within_mm'
+            )
+        raise ValueError(
+            f'the setup changes tools with the carriage kept within a bound (TurnToolChange.carriage_kept('
+            f'tip_within_mm={tuple(within)})), but the machine states no bound: declare the same on the machine, '
+            f'tool_change_tip_within_mm={tuple(within)}, if that is true of its tool post; camlib assumes none'
+        )
+    if within is not None:
+        if tuple(float(v) for v in within) != tuple(stated):
+            raise ValueError(
+                f'the setup checks each tool change within tip_within_mm={tuple(within)} (TurnToolChange.'
+                f'carriage_kept), but the machine states tool_change_tip_within_mm={stated}: one tool post has '
+                'one bound; state the same value in both'
+            )
+        # No offset is read and no table position: each change is checked
+        # in the posted output (its T word, then its regroup rapid).
+        return
     if change['mode'] == 'tip_kept':
         return
     settings = {t['tool']['id']: t for t in turning['tools']}

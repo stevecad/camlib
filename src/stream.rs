@@ -1991,13 +1991,15 @@ impl StreamReceiver {
     /// may start at the manifest's declared tool-change pose instead. On a
     /// lathe whose tool change moves the controlled point (the carriage
     /// kept, or at a machine position: #416) a new tool starts only where
-    /// its change leaves it: the previous end is the old tool's point.
+    /// its change leaves it: the previous end is the old tool's point. (The
+    /// carriage kept within a stated bound, #421, regroups every new tool
+    /// to the start position: its moves start as with the tip kept.)
     fn starts_in_place(&self, motion: &Motion) -> Result<bool, String> {
         let placed = self
             .manifest
             .turning
             .as_ref()
-            .is_some_and(|t| !t.tool_change.is_tip_kept());
+            .is_some_and(|t| t.tool_change.places_by_offset());
         if placed && self.last_tool.as_deref() != Some(motion.tool.as_str()) {
             if self.placed_tool.as_deref() == Some(motion.tool.as_str()) {
                 return Ok(motion.curve.start() == self.position);

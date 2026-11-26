@@ -93,6 +93,9 @@ pub struct DefaultPost {
     /// that names it (`PostProcessor._placed`). Set by `call` from the
     /// blocks each hook writes.
     placed: [bool; 3],
+    /// A lathe T word has been written: a later one changes the tool (and,
+    /// under `tool_change_tip_within_mm`, is followed by its regroup rapid).
+    lathe_tool_mounted: bool,
 }
 
 /// `PostProcessor.version`/`GCodePost.version` of the Python post this one
@@ -227,6 +230,7 @@ impl DefaultPost {
             work_offset: None,
             probe_label: 100,
             placed: [false; 3],
+            lathe_tool_mounted: false,
         }
     }
     pub fn machine(&self) -> &Machine {
@@ -500,6 +504,7 @@ impl DefaultPost {
             Event::ToolChange {
                 number,
                 length_register,
+                position_after_mm,
                 ..
             } => {
                 if let Some(Controller::Carvera(_)) = &self.machine.controller {
@@ -510,8 +515,25 @@ impl DefaultPost {
                     if !((1..=99).contains(number) && (1..=99).contains(length_register)) {
                         return Err("T<nn><oo> needs a tool and an offset number of 1..99".into());
                     }
-                    return self
-                        .emit(&[&format!("{}{number:02}{length_register:02}", d.tool_word)]);
+                    self.emit(&[&format!("{}{number:02}{length_register:02}", d.tool_word)])?;
+                    if self.machine.tool_change_tip_within_mm.is_some() && self.lathe_tool_mounted {
+                        // The T word moved no axis and the new tool's point
+                        // is known only to be within the machine's stated
+                        // bound of where the old one's was (#421): regroup.
+                        // One rapid of X and Z to where the plan starts this
+                        // tool (the start position), both words written
+                        // whatever the last block said. (The program's first
+                        // tool is the one mounted at the start.)
+                        let mut block = vec![d.code("rapid")?.to_string()];
+                        block.extend(self.words(
+                            &[d.axes[0].as_str(), d.axes[2].as_str()],
+                            &[position_after_mm[0], position_after_mm[2]],
+                            true,
+                        )?);
+                        self.emit_owned(block)?;
+                    }
+                    self.lathe_tool_mounted = true;
+                    return Ok(());
                 }
                 self.emit(&[&format!("{}{number}", d.tool_word)])?;
                 if d.tool_change == "m6" {
