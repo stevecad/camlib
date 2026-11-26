@@ -1,0 +1,58 @@
+{
+  "name": "lathe-second-chucking",
+  "operations": {
+    "face": {
+      "air_cut_mm": 4.0,
+      "cut_mm": 41.6,
+      "cycle_seconds_exact_stop": 17.56,
+      "cycle_seconds_tangent": 17.56,
+      "link_mm": 0.0,
+      "moves": 8,
+      "plunges": 0,
+      "rapid_mm": 52.8,
+      "removed_mm3": 1608.495,
+      "retracts": 2
+    },
+    "finish": {
+      "air_cut_mm": 17.2,
+      "cut_mm": 41.113,
+      "cycle_seconds_exact_stop": 21.745,
+      "cycle_seconds_tangent": 21.739,
+      "link_mm": 0.0,
+      "moves": 11,
+      "plunges": 1,
+      "rapid_mm": 77.8,
+      "removed_mm3": 516.99,
+      "retracts": 1
+    },
+    "rough": {
+      "air_cut_mm": 2.121,
+      "cut_mm": 71.921,
+      "cycle_seconds_exact_stop": 18.913,
+      "cycle_seconds_tangent": 18.913,
+      "link_mm": 0.0,
+      "moves": 14,
+      "plunges": 0,
+      "rapid_mm": 95.0,
+      "removed_mm3": 6395.827,
+      "retracts": 7
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 58.217,
+    "cycle_seconds_tangent": 58.211,
+    "material": {
+      "leftover_mm3": [
+        2.077,
+        361.298
+      ],
+      "overcut_mm3": [
+        0.0,
+        0.0
+      ]
+    },
+    "moves": 33,
+    "post_error": null,
+    "posted_blocks": 58
+  }
+}

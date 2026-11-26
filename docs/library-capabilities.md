@@ -54,6 +54,17 @@ See [Operations](operations.md) for parameters. Summary:
 Turning uses the supplied insert profile for cutting and clearance checks.
 See the [turning insert premises](operations.md#turning-insert-premises).
 
+A part turned in two chuckings is two lathe setups
+([second chucking](operations.md#second-chucking)): a declared grip
+(`ChuckGrip`) lets the chuck face sit along the part and is checked against
+the stock; the second setup's stock is what the first left, turned end for
+end (`TurnStockSpec.from_turned`; a stepped blank is declared the same way,
+as `TurnStockSection`s); `TurnRough` and `TurnFinish` take the stretch of
+the profile each chucking turns (`z_from_mm`, `z_to_mm`) and report the
+rest as left; a cut that would reach the jaws is refused by name.
+`turning_section` reports a hole in the chuck-side end (`back_bore`)
+instead of refusing the part.
+
 [Indexable mills](indexable-geometry.md) use mounted annular cutting profiles,
 separate noncutting bodies and declared depth/entry limits. They support Facing,
 Pocket, raster/offset Roughing, exterior-entry Contour without tabs and supplied

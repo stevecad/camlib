@@ -3696,9 +3696,11 @@ From CAD: `camlib.cadquery.turning_section(solid)` returns the `profile` and
 `bore` of a solid turned about its Z axis (front face toward +Z), lines and
 arcs kept exact. It refuses a solid that is not a solid of revolution (its
 volume differs from the half-section revolved: flats, cross holes, keyways),
-closed voids, cavities on the axis behind solid material, undercuts and
+closed voids, chambers on the axis open to neither end, undercuts and
 other curve types. Rectangular grooves in the front face come back as
-`s.face_grooves` (`TurningSetup.from_section(s, ...)` takes all three).
+`s.face_grooves` (`TurningSetup.from_section(s, ...)` takes all three). A
+hole in the chuck-side end, which this side cannot turn, comes back as
+`s.back_bore` ([second chucking](#second-chucking)).
 
 ```python
 s = camlib.cadquery.turning_section(part.val())
@@ -3710,6 +3712,136 @@ exactly and its straight sides. Material may reach an insert only through
 its cutting edges: a move whose back (non-cutting) side leads into stock is
 refused, and stock beyond the edges' reach is left for the holder check, so
 a depth of cut beyond the cutting edge is refused.
+
+### Second chucking
+
+A turned part is normally made in two chuckings: one end is turned, the part
+is taken out, turned end for end and gripped on a diameter the first
+chucking finished, and the other end is turned. Each chucking is its own
+lathe `Setup` with its own program. Four declarations make the pair:
+
+- **The jaws on the work: `TurningSetup(grip=ChuckGrip(length_mm,
+  radius_mm))`.** Without a grip the part must lie wholly in front of the
+  chuck face `chuck_z_mm`, and a chuck face along the part is refused. With
+  one, the jaws hold the work from `chuck_z_mm - length_mm` to `chuck_z_mm`,
+  closed on `radius_mm`, and the chuck face may sit along the part. Before
+  anything is planned the grip is checked against the setup's stock: over
+  the whole held length the stock must be the cylinder of that radius,
+  within the setup's `tolerance_mm` (jaws hold a parallel diameter; the
+  stock cell its own end face lies in need only be no larger), it must
+  reach that far, the part may not be larger than it there, and some of the
+  part must lie in front of the chuck clearance. A chuck face set by mistake
+  onto a shoulder, a taper, a fillet or no material is refused, naming the
+  stretch of stock that is not the cylinder.
+- **The stock the first chucking left: `TurnStockSpec.from_turned(stock,
+  reversed=True, z_shift_mm=...)`.** `stock` is the first setup's finished
+  stock (`state.stock()`). `reversed=True` turns it end for end (z becomes
+  `z_shift_mm - z`), `z_shift_mm` places it in the second setup's
+  coordinates; ends with no material left (the faced-off front) are dropped.
+  The cells keep their radius bounds, so the second setup's stock is the
+  first one's, cell for cell, where the two grids line up, and otherwise
+  each bin holds the bounds of the cells it overlaps (the same stock known
+  less sharply, never less material). A blank that was not turned by camlib
+  is declared the same way: `TurnStockSpec(..., sections=(TurnStockSection(
+  z_mm, outer_mm, inner_mm), ...))`, the sections tiling the stock's length.
+- **What each chucking turns: `TurnRough(z_from_mm=, z_to_mm=)` and
+  `TurnFinish(z_from_mm=, z_to_mm=)`.** The operation's nose centre works
+  between the two z (either may be left out); the path is cut exactly there.
+  With `z_from_mm` inside the profile, roughing passes start a clearance in
+  front of it and finishing feeds in radially at it; the move checks decide
+  whether the insert can (a rapid into stock, or an insert's back leading
+  into it, is refused). A `z_to_mm` behind the chuck clearance is refused.
+- **A hole in the chuck-side end: `turning_section(solid).back_bore`.** A
+  part bored from one end reads turned around: the hole this side cannot
+  reach comes back as `back_bore` (from the chuck-side face to its deepest
+  point) instead of a refusal, and is the `bore` of the same solid read from
+  its other end.
+
+Nothing behind the chuck face is machined, in any setup. With a grip:
+
+- An operation whose own target is behind the chuck face (a facing depth, a
+  groove, a part-off, a thread end, a drilling or boring depth) is refused
+  before any move, naming the chuck face and the jaws.
+- Roughing and finishing stop at the clearance in front of the chuck face
+  (`chuck_z_mm + clearance_mm`), exactly; their reports list the part's z
+  ranges they did not turn, `left_for_another_setup_z_mm`, as does a bounded
+  operation without a grip. That is a statement, not a failure.
+- Every move's insert and holder are checked against the chuck face as
+  before, the posted program's moves included; a refusal says the jaws hold
+  the work behind that face.
+- The material check compares the whole part with the stock, the held end
+  included: its `held` entry gives the jaws' z range and how many cells of
+  leftover lie behind the chuck face, and each such finding carries
+  `behind_chuck_face`. After the first chucking that is the other end's
+  material; after the second it is zero where the first chucking finished
+  the diameter the jaws are on.
+
+```python
+# A shaft 60 mm long: 20 mm and 24 mm diameter ends, a 30 mm collar between.
+# First chucking: the sawn bar (32 mm x 64 mm, 2 mm to face off each end) in
+# the jaws by 18 mm; the 20 mm end and the collar are turned.
+first = camlib.Setup(
+    "first", stock=camlib.TurnStockSpec(-62, 2, 16), tools=tools, initial_position_mm=(30, 0, 20),
+    operations=(camlib.TurnFace("face", "cnmg", 0, feed_mm_rev=0.15, rpm=1000),
+                camlib.TurnRough("rough", "cnmg", z_to_mm=-40, feed_mm_rev=0.25, rpm=1000),
+                camlib.TurnFinish("finish", "cnmg", z_to_mm=-40, feed_mm_rev=0.1, rpm=1200)),
+    turning=camlib.TurningSetup(
+        profile=((0, 0, 0), (10, 0, 0), (10, -20, 0), (15, -20, 0), (15, -40, 0), (12, -40, 0), (12, -60, 0)),
+        chuck_z_mm=-44, grip=camlib.ChuckGrip(length_mm=18, radius_mm=16),
+        clearance_mm=2, tolerance_mm=1e-3))
+with camlib.Job("shaft-1", "1", (first,)).record("first", rapid_mm_min=6000) as run:
+    run.wait()
+    player = camlib.Player(run)
+    player.seek(camlib.Cursor(run.status()["available"]))
+    left = player.state.stock()                      # what the first chucking left
+
+# Second chucking: turned around (the old z -60 is the new front face, z 0),
+# gripped on the finished 20 mm diameter, 5 mm of it in front of the jaws.
+second = camlib.Setup(
+    "second", stock=camlib.TurnStockSpec.from_turned(left, reversed=True, z_shift_mm=-60),
+    tools=tools, initial_position_mm=(30, 0, 20),
+    operations=(camlib.TurnFace("face", "cnmg", 0, feed_mm_rev=0.15, rpm=1000),
+                camlib.TurnRough("rough", "cnmg", z_to_mm=-20, feed_mm_rev=0.25, rpm=1000),
+                camlib.TurnFinish("finish", "cnmg", z_to_mm=-20, feed_mm_rev=0.1, rpm=1200)),
+    turning=camlib.TurningSetup(
+        profile=((0, 0, 0), (12, 0, 0), (12, -20, 0), (15, -20, 0), (15, -40, 0), (10, -40, 0), (10, -60, 0)),
+        chuck_z_mm=-45, grip=camlib.ChuckGrip(length_mm=15, radius_mm=10),
+        clearance_mm=2, tolerance_mm=1e-3))
+```
+
+Each setup is posted and released like any lathe setup (`job.post_nc`).
+Without `z_to_mm` the first finish would be refused where the insert's
+trailing edge cannot follow the collar's far shoulder; with it, that
+shoulder is the second chucking's, which turns it as a shoulder facing the
+tool.
+
+Premises and limits, stated rather than assumed:
+
+- The chuck is a half-space: everything behind `chuck_z_mm` is closed to
+  every tool part, at every radius. It contains the entry-inhibition area
+  a lathe control checks tool tips against (the jaws' outline, set by their
+  length and depth and the chuck's position: FANUC Series 0i-TD Operator's
+  Manual, lathe system, B-64304EN-1, "Chuck and tail stock barriers")
+  whatever the jaws' own dimensions, so `chuck_z_mm` is the face of the
+  jaws (their end toward the tool), not of the chuck body. A hole is
+  therefore not bored or drilled past the jaw face in the chucking that
+  holds that end.
+- The grip is on an outside diameter. Holding in a bore, a collet on a
+  taper, soft jaws on a contour, a tailstock, a steady rest and a
+  sub-spindle transfer are not modelled.
+- camlib checks that the grip is geometrically what was declared. It does
+  not judge whether it holds the part against the cut: jaw type, pressure
+  and the cutting forces are not known to it.
+- The carried stock is the first run's stock model, not a measurement of
+  the part: where the part is put back (`z_shift_mm`) and how true it runs
+  in the jaws are the setup's to state and the operator's to achieve.
+  Removed face-groove rings are not carried (they count as possible
+  material).
+- Each chucking's program holds only the portion of the profile it turns,
+  as the contour between the P and Q blocks of a stock removal cycle does
+  (the same FANUC manual, "Stock removal in turning (G71)" and "Finishing
+  cycle (G70)"). The bounds are of the nose centre; the nose itself reaches
+  one nose radius past them, outside the part.
 
 ## Probing and tool setting
 

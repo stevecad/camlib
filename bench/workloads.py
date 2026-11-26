@@ -837,6 +837,38 @@ def _lathe_face_groove():
     )()
 
 
+def _lathe_second_chucking():
+    """The second of a stepped shaft's two chuckings (#418). The first (the
+    sawn bar held by 18 mm; the 20 mm end and the collar turned) is run here
+    to get the stock it leaves; the workload is the part turned around on
+    that stock, held on the finished 20 mm diameter: faced to length, the
+    24 mm end roughed and finished up to the collar."""
+    import camlib
+    import test_turning as t
+
+    def turn_to(z_to_mm):
+        return (
+            camlib.TurnFace("face", "cnmg", 0, feed_mm_rev=0.15, rpm=1000),
+            camlib.TurnRough("rough", "cnmg", feed_mm_rev=0.25, rpm=1000, z_to_mm=z_to_mm),
+            camlib.TurnFinish("finish", "cnmg", feed_mm_rev=0.1, rpm=1200, z_to_mm=z_to_mm),
+        )
+
+    first = t.job(
+        stock=camlib.TurnStockSpec(-62, 2, 16),
+        profile=((0, 0, 0), (10, 0, 0), (10, -20, 0), (15, -20, 0), (15, -40, 0), (12, -40, 0), (12, -60, 0)),
+        chuck_z_mm=-44,
+        grip=camlib.ChuckGrip(18, 16),
+        operations=turn_to(-40),
+    ).plan()
+    return _lathe(
+        stock=camlib.TurnStockSpec.from_turned(first.stock, reversed=True, z_shift_mm=-60),
+        profile=((0, 0, 0), (12, 0, 0), (12, -20, 0), (15, -20, 0), (15, -40, 0), (10, -40, 0), (10, -60, 0)),
+        chuck_z_mm=-45,
+        grip=camlib.ChuckGrip(15, 10),
+        operations=turn_to(-20),
+    )()
+
+
 WORKLOADS = (
     Workload(
         "indexable-facing",
@@ -1294,6 +1326,13 @@ WORKLOADS = (
         "Face and cut a face groove",
         {"face": ("TurnFace", 49), "fg": ("TurnFaceGroove", 57)},
         _lathe_face_groove,
+    ),
+    Workload(
+        "lathe-second-chucking",
+        "lathe",
+        "Second chucking of a stepped shaft: turned around, held on its finished diameter, on the stock the first left",
+        {"face": ("TurnFace", 49), "rough": ("TurnRough", 50), "finish": ("TurnFinish", 51)},
+        _lathe_second_chucking,
     ),
 )
 

@@ -193,7 +193,15 @@ can say clear, violation or uncertain honestly.
   its insert's size tolerance (ISO 1832 d and m), everything an insert of
   that tolerance can occupy relative to its measured nose
   (`src/turning/size.rs`): the nose and the two cutting edges at it are
-  fixed, so the cut and the program do not change with it.
+  fixed, so the cut and the program do not change with it. A stock that is
+  not a bar is declared in its spec as sections along z with a cell's own
+  bounds (`TurnStockSpec.sections`); `TurnStock::carried` writes a finished
+  stock that way for the next chucking, turned end for end, so the planner,
+  receivers, checkpoints and the replay of posted programs start from it
+  like from any stock. A setup whose jaws hold the part itself declares the
+  grip (`src/turning/chucking.rs`: the grip's checks against the stock, the
+  z window roughing and finishing work in, and what is refused behind the
+  chuck face).
 
 - **Tri-dexel** (`src/dexel.rs`, `DexelStock`; issue #1): three grids of rays
   along X, Y and Z, each ray a prism (its cell's rectangle times its line)
