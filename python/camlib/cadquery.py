@@ -1538,7 +1538,14 @@ class TurnSection:
     the back corner, ``bore`` (the hole from the front face to its deepest
     point, or None), the front and back z, and the solid's volume against the
     volume of revolution of the section (their difference proves the part is
-    turned)."""
+    turned).
+
+    ``back_bore``: a hole in the chuck-side end, (radius, z, bulge) from the
+    back face to its deepest point on the axis, or None. A setup holding the
+    part by that end cannot turn it, and its profile and bore do not include
+    it: it is reported here, left for the chucking that holds the part by
+    its other end, where the same hole is the ``bore`` of the solid turned
+    around."""
 
     profile: tuple
     bore: tuple | None
@@ -1547,6 +1554,7 @@ class TurnSection:
     volume_mm3: float
     revolved_volume_mm3: float
     face_grooves: tuple = ()
+    back_bore: tuple | None = None
 
 
 def turning_section(solid, *, tolerance_mm=1e-6):
@@ -1558,7 +1566,12 @@ def turning_section(solid, *, tolerance_mm=1e-6):
     bulges). Refused: a solid that is not a solid of revolution about Z (its
     volume differs from 2 pi x section area x centroid radius: flats, cross
     holes, keyways), closed internal voids, undercuts (a profile or bore
-    turning back toward the front) and other curve types."""
+    turning back toward the front) and other curve types.
+
+    A hole in the chuck-side end (a part bored from its other end, read
+    turned around) is not turned from this side: it comes back as
+    ``back_bore`` and the section is otherwise complete. A closed chamber
+    on the axis, open to neither end, is still refused."""
     import cadquery as cq
     from OCP.BRepAdaptor import BRepAdaptor_Curve
     from OCP.GeomAbs import GeomAbs_Circle, GeomAbs_Line
@@ -1681,6 +1694,34 @@ def turning_section(solid, *, tolerance_mm=1e-6):
     if points[front][0] > tol:
         bore = walk(front, -outward, lambda p: p[0] <= tol or abs(p[1] - z_back) <= tol)
 
+    # A hole in the chuck-side end (#418): on from the back corner along the
+    # back face, a run that leaves that face and ends on the axis. This
+    # side cannot turn it; it is reported, and is the bore of the same part
+    # turned around.
+    back_chain = []
+    i = (front + outward * len(outer)) % n
+    for _ in range(n):
+        k = i if outward > 0 else (i - 1) % n
+        if k in used:
+            break
+        a, b, c, sweep = loop[k] if outward > 0 else (loop[k][1], loop[k][0], loop[k][2], -loop[k][3])
+        if abs(a[1] - z_back) <= tol and abs(b[1] - z_back) <= tol:
+            if back_chain:
+                break  # back on the face without reaching the axis: not a hole on the axis
+            used.add(k)
+        elif a[0] <= tol and b[0] <= tol:
+            break
+        else:
+            back_chain.append((k, a, b, sweep))
+            if b[0] <= tol:
+                used.update(k for k, *_ in back_chain)
+                break
+        i = (i + outward) % n
+    else:
+        back_chain = []
+    if not (back_chain and back_chain[-1][2][0] <= tol):
+        back_chain = []
+
     # The rest of the boundary: the back face and the axis only. Anything
     # else is a cavity on the axis behind solid material (not reachable).
     for k in set(range(n)) - used:
@@ -1730,8 +1771,22 @@ def turning_section(solid, *, tolerance_mm=1e-6):
     if profile[0][0] > tol:
         # The front face continues across the hole (the bore is its own chain).
         profile = ((0.0, z_front, 0.0),) + profile
+    # The chuck-side hole as it is, from that face to its deepest point: it
+    # is judged (undercuts, curve types) when the part is read turned around,
+    # where it is the bore.
+    back_bore = None
+    if back_chain:
+        back_bore = tuple((a[0], a[1], math.tan(sweep / 4) if sweep else 0.0) for _, a, _, sweep in back_chain)
+        back_bore += ((back_chain[-1][2][0], back_chain[-1][2][1], 0.0),)
     return TurnSection(
-        profile, None if bore is None else to_points(bore, "bore"), z_front, z_back, volume, revolved, tuple(grooves)
+        profile,
+        None if bore is None else to_points(bore, "bore"),
+        z_front,
+        z_back,
+        volume,
+        revolved,
+        tuple(grooves),
+        back_bore,
     )
 
 

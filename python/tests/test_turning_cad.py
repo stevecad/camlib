@@ -105,6 +105,66 @@ class TurningSectionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cavity on the axis"):
             turning_section(outer.cut(revolve([(0, -5), (4, -5), (4, -15), (0, -15)])))
 
+    def test_a_hole_in_the_chuck_side_end_is_reported_not_refused(self):
+        # #418: a part bored from one end, read turned around. A shaft 20
+        # long (r 12, its last 6 mm r 10) with a 16 mm counterbore 3 deep, a
+        # round into an 8 mm hole and a 118 degree drill point, 10 deep on
+        # its diameter.
+        cone = 4 / math.tan(math.radians(59))
+        hole = (
+            cq.Workplane("XZ")
+            .moveTo(0, 0)
+            .lineTo(8, 0)
+            .lineTo(8, -3)
+            .lineTo(5, -3)
+            .threePointArc((5 - math.sin(math.radians(45)), -4 + math.cos(math.radians(45))), (4, -4))
+            .lineTo(4, -10)
+            .lineTo(0, -10 - cone)
+            .close()
+            .revolve(360, (0, 0, 0), (0, 1, 0))
+            .val()
+        )
+        part = revolve([(0, 0), (12, 0), (12, -14), (10, -14), (10, -20), (0, -20)]).cut(hole)
+        bored = turning_section(part)
+        self.assertIsNone(bored.back_bore)
+        self.assertEqual(len(bored.bore), 6)
+        # Held by the bored end (turned about X, its new front face at z 0).
+        turned = part.rotate((0, 0, 0), (1, 0, 0), 180).translate((0, 0, -20))
+        s = turning_section(turned)
+        self.assertIsNone(s.bore)
+        self.assertEqual(
+            [tuple(round(v, 9) for v in p) for p in s.profile],
+            [(0, 0, 0), (10, 0, 0), (10, -6, 0), (12, -6, 0), (12, -20, 0)],
+        )
+        self.assertAlmostEqual(s.volume_mm3, s.revolved_volume_mm3, places=4)
+        self.assertAlmostEqual(s.volume_mm3, bored.volume_mm3, places=4)
+        # The hole, from the chuck-side face to its deepest point: the
+        # first side's bore turned around, arc and drill point included.
+        self.assertEqual(len(s.back_bore), len(bored.bore))
+        for (r, z, bulge), (r0, z0, bulge0) in zip(s.back_bore, bored.bore):
+            self.assertAlmostEqual(r, r0, places=9)
+            self.assertAlmostEqual(z, -20 - z0, places=9)
+            self.assertAlmostEqual(bulge, -bulge0, places=9)
+        self.assertEqual(tuple(round(v, 9) for v in s.back_bore[0]), (8, -20, 0))
+        self.assertEqual(tuple(round(v, 9) for v in s.back_bore[-1][:2]), (0, round(-10 + cone, 9)))
+        # Both ends bored, a web between them: a bore and a back bore.
+        both = turning_section(part.cut(revolve([(0, -20), (3, -20), (3, -17), (0, -17)])))
+        self.assertEqual(len(both.bore), 6)
+        self.assertEqual(
+            [tuple(round(v, 9) for v in p) for p in both.back_bore], [(3, -20, 0), (3, -17, 0), (0, -17, 0)]
+        )
+        # The turned-around section plans as a lathe setup: this side's
+        # profile is turned, the hole is not this setup's.
+        turning = camlib.TurningSetup.from_section(s, chuck_z_mm=-22, clearance_mm=2, tolerance_mm=1e-3)
+        self.assertIsNone(turning.bore)
+        plan = job(stock=camlib.TurnStockSpec(-40, 1, 13), profile=s.profile, chuck_z_mm=-22).plan()
+        self.assertEqual([r["id"] for r in plan.reports], ["face", "rough", "finish"])
+        # A recess in the chuck-side face that does not reach the axis is
+        # still refused, as is a chamber open to neither end.
+        plain = revolve([(0, 0), (10, 0), (10, -20), (0, -20)])
+        with self.assertRaisesRegex(ValueError, "cavity on the axis"):
+            turning_section(plain.cut(revolve([(3, -20), (6, -20), (6, -17), (3, -17)])))
+
 
 if __name__ == "__main__":
     unittest.main()
