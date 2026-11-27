@@ -1738,11 +1738,16 @@ mod normal_limit_tests {
     #[test]
     fn malformed_typed_limits_refuse_begin_and_none_is_omitted_from_settings() {
         let (checker, _, header) = fixture(Some(40.), false);
-        for value in [0., -1., f64::NAN, f64::INFINITY, 1e10] {
+        for value in [0., -1., f64::NAN, f64::INFINITY] {
             let mut settings = checker.settings.clone();
             settings.max_normal_accel_mm_s2 = Some(value);
             assert!(IntentChecker::begin(&header, settings, &["BEGIN".into()]).is_err());
         }
+        // A large declared limit is the machine's value, not malformed:
+        // camlib states no upper bound of its own for it (#429).
+        let mut settings = checker.settings.clone();
+        settings.max_normal_accel_mm_s2 = Some(1e10);
+        IntentChecker::begin(&header, settings, &["BEGIN".into()]).unwrap();
         let mut settings = checker.settings.clone();
         settings.max_normal_accel_mm_s2 = None;
         assert!(

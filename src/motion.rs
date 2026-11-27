@@ -1440,9 +1440,7 @@ impl ProgramValidator {
                     // unit means (not a machine fact; how a control scales
                     // it is the post's).
                     if !power_percent.is_finite() || !(0. ..=100.).contains(power_percent) {
-                        return Err(error(&format!(
-                            "beam power {power_percent} percent must be 0..100 percent"
-                        )));
+                        return Err(error("beam power must be 0..100 percent"));
                     }
                     if !beam_tool(&active_tool) {
                         return Err(error(
@@ -1463,9 +1461,9 @@ impl ProgramValidator {
                 Event::BeamStart { power_percent } => {
                     // A percentage, as for `Beam`.
                     if !power_percent.is_finite() || *power_percent <= 0. || *power_percent > 100. {
-                        return Err(error(&format!(
-                            "beam power {power_percent} percent at an open-material start must be above 0, at most 100 percent"
-                        )));
+                        return Err(error(
+                            "beam power at an open-material start must be above 0, at most 100 percent",
+                        ));
                     }
                     if !beam_tool(&active_tool) {
                         return Err(error(
@@ -1483,9 +1481,9 @@ impl ProgramValidator {
                 Event::BeamMark { power_percent } => {
                     // A percentage, as for `Beam`.
                     if !power_percent.is_finite() || *power_percent <= 0. || *power_percent > 100. {
-                        return Err(error(&format!(
-                            "marking beam power {power_percent} percent must be above 0, at most 100 percent"
-                        )));
+                        return Err(error(
+                            "marking beam power must be above 0, at most 100 percent",
+                        ));
                     }
                     if !beam_tool(&active_tool) {
                         return Err(error(
