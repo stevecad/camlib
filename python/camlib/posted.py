@@ -532,9 +532,7 @@ class PostedRun(RecordedRun):
             off_grid = any(abs(v * 10**machine.decimals - round(v * 10**machine.decimals)) > 1e-6 for v in grid)
             self._regroup_written = (
                 (start, machine.output_units, machine.decimals, diameter)
-                if 'turning' in options
-                and getattr(machine, 'tool_change_tip_within_mm', None) is not None
-                and off_grid
+                if 'turning' in options and getattr(machine, 'tool_change_tip_within_mm', None) is not None and off_grid
                 else None
             )
             self._post_identity = deepcopy(begin['identity'])
