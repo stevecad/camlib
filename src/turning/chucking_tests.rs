@@ -958,3 +958,91 @@ fn a_finish_that_ends_against_standing_stock_feeds_out_along_x() {
         "{retract:?}"
     );
 }
+
+/// The collar shaft's bar from #425: 45 mm diameter, 79 mm long.
+fn bar45() -> Value {
+    json!({
+        "version": 1, "units": "mm", "z_min_mm": -77.0, "z_max_mm": 2.0,
+        "outer_radius_mm": 22.5, "cell_mm": 0.25, "max_cells": 10000,
+    })
+}
+
+#[test]
+fn a_front_bound_behind_stock_not_turned_is_refused_by_name_before_any_move() {
+    // #427: the collar shaft from a 45 mm bar, faced, then roughed from
+    // z -20 to z -40 with the 20 mm end in front of z -20 not turned.
+    let collar = |operations: Value| job(bar45(), &A_SIDE, -67., None, operations);
+    let rough30 = || {
+        let mut op = between(rough(), Some(-20.), Some(-40.));
+        op["id"] = json!("rough30");
+        op
+    };
+    let error = planned(&collar(json!([face(), rough30()]))).err().unwrap();
+    // Its first pass (the nose centre one depth of cut under the bar's
+    // top, at r 21.3) is the one refused; the bar stands at 22.5 from the
+    // bound to the faced front.
+    assert!(
+        error.starts_with(
+            "rough30: the roughing pass at radius 21.300 (the nose centre) behind z_from_mm -20 cannot be reached: the stock in front of z_from_mm stands up to radius 22.500 between z -20 and z 0,"
+        ),
+        "{error}"
+    );
+    assert!(
+        error.contains("at z -18, and is reached by a rapid down to its level")
+            && error.ends_with(
+                "Rough the stretch in front of z -20 first (a TurnRough with z_to_mm -20 before this one), or give a z_from_mm where the stock in front is already turned down"
+            ),
+        "{error}"
+    );
+    // Partly turned in front (to z -10): the stock still standing is named.
+    let error = planned(&collar(json!([
+        face(),
+        between(rough(), None, Some(-10.)),
+        rough30()
+    ])))
+    .err()
+    .unwrap();
+    assert!(
+        error.starts_with("rough30: the roughing pass at radius 21.300")
+            && error.contains("stands up to radius 22.500 between z -20 and z -10.75,"),
+        "{error}"
+    );
+    // Roughed in front first, as the refusal says: the same operation plans,
+    // and its passes start a clearance in front of the bound.
+    let plan = planned(&collar(json!([
+        face(),
+        between(rough(), None, Some(-20.)),
+        rough30()
+    ])))
+    .unwrap();
+    let rapids = ends(&plan, "rough30", MoveKind::Rapid);
+    assert!(
+        rapids.iter().any(|p| (p[1] - (-18. - 0.8)).abs() < 1e-9),
+        "{rapids:?}"
+    );
+    radius_is(&plan.stock, -39.5, -21.5, 15.3);
+}
+
+#[test]
+fn a_front_bound_behind_a_larger_diameter_names_the_part_in_front() {
+    // The 24 mm end behind the 30 mm collar, roughed from the collar's far
+    // shoulder after the collar was turned: the collar itself stands in
+    // front of the passes that reach the 24 mm diameter.
+    let operations = json!([
+        face(),
+        between(rough(), None, Some(-40.)),
+        {"kind": "rough", "id": "rough24", "tool": "cnmg", "depth_of_cut_mm": 2.0, "allowance_mm": 0.3,
+         "feed_mm_rev": 0.25, "rpm": 1200.0, "z_from_mm": -40.0},
+    ]);
+    let error = planned(&job(bar45(), &A_SIDE, -67., None, operations))
+        .err()
+        .unwrap();
+    assert!(
+        error.starts_with("rough24: the roughing pass at radius ")
+            && error.contains("behind z_from_mm -40 cannot be reached")
+            && error.contains(
+                "and the part itself stands there up to radius 15 (15.300 with allowance_mm 0.3): no axial pass from the front reaches behind it. Turn that stretch from the part's other end (a second chucking), or groove it (TurnGroove)"
+            ),
+        "{error}"
+    );
+}

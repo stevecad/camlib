@@ -3835,7 +3835,20 @@ lathe `Setup` with its own program. Four declarations make the pair:
   With `z_from_mm` inside the profile, roughing passes start a clearance in
   front of it and finishing feeds in radially at it; the move checks decide
   whether the insert can (a rapid into stock, or an insert's back leading
-  into it, is refused). A `z_to_mm` behind the chuck clearance is refused.
+  into it, is refused). Each roughing pass is reached by a rapid down to its
+  level there, as a stock removal cycle reaches its passes from its start
+  position in front of the material and returns to its clearance plane at
+  rapid (Haas lathe, "G71 O.D./I.D. Stock Removal Cycle", Type I details, in
+  Haas Lathe Programming Manual, Haas Factory Outlet, rev. 12/2024, p. 32);
+  it has no entry into stock standing ahead of a pass. So where the stock in
+  front of `z_from_mm` has not been turned down below a pass, `TurnRough` is
+  refused before any move, naming the pass, `z_from_mm`, the stock standing
+  in front of it (its z range and radius) and the fix: rough the stretch in
+  front first (a `TurnRough` with `z_to_mm` at the bound), or give a
+  `z_from_mm` where the stock in front is already down. Where the part
+  itself stands in front above the pass (a smaller diameter behind a
+  collar), the refusal says so: that stretch is turned from the part's other
+  end, or grooved. A `z_to_mm` behind the chuck clearance is refused.
   The bar may be well over the largest diameter (45 mm for a 30 mm collar):
   roughing then leaves a wall at `z_to_mm`, each of its passes leaving it
   at 45 degrees as before, and the finishing pass feeds out along X up

@@ -2327,6 +2327,76 @@ fn first_reach(points: &[[f64; 2]], v: f64) -> Option<f64> {
     best
 }
 
+/// The refusal of a roughing pass behind a front bound that cannot be
+/// reached (#427): the move kernel refused the rapid down to the pass at
+/// `v` (the nose centre's radius), a clearance in front of the bound `hi`
+/// at z `begin`, for running into the stock or the part. A stock removal cycle reaches every pass from its
+/// start position, in front of the material, along its clearance plane,
+/// and leaves each pass the same way ("The tool then moves in rapid mode
+/// to the Z-axis clearance plane": Haas lathe, "G71 O.D./I.D. Stock
+/// Removal Cycle", Type I details, in Haas Lathe Programming Manual, Haas
+/// Factory Outlet, rev. 12/2024, p. 32); it has no entry into stock that
+/// stands in front of its passes (in Type II, "after each pass along the Z
+/// axis, the tool will follow the path defined by PQ", the same page: it
+/// feeds along the profile from a pass it has reached, never into the
+/// stock ahead of one). So such a pass is refused, not entered at feed.
+///
+/// The cause is named when stock in front of the bound stands above the
+/// nose's lowest point (`v - rn`): Err with what stands there, the part's
+/// own radius there when that is above the pass too, and the fix.
+/// Otherwise Ok: what the rapid touches is not in front of the bound, and
+/// the move kernel refuses the rapid in its own words.
+#[allow(clippy::too_many_arguments)]
+fn front_bound_blocked(
+    planner: &Planner,
+    job: &TurningJob,
+    id: &str,
+    hi: f64,
+    begin: f64,
+    v: f64,
+    rn: f64,
+    allowance: f64,
+) -> Result<(), String> {
+    let low = v - rn;
+    // The stock's cells in front of the bound (a cell across it counts)
+    // whose possible material reaches above the nose: their z range and
+    // highest outer radius.
+    let mut standing: Option<([f64; 2], f64)> = None;
+    for (i, c) in planner.stock.cells().iter().enumerate() {
+        let [a, b] = planner.stock.bin(i);
+        if b <= hi || !(c.outer.upper_mm > low && c.outer.upper_mm > c.inner.lower_mm) {
+            continue;
+        }
+        let (a, top) = (a.max(hi), c.outer.upper_mm);
+        standing = Some(match standing {
+            None => ([a, b], top),
+            Some(([lo, up], high)) => ([lo.min(a), up.max(b)], high.max(top)),
+        });
+    }
+    let Some(([lo, up], high)) = standing else {
+        return Ok(());
+    };
+    let head = format!(
+        "{id}: the roughing pass at radius {v:.3} (the nose centre) behind z_from_mm {hi} cannot be reached: the stock in front of z_from_mm stands up to radius {high:.3} between z {lo} and z {up}, above that pass (its nose reaches down to radius {low:.3}). Each pass starts clearance_mm ({}) in front of z_from_mm, at z {begin}, and is reached by a rapid down to its level from in front of the material, as a stock removal cycle reaches its passes; that rapid would run into this stock",
+        job.clearance_mm
+    );
+    // The part itself in front of the bound, with the allowance, above the
+    // nose: no turning of that stretch from the front clears the way.
+    let part = planner
+        .part
+        .radius_range(hi + job.tolerance_mm, f64::INFINITY)
+        .map(|[_, top]| top);
+    Err(match part {
+        Some(top) if top + allowance > low => format!(
+            "{head}, and the part itself stands there up to radius {top} ({:.3} with allowance_mm {allowance}): no axial pass from the front reaches behind it. Turn that stretch from the part's other end (a second chucking), or groove it (TurnGroove)",
+            top + allowance
+        ),
+        _ => format!(
+            "{head}. Rough the stretch in front of z {hi} first (a TurnRough with z_to_mm {hi} before this one), or give a z_from_mm where the stock in front is already turned down"
+        ),
+    })
+}
+
 /// Roughing pass levels from `from` toward `to`, each at most `step` from
 /// the last, with a pass at every flat diameter of the path between them
 /// (over z in `[z_lo, z_hi]`): each diameter is left at its allowance, not
@@ -2907,9 +2977,9 @@ impl<'a> TurnSession<'a> {
                 {
                     let stop = reach(v_pass);
                     if stop < begin - tol {
-                        if first {
-                            approach(&mut *planner, &mut report, [begin, v_pass])?;
+                        let descent = if first {
                             first = false;
+                            approach(&mut *planner, &mut report, [begin, v_pass])
                         } else {
                             // Beyond the stock end: straight down to the pass.
                             planner.emit(
@@ -2919,7 +2989,37 @@ impl<'a> TurnSession<'a> {
                                 MoveKind::Rapid,
                                 None,
                                 &mut report,
-                            )?;
+                            )
+                        };
+                        if let Err(error) = descent {
+                            // A pass behind a front bound inside the stock is
+                            // reached as every pass is: by a rapid down to its
+                            // level a clearance in front of the bound. Where
+                            // what stands in front of the bound is not turned
+                            // down below the pass, the move kernel refuses that
+                            // rapid (#427). Refused by name instead, when that
+                            // is the cause: the descent is the move refused
+                            // (the tool stands at the clearance plane, z
+                            // `begin`) and stock in front of the bound stands
+                            // above the pass's nose. Nothing of the operation
+                            // has left the planner (an operation is planned
+                            // whole before its first move is sent), and the
+                            // check itself is the kernel's, unchanged.
+                            if let Some(hi) = window.hi
+                                && planner.position[0] == begin
+                            {
+                                front_bound_blocked(
+                                    planner,
+                                    job,
+                                    &id,
+                                    hi,
+                                    begin,
+                                    v_pass,
+                                    rn,
+                                    *allowance_mm,
+                                )?;
+                            }
+                            return Err(error);
                         }
                         planner.emit(
                             &geom,

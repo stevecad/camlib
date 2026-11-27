@@ -1169,9 +1169,12 @@ class TurnRough:
     ``z_from_mm``, ``z_to_mm``: the stretch of the profile this operation
     turns (its nose centre works between them; either may be left out). The
     passes end at ``z_to_mm`` at the latest, and start a clearance in front
-    of a ``z_from_mm`` inside the stock. The rest of the profile is left for
-    another operation or chucking, and the operation's report lists it
-    (``left_for_another_setup_z_mm``)."""
+    of a ``z_from_mm`` inside the stock, reached by a rapid down to their
+    level: where the stock in front of ``z_from_mm`` is not turned down
+    below a pass, the operation is refused before any move, naming that
+    stock and the fix (rough the stretch in front first). The rest of the
+    profile is left for another operation or chucking, and the operation's
+    report lists it (``left_for_another_setup_z_mm``)."""
 
     id: str
     tool: str
