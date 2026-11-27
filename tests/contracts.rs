@@ -717,7 +717,7 @@ fn machine_limits_are_the_declared_ones_and_their_refusals_name_them() {
     assert_eq!(
         program().validate(Some(&c)).unwrap_err(),
         format!(
-            "pocket: circular motion the machine cannot take: its sweep {} rad is above the machine's largest 1 rad in one block (Machine.max_sweep_rad); post it as checked line segments (LoweringOptions) (move 1, event 5)",
+            "pocket: circular motion unsupported by the machine: its sweep {} rad is above the machine's largest 1 rad in one block (Machine.max_sweep_rad); post it as checked line segments (LoweringOptions) (move 1, event 5)",
             FRAC_PI_2
         )
     );

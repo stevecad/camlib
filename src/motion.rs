@@ -2018,7 +2018,7 @@ impl ProgramValidator {
                                 };
                                 if let Some(why) = unsupported {
                                     return Err(format!(
-                                        "{}: circular motion the machine cannot take: {why}; post it as checked line segments (LoweringOptions) (move {}, event {index})",
+                                        "{}: circular motion unsupported by the machine: {why}; post it as checked line segments (LoweringOptions) (move {}, event {index})",
                                         m.operation, m.id
                                     ));
                                 }
