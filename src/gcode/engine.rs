@@ -381,12 +381,17 @@ impl Engine {
                         if covered > 0 {
                             return Err("a canned cycle starts inside another one".into());
                         }
-                        if covers + 1 > 64 {
+                        if covers >= 64 {
                             return Err(format!(
                                 "a canned cycle covering {covers} events cannot be checked in one batch (at most 63): post this hole as explicit moves (canned_cycle=False)"
                             ));
                         }
-                        if batch.len() + covers as usize + 1 > 64 {
+                        if batch
+                            .len()
+                            .saturating_add(covers as usize)
+                            .saturating_add(1)
+                            > 64
+                        {
                             break;
                         }
                         covered = covers + 1;

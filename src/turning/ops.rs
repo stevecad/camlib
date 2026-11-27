@@ -2621,8 +2621,13 @@ impl<'a> TurnSession<'a> {
             TurnOperation::Thread { .. } => None,
         };
         if let Some(v) = css {
-            if !(v.is_finite() && v > 0. && v <= 1e5) {
-                return Err(format!("{id}: surface_speed_m_min must be positive"));
+            // Numeric safety only: the spindle speed it asks for is capped by
+            // the operation's rpm (the G50/G92 limit), and that by the
+            // machine's declared top speed when posting (#429).
+            if !(v.is_finite() && v > 0.) {
+                return Err(format!(
+                    "{id}: surface_speed_m_min {v} must be positive and finite"
+                ));
             }
             if !job.feed_per_rev {
                 return Err(format!(

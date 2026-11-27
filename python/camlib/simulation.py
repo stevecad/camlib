@@ -435,6 +435,7 @@ class ToolChangePosition:
 
     def __post_init__(self):
         values = (self.gauge_z_mm, *(self.xy_mm or ()))
+        # +-1e6 mm: the engine's coordinate range (numeric safety, see _point).
         if (self.xy_mm is not None and len(self.xy_mm) != 2) or not all(
             isinstance(v, (int, float)) and math.isfinite(v) and abs(v) <= 1e6 for v in values
         ):
@@ -473,6 +474,7 @@ class ToolChangeInPlace:
 
     def __post_init__(self):
         z = self.retract_gauge_z_mm
+        # +-1e6 mm: the engine's coordinate range (numeric safety, see _point).
         if z is not None and (
             isinstance(z, bool) or not isinstance(z, (int, float)) or not math.isfinite(z) or abs(z) > 1e6
         ):
@@ -511,6 +513,7 @@ class EndPosition:
             if not isinstance(xy, (list, tuple)) or len(xy) != 2:
                 raise ValueError("end position xy_mm needs two work coordinates (or None: X and Y stay)")
             object.__setattr__(self, "xy_mm", tuple(xy))
+        # +-1e6 mm: the engine's coordinate range (numeric safety, see _point).
         if not all(
             not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v) and abs(v) <= 1e6
             for v in (self.gauge_z_mm, *(self.xy_mm or ()))
@@ -538,6 +541,7 @@ class ToolChangeTable:
     def __post_init__(self):
         items = self.tips_mm.items() if isinstance(self.tips_mm, dict) else self.tips_mm
         tips = tuple(sorted((str(tool), tuple(tip)) for tool, tip in items))
+        # +-1e6 mm: the engine's coordinate range (numeric safety, see _point).
         if (
             not tips
             or len({tool for tool, _ in tips}) != len(tips)
@@ -721,6 +725,9 @@ class _Decoder:
 
 
 def _point(point):
+    # Numeric safety, as the engine's motion.rs `point_ok`: within +-1e6 mm a
+    # coordinate keeps its last place below 1.2e-10 mm. Not a machine fact
+    # (a machine's travel is its own declaration).
     return len(point) == 3 and all(
         isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) and abs(x) <= 1e6 for x in point
     )
@@ -733,7 +740,7 @@ def curve_length(curve, tolerance=1e-5):
         raise ProtocolError("invalid motion endpoints")
     if curve["kind"] == "line":
         length = math.dist(start, end)
-        if length < 1e-9:
+        if length < 1e-9:  # numeric safety: no direction
             raise ProtocolError("zero-length motion")
         return length
     center, sweep = curve["center"], curve["sweep_rad"]
@@ -742,6 +749,10 @@ def curve_length(curve, tolerance=1e-5):
         curve["plane"] not in axes
         or not _point(center)
         or not math.isfinite(sweep)
+        # Numeric safety, as motion.rs `Curve::prepare`: a sweep under 1e-12
+        # rad has no direction, and up to 1000 turns the angle's rounding
+        # stays near 1.4e-12 rad. The controller's limit is the machine's
+        # declared max_sweep_rad, checked when posting.
         or not 1e-12 <= abs(sweep) <= 1000 * math.tau
     ):
         raise ProtocolError("invalid circular geometry")
