@@ -3017,6 +3017,20 @@ there (another move, a rapid of one axis, a rapid elsewhere, the spindle)
 is refused. The replay of the decoded program on the stock then checks the
 box of each tool change again, from where the old tool really stopped.
 
+The start position is written at the output resolution, like every point
+(#424): a start in millimetres posted in inches at 4 decimals moves by up
+to 0.00127 mm along X (a diameter word) and 0.00254 mm along Z. The decoder
+accepts the regroup within the machine's `tolerance_mm` of the start and
+takes the point where the words put it; the read-back program is continuous
+through every change (the old tool's last move, the change and the new
+tool's first move all at the written point), and the replay checks each
+box about the written points. So such a program is released when that box
+is clear. Where the rounding takes the box into the work, the replay
+refuses before any program is written, saying it checked the program as
+read back, and the refusal names the setup's start position, where the
+program writes it and the output resolution: give a start the output writes
+exactly (on the grid of its decimals), or one further from the work.
+
 The program's first tool is the one mounted when the program starts, with
 its point at the start position: there is no tool before it and nothing to
 regroup. Tools may still declare `carriage_to_tip_mm` (they are not read);

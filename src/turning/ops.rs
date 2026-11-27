@@ -3937,6 +3937,12 @@ fn thread_relief(
     }
 }
 
+/// How a replay's refusal of a `CarriageKeptWithin` tool change (#424)
+/// says it is the posted program's: `posted.PostedRun` looks for these
+/// words to add the setup's start position and the output resolution,
+/// which only it knows. Change both together.
+pub const REGROUP_READ_BACK: &str = "the tool change as the posted program was read back";
+
 /// Replays given lathe moves (a posted program read back) on the setup's
 /// stock with the planner's own move kernel: each move is checked exactly as
 /// a planned one (insert against the part, bore and chuck, holder and rapids
@@ -4078,15 +4084,29 @@ impl TurnReplay {
                     left_for_another_setup_z_mm: vec![],
                 };
                 planner.position = [start[2] - geom.tip[0], start[0] - geom.tip[1]];
-                planner.regroup(
-                    geom,
-                    &motion.operation,
-                    previous,
-                    *old,
-                    bound,
-                    [start[0], start[2]],
-                    &mut report,
-                )?;
+                // Read back, the regroup goes where the posted program writes
+                // the start position (at the control's resolution), and the
+                // tool before it stopped where its last block put it: the
+                // box checked here is about those points, which need not be
+                // the plan's (#424). Said so after the check's own words;
+                // the posting run names the setup's start and the
+                // resolution (`posted.PostedRun`, which knows both).
+                planner
+                    .regroup(
+                        geom,
+                        &motion.operation,
+                        previous,
+                        *old,
+                        bound,
+                        [start[0], start[2]],
+                        &mut report,
+                    )
+                    .map_err(|error| {
+                        format!(
+                            "{error} ({REGROUP_READ_BACK}: the tool before it stopped at radius {}, z {} and the regroup rapid goes to radius {}, z {}, as written)",
+                            old[0], old[1], start[0], start[2]
+                        )
+                    })?;
             }
             if let Some(op) = operation {
                 let (part, bore) = thread_relief(
@@ -8944,6 +8964,16 @@ test_tool("groove_in".into(), Insert::Groove { width_mm: 3.,
             assert!(
                 error.contains("the tool change from \"cnmg\" to \"groove3\" is not clear")
                     && error.contains("within radius ±60 mm, z ±90 mm"),
+                "{error}"
+            );
+            // It says the program read back was checked, and from where
+            // (#424): the old tool's last point and the regroup's target.
+            let start = j.initial_position_mm;
+            assert!(
+                error.ends_with(&format!(
+                    "({REGROUP_READ_BACK}: the tool before it stopped at radius {}, z {} and the regroup rapid goes to radius {}, z {}, as written)",
+                    start[0], start[1], start[0], start[1]
+                )),
                 "{error}"
             );
             // The first tool has no tool before it: nothing to regroup, as
