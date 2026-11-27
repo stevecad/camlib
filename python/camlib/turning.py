@@ -1164,7 +1164,10 @@ class TurnFace:
 class TurnRough:
     """Outside roughing in axial passes of ``depth_of_cut_mm`` (G71 type I),
     leaving ``allowance_mm``; each pass ends where the part (plus allowance)
-    is reached and retracts ``retract_mm`` at 45 degrees.
+    is reached and retracts ``retract_mm`` at 45 degrees. Every diameter of
+    the profile gets a pass at its own level, which ends where the profile
+    leaves the diameter (a shoulder, or the start of a taper or fillet); a
+    taper is left in steps for the finishing pass.
 
     ``z_from_mm``, ``z_to_mm``: the stretch of the profile this operation
     turns (its nose centre works between them; either may be left out). The

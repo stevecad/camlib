@@ -50,7 +50,7 @@ fn bar() -> Value {
     })
 }
 
-fn job(
+pub(super) fn job(
     stock: Value,
     profile: &[[f64; 3]],
     chuck: f64,
@@ -74,19 +74,19 @@ fn job(
     serde_json::from_value(job).unwrap()
 }
 
-fn face() -> Value {
+pub(super) fn face() -> Value {
     json!({"kind": "face", "id": "face", "tool": "cnmg", "z_mm": 0.0, "stepdown_mm": 1.0,
            "feed_mm_rev": 0.15, "rpm": 1200.0})
 }
-fn rough() -> Value {
+pub(super) fn rough() -> Value {
     json!({"kind": "rough", "id": "rough", "tool": "cnmg", "depth_of_cut_mm": 2.0,
            "allowance_mm": 0.3, "feed_mm_rev": 0.25, "rpm": 1200.0})
 }
-fn finish() -> Value {
+pub(super) fn finish() -> Value {
     json!({"kind": "finish", "id": "finish", "tool": "cnmg", "feed_mm_rev": 0.1, "rpm": 1500.0})
 }
 
-fn planned(job: &TurningJob) -> Result<TurnPlan, String> {
+pub(super) fn planned(job: &TurningJob) -> Result<TurnPlan, String> {
     plan(job, &AtomicBool::new(false))
 }
 

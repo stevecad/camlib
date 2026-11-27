@@ -2306,22 +2306,56 @@ fn seg_low(seg: &Seg, axis: usize) -> f64 {
     }
 }
 
-/// The largest z (u) at which the offset chain reaches radius v.
-fn first_reach(points: &[[f64; 2]], v: f64) -> Option<f64> {
+/// Where an axial roughing pass at radius `v` ends: the largest z (u) at
+/// which the offset chain is beyond `v`, on the part's side of the pass
+/// (above it outside; below it in a bore, `inner`). None: the chain is
+/// nowhere beyond `v`.
+///
+/// Each roughing pass is stopped where it meets the path with its
+/// allowances (Haas Lathe Programming Manual, Haas Factory Outlet, rev.
+/// 12/2024, "G71 O.D./I.D. Stock Removal Cycle", Type I details, p. 32:
+/// "Each roughing pass is stopped before it intersects the programmed tool
+/// path allowing for both roughing and finishing allowances"). The chain is
+/// that path with the allowance and the nose radius, so the pass may run to
+/// the first point where the chain leaves the level toward the part, and
+/// no further.
+///
+/// A pass at a diameter's own level runs along the diameter: a point counts
+/// as beyond only from 1e-9 past the level, and a segment none of whose
+/// ends is beyond is not met (it stays on or below the level). A segment
+/// with one end beyond is beyond the level from where it leaves the level
+/// to that end, so the pass may run to the larger z of the two: the beyond
+/// end's, or where the segment leaves the level. That is the point where
+/// it crosses the level when its other end lies below the level, and that
+/// other end itself when it lies on the level (within the 1e-9): a taper
+/// after a diameter, or the first rising chord of an arc tangent to it,
+/// starts on the diameter's level (#426). Only the far end of such a
+/// segment was once taken there, so the diameter's pass ran on along the
+/// taper into the part. (A shoulder's two ends have one z, which is why a
+/// square shoulder never showed it.)
+fn first_reach(points: &[[f64; 2]], v: f64, inner: bool) -> Option<f64> {
     let mut best: Option<f64> = None;
     let mut take = |u: f64| best = Some(best.map_or(u, |b: f64| b.max(u)));
-    // A pass at a diameter's own level runs along it (strictly above).
-    let above = v + 1e-9;
+    // How far a radius lies past the level toward the part: above it
+    // outside, below it in a bore.
+    let past = |r: f64| if inner { v - r } else { r - v };
     for w in points.windows(2) {
         let (p, q) = (w[0], w[1]);
-        if p[1] > above {
+        let (bp, bq) = (past(p[1]) > 1e-9, past(q[1]) > 1e-9);
+        if bp {
             take(p[0]);
         }
-        if q[1] > above {
+        if bq {
             take(q[0]);
         }
-        if (p[1] - v) * (q[1] - v) < 0. {
-            take(p[0] + (v - p[1]) / (q[1] - p[1]) * (q[0] - p[0]));
+        if bp != bq {
+            // `on` is the end that is not beyond, `off` the one that is.
+            let (on, off) = if bp { (q, p) } else { (p, q) };
+            take(if past(on[1]) < 0. {
+                on[0] + (v - on[1]) / (off[1] - on[1]) * (off[0] - on[0])
+            } else {
+                on[0]
+            });
         }
     }
     best
@@ -2874,7 +2908,7 @@ impl<'a> TurnSession<'a> {
                 let reach = |v: f64| {
                     ahead
                         .iter()
-                        .filter_map(|piece| first_reach(piece, v))
+                        .filter_map(|piece| first_reach(piece, v, false))
                         .reduce(f64::max)
                         .map_or(z_end, |u| u.max(z_end))
                 };
@@ -3222,22 +3256,8 @@ impl<'a> TurnSession<'a> {
                     .fold(f64::NEG_INFINITY, f64::max);
                 // The first z, moving in from the front, where the bore
                 // allows the nose center no further out than v.
-                let stop = |v: f64| {
-                    let mut best: Option<f64> = None;
-                    for w in points.windows(2) {
-                        let (p, q) = (w[0], w[1]);
-                        for x in [p, q] {
-                            if x[1] < v - 1e-9 {
-                                best = Some(best.map_or(x[0], |b: f64| b.max(x[0])));
-                            }
-                        }
-                        if (p[1] - v) * (q[1] - v) < 0. {
-                            let u = p[0] + (v - p[1]) / (q[1] - p[1]) * (q[0] - p[0]);
-                            best = Some(best.map_or(u, |b: f64| b.max(u)));
-                        }
-                    }
-                    best.map_or(*z_end_mm, |u| u.max(*z_end_mm))
-                };
+                let stop =
+                    |v: f64| first_reach(&points, v, true).map_or(*z_end_mm, |u| u.max(*z_end_mm));
                 let mut first = true;
                 for v in pass_levels(
                     &points,
@@ -4908,6 +4928,90 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_pass_at_a_diameters_level_ends_where_the_path_leaves_it() {
+        // #426. A diameter at r 11.1, then a taper that starts on that
+        // level and rises to r 16 ten millimetres on, then the next
+        // diameter. The pass at 11.1 ends at the start of the taper.
+        let taper = [[0., 11.1], [-19.74, 11.1], [-29.5, 16.], [-40., 16.]];
+        assert_eq!(first_reach(&taper, 11.1, false), Some(-19.74));
+        // The taper's start a rounding above or below the level.
+        for off in [5e-10, -5e-10, 1e-15, -1e-15] {
+            let mut chain = taper;
+            chain[1][1] += off;
+            let reach = first_reach(&chain, 11.1, false).unwrap();
+            assert!((reach + 19.74).abs() < 1e-8, "{off}: {reach}");
+        }
+        // A pass above the diameter crosses the taper where it always did,
+        // one above everything meets nothing, and a square shoulder (both
+        // ends at one z) is where the diameter's own pass ends.
+        let near = |reach: Option<f64>, u: f64| {
+            assert!(reach.is_some_and(|r| (r - u).abs() < 1e-9), "{reach:?} {u}")
+        };
+        near(first_reach(&taper, 13.55, false), -24.62);
+        assert_eq!(first_reach(&taper, 16., false), None);
+        let shoulder = [[0., 11.1], [-18.9, 11.1], [-18.9, 16.], [-40., 16.]];
+        assert_eq!(first_reach(&shoulder, 11.1, false), Some(-18.9));
+        // A diameter whose two ends round either side of the level is on it
+        // over its whole length: the pass runs to the shoulder, not to where
+        // the rounding crosses the level halfway along.
+        let rounded = [[0., 11.1 - 1e-12], [-18.9, 11.1 + 1e-12], [-18.9, 16.]];
+        assert_eq!(first_reach(&rounded, 11.1, false), Some(-18.9));
+        // A taper that rises to the diameter in front of it is not beyond
+        // the diameter's level: the pass runs past it and along the
+        // diameter; a pass below the level stops on that taper.
+        let before = [[0., 9.], [-5., 11.1], [-20., 11.1], [-30., 16.]];
+        assert_eq!(first_reach(&before, 11.1, false), Some(-20.));
+        near(first_reach(&before, 10.05, false), -2.5);
+
+        // An arc tangent to the diameter (a fillet of radius 1.9 about
+        // (z -20, r 9), from the diameter at r 7.1 up to a shoulder), as
+        // `chain` approximates it: the first chord lies along the diameter
+        // (the tangent at the arc's start) and the second leaves it.
+        use std::f64::consts::FRAC_PI_2;
+        let path = [
+            Seg::Line {
+                a: [0., 7.1],
+                b: [-20., 7.1],
+            },
+            Seg::Arc {
+                a: [-20., 7.1],
+                b: [-21.9, 9.],
+                c: [-20., 9.],
+                sweep: -FRAC_PI_2,
+            },
+            Seg::Line {
+                a: [-21.9, 9.],
+                b: [-21.9, 14.],
+            },
+        ];
+        let points = chain(&path, 2.5e-4);
+        let (corner, next) = (points[2], points[3]);
+        assert!(
+            (corner[1] - 7.1).abs() < 1e-12 && corner[0] < -20.,
+            "{corner:?}"
+        );
+        assert!(
+            next[1] > 7.1 + 1e-6 && next[0] < corner[0] - 1e-3,
+            "{next:?}"
+        );
+        // The pass at the diameter's level (as stated, and as the chain's
+        // own corner has it) ends at that corner, not a chord further on.
+        for level in [7.1, corner[1]] {
+            let reach = first_reach(&points, level, false).unwrap();
+            assert!((reach - corner[0]).abs() < 1e-6, "{level}: {reach}");
+        }
+
+        // In a bore the part is outside the pass: a bore diameter at
+        // r 10.4, then a taper narrowing to r 7.6.
+        let bore = [[0., 10.4], [-10.27, 10.4], [-15.73, 7.6], [-25., 7.6]];
+        assert_eq!(first_reach(&bore, 10.4, true), Some(-10.27));
+        near(first_reach(&bore, 9., true), -13.);
+        assert_eq!(first_reach(&bore, 7.6, true), None);
+        let step = [[0., 10.4], [-14.6, 10.4], [-14.6, 7.6], [-25., 7.6]];
+        assert_eq!(first_reach(&step, 10.4, true), Some(-14.6));
+    }
+
     fn groove_job() -> TurningJob {
         let mut j = job();
         j.part.points = vec![
@@ -5225,6 +5329,69 @@ test_tool("bar".into(), Insert::iso_turning(55., 95., 6., 0.4).unwrap(), 0.4, Tu
         let mut solid = bore_job();
         solid.stock.bore_radius_mm = 0.;
         assert!(plan_err(&solid).contains("no open hole"));
+    }
+
+    #[test]
+    fn a_bore_diameter_followed_by_a_taper_is_roughed_in_steps() {
+        // #426, inside: r 11 to 12 deep, a taper narrowing to r 9 over
+        // 4 mm, then r 9. The pass at the large diameter's level ends where
+        // the taper begins, not at its far end (which was refused as a cut
+        // into the part).
+        let mut j = bore_job();
+        j.controlled_point = ControlledPoint::NoseCenter;
+        j.bore = Some(TurnProfile {
+            points: vec![
+                [11., 0., 0.],
+                [11., -12., 0.],
+                [9., -16., 0.],
+                [9., -35., 0.],
+            ],
+        });
+        let mut rough = j.clone();
+        rough.operations.truncate(1);
+        let plan = plan(&rough).unwrap();
+        // The nose (0.4 mm) and the allowance (0.2 mm) inside the bore.
+        let offset = 0.6;
+        let corner = -12. + offset * ((0.5_f64).atan() / 2.).tan();
+        let (a, b) = ([-12., 11.], [-16., 9.]);
+        let to_taper = |p: [f64; 2]| {
+            let (d, w) = ([b[0] - a[0], b[1] - a[1]], [p[0] - a[0], p[1] - a[1]]);
+            let t = ((w[0] * d[0] + w[1] * d[1]) / (d[0] * d[0] + d[1] * d[1])).clamp(0., 1.);
+            (w[0] - t * d[0]).hypot(w[1] - t * d[1])
+        };
+        let mut ends = vec![];
+        for e in &plan.events {
+            if let Event::Motion { motion } = e
+                && motion.kind == MoveKind::Cut
+            {
+                let (start, end) = (motion.curve.start(), motion.curve.end());
+                assert_eq!(start[0], end[0], "{motion:?}");
+                ends.push([end[2], end[0]]);
+            }
+        }
+        let mut on_taper = 0;
+        for &[z, r] in &ends {
+            assert!(to_taper([z, r]) >= offset - 1e-6, "z {z} r {r}");
+            if (r - 10.4).abs() < 1e-9 {
+                assert!((z - corner).abs() < 1e-6, "z {z}, expected {corner}");
+            } else if r > 8.4 + 1e-9 {
+                assert!((to_taper([z, r]) - offset).abs() < 1e-6, "z {z} r {r}");
+                on_taper += 1;
+            }
+        }
+        assert!(ends.iter().any(|e| (e[1] - 10.4).abs() < 1e-9), "{ends:?}");
+        assert!(on_taper >= 1, "{ends:?}");
+        inner_radius_is(&plan, -11., -1., 10.8);
+        inner_radius_is(&plan, -33.5, -17., 8.8);
+        // Finished: both diameters at size.
+        let plan = self::plan(&j).unwrap();
+        inner_radius_is(&plan, -11., -1., 11.);
+        inner_radius_is(&plan, -33.5, -17., 9.);
+        assert!(
+            plan.reports
+                .iter()
+                .all(|r| r.min_part_clearance_mm >= -1e-3)
+        );
     }
 
     #[test]

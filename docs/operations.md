@@ -3066,7 +3066,15 @@ roughing setup its allowance.
   type I), each ending where the part plus allowance is reached, retracting
   at 45 degrees. Besides the depth-of-cut steps there is a pass at every
   diameter of the profile, so each one is left at the allowance (never up
-  to a depth of cut more).
+  to a depth of cut more). A diameter's own pass runs along it and ends
+  where the profile leaves it: at a shoulder, or at the start of a taper
+  or of a fillet tangent to the diameter. A taper is therefore left in
+  steps, each pass ending on the taper plus the nose radius and the
+  allowance ("Each roughing pass is stopped before it intersects the
+  programmed tool path allowing for both roughing and finishing
+  allowances": Haas lathe, "G71 O.D./I.D. Stock Removal Cycle", Type I
+  details, in Haas Lathe Programming Manual, Haas Factory Outlet, rev.
+  12/2024, p. 32); `TurnFinish` takes the steps off.
 - `TurnGroove(z_from_mm, z_to_mm, bottom_radius_mm, peck_mm=None,
   overlap_mm=0.2)`: plunges of a `GrooveInsert` tool across a groove that is
   in the profile (internal grooves with a `side="inner"` tool: in the
@@ -3105,7 +3113,9 @@ roughing setup its allowance.
   the hole already there (stock bore or drilled) by at most the depth of
   cut, with a pass at every bore diameter, each from the front to where the
   bore less the allowance is reached or `z_end_mm`, retracting at 45 degrees
-  toward the axis. `TurnBoreFinish(z_end_mm, allowance_mm=0)`: along the
+  toward the axis. As outside, a bore diameter's own pass ends where the
+  bore leaves that diameter (a step, or the start of a taper or fillet).
+  `TurnBoreFinish(z_end_mm, allowance_mm=0)`: along the
   bore from the front face to `z_end_mm` (arcs as arcs, like `TurnFinish`),
   then out at 45 degrees and along the axis. Posted as `G33 Z… K<lead>` (LinuxCNC)
   or `G32 Z… F<lead>` where the dialect declares `thread_synchronized` and

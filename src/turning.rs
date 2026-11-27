@@ -7,6 +7,8 @@ mod chucking_tests;
 pub mod model;
 pub mod ops;
 pub mod profile;
+#[cfg(test)]
+mod rough_tests;
 mod rub;
 pub mod size;
 pub mod stock;
