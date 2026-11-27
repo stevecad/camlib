@@ -3134,6 +3134,22 @@ roughing setup its allowance.
   cutting toward the chuck), turned on over the straight entry and off
   over the retract, so the control applies only the wear in its offset's
   nose radius (tip direction from the offset).
+  The path's exit is a feed move along X, never a rapid: one `clearance_mm`
+  off the last diameter, or, where the path ends against stock that still
+  stands there (the wall roughing leaves at `z_to_mm`, or at the chuck
+  clearance, when the bar is well over the finished diameter), on up that
+  wall to the safe radius (`clearance_mm` above the stock's outer radius),
+  as one block. Only then does the tool rapid away. A finishing contour
+  leaves the work in its own last block at feed, and the rapid comes after
+  it: the control runs the ending (Q) block of the contour and then rapids
+  back to the start position, and that block is the one whose X may pass
+  the start position's (Haas lathe, "G70 Finishing Cycle" and "G71
+  O.D./I.D. Stock Removal Cycle", in Haas Lathe Programming Manual, Haas
+  Factory Outlet, rev. 12/2024, pp. 30-32). The feed out is checked as a
+  cut (it may skim the wall); no rapid runs along the wall. Which of the
+  two it is, is decided by the rapid check itself: the feed goes on to the
+  safe radius exactly where a rapid from one clearance out would be refused
+  for touching the stock.
 - Tools: `TurningTool(id, insert=, side=, hand=, holder=, nose_radius_mm=)`,
   every value required (a missing one is refused by name; nothing stands in
   for a tool that isn't yours). Geometry is in the tool's XZ frame: x away
@@ -3820,6 +3836,10 @@ lathe `Setup` with its own program. Four declarations make the pair:
   front of it and finishing feeds in radially at it; the move checks decide
   whether the insert can (a rapid into stock, or an insert's back leading
   into it, is refused). A `z_to_mm` behind the chuck clearance is refused.
+  The bar may be well over the largest diameter (45 mm for a 30 mm collar):
+  roughing then leaves a wall at `z_to_mm`, each of its passes leaving it
+  at 45 degrees as before, and the finishing pass feeds out along X up
+  that wall to above the bar before any rapid (see `TurnFinish`).
 - **A hole in the chuck-side end: `turning_section(solid).back_bore`.** A
   part bored from one end reads turned around: the hole this side cannot
   reach comes back as `back_bore` (from the chuck-side face to its deepest

@@ -1,0 +1,58 @@
+{
+  "name": "lathe-bar-over-size",
+  "operations": {
+    "face": {
+      "air_cut_mm": 4.0,
+      "cut_mm": 54.6,
+      "cycle_seconds_exact_stop": 22.753,
+      "cycle_seconds_tangent": 22.753,
+      "link_mm": 0.0,
+      "moves": 8,
+      "plunges": 0,
+      "rapid_mm": 52.8,
+      "removed_mm3": 3180.863,
+      "retracts": 2
+    },
+    "finish": {
+      "air_cut_mm": 22.7,
+      "cut_mm": 68.613,
+      "cycle_seconds_exact_stop": 35.776,
+      "cycle_seconds_tangent": 35.768,
+      "link_mm": 0.0,
+      "moves": 12,
+      "plunges": 1,
+      "rapid_mm": 105.3,
+      "removed_mm3": 1164.974,
+      "retracts": 1
+    },
+    "rough": {
+      "air_cut_mm": 4.95,
+      "cut_mm": 249.65,
+      "cycle_seconds_exact_stop": 64.214,
+      "cycle_seconds_tangent": 64.214,
+      "link_mm": 0.0,
+      "moves": 30,
+      "plunges": 0,
+      "rapid_mm": 284.9,
+      "removed_mm3": 42659.505,
+      "retracts": 15
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 122.743,
+    "cycle_seconds_tangent": 122.735,
+    "material": {
+      "leftover_mm3": [
+        21832.201,
+        22373.591
+      ],
+      "overcut_mm3": [
+        0.0,
+        0.0
+      ]
+    },
+    "moves": 50,
+    "post_error": null,
+    "posted_blocks": 75
+  }
+}

@@ -61,7 +61,9 @@ the stock; the second setup's stock is what the first left, turned end for
 end (`TurnStockSpec.from_turned`; a stepped blank is declared the same way,
 as `TurnStockSection`s); `TurnRough` and `TurnFinish` take the stretch of
 the profile each chucking turns (`z_from_mm`, `z_to_mm`) and report the
-rest as left; a cut that would reach the jaws is refused by name.
+rest as left, from a bar of any diameter over the part (a finishing pass
+that ends against standing stock feeds out along X to above it before any
+rapid); a cut that would reach the jaws is refused by name.
 `turning_section` reports a hole in the chuck-side end (`back_bore`)
 instead of refusing the part.
 

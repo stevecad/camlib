@@ -778,3 +778,183 @@ fn a_stepped_shaft_is_turned_in_two_chuckings() {
         "{error}"
     );
 }
+
+/// A bar `radius` thick for the collar shaft: 2 mm to face off, 17 mm
+/// behind the part for the jaws (the chuck face at z -67).
+fn shelf_bar(radius: f64) -> Value {
+    json!({
+        "version": 1, "units": "mm", "z_min_mm": -77.0, "z_max_mm": 2.0,
+        "outer_radius_mm": radius, "cell_mm": 0.25, "max_cells": 10000,
+    })
+}
+
+/// An operation's motions, in order.
+fn motions<'a>(plan: &'a TurnPlan, operation: &str) -> Vec<&'a Motion> {
+    plan.events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Motion { motion } if motion.operation == operation => Some(motion),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A straight motion's programmed ends, each (x = radius, z).
+fn line(motion: &Motion) -> [[f64; 2]; 2] {
+    let Curve::Line { start, end } = motion.curve else {
+        panic!("{motion:?}");
+    };
+    [[start[0], start[2]], [end[0], end[2]]]
+}
+
+#[test]
+fn a_finish_that_ends_against_standing_stock_feeds_out_along_x() {
+    // The collar shaft's first chucking from the bar on the shelf: 45 mm
+    // for a 30 mm collar (#425). Roughing to the collar's far shoulder
+    // leaves a wall 7.5 mm high at the bound.
+    let to_collar = || {
+        json!([
+            face(),
+            between(rough(), None, Some(-40.)),
+            between(finish(), None, Some(-40.))
+        ])
+    };
+    let first = job(shelf_bar(22.5), &A_SIDE, -67., None, to_collar());
+    let plan = planned(&first).unwrap();
+    // The finishing path ends at the bound on the collar; from there one
+    // feed move, along X only, to the safe radius: the tool tip a
+    // clearance (2 mm) above the bar. It is a cutting move at the
+    // operation's feed (0.1 mm/rev at 1500 rpm), not a rapid.
+    let finish_moves = motions(&plan, "finish");
+    let at = finish_moves
+        .iter()
+        .position(|m| m.kind == MoveKind::Retract)
+        .unwrap();
+    let out = finish_moves[at];
+    assert_eq!(finish_moves[at - 1].kind, MoveKind::Cut);
+    let [from, to] = line(out);
+    assert!(
+        (from[0] - 15.).abs() < 1e-9 && (from[1] + 40.8).abs() < 1e-9,
+        "{out:?}"
+    );
+    assert!(
+        to[1] == from[1] && (to[0] - 24.5).abs() < 1e-9,
+        "the feed out goes straight up the wall to 2 mm above the bar: {out:?}"
+    );
+    assert!(
+        (out.feed_mm_min.unwrap() - 150.).abs() < 1e-9,
+        "at the finishing feed: {out:?}"
+    );
+    assert_eq!(
+        finish_moves
+            .iter()
+            .filter(|m| m.kind == MoveKind::Retract)
+            .count(),
+        1
+    );
+    // Only then the rapids, and every one of them stays a clearance above
+    // the bar it was (22.5 mm): none runs along the wall. Stated from the
+    // bar's own radius, not from the planner's stock.
+    let after = &finish_moves[at + 1..];
+    assert!(!after.is_empty() && after.iter().all(|m| m.kind == MoveKind::Rapid));
+    for rapid in after {
+        for p in line(rapid) {
+            assert!(p[0] >= 24.5 - 1e-9, "{rapid:?}");
+        }
+    }
+    // No rapid of the program goes behind the bound, where the bar stands.
+    for event in &plan.events {
+        let Event::Motion { motion } = event else {
+            continue;
+        };
+        if motion.kind == MoveKind::Rapid {
+            for p in line(motion) {
+                assert!(p[1] >= -40.8 - 1e-9, "{motion:?}");
+            }
+        }
+    }
+    // What is left: the two diameters at size, the bar behind the bound as
+    // it was (the feed out took nothing off it), no gouge.
+    radius_is(&plan.stock, -18.5, -1.5, 10.);
+    radius_is(&plan.stock, -39.5, -21.5, 15.);
+    radius_is(&plan.stock, -77., -41., 22.5);
+    let report = material_report(&first, &plan.stock).unwrap();
+    assert_eq!(report["gouge"]["definite_cells"], 0);
+    assert_eq!(
+        plan.reports[2].left_for_another_setup_z_mm,
+        vec![[-60., -40.]]
+    );
+
+    // The second chucking starts from that stock: turned around, held on
+    // the finished 20 mm diameter, the 17 mm the jaws held faced off and
+    // the 24 mm end turned up to the collar.
+    let left = plan.stock.carried(true, -60.).unwrap();
+    let second = job(
+        serde_json::to_value(&left).unwrap(),
+        &B_SIDE,
+        -45.,
+        Some([15., 10.]),
+        json!([
+            face(),
+            between(rough(), None, Some(-20.)),
+            between(finish(), None, Some(-20.))
+        ]),
+    );
+    let turned = planned(&second).unwrap();
+    radius_is(&turned.stock, -18.5, -0.5, 12.);
+    radius_is(&turned.stock, -39.5, -20.5, 15.);
+    radius_is(&turned.stock, -59.5, -41.5, 10.);
+    let report = material_report(&second, &turned.stock).unwrap();
+    assert_eq!(report["gouge"]["definite_cells"], 0);
+    assert_eq!(
+        report["held"],
+        json!({"z_mm": [-60., -45.], "definite_cells": 0, "possible_only_cells": 0})
+    );
+
+    // Where no stock stands beside the nose a clearance out, the exit is
+    // the one clearance it always was: a bar 1 mm over the collar, and an
+    // operation without bounds.
+    for (stock, operations) in [
+        (shelf_bar(16.), to_collar()),
+        (shelf_bar(22.5), json!([face(), rough(), finish()])),
+    ] {
+        let short = [A_SIDE[0], A_SIDE[1], A_SIDE[2], A_SIDE[3], A_SIDE[4]];
+        let bounded = operations[2].get("z_to_mm").is_some();
+        let profile: &[[f64; 3]] = if bounded { &A_SIDE } else { &short };
+        let plan = planned(&job(stock, profile, -67., None, operations)).unwrap();
+        let retracts: Vec<_> = motions(&plan, "finish")
+            .into_iter()
+            .filter(|m| m.kind == MoveKind::Retract)
+            .collect();
+        assert_eq!(retracts.len(), 1);
+        let [from, to] = line(retracts[0]);
+        assert!(
+            to[1] == from[1] && (from[0] - 15.).abs() < 1e-9 && (to[0] - 17.).abs() < 1e-9,
+            "{:?}",
+            retracts[0]
+        );
+    }
+
+    // Without bounds too: the jaws on a bar well over the part, the path
+    // ending at the chuck clearance against the bar that stands there.
+    let held = job(
+        json!({
+            "version": 1, "units": "mm", "z_min_mm": -62.0, "z_max_mm": 2.0,
+            "outer_radius_mm": 22.5, "cell_mm": 0.25, "max_cells": 10000,
+        }),
+        &LONG,
+        -44.,
+        Some([18., 22.5]),
+        json!([face(), rough(), finish()]),
+    );
+    let plan = planned(&held).unwrap();
+    let retract = motions(&plan, "finish")
+        .into_iter()
+        .find(|m| m.kind == MoveKind::Retract)
+        .unwrap();
+    let [from, to] = line(retract);
+    assert!(
+        (from[1] + 42.8).abs() < 1e-9 && to[1] == from[1] && (to[0] - 24.5).abs() < 1e-9,
+        "{retract:?}"
+    );
+}

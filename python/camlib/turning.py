@@ -1377,7 +1377,12 @@ class TurnFinish:
     exactly at both: with ``z_from_mm`` inside the profile the tool feeds in
     radially at it, and it leaves radially at ``z_to_mm``. The rest of the
     profile is left for another operation or chucking, and the operation's
-    report lists it (``left_for_another_setup_z_mm``)."""
+    report lists it (``left_for_another_setup_z_mm``).
+
+    The exit is a feed along X, then the rapid: one ``clearance_mm`` off the
+    last diameter, or, where the path ends against stock still standing (a
+    bar well over the finished diameter leaves a wall at ``z_to_mm``), up
+    that wall to ``clearance_mm`` above the stock's outer radius."""
 
     id: str
     tool: str

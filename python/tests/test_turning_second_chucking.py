@@ -416,5 +416,121 @@ class TwoChuckingsTest(unittest.TestCase):
             job(**{**held, "stock": camlib.TurnStockSpec(-60, 2, 16)}, operations=turn_to(-20)).plan()
 
 
+def moves(text):
+    """A posted lathe program's motion blocks, in order: (G word, X word (a
+    diameter), Z word)."""
+    out = []
+    for line in text.splitlines():
+        words = {w[0]: w[1:] for w in line.split()}
+        if words.get("G") in ("0", "1", "2", "3") and "X" in words and "Z" in words:
+            out.append((int(words["G"]), float(words["X"]), float(words["Z"])))
+    return out
+
+
+class StandingStockTest(unittest.TestCase):
+    """A bar well over the finished diameter (#425): roughing to ``z_to_mm``
+    leaves a wall there, and the finishing pass leaves the work by a feed
+    out along X up that wall before any rapid."""
+
+    def first(self, radius):
+        """The collar shaft's first chucking from a bar of ``radius``: 2 mm
+        to face off, 17 mm behind the part for the jaws."""
+        return job(stock=camlib.TurnStockSpec(-77, 2, radius), profile=A_SIDE, chuck_z_mm=-67, operations=turn_to(-40))
+
+    def test_a_finish_against_the_bar_feeds_out_along_x_before_any_rapid(self):
+        # The bar on the shelf: 45 mm for a 30 mm collar. The wall at the
+        # bound is 7.5 mm high.
+        first = self.first(22.5)
+        plan = first.plan()
+        self.assertTrue(all(abs(lo - 15) < 1e-6 and abs(hi - 15) < 1e-6 for lo, hi in outer(plan.stock, -39.5, -21.5)))
+        # Behind the bound the bar is as it was: the feed out took nothing
+        # off it.
+        self.assertEqual(set(outer(plan.stock, -77, -41)), {(22.5, 22.5)})
+        reports = {r["id"]: r for r in plan.reports}
+        self.assertEqual(reports["finish"]["left_for_another_setup_z_mm"], [[-60, -40]])
+        self.assertEqual(reports["finish"]["material"]["gouge"]["assessment"], "within_tolerance")
+        for name in ("fanuc_lathe_post", "centroid_lathe_post"):
+            with self.subTest(post=name):
+                # Released: posted, read back and replayed on the stock.
+                posted = release(first.job, name)
+                self.assertFalse(posted.findings)
+                self.assertEqual(posted.material["gouge"]["assessment"], "within_tolerance")
+                blocks = moves(posted.text)
+                # The pass ends on the collar at the bound (the tip one
+                # nose radius behind the nose centre), feeds out along X
+                # to 2 mm above the 45 mm bar, and only then rapids.
+                end = blocks.index((1, 30, -40.8))
+                self.assertEqual(blocks[end + 1], (1, 49, -40.8))
+                self.assertTrue(blocks[end + 2 :])
+                for g, x, z in blocks[end + 2 :]:
+                    self.assertEqual(g, 0)
+                    self.assertGreaterEqual(x, 49)
+                # No rapid of the program starts or ends at the wall below
+                # the bar's diameter, or behind the bound at all: read from
+                # the program's own words and the bar's diameter.
+                for (_, x0, z0), (g, x1, z1) in zip(blocks, blocks[1:]):
+                    if g == 0:
+                        self.assertGreaterEqual(min(z0, z1), -40.8 - 1e-9)
+                        for x, z in ((x0, z0), (x1, z1)):
+                            self.assertTrue(z > -40.8 + 1e-6 or x >= 49, (x0, z0, x1, z1))
+
+    def test_the_second_chucking_starts_from_the_stock_it_leaves(self):
+        first = self.first(22.5)
+        _, left, after_first = recorded(first.job)
+        self.assertEqual(after_first["gouge"]["assessment"], "within_tolerance")
+        # Turned around on the finished 20 mm diameter: the 17 mm of bar the
+        # jaws held is faced off, the 24 mm end turned up to the collar.
+        stock = camlib.TurnStockSpec.from_turned(left, reversed=True, z_shift_mm=-60)
+        self.assertEqual((stock.z_min_mm, stock.z_max_mm, stock.outer_radius_mm), (-60, 17, 22.5))
+        second = job(
+            stock=stock, profile=B_SIDE, chuck_z_mm=-45, grip=camlib.ChuckGrip(15, 10), operations=turn_to(-20)
+        )
+        start, final, material = recorded(second.job)
+        self.assertEqual(start["cells"], material_cells(left)[::-1])
+        for z0, z1, radius in ((-18.5, -0.5, 12), (-39.5, -20.5, 15), (-59.5, -41.5, 10)):
+            cells = outer(final, z0, z1)
+            self.assertTrue(
+                cells and all(abs(lo - radius) < 1e-6 and abs(hi - radius) < 1e-6 for lo, hi in cells), radius
+            )
+        self.assertEqual(material["gouge"]["assessment"], "within_tolerance")
+        self.assertEqual(material["held"], dict(z_mm=[-60, -45], definite_cells=0, possible_only_cells=0))
+        for name in ("fanuc_lathe_post", "centroid_lathe_post"):
+            with self.subTest(post=name):
+                posted = release(second.job, name)
+                self.assertFalse(posted.findings)
+                self.assertEqual(checked(posted.material), checked(material))
+
+    def test_without_standing_stock_the_exit_is_one_clearance(self):
+        # A bar 1 mm over the collar, and a bar that just clears the nose a
+        # clearance out: the pass leaves by the 2 mm it always did.
+        for radius in (16, 17.5):
+            with self.subTest(radius=radius):
+                blocks = moves(release(self.first(radius).job, "fanuc_lathe_post").text)
+                end = blocks.index((1, 30, -40.8))
+                self.assertEqual(blocks[end + 1], (1, 34, -40.8))
+                self.assertEqual(blocks[end + 2][0], 0)
+        # An operation without bounds, its path ending where the part does.
+        blocks = moves(release(job().job, "fanuc_lathe_post").text)
+        end = blocks.index((1, 30, -40.8))
+        self.assertEqual(blocks[end + 1], (1, 34, -40.8))
+        self.assertEqual(blocks[end + 2][0], 0)
+
+    def test_the_jaws_on_a_bar_well_over_the_part(self):
+        # No bounds: the path ends at the clearance in front of the chuck
+        # face, against the bar the jaws hold.
+        held = job(
+            stock=camlib.TurnStockSpec(-62, 2, 22.5),
+            profile=LONG,
+            chuck_z_mm=-44,
+            grip=camlib.ChuckGrip(18, 22.5),
+        )
+        for name in ("fanuc_lathe_post", "centroid_lathe_post"):
+            with self.subTest(post=name):
+                blocks = moves(release(held.job, name).text)
+                end = blocks.index((1, 30, -42.8))
+                self.assertEqual(blocks[end + 1], (1, 49, -42.8))
+                self.assertEqual(blocks[end + 2][0], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

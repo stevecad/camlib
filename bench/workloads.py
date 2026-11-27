@@ -869,6 +869,25 @@ def _lathe_second_chucking():
     )()
 
 
+def _lathe_bar_over_size():
+    """The first chucking of a collar shaft from a bar well over its largest
+    diameter (#425): 45 mm for a 30 mm collar. Roughing to the collar's far
+    shoulder leaves a wall there; the finishing pass feeds out along X up
+    that wall before it rapids away."""
+    import camlib
+
+    return _lathe(
+        stock=camlib.TurnStockSpec(-77, 2, 22.5),
+        profile=((0, 0, 0), (10, 0, 0), (10, -20, 0), (15, -20, 0), (15, -40, 0), (12, -40, 0), (12, -60, 0)),
+        chuck_z_mm=-67,
+        operations=(
+            camlib.TurnFace("face", "cnmg", 0, feed_mm_rev=0.15, rpm=1000),
+            camlib.TurnRough("rough", "cnmg", feed_mm_rev=0.25, rpm=1000, z_to_mm=-40),
+            camlib.TurnFinish("finish", "cnmg", feed_mm_rev=0.1, rpm=1200, z_to_mm=-40),
+        ),
+    )()
+
+
 WORKLOADS = (
     Workload(
         "indexable-facing",
@@ -1333,6 +1352,13 @@ WORKLOADS = (
         "Second chucking of a stepped shaft: turned around, held on its finished diameter, on the stock the first left",
         {"face": ("TurnFace", 49), "rough": ("TurnRough", 50), "finish": ("TurnFinish", 51)},
         _lathe_second_chucking,
+    ),
+    Workload(
+        "lathe-bar-over-size",
+        "lathe",
+        "First chucking from a bar well over the largest diameter: the finish feeds out up the wall roughing left",
+        {"face": ("TurnFace", 49), "rough": ("TurnRough", 50), "finish": ("TurnFinish", 51)},
+        _lathe_bar_over_size,
     ),
 )
 

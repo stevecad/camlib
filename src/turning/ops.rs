@@ -874,6 +874,10 @@ struct Planner<'a> {
     /// hull the tool may be anywhere in; the kernel's one step then has
     /// these points instead of a move's two ends. Empty otherwise.
     over: Vec<[f64; 2]>,
+    /// Set by `beside_stock` (with `standing`): the kernel's stock test of a
+    /// rapid is asked, not enforced. It answers here (true: the insert
+    /// would touch the stock) instead of refusing. None otherwise.
+    asking: Option<bool>,
     next_id: u64,
     guard: f64,
     /// The last cutting move (from, to), for retracing rapids.
@@ -1226,6 +1230,28 @@ impl Planner<'_> {
         self.standing = false;
         self.over.clear();
         result
+    }
+
+    /// Whether the insert, standing with its nose center at `at`, would
+    /// touch the stock as it is: the move kernel's own test of a rapid
+    /// (same pieces, same guard), asked instead of enforced, so the answer
+    /// is exactly whether a rapid from there would be refused for touching
+    /// the stock. Nothing is emitted, the tool stays where it is and
+    /// `report` is not changed. Anything else the kernel finds about that
+    /// pose (the chuck, the part, the holder) is not answered here: the
+    /// move that goes there is checked like every move and refuses in its
+    /// own words.
+    fn beside_stock(
+        &mut self,
+        tool: &ToolGeom,
+        op: &str,
+        at: [f64; 2],
+        report: &TurnReport,
+    ) -> bool {
+        let mut unchanged = report.clone();
+        self.asking = Some(false);
+        let _ = self.stand_over(tool, op, &[at], &mut unchanged);
+        self.asking.take() == Some(true)
     }
 
     /// The check of a `CarriageKeptWithin` tool change (#421): `tool`
@@ -1962,6 +1988,11 @@ impl Planner<'_> {
                 to[1] > from[1]
             };
         if kind == MoveKind::Rapid && !retraces && !pullout && touches {
+            if let Some(touched) = &mut self.asking {
+                // Asked by `beside_stock`: answered, nothing refused.
+                *touched = true;
+                return Ok(());
+            }
             return Err(format!(
                 "{op}: a rapid would touch the stock moving to r {:.3}, z {:.3}",
                 to[1], to[0]
@@ -2460,6 +2491,7 @@ impl<'a> TurnSession<'a> {
             position: [job.initial_position_mm[1], job.initial_position_mm[0]],
             emitted: job.initial_position_mm,
             standing: false,
+            asking: None,
             over: vec![],
             next_id: 1,
             guard: tol,
@@ -3701,10 +3733,36 @@ impl<'a> TurnSession<'a> {
                         amount_mm: None,
                     });
                 }
+                // Off the work along X at feed: one clearance, or, where the
+                // path ends against stock still standing (the wall roughing
+                // leaves at `z_to_mm` or at the chuck clearance when the bar
+                // is well over the finished diameter, #425), on up that wall
+                // to the safe radius every approach uses, above the whole
+                // stock. A finishing path leaves the work in its own last
+                // block, at feed, and only then rapids away: the control
+                // executes the contour's ending (Q) block and after it the
+                // rapid back to the start position, and that ending block is
+                // the one block of the contour whose X may pass the start
+                // position's (Haas lathe, "G70 Finishing Cycle (Group 00)"
+                // and "G71 O.D./I.D. Stock Removal Cycle (Group 00)", in
+                // Haas Lathe Programming Manual, Haas Factory Outlet, rev.
+                // 12/2024, pp. 30-32).
+                // The move is a cut for every check (it may skim the wall)
+                // and one feed block in the program. Whether stock stands
+                // there is the rapid's own test, asked of the pose one
+                // clearance out: where a rapid from it would be refused,
+                // the feed goes on; everywhere else the exit is what it
+                // always was.
+                let out = pos[1] + job.clearance_mm;
+                let out = if planner.beside_stock(&geom, &id, [pos[0], out], &report) {
+                    out.max(safe_r)
+                } else {
+                    out
+                };
                 planner.emit(
                     &geom,
                     &id,
-                    [pos[0], pos[1] + job.clearance_mm],
+                    [pos[0], out],
                     MoveKind::Retract,
                     feed,
                     &mut report,
@@ -3977,6 +4035,7 @@ impl TurnReplay {
             position: [0., 0.],
             emitted: [start[0], start[2]],
             standing: false,
+            asking: None,
             over: vec![],
             next_id: motion.id,
             guard: self.job.tolerance_mm,
