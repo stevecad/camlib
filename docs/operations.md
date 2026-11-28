@@ -41,9 +41,18 @@ does. The engine converts a retract only when the stock proves it clear: it
 starts exactly where the last cut left the tool, so that pose is already empty,
 and the stock has no overhangs, so everything above it is empty too. Any other
 retract stays at feed; after an undercut (a necked tool under a ledge) the
-proof no longer applies and retracts stay fed. The stock-contact check, when
-configured, verifies each rapid again. `Setup(rapid_retracts=False)` keeps
-every retract at feed.
+proof no longer applies and retracts stay fed. A retract also stays at feed
+when the stock's whole-cell bounds alone do not show it clear: some cell
+within reach of the tool stands above it where it starts (#430). That is the
+case beside a wall the cutter has just cut, such as the end of a pocket's
+wall loop or of an adaptive wall pass. The cutter stops short of the wall, so
+the cells along it keep the wall's height. A check without the cut history
+reads only those bounds: the machine check of an independent-axis rapid (G0
+with each axis on its own) could not decide such a lift, and the program
+could not be released. The tool then leaves straight up at feed to
+`feed_z_mm` and rapids from there. The stock-contact check, when configured,
+verifies each rapid again. `Setup(rapid_retracts=False)` keeps every retract
+at feed.
 
 ## Machining limits: avoid areas and containment
 

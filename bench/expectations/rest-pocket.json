@@ -14,33 +14,33 @@
       "retracts": 1
     },
     "pocket": {
-      "air_cut_mm": 7.999,
-      "cut_mm": 99.328,
-      "cycle_seconds_exact_stop": 16.66,
-      "cycle_seconds_tangent": 16.66,
+      "air_cut_mm": 25.999,
+      "cut_mm": 117.328,
+      "cycle_seconds_exact_stop": 17.965,
+      "cycle_seconds_tangent": 17.965,
       "link_mm": 5.333,
       "moves": 30,
       "plunges": 4,
-      "rapid_mm": 44.26,
+      "rapid_mm": 26.26,
       "removed_mm3": 124.0,
       "retracts": 4
     },
     "rest": {
-      "air_cut_mm": 27.999,
-      "cut_mm": 93.997,
-      "cycle_seconds_exact_stop": 22.542,
-      "cycle_seconds_tangent": 22.542,
+      "air_cut_mm": 57.999,
+      "cut_mm": 123.997,
+      "cycle_seconds_exact_stop": 24.551,
+      "cycle_seconds_tangent": 24.551,
       "link_mm": 0.0,
       "moves": 66,
       "plunges": 10,
-      "rapid_mm": 107.302,
+      "rapid_mm": 77.302,
       "removed_mm3": 2.0,
       "retracts": 20
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 66.062,
-    "cycle_seconds_tangent": 66.062,
+    "cycle_seconds_exact_stop": 69.374,
+    "cycle_seconds_tangent": 69.374,
     "material": {
       "leftover_mm3": [
         0.0,

@@ -2,21 +2,21 @@
   "name": "spiral-dense",
   "operations": {
     "spiral": {
-      "air_cut_mm": 1051.826,
-      "cut_mm": 5290.519,
-      "cycle_seconds_exact_stop": 1125.918,
-      "cycle_seconds_tangent": 1123.918,
+      "air_cut_mm": 1970.713,
+      "cut_mm": 6209.405,
+      "cycle_seconds_exact_stop": 1199.259,
+      "cycle_seconds_tangent": 1197.259,
       "link_mm": 0.0,
       "moves": 12767,
       "plunges": 152,
-      "rapid_mm": 3602.843,
+      "rapid_mm": 2683.957,
       "removed_mm3": 28.682,
       "retracts": 152
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 1125.918,
-    "cycle_seconds_tangent": 1123.918,
+    "cycle_seconds_exact_stop": 1199.259,
+    "cycle_seconds_tangent": 1197.259,
     "material": {
       "leftover_mm3": [
         0.0,

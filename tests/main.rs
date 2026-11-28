@@ -50,6 +50,7 @@ modules! {
     planar,
     pocket,
     pocket_top,
+    pocket_wall_loop,
     post_rounding,
     preparation,
     probe,

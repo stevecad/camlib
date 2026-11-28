@@ -117,9 +117,11 @@ class RequiredSettingsTest(unittest.TestCase):
         on = kinds(job)
         off = kinds(replace(job, setups=(replace(job.setups[0], rapid_retracts=False),)))
         self.assertEqual(len(on), len(off))
-        self.assertNotIn("retract", on)
+        # With them on, the retracts proven clear become rapids; those that
+        # start beside stock the cutter just cut stay at feed (#430).
+        self.assertLess(on.count("retract"), off.count("retract"))
         self.assertGreater(off.count("retract"), 0)
-        self.assertEqual(on.count("rapid") - off.count("rapid"), off.count("retract"))
+        self.assertEqual(on.count("rapid") - off.count("rapid"), off.count("retract") - on.count("retract"))
 
 
 if __name__ == "__main__":

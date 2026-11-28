@@ -2,21 +2,21 @@
   "name": "flat-cad-walls",
   "operations": {
     "flats": {
-      "air_cut_mm": 39.775,
-      "cut_mm": 269.734,
-      "cycle_seconds_exact_stop": 37.039,
-      "cycle_seconds_tangent": 36.862,
+      "air_cut_mm": 52.775,
+      "cut_mm": 282.734,
+      "cycle_seconds_exact_stop": 38.039,
+      "cycle_seconds_tangent": 37.862,
       "link_mm": 0.0,
       "moves": 100,
       "plunges": 9,
-      "rapid_mm": 108.176,
+      "rapid_mm": 95.176,
       "removed_mm3": 34.872,
       "retracts": 5
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 37.039,
-    "cycle_seconds_tangent": 36.862,
+    "cycle_seconds_exact_stop": 38.039,
+    "cycle_seconds_tangent": 37.862,
     "material": {
       "leftover_mm3": [
         1.275,

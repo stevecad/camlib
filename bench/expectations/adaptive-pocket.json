@@ -2,10 +2,10 @@
   "name": "adaptive-pocket",
   "operations": {
     "adaptive": {
-      "air_cut_mm": 519.012,
-      "cut_mm": 1122.34,
-      "cycle_seconds_exact_stop": 144.295,
-      "cycle_seconds_tangent": 143.979,
+      "air_cut_mm": 540.012,
+      "cut_mm": 1143.34,
+      "cycle_seconds_exact_stop": 145.747,
+      "cycle_seconds_tangent": 145.431,
       "engagement": {
         "cut_mm": 539.664,
         "entry_feed_mean_deg": 103.9,
@@ -24,14 +24,14 @@
       "link_mm": 497.379,
       "moves": 528,
       "plunges": 6,
-      "rapid_mm": 50.739,
+      "rapid_mm": 29.739,
       "removed_mm3": 472.318,
       "retracts": 6
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 144.295,
-    "cycle_seconds_tangent": 143.979,
+    "cycle_seconds_exact_stop": 145.747,
+    "cycle_seconds_tangent": 145.431,
     "material": {
       "leftover_mm3": [
         0.0,

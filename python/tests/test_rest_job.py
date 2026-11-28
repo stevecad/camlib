@@ -40,9 +40,11 @@ def collect(job, cache=None):
                 completed[update.operation] = sim.state.completed
             elif isinstance(update, Update):
                 motions.append(update.motion)
+                # Strokes fed through air. A lift out of the cut is not one:
+                # beside the stock the cutter just cut it stays at feed (#430).
                 if (
                     update.motion["operation"] == "rest"
-                    and update.motion["kind"] != "rapid"
+                    and update.motion["kind"] not in ("rapid", "retract")
                     and not update.changed_count
                 ):
                     rest_air_mm += curve_length(update.motion["curve"])

@@ -2,33 +2,33 @@
   "name": "steep-and-shallow",
   "operations": {
     "finish-shallow": {
-      "air_cut_mm": 236.262,
-      "cut_mm": 856.33,
-      "cycle_seconds_exact_stop": 158.113,
-      "cycle_seconds_tangent": 154.413,
+      "air_cut_mm": 433.115,
+      "cut_mm": 1053.183,
+      "cycle_seconds_exact_stop": 173.692,
+      "cycle_seconds_tangent": 169.992,
       "link_mm": 0.0,
       "moves": 804,
       "plunges": 24,
-      "rapid_mm": 243.044,
+      "rapid_mm": 46.19,
       "removed_mm3": 23.086,
       "retracts": 24
     },
     "finish-steep": {
-      "air_cut_mm": 635.708,
-      "cut_mm": 1666.782,
-      "cycle_seconds_exact_stop": 344.046,
-      "cycle_seconds_tangent": 336.106,
+      "air_cut_mm": 716.708,
+      "cut_mm": 1747.782,
+      "cycle_seconds_exact_stop": 350.371,
+      "cycle_seconds_tangent": 342.431,
       "link_mm": 0.0,
       "moves": 2532,
       "plunges": 1051,
-      "rapid_mm": 337.259,
+      "rapid_mm": 256.259,
       "removed_mm3": 0.0,
       "retracts": 13
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 502.159,
-    "cycle_seconds_tangent": 490.519,
+    "cycle_seconds_exact_stop": 524.062,
+    "cycle_seconds_tangent": 512.422,
     "material": {
       "leftover_mm3": [
         0.0,

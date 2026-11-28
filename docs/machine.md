@@ -150,6 +150,16 @@ machine positions and a lathe are checked as before. Lifting straight up off
 a faced or pocketed floor is therefore clear, while a lift out of a hole past
 its walls, or out of stock it started in, is still found.
 
+A lift beside a wall the tool has just cut is one of the cases checked as
+before. The cutter stops short of the wall, so the cells along the wall are
+not wholly cut and keep the wall's height. The interval reaches into them, so
+an independent-axis rapid lift there cannot be decided. The run therefore
+plans no such rapid: with `Setup(rapid_retracts=True)` a retract becomes a
+rapid only where the whole-cell bounds show it clear too, and a lift beside a
+wall stays at feed (#430; see
+[Common parameters](operations.md#common-parameters)). A feed lift's cutter
+contact is decided by the exact stock kernel.
+
 Stock simulation reuses the existing native stock and turning kernels.
 
 ## Limits and external premises

@@ -320,11 +320,16 @@ pub fn in_place_tip(position: Vec3, old_gauge_mm: f64, new_gauge_mm: f64) -> Vec
     ]
 }
 impl StreamManifest {
-    /// With `rapid_retracts`, a plan's straight-up retract becomes a rapid,
-    /// only when it leaves from exactly where the last committed motion left
-    /// the same tool: that pose is empty and, in a height field, so is
-    /// everything above it (`Stock::departs_clear`). Otherwise it stays at
-    /// feed. The stock-contact check, when enabled, verifies it again.
+    /// With `rapid_retracts`, a plan's straight-up retract becomes a rapid
+    /// only when two things hold:
+    /// - it leaves from exactly where the last committed motion left the same
+    ///   tool. That pose is empty and, in a height field, so is everything
+    ///   above it (`Stock::departs_clear`);
+    /// - no whole-cell stock bound within reach of the tool stands above it
+    ///   where it starts (`retract_bounds_clear`, #430).
+    ///
+    /// Otherwise it stays at feed, as planned. The stock-contact check, when
+    /// enabled, verifies it again.
     /// `declared_feed`: the operation declares its retract feed (hole
     /// cycles feeding out); those retracts are kept as planned.
     pub fn retract_policy(
@@ -338,12 +343,52 @@ impl StreamManifest {
             && motion.kind == MoveKind::Retract
             && matches!(motion.curve, Curve::Line { start, end }
                 if start[0] == end[0] && start[1] == end[1] && end[2] > start[2]
-                    && stock.departs_clear(&motion.tool, start))
+                    && stock.departs_clear(&motion.tool, start)
+                    && self.retract_bounds_clear(&motion.tool, start, stock))
         {
             motion.kind = MoveKind::Rapid;
             motion.feed_mm_min = None;
         }
         motion
+    }
+    /// Whether the stock's whole-cell bounds alone show a straight-up lift
+    /// of `tool` from `start` clear (#430): no cell within reach of a tool
+    /// section stands above that section's lowest point. "Within reach" is
+    /// the section's widest radius plus 32 sweep tolerances. "Above" means
+    /// more than one sweep tolerance, the guard a cell cut flat at the tip's
+    /// height keeps (`Stock::preview_sweep`: `upper = z + guard`).
+    ///
+    /// `departs_clear` proves the lift clear from the cut history. A checker
+    /// without that history reads only these bounds. The machine check boxes
+    /// an independent-axis rapid's envelope against them: G0 with each axis
+    /// on its own, as FANUC's non-linear positioning and Siemens' RTLIOF
+    /// move. Its rule for a lift skips only cells at or below the tip
+    /// (`machine::Session::floor_rise`, #412). Beside a wall the cutter has
+    /// just cut, the cells along the wall keep the wall's height, since the
+    /// cutter stops short of the wall. So a rapid that starts there cannot be
+    /// decided, and the program could not be released. Such a lift stays at
+    /// feed, the retract the operation planned. A feed move's cutter contact
+    /// is checked by the exact stock kernel.
+    fn retract_bounds_clear(&self, tool: &str, start: Vec3, stock: &crate::stock::Stock) -> bool {
+        // An undeclared tool or one that does not prepare has no sections to
+        // prove anything with: the retract stays at feed.
+        let Some(prepared) = self
+            .tools
+            .iter()
+            .find(|t| t.id == tool)
+            .and_then(|t| t.prepare().ok())
+        else {
+            return false;
+        };
+        let Ok(parts) = crate::verification::parts(&prepared) else {
+            return false;
+        };
+        let sections: Vec<(f64, f64)> = parts
+            .iter()
+            .map(|p| (p.radius.max_over(p.min, p.max), p.min))
+            .collect();
+        let tolerance = self.sweep.tolerance_mm;
+        stock.bounds_below_tool(&sections, start, 32. * tolerance, tolerance)
     }
     /// The tip position after changing to `tool` at `position`, or None when
     /// the manifest declares no tool-change pose (the tip stays put).

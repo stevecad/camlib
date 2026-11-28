@@ -1129,6 +1129,61 @@ impl Stock {
                 .as_ref()
                 .is_some_and(|(t, p)| t == tool && *p == start)
     }
+    /// Whether no whole-cell upper bound stands above the tool posed with
+    /// its tip at `tip` (#430). `sections` are the tool's sections as
+    /// (largest radius, height of its lowest point above the tip). A cell
+    /// stands above a section when its whole-cell box comes within the
+    /// section's radius plus `reach_guard` of the tool axis and its upper
+    /// bound is more than `height_guard` above the section's lowest point.
+    ///
+    /// This asks only what the whole-cell bounds say. The cut history may
+    /// prove more (`departs_clear`), but a checker that reads only these
+    /// bounds cannot see it. Beside a wall the cutter has just cut, the
+    /// cells along the wall keep the wall's height: the cutter stops short
+    /// of the wall, so none of them is wholly cut. One example is the machine
+    /// check of an independent-axis rapid, which boxes the tool's envelope
+    /// against them.
+    pub(crate) fn bounds_below_tool(
+        &self,
+        sections: &[(f64, f64)],
+        tip: Vec3,
+        reach_guard: f64,
+        height_guard: f64,
+    ) -> bool {
+        let [wx, wy] = self.step;
+        let min = self.spec.min_mm;
+        for &(radius, bottom) in sections {
+            let reach = radius + reach_guard;
+            let level = tip[2] + bottom + height_guard;
+            if !(reach.is_finite() && level.is_finite()) {
+                return false;
+            }
+            let span = |v: f64, o: f64, w: f64, n: usize| {
+                let lo = ((v - reach - o) / w).floor().max(0.);
+                let hi = ((v + reach - o) / w).floor().min(n as f64 - 1.);
+                (lo as usize, hi)
+            };
+            let (i0, i1) = span(tip[0], min[0], wx, self.nx);
+            let (j0, j1) = span(tip[1], min[1], wy, self.ny);
+            if i1 < 0. || j1 < 0. {
+                continue;
+            }
+            for j in j0..=j1 as usize {
+                for i in i0..=i1 as usize {
+                    if self.cells[j * self.nx + i].upper_mm <= level {
+                        continue;
+                    }
+                    let (x0, y0) = (min[0] + i as f64 * wx, min[1] + j as f64 * wy);
+                    let dx = (x0 - tip[0]).max(tip[0] - x0 - wx).max(0.);
+                    let dy = (y0 - tip[1]).max(tip[1] - y0 - wy).max(0.);
+                    if dx.hypot(dy) <= reach {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
     /// The bore an oriented-spindle shift of `tool` starting at `start` is
     /// in: the axis and the lowest certified tip of the plunge the shifts
     /// started from (the first shift starts at that plunge's end).

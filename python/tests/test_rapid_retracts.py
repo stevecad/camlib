@@ -1,6 +1,8 @@
 """Rapid retracts: a straight-up retract from the end of a cut is posted as a
-rapid and the stock-contact check proves it clear."""
+rapid where the stock proves it clear, cut history and whole-cell bounds both
+(#430), and the stock-contact check proves it clear."""
 
+import math
 import unittest
 
 import camlib
@@ -11,6 +13,25 @@ from test_limits import square, tool
 def job(rapid, holes=False):
     t = tool()
     ops = [
+        # Faced first: its passes end past the stock edge, where nothing stands
+        # beside the tool, so its lifts become rapids (#430).
+        camlib.OperationNode(
+            camlib.Facing(
+                "face",
+                t,
+                9.5,
+                0.5,
+                3,
+                20,
+                feed_mm_min=600,
+                plunge_mm_min=150,
+                spindle_rpm=12000,
+                tool_number=1,
+                length_register=1,
+                coolant="flood",
+            ),
+            sources=(),
+        ),
         camlib.OperationNode(
             camlib.Pocket(
                 "pocket",
@@ -52,7 +73,7 @@ def job(rapid, holes=False):
         "top",
         stock=camlib.StockSpec((0, 0, 0), (40, 40, 10), 0.25),
         tools=(t,),
-        operations=tuple(ops[:1]) if holes else tuple(ops),
+        operations=tuple(ops[:2]) if holes else tuple(ops),
         initial_position_mm=(0, 0, 20),
         verification=camlib.StreamChecks(stock_contact=camlib.StockContactOptions()),
         rapid_retracts=rapid,
@@ -60,31 +81,72 @@ def job(rapid, holes=False):
     return camlib.Job("retracts", "1", (setup,))
 
 
-def run(j):
+def run(j, beside=None):
     moves, statuses = [], {}
     with j.regenerate() as r:
         for u in r:
             if isinstance(u.update, Update):
                 moves.append(u.update.motion)
+                if beside is not None and u.update.motion["kind"] in ("rapid", "retract"):
+                    beside[u.update.motion["id"]] = stands_beside(r._simulation.state, u.update.motion)
             elif isinstance(u.update, VerificationUpdate):
                 statuses[u.update.status] = statuses.get(u.update.status, 0) + 1
     return moves, statuses
 
 
+def stands_beside(state, motion):
+    """Whether a stock cell's whole-cell bound stands above the cutter where
+    `motion` starts: within the cutter's radius (plus 32 sweep tolerances) of
+    its axis and more than one sweep tolerance above its tip. Read from the
+    stock after the move, which a straight lift leaves as it was."""
+    tolerance = state.manifest["sweep"]["tolerance_mm"]
+    x, y, z = motion["curve"]["start"]
+    reach = tool().cutter.diameter_mm / 2 + 32 * tolerance
+    heights = state.heights
+    for iy in range(max(0, int((y - reach - state.min_mm[1]) // state.dy)), state.ny):
+        y0 = state.min_mm[1] + iy * state.dy
+        if y0 > y + reach:
+            break
+        for ix in range(max(0, int((x - reach - state.min_mm[0]) // state.dx)), state.nx):
+            x0 = state.min_mm[0] + ix * state.dx
+            if x0 > x + reach:
+                break
+            dx = max(x0 - x, x - x0 - state.dx, 0.0)
+            dy = max(y0 - y, y - y0 - state.dy, 0.0)
+            if math.hypot(dx, dy) <= reach and heights[2 * (iy * state.nx + ix) + 1] > z + tolerance:
+                return True
+    return False
+
+
 class RapidRetractTest(unittest.TestCase):
     def test_retracts_become_rapids_and_check_clear(self):
         slow, slow_status = run(job(False))
-        fast, fast_status = run(job(True))
+        beside = {}
+        fast, fast_status = run(job(True), beside)
         self.assertEqual(set(slow_status), {"clear"})
         self.assertEqual(set(fast_status), {"clear"}, fast_status)
         retracts = [m for m in slow if m["kind"] == "retract"]
         self.assertTrue(retracts)
-        self.assertEqual([m for m in fast if m["kind"] == "retract"], [])
         # Same path, same count: only the kind and feed of the retracts change.
         self.assertEqual([m["curve"] for m in slow], [m["curve"] for m in fast])
+        planned = {m["id"] for m in retracts}
+        rapids = [m for m in fast if m["id"] in planned and m["kind"] == "rapid"]
+        kept = [m for m in fast if m["kind"] == "retract"]
+        self.assertTrue(rapids)
+        self.assertEqual(len(rapids) + len(kept), len(retracts))
         self.assertEqual(
-            sum(1 for m in fast if m["kind"] == "rapid"), sum(1 for m in slow if m["kind"] == "rapid") + len(retracts)
+            sum(1 for m in fast if m["kind"] == "rapid"), sum(1 for m in slow if m["kind"] == "rapid") + len(rapids)
         )
+        # A retract stays at feed exactly where stock stands beside the cutter
+        # above its tip, which the whole-cell bounds cannot show clear (#430):
+        # here the pocket's and the contour's lifts. The facing's lift past
+        # the stock edge becomes a rapid.
+        for m in rapids:
+            self.assertFalse(beside[m["id"]], m)
+            self.assertIsNone(m["feed_mm_min"])
+        for m in kept:
+            self.assertTrue(beside[m["id"]], m)
+            self.assertEqual(m["feed_mm_min"], 600, m)
 
 
 if __name__ == "__main__":

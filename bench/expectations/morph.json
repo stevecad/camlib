@@ -3,24 +3,24 @@
   "operations": {
     "morph": {
       "air_cut_mm": 181.277,
-      "cut_mm": 838.703,
-      "cycle_seconds_exact_stop": 151.464,
-      "cycle_seconds_tangent": 149.804,
+      "cut_mm": 1027.533,
+      "cycle_seconds_exact_stop": 166.252,
+      "cycle_seconds_tangent": 164.592,
       "link_mm": 0.0,
       "moves": 466,
       "plunges": 25,
-      "rapid_mm": 258.017,
-      "removed_mm3": 1238.639,
+      "rapid_mm": 69.187,
+      "removed_mm3": 1238.843,
       "retracts": 25
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 151.464,
-    "cycle_seconds_tangent": 149.804,
+    "cycle_seconds_exact_stop": 166.252,
+    "cycle_seconds_tangent": 164.592,
     "material": {
       "leftover_mm3": [
         192.899,
-        415.867
+        415.663
       ],
       "overcut_mm3": [
         0.0,

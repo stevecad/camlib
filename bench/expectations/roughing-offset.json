@@ -2,21 +2,21 @@
   "name": "roughing-offset",
   "operations": {
     "rough": {
-      "air_cut_mm": 6089.311,
-      "cut_mm": 10665.257,
-      "cycle_seconds_exact_stop": 1439.817,
-      "cycle_seconds_tangent": 1436.824,
+      "air_cut_mm": 6125.111,
+      "cut_mm": 10701.056,
+      "cycle_seconds_exact_stop": 1442.61,
+      "cycle_seconds_tangent": 1439.617,
       "link_mm": 1102.218,
       "moves": 924,
       "plunges": 5,
-      "rapid_mm": 250.41,
+      "rapid_mm": 214.61,
       "removed_mm3": 5776.189,
       "retracts": 8
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 1439.817,
-    "cycle_seconds_tangent": 1436.824,
+    "cycle_seconds_exact_stop": 1442.61,
+    "cycle_seconds_tangent": 1439.617,
     "material": {
       "leftover_mm3": [
         930.823,

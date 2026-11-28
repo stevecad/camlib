@@ -2,21 +2,21 @@
   "name": "radial",
   "operations": {
     "radial": {
-      "air_cut_mm": 76.663,
-      "cut_mm": 503.87,
-      "cycle_seconds_exact_stop": 115.708,
-      "cycle_seconds_tangent": 114.69,
+      "air_cut_mm": 188.569,
+      "cut_mm": 615.775,
+      "cycle_seconds_exact_stop": 124.15,
+      "cycle_seconds_tangent": 123.133,
       "link_mm": 0.0,
       "moves": 745,
       "plunges": 159,
-      "rapid_mm": 214.62,
+      "rapid_mm": 102.714,
       "removed_mm3": 10.228,
       "retracts": 24
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 115.708,
-    "cycle_seconds_tangent": 114.69,
+    "cycle_seconds_exact_stop": 124.15,
+    "cycle_seconds_tangent": 123.133,
     "material": {
       "leftover_mm3": [
         1.096,

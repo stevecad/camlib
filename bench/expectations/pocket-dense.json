@@ -2,21 +2,21 @@
   "name": "pocket-dense",
   "operations": {
     "clear-pocket": {
-      "air_cut_mm": 292.0,
-      "cut_mm": 79835.535,
-      "cycle_seconds_exact_stop": 11873.766,
-      "cycle_seconds_tangent": 11873.446,
+      "air_cut_mm": 11388.0,
+      "cut_mm": 90931.535,
+      "cycle_seconds_exact_stop": 12764.713,
+      "cycle_seconds_tangent": 12764.393,
       "link_mm": 819.189,
       "moves": 9088,
       "plunges": 1216,
-      "rapid_mm": 26382.501,
+      "rapid_mm": 15286.501,
       "removed_mm3": 8698.869,
       "retracts": 1216
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 11873.766,
-    "cycle_seconds_tangent": 11873.446,
+    "cycle_seconds_exact_stop": 12764.713,
+    "cycle_seconds_tangent": 12764.393,
     "material": {
       "leftover_mm3": [
         3.84,

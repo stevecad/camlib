@@ -2,21 +2,21 @@
   "name": "scallop-dense",
   "operations": {
     "scallop": {
-      "air_cut_mm": 4092.256,
-      "cut_mm": 7488.426,
-      "cycle_seconds_exact_stop": 1904.741,
-      "cycle_seconds_tangent": 1781.687,
+      "air_cut_mm": 5190.964,
+      "cut_mm": 8587.135,
+      "cycle_seconds_exact_stop": 1992.041,
+      "cycle_seconds_tangent": 1868.987,
       "link_mm": 0.0,
       "moves": 34950,
       "plunges": 8437,
-      "rapid_mm": 4359.735,
+      "rapid_mm": 3261.026,
       "removed_mm3": 29.336,
       "retracts": 589
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 1904.741,
-    "cycle_seconds_tangent": 1781.687,
+    "cycle_seconds_exact_stop": 1992.041,
+    "cycle_seconds_tangent": 1868.987,
     "material": {
       "leftover_mm3": [
         0.0,

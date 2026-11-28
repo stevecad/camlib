@@ -2,10 +2,10 @@
   "name": "roughing-adaptive-large",
   "operations": {
     "rough": {
-      "air_cut_mm": 5498.695,
-      "cut_mm": 61339.776,
-      "cycle_seconds_exact_stop": 4700.284,
-      "cycle_seconds_tangent": 4697.972,
+      "air_cut_mm": 10022.583,
+      "cut_mm": 65863.665,
+      "cycle_seconds_exact_stop": 4911.696,
+      "cycle_seconds_tangent": 4909.384,
       "engagement": {
         "cut_mm": 50013.094,
         "entry_feed_mean_deg": 87.35,
@@ -24,14 +24,14 @@
       "link_mm": 6394.859,
       "moves": 3994,
       "plunges": 174,
-      "rapid_mm": 23424.251,
+      "rapid_mm": 18900.363,
       "removed_mm3": 2418061.169,
       "retracts": 174
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 4700.284,
-    "cycle_seconds_tangent": 4697.972,
+    "cycle_seconds_exact_stop": 4911.696,
+    "cycle_seconds_tangent": 4909.384,
     "material": {
       "leftover_mm3": [
         87492.271,

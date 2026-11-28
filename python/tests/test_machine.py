@@ -432,6 +432,80 @@ class MachineJobExportTest(unittest.TestCase):
         self.assertNotIn('machine', result.unchecked)
         self.assertEqual(result.machine['decoded_motions'], result.motions)
 
+    def test_a_pocket_left_beside_its_wall_is_released_with_independent_axis_rapids(self):
+        # #430: a 104 x 64 block faced to Z-1, then a 50 x 30 pocket 9 deep
+        # with a 12 mm end mill. The pocket ends on its wall loop with the
+        # cutter against the wall. On a machine whose G0 moves each axis on
+        # its own, known to +-0.0254 mm, the lift from there as a rapid was
+        # undecided and export was refused; it now leaves at feed.
+        from camlib.jobs import Job, OperationNode, Setup
+        from camlib.operations import Facing, Pocket
+        from camlib.planar import Boundary, Component, PlanarRegion
+        from camlib.tools import EndMill, HolderSection, ToolAssembly
+        from camlib.verification import StreamChecks
+        from test_post_nc import example
+
+        tool = ToolAssembly(
+            'em12',
+            EndMill('em12', diameter=12, flute_length=26, overall_length=75),
+            stickout_mm=40,
+            gauge_length_mm=90,
+            holders=(HolderSection(z_min_mm=40, z_max_mm=90, radius_min_mm=12, radius_max_mm=12),),
+        )
+        cut = dict(feed_mm_min=1000, plunge_mm_min=300, spindle_rpm=10000, coolant='flood')
+        number = dict(tool_number=7, length_register=9)
+        face = Facing('face', tool, floor_z_mm=-1, stepdown_mm=1, stepover_mm=6, clearance_z_mm=10, **cut, **number)
+        # The outline as a CadQuery face lists it, from (27, 47).
+        region = PlanarRegion('pocket', (Component(Boundary.polygon(((27, 47), (27, 17), (77, 17), (77, 47)))),))
+        pocket = Pocket(
+            'pocket',
+            tool,
+            region,
+            top_z_mm=0,
+            floor_z_mm=-9,
+            stepdown_mm=12,
+            stepover_mm=3,
+            clearance_z_mm=10,
+            **cut,
+            **number,
+        )
+        setup = Setup(
+            'top',
+            stock=StockSpec((0, 0, -21), (104, 64, 0), 0.5),
+            tools=(tool,),
+            operations=(OperationNode(face, sources=()), pocket),
+            initial_position_mm=(0, 0, 10),
+            verification=StreamChecks(stock_contact=StockContactOptions()),
+        )
+        job = Job('wall-loop', '1', (setup,))
+        machine = example().machine_for(job)
+        header = job.compile().setup('top').program_header()
+        p = header.initial_position_mm
+        g = header.tools[0].gauge_length_mm
+        declared = replace(
+            model(header, machine),
+            work_error_min_mm=(-0.0254,) * 3,
+            work_error_max_mm=(0.0254,) * 3,
+            rapid_mode='axis_independent',
+            initial_axes_mm=(p[0], p[1], p[2] + g),
+            # Work for every cell of the 208 x 128 grid at each rapid.
+            options=MachineCheckOptions(0.00001, 0.05, 100_000_000, 128, StockContactOptions()),
+            # An indexing envelope that holds this tool and its 12 mm holder.
+            tool_change_routes={
+                tool.id: ToolChangeRoute(
+                    'synthetic complete indexing enclosure', (), (Box((-15, -15, -g - 1), (15, 15, 1)),), ('@tool',), ()
+                )
+            },
+        )
+        result = job.post_nc('top', machine=replace(machine, crash_model=declared))
+        self.assertEqual(result.machine['status'], 'clear', result.machine)
+        self.assertEqual(result.machine['findings'], [], result.machine)
+        self.assertEqual(result.findings, ())
+        # The program's last move is the pocket's lift to the clearance, at feed.
+        blocks = [line for line in result.text.splitlines() if line.startswith(('G0', 'G1', 'X', 'Y', 'Z'))]
+        self.assertIn('Z10', blocks[-1], blocks[-3:])
+        self.assertFalse(blocks[-1].startswith('G0'), blocks[-3:])
+
 
 if __name__ == '__main__':
     unittest.main()

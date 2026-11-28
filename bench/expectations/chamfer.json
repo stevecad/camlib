@@ -2,33 +2,33 @@
   "name": "chamfer",
   "operations": {
     "rough-profile": {
-      "air_cut_mm": 0.0,
-      "cut_mm": 357.593,
-      "cycle_seconds_exact_stop": 55.776,
-      "cycle_seconds_tangent": 55.696,
+      "air_cut_mm": 56.0,
+      "cut_mm": 413.593,
+      "cycle_seconds_exact_stop": 60.136,
+      "cycle_seconds_tangent": 60.056,
       "link_mm": 0.0,
       "moves": 40,
       "plunges": 8,
-      "rapid_mm": 148.13,
+      "rapid_mm": 92.13,
       "removed_mm3": 2243.197,
       "retracts": 8
     },
     "top-bevel": {
-      "air_cut_mm": 0.0,
-      "cut_mm": 82.398,
-      "cycle_seconds_exact_stop": 10.934,
-      "cycle_seconds_tangent": 10.914,
+      "air_cut_mm": 7.0,
+      "cut_mm": 89.398,
+      "cycle_seconds_exact_stop": 11.418,
+      "cycle_seconds_tangent": 11.398,
       "link_mm": 0.0,
       "moves": 10,
       "plunges": 2,
-      "rapid_mm": 19.27,
+      "rapid_mm": 12.27,
       "removed_mm3": 37.366,
       "retracts": 2
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 66.71,
-    "cycle_seconds_tangent": 66.61,
+    "cycle_seconds_exact_stop": 71.553,
+    "cycle_seconds_tangent": 71.453,
     "material": {
       "leftover_mm3": [
         0.0,
