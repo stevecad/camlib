@@ -1175,9 +1175,12 @@ class TurnRough:
     of a ``z_from_mm`` inside the stock, reached by a rapid down to their
     level: where the stock in front of ``z_from_mm`` is not turned down
     below a pass, the operation is refused before any move, naming that
-    stock and the fix (rough the stretch in front first). The rest of the
-    profile is left for another operation or chucking, and the operation's
-    report lists it (``left_for_another_setup_z_mm``)."""
+    stock and the fix (rough the stretch in front first). A pass stops where
+    the profile, in front of ``z_from_mm`` too, blocks it, and one blocked
+    before it enters the window is not cut. The rest of the profile is left
+    for another operation or chucking, and the operation's report lists it
+    (``left_for_another_setup_z_mm``), with, behind a front larger than what
+    follows, the window's profile below that front."""
 
     id: str
     tool: str

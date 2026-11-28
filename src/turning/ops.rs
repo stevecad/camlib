@@ -720,8 +720,11 @@ pub struct TurnReport {
     pub max_model_hull_error_mm: Option<f64>,
     /// The z ranges of the part's profile a roughing or finishing operation
     /// did not turn, because the jaws hold the work there or its own bounds
-    /// end before them (#418): left for another operation or chucking, not
-    /// a failure. Reported with a grip or bounds only.
+    /// end before them (#418), or, for roughing, because they lie below a
+    /// front larger than them that stops every pass before it gets there
+    /// (#447): left for another operation or chucking, not a failure.
+    /// Ascending; ranges that meet are joined. Reported with a grip or
+    /// bounds only.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub left_for_another_setup_z_mm: Vec<[f64; 2]>,
 }
@@ -2967,19 +2970,25 @@ impl<'a> TurnSession<'a> {
                 // With bounds or a grip, the rest of the profile is
                 // reported as left for another operation or chucking.
                 let window = chucking::window(&id, job, *z_from_mm, *z_to_mm)?;
-                report.left_for_another_setup_z_mm = window.left.clone();
                 let z_end = window.lo;
                 // The passes start beyond the stock end, or the clearance in
                 // front of a front bound inside it.
                 let begin = window
                     .hi
                     .map_or(z_start, |hi| z_start.min(hi + job.clearance_mm));
-                // The path a pass can meet: all of it, or what lies behind
-                // the front bound.
+                // The path a pass can meet: all of it, or, with a front
+                // bound, all of it behind where the passes start. A pass
+                // runs from `begin`, so the path between the bound and
+                // `begin` stops it as the path behind the bound does (#447:
+                // the path was once clipped at the bound, and a pass below
+                // a front larger than the window ran through it).
                 let ahead = match window.hi {
-                    Some(hi) => chucking::clip(&points, f64::NEG_INFINITY, hi),
+                    Some(hi) => chucking::clip(&points, f64::NEG_INFINITY, hi.max(begin)),
                     None => vec![points.clone()],
                 };
+                // A pass is cut only where it enters the window: stopped at
+                // or in front of the front bound it removes nothing there.
+                let enter = window.hi.map_or(begin, |hi| hi.min(begin));
                 let reach = |v: f64| {
                     ahead
                         .iter()
@@ -2988,6 +2997,24 @@ impl<'a> TurnSession<'a> {
                         .map_or(z_end, |u| u.max(z_end))
                 };
                 let z_top = window.hi.map_or(z_hi, |hi| hi.min(z_hi));
+                // Left for another operation or chucking (bounded only):
+                // the profile outside the window and what in it lies below
+                // a front larger than it (in front of the window's front
+                // end, the front bound or the part's front face, where the
+                // passes start), which no pass reaches (#447).
+                report.left_for_another_setup_z_mm = if window.bounded {
+                    let mut left = window.left.clone();
+                    left.extend(chucking::behind_front(
+                        &points,
+                        [z_end, z_top],
+                        begin,
+                        tol,
+                        job.part.z_range(),
+                    ));
+                    chucking::joined(left)
+                } else {
+                    window.left.clone()
+                };
                 // The front face's offset is not a diameter to rough to.
                 let lowest = if window.bounded {
                     // Cut at the window's ends: a diameter or taper crossing
@@ -3015,7 +3042,7 @@ impl<'a> TurnSession<'a> {
                     pass_levels(&points, [z_end, z_top], top + rn, lowest, *depth_of_cut_mm)
                 {
                     let stop = reach(v_pass);
-                    if stop < begin - tol {
+                    if stop < enter - tol {
                         let descent = if first {
                             first = false;
                             approach(&mut *planner, &mut report, [begin, v_pass])

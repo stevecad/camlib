@@ -268,6 +268,98 @@ pub(super) fn clip(points: &[[f64; 2]], lo: f64, hi: f64) -> Vec<Vec<[f64; 2]>> 
     pieces
 }
 
+/// Behind a front larger than what follows (#447): the stretches of a
+/// roughing window `[lo, hi]` (`hi` its front end: the front bound, or the
+/// part's front face) that no pass reaches down to the nose-centre path
+/// `points`.
+///
+/// Every pass starts at `begin`, in front of `hi`, and runs
+/// toward the chuck until the path stands above it (`first_reach`), so no
+/// pass gets into the window below the path's highest point between `hi`
+/// and `begin`: the front. Where the window's path lies lower than the
+/// front, a stock removal cycle from the front leaves the material above it
+/// (its passes stop "before [they intersect] the programmed tool path":
+/// Haas Lathe Programming Manual, Haas Factory Outlet, rev. 12/2024, "G71
+/// O.D./I.D. Stock Removal Cycle", Type I details, p. 32). That stretch is
+/// left for another operation or chucking, like the profile outside the
+/// window.
+///
+/// Returned: each stretch of the window's path that is nowhere above the
+/// front by more than `tol` and somewhere lower than it by more than `tol`, within the part's
+/// z range `[z_lo, z_hi]`, ascending. A front only as high as the window's
+/// path leaves nothing.
+pub(super) fn behind_front(
+    points: &[[f64; 2]],
+    [lo, hi]: [f64; 2],
+    begin: f64,
+    tol: f64,
+    [z_lo, z_hi]: [f64; 2],
+) -> Vec<[f64; 2]> {
+    if hi >= begin {
+        return vec![];
+    }
+    let front = clip(points, hi, begin)
+        .iter()
+        .flatten()
+        .map(|p| p[1])
+        .fold(f64::NEG_INFINITY, f64::max);
+    if !front.is_finite() {
+        return vec![];
+    }
+    // Above the front only past it by more than the tolerance: the chain
+    // round an arc (its chords' corners, `chain`) stands up to a fraction
+    // of it outside the arc, so the window's chain round the corner the
+    // front ends on is as high as the front within it.
+    let level = front + tol;
+    // The z extent of each segment's stretch at or below the front, and
+    // whether it lies lower than the front by more than the tolerance.
+    let mut runs: Vec<([f64; 2], bool)> = vec![];
+    for piece in clip(points, lo, hi) {
+        for w in piece.windows(2) {
+            let (p, q) = (w[0], w[1]);
+            let at =
+                |a: [f64; 2], b: [f64; 2]| a[0] + (level - a[1]) / (b[1] - a[1]) * (b[0] - a[0]);
+            let (a, b) = match (p[1] <= level, q[1] <= level) {
+                (true, true) => (p[0], q[0]),
+                (true, false) => (p[0], at(p, q)),
+                (false, true) => (at(p, q), q[0]),
+                (false, false) => continue,
+            };
+            runs.push(([a.min(b), a.max(b)], p[1].min(q[1]) < front - tol));
+        }
+    }
+    runs.sort_by(|x, y| x.0[0].total_cmp(&y.0[0]));
+    let mut joined: Vec<([f64; 2], bool)> = vec![];
+    for (span, deep) in runs {
+        match joined.last_mut() {
+            Some((last, low)) if span[0] <= last[1] + SLIVER => {
+                last[1] = last[1].max(span[1]);
+                *low |= deep;
+            }
+            _ => joined.push((span, deep)),
+        }
+    }
+    joined
+        .into_iter()
+        .filter(|&(_, deep)| deep)
+        .map(|([a, b], _)| [a.max(z_lo), b.min(z_hi)])
+        .filter(|[a, b]| b - a > SLIVER)
+        .collect()
+}
+
+/// z ranges, ascending, with those that overlap or meet joined.
+pub(super) fn joined(mut ranges: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
+    ranges.sort_by(|x, y| x[0].total_cmp(&y[0]));
+    let mut out: Vec<[f64; 2]> = vec![];
+    for r in ranges {
+        match out.last_mut() {
+            Some(last) if r[0] <= last[1] + SLIVER => last[1] = last[1].max(r[1]),
+            _ => out.push(r),
+        }
+    }
+    out
+}
+
 /// One move of a finishing path: a line to a point, or an arc (about `c`
 /// through `sweep`) from where the path is to `b`.
 pub(super) enum Piece {
