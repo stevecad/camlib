@@ -664,6 +664,16 @@ keeps the exact shadow, as it would with `contour_tolerance_mm` 0, and
 disk of half the cutter's radius are protected too, since the cutter cannot
 enter them (the layer report's `shadow.filled_holes`).
 
+Set `region_first=True` to try roughing two independent enclosed pockets
+one at a time with raster or offset clearing. The mode requires persistent
+pocket footprints, a separating retained perimeter, and clearance for
+the full tool assembly between regions. The exterior runs first, then
+each admitted pocket runs through its normal levels. If the geometry or
+the existing layer preparation cannot prove that ordering, CAMLib uses
+the ordinary depth-by-depth schedule. The optional report field
+`region_first_applied` indicates whether the mode was used. Stock, entry,
+fixture and posted-program checks apply to both schedules.
+
 A target mesh whose faces were tessellated separately has hairline seams
 between neighbouring faces (their shared edge is subdivided differently on
 each side). A mesh declares how far the part's surface may be from its facets

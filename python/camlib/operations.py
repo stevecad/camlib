@@ -1654,6 +1654,7 @@ class Roughing:
     clearing_tolerance_mm: float | None = None
     require_part_at_first_depth: bool = False
     omit_empty_cuts: bool = False
+    region_first: bool = field(default=False, kw_only=True)
     rest_tolerance_mm: float | None = None
     # See Pocket.retract_z_mm/feed_z_mm. Raster, offset and engagement_front.
     retract_z_mm: float | None = None
@@ -1709,6 +1710,8 @@ class Roughing:
             result.pop('rest_tolerance_mm')
         if type(self.omit_empty_cuts) is not bool:
             raise ValueError('omit_empty_cuts must be a boolean')
+        if self.region_first is False:
+            result.pop('region_first')
         if not self.omit_empty_cuts:
             result.pop('omit_empty_cuts')
         if self.clearing_tolerance_mm is None:

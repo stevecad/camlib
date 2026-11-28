@@ -703,6 +703,9 @@ pub struct RoughingOperation<G = SurfaceMesh> {
     pub rest_tolerance_mm: Option<f64>,
     #[serde(default, skip_serializing_if = "no_part_depth_check")]
     pub omit_empty_cuts: bool,
+    /// Try clearing each proven independent enclosed pocket through its depths.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub region_first: bool,
     #[serde(default, skip_serializing_if = "no_part_depth_check")]
     pub require_part_at_first_depth: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -798,6 +801,7 @@ impl<G> RoughingOperation<G> {
             limits: self.limits,
             rest_tolerance_mm: self.rest_tolerance_mm,
             omit_empty_cuts: self.omit_empty_cuts,
+            region_first: self.region_first,
             require_part_at_first_depth: self.require_part_at_first_depth,
             clearing_tolerance_mm: self.clearing_tolerance_mm,
             contour_tolerance_mm: self.contour_tolerance_mm,
@@ -836,6 +840,9 @@ impl<G> RoughingOperation<G> {
 #[derive(Clone, Serialize)]
 pub struct RoughingLayerReport {
     pub tip_z_mm: f64,
+    /// 0 is the exterior, 1 and 2 are isolated pockets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region_index: Option<usize>,
     /// For a step-up layer: the full stepdown layer below it whose band it cuts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub step_up_of_z_mm: Option<f64>,
@@ -887,6 +894,9 @@ pub struct RoughingReport {
     pub max_radial_engagement_mm: Option<f64>,
     pub max_engagement_deg: Option<f64>,
     pub layers: Vec<RoughingLayerReport>,
+    /// True when the requested schedule was proved, false on fallback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region_first_applied: Option<bool>,
     pub completed_layers: usize,
     pub active_layer: usize,
     pub prepared_guides: usize,
@@ -897,6 +907,114 @@ pub struct RoughingReport {
     pub helical_entries: usize,
     pub diagnostics: Vec<String>,
 }
+type XyBox = [Point; 2];
+
+fn linear_bounds(boundary: &Boundary) -> Option<XyBox> {
+    let mut lo = [f64::INFINITY; 2];
+    let mut hi = [f64::NEG_INFINITY; 2];
+    for &[x, y, bulge] in &boundary.vertices {
+        if bulge != 0. {
+            return None;
+        }
+        lo = [lo[0].min(x), lo[1].min(y)];
+        hi = [hi[0].max(x), hi[1].max(y)];
+    }
+    (lo[0] < hi[0] && lo[1] < hi[1]).then_some([lo, hi])
+}
+
+/// Require a rectangular retained perimeter separating the exterior from
+/// exactly two enclosed components, with room for the full assembly between
+/// every component. Refuse uncertain topology before any motion is emitted.
+fn independent_pockets(region: &PlanarRegion, reach: f64) -> Option<([usize; 3], [XyBox; 2])> {
+    if region.components.len() != 3 {
+        return None;
+    }
+    let exterior = region.components.iter().position(|c| c.holes.len() == 1)?;
+    let wall = &region.components[exterior].holes[0];
+    let [lo, hi] = linear_bounds(wall)?;
+    // The Boolean may subdivide a straight side at mesh seams. All
+    // consecutive edges still have to run along the rectangle's boundary.
+    for (a, b) in wall
+        .vertices
+        .iter()
+        .zip(wall.vertices.iter().cycle().skip(1))
+    {
+        if !(0..2).any(|k| a[k] == b[k] && (a[k] == lo[k] || a[k] == hi[k])) {
+            return None;
+        }
+    }
+    let mut pockets = [(0, [[0.; 2]; 2]); 2];
+    for (slot, (id, component)) in pockets.iter_mut().zip(
+        region
+            .components
+            .iter()
+            .enumerate()
+            .filter(|(id, _)| *id != exterior),
+    ) {
+        if !component.holes.is_empty() {
+            return None;
+        }
+        let bounds = linear_bounds(&component.outer)?;
+        *slot = (id, bounds);
+    }
+    let gap = 2. * (reach + region.boundary_error_mm);
+    if pockets
+        .iter()
+        .any(|(_, [a, b])| (0..2).any(|k| a[k] - lo[k] <= gap || hi[k] - b[k] <= gap))
+    {
+        return None;
+    }
+    let [(_, a), (_, b)] = pockets;
+    if !(0..2).any(|k| (b[0][k] - a[1][k]).max(a[0][k] - b[1][k]) > gap) {
+        return None;
+    }
+    pockets.sort_by(|(_, a), (_, b)| {
+        a[0][0]
+            .total_cmp(&b[0][0])
+            .then(a[0][1].total_cmp(&b[0][1]))
+    });
+    Some((
+        [exterior, pockets[0].0, pockets[1].0],
+        [pockets[0].1, pockets[1].1],
+    ))
+}
+
+#[cfg(test)]
+#[test]
+fn region_first_requires_full_assembly_separation() {
+    let rectangle = |lo: Point, hi: Point| Boundary {
+        vertices: vec![
+            [lo[0], lo[1], 0.],
+            [hi[0], lo[1], 0.],
+            [hi[0], hi[1], 0.],
+            [lo[0], hi[1], 0.],
+        ],
+    };
+    let pocket = |x: f64| Component {
+        outer: rectangle([x, -6.], [x + 12., 6.]),
+        holes: vec![],
+    };
+    let mut region = PlanarRegion {
+        version: 1,
+        name: "pockets".into(),
+        units: "mm".into(),
+        boundary_error_mm: 0.,
+        components: vec![
+            pocket(9.),
+            Component {
+                outer: rectangle([-40., -25.], [40., 25.]),
+                holes: vec![rectangle([-30., -15.], [30., 15.])],
+            },
+            pocket(-21.),
+        ],
+        source: serde_json::Value::Null,
+    };
+    assert_eq!(independent_pockets(&region, 3.).unwrap().0, [1, 2, 0]);
+    assert!(independent_pockets(&region, 5.).is_none());
+    region.components.pop();
+    assert!(independent_pockets(&region, 3.).is_none());
+}
+
 enum LayerPlan {
     Pocket(Box<PocketPlan>),
     Engagement(Box<EngagementFrontPlan>),
@@ -1315,7 +1433,6 @@ impl RoughingPlan {
         }
         let mut plans = VecDeque::new();
         let mut reports = vec![];
-        let (mut work, mut vertices, mut guides) = (0usize, 0usize, 0usize);
         let mut maximum_error = guard;
         let mut depths = vec![];
         // The deepest full layer cut so far: everything above it outside its
@@ -1362,230 +1479,317 @@ impl RoughingPlan {
         } else {
             1
         };
-        let prepared = parallel::ordered(
-            depths.len(),
-            workers,
-            cancel,
-            |i, signal| {
-                let cancel = || signal.is_cancelled();
-                let (z, step_up_of, cleared_above) = depths[i];
-                // Earlier layers clear the space above this one. Keep the
-                // original entry plane while the flutes span it; deeper
-                // layers admit only their actual increment below the last
-                // full layer above them (a step-up's band cut clears less),
-                // with a reserve for that sweep's conservative height bound.
-                let mut layer_spec = material_spec.clone();
-                if tool.cutter.shape.indexable().is_some()
-                    || material_spec.max_mm[2] - z > tool.cutter.cutting_length_mm
-                {
-                    layer_spec.max_mm[2] = match cleared_above {
-                        None => material_spec.max_mm[2],
-                        Some(above) => above + 16. * op.tolerance_mm,
-                    };
-                }
-                let cut_depth = layer_spec.max_mm[2] - z;
-                if cut_depth > tool.cutter.cutting_length_mm {
-                    return Err(crate::reach::ReachRefusal::cutting_length(&op.id, &tool.id, layer_spec.max_mm[2], z, tool.cutter.cutting_length_mm).error(format_args!(
+        let prepare_layers = |region_reach: Option<f64>| {
+            let (mut work, mut vertices, mut guides) = (0usize, 0usize, 0usize);
+            let prepared = parallel::ordered(
+                depths.len(),
+                workers,
+                cancel,
+                |i, signal| {
+                    let cancel = || signal.is_cancelled();
+                    let (z, step_up_of, cleared_above) = depths[i];
+                    // Earlier layers clear the space above this one. Keep the
+                    // original entry plane while the flutes span it; deeper
+                    // layers admit only their actual increment below the last
+                    // full layer above them (a step-up's band cut clears less),
+                    // with a reserve for that sweep's conservative height bound.
+                    let mut layer_spec = material_spec.clone();
+                    if tool.cutter.shape.indexable().is_some()
+                        || material_spec.max_mm[2] - z > tool.cutter.cutting_length_mm
+                    {
+                        layer_spec.max_mm[2] = match cleared_above {
+                            None => material_spec.max_mm[2],
+                            Some(above) => above + 16. * op.tolerance_mm,
+                        };
+                    }
+                    let cut_depth = layer_spec.max_mm[2] - z;
+                    if cut_depth > tool.cutter.cutting_length_mm {
+                        return Err(crate::reach::ReachRefusal::cutting_length(&op.id, &tool.id, layer_spec.max_mm[2], z, tool.cutter.cutting_length_mm).error(format_args!(
                         "roughing layer {i} at Z{z}: actual cut depth {cut_depth} mm exceeds cutting length {} mm; use a smaller stepdown or longer flutes",
                         tool.cutter.cutting_length_mm
                     )));
-                }
-                let mut work = 0;
-                let shadow = target
-                    .shadow_simplified(z, op.bottom_allowance_mm, r, contour, &mut work, &cancel)
-                    .map_err(|e| format!("roughing shadow at Z{z}: {e}"))?;
-                let band = match step_up_of {
-                    Some(below) => Some(
-                        target
-                            .shadow_simplified(
-                                below,
-                                op.bottom_allowance_mm,
-                                r,
-                                contour,
-                                &mut work,
-                                &cancel,
-                            )
-                            .and_then(|parent| {
-                                stepup_band(&parent, r + op.radial_allowance_mm, options)
-                            })
-                            .map_err(|e| format!("roughing step-up band at Z{z}: {e}"))?,
-                    ),
-                    None => None,
-                };
-                let plan_layer = |shadow: RoughingShadow| -> Result<_, String> {
-                    let mut region = expanded
-                        .boolean(&shadow.region.prepare(options)?, Boolean::Difference)?
-                        .region;
-                    if let Some(band) = &band {
-                        region = region
-                            .prepare(options)?
-                            .boolean(&band.prepare(options)?, Boolean::Intersection)?
-                            .region;
                     }
-                    let layer_vertices = count_vertices(&region);
-                    let step = match op.clearing {
-                        RoughingClearing::Raster { stepover_mm, .. }
-                        | RoughingClearing::Offset { stepover_mm, .. } => stepover_mm,
-                        RoughingClearing::Adaptive { .. } => r,
-                    };
-                    let pocket = PocketOperation {
-                        max_stay_down_mm: None,
-                        limits: op.limits.clone(),
-                        id: op.id.clone(),
-                        tool: op.tool.clone(),
-                        region,
-                        top_z_mm: layer_spec.max_mm[2],
-                        floor_z_mm: z,
-                        stepdown_mm: layer_spec.max_mm[2] - z,
-                        stepover_mm: step,
-                        feed_mm_min: op.feed_mm_min,
-                        plunge_mm_min: op.plunge_mm_min,
-                        clearance_z_mm: op.clearance_z_mm,
-                        radial_allowance_mm: op.radial_allowance_mm,
-                        bottom_allowance_mm: 0.,
-                        tolerance_mm: op.tolerance_mm,
-                        spindle_rpm: op.spindle_rpm,
-                        work_offset: op.work_offset,
-                        tool_number: op.tool_number,
-                        length_register: op.length_register,
-                        coolant: op.coolant,
-                        rest_tolerance_mm: op.rest_tolerance_mm,
-                        boundary_clockwise: Some(op.clockwise),
-                        entry: Some(op.entry.clone()),
-                        retract_z_mm: op.retract_z_mm,
-                        feed_z_mm: op.feed_z_mm,
-                    };
-                    let mut plan = match op.clearing {
-                        RoughingClearing::Offset {
-                            coverage_margin_mm, ..
-                        } => LayerPlan::Pocket(Box::new(PocketPlan::prepare_offset(
-                            pocket,
-                            tool,
-                            &layer_spec,
-                            initial,
-                            1,
-                            coverage_margin_mm,
+                    let mut work = 0;
+                    let shadow = target
+                        .shadow_simplified(
+                            z,
+                            op.bottom_allowance_mm,
+                            r,
+                            contour,
+                            &mut work,
                             &cancel,
-                        )?)),
-                        RoughingClearing::Raster { routing, .. } => {
-                            let p = PocketPlan::prepare(
-                                pocket,
-                                tool,
-                                &layer_spec,
-                                initial,
-                                1,
-                                &cancel,
-                            )?;
-                            LayerPlan::Pocket(Box::new(if let Some(policy) = routing {
-                                p.with_routing(policy, &cancel)?
-                            } else {
-                                p
-                            }))
+                        )
+                        .map_err(|e| format!("roughing shadow at Z{z}: {e}"))?;
+                    let band = match step_up_of {
+                        Some(below) => Some(
+                            target
+                                .shadow_simplified(
+                                    below,
+                                    op.bottom_allowance_mm,
+                                    r,
+                                    contour,
+                                    &mut work,
+                                    &cancel,
+                                )
+                                .and_then(|parent| {
+                                    stepup_band(&parent, r + op.radial_allowance_mm, options)
+                                })
+                                .map_err(|e| format!("roughing step-up band at Z{z}: {e}"))?,
+                        ),
+                        None => None,
+                    };
+                    let plan_layer = |shadow: RoughingShadow| -> Result<_, String> {
+                        let mut region = expanded
+                            .boolean(&shadow.region.prepare(options)?, Boolean::Difference)?
+                            .region;
+                        if let Some(band) = &band {
+                            region = region
+                                .prepare(options)?
+                                .boolean(&band.prepare(options)?, Boolean::Intersection)?
+                                .region;
                         }
-                        RoughingClearing::Adaptive {
-                            max_radial_engagement_mm,
-                            cutting_sense,
-                            ..
-                        } => LayerPlan::Engagement(Box::new(
-                            EngagementFrontPlan::prepare(
-                                pocket,
-                                tool,
-                                &layer_spec,
-                                initial,
-                                max_radial_engagement_mm,
-                                cutting_sense.unwrap_or(CuttingSense::Climb) == CuttingSense::Climb,
-                                &cancel,
-                            )?
-                            .with_motion_options(front)
-                            // The walls are left with the allowance asked
-                            // for, not with the cusps between pass ends.
-                            .with_wall_runs(true),
-                        )),
-                    };
-                    if let (Some((feed, radius)), LayerPlan::Pocket(p)) = (exterior_link, &mut plan)
-                    {
-                        p.enable_exterior_links(feed, radius);
-                    }
-                    if op.omit_empty_cuts {
-                        match &mut plan {
-                            LayerPlan::Pocket(p) => p.enable_empty_cuts(),
-                            LayerPlan::Engagement(_) => (),
+                        let (parts, bounds) = if let Some(reach) = region_reach {
+                            let (ids, bounds) = independent_pockets(&region, reach + numeric_guard)
+                                .ok_or("roughing layer lacks two independently bounded pockets")?;
+                            let parts = ids
+                                .into_iter()
+                                .map(|id| PlanarRegion {
+                                    components: vec![region.components[id].clone()],
+                                    ..region.clone()
+                                })
+                                .collect();
+                            (parts, Some(bounds))
+                        } else {
+                            (vec![region], None)
+                        };
+                        let mut layer_plans = Vec::with_capacity(parts.len());
+                        for (i, region) in parts.into_iter().enumerate() {
+                            let layer_vertices = count_vertices(&region);
+                            let step = match op.clearing {
+                                RoughingClearing::Raster { stepover_mm, .. }
+                                | RoughingClearing::Offset { stepover_mm, .. } => stepover_mm,
+                                RoughingClearing::Adaptive { .. } => r,
+                            };
+                            let pocket = PocketOperation {
+                                max_stay_down_mm: None,
+                                limits: op.limits.clone(),
+                                id: op.id.clone(),
+                                tool: op.tool.clone(),
+                                region,
+                                top_z_mm: layer_spec.max_mm[2],
+                                floor_z_mm: z,
+                                stepdown_mm: layer_spec.max_mm[2] - z,
+                                stepover_mm: step,
+                                feed_mm_min: op.feed_mm_min,
+                                plunge_mm_min: op.plunge_mm_min,
+                                clearance_z_mm: op.clearance_z_mm,
+                                radial_allowance_mm: op.radial_allowance_mm,
+                                bottom_allowance_mm: 0.,
+                                tolerance_mm: op.tolerance_mm,
+                                spindle_rpm: op.spindle_rpm,
+                                work_offset: op.work_offset,
+                                tool_number: op.tool_number,
+                                length_register: op.length_register,
+                                coolant: op.coolant,
+                                rest_tolerance_mm: op.rest_tolerance_mm,
+                                boundary_clockwise: Some(op.clockwise),
+                                entry: Some(op.entry.clone()),
+                                retract_z_mm: op.retract_z_mm,
+                                feed_z_mm: op.feed_z_mm,
+                            };
+                            let mut plan = match op.clearing {
+                                RoughingClearing::Offset {
+                                    coverage_margin_mm, ..
+                                } => LayerPlan::Pocket(Box::new(PocketPlan::prepare_offset(
+                                    pocket,
+                                    tool,
+                                    &layer_spec,
+                                    initial,
+                                    1,
+                                    coverage_margin_mm,
+                                    &cancel,
+                                )?)),
+                                RoughingClearing::Raster { routing, .. } => {
+                                    let p = PocketPlan::prepare(
+                                        pocket,
+                                        tool,
+                                        &layer_spec,
+                                        initial,
+                                        1,
+                                        &cancel,
+                                    )?;
+                                    LayerPlan::Pocket(Box::new(if let Some(policy) = routing {
+                                        p.with_routing(policy, &cancel)?
+                                    } else {
+                                        p
+                                    }))
+                                }
+                                RoughingClearing::Adaptive {
+                                    max_radial_engagement_mm,
+                                    cutting_sense,
+                                    ..
+                                } => LayerPlan::Engagement(Box::new(
+                                    EngagementFrontPlan::prepare(
+                                        pocket,
+                                        tool,
+                                        &layer_spec,
+                                        initial,
+                                        max_radial_engagement_mm,
+                                        cutting_sense.unwrap_or(CuttingSense::Climb)
+                                            == CuttingSense::Climb,
+                                        &cancel,
+                                    )?
+                                    .with_motion_options(front)
+                                    // The walls are left with the allowance asked
+                                    // for, not with the cusps between pass ends.
+                                    .with_wall_runs(true),
+                                )),
+                            };
+                            if let (Some((feed, radius)), LayerPlan::Pocket(p)) =
+                                (exterior_link, &mut plan)
+                            {
+                                p.enable_exterior_links(feed, radius);
+                            }
+                            if op.omit_empty_cuts {
+                                match &mut plan {
+                                    LayerPlan::Pocket(p) => p.enable_empty_cuts(),
+                                    LayerPlan::Engagement(_) => (),
+                                }
+                            }
+                            let layer_error = plan.construction_error_mm();
+                            if op
+                                .clearing_tolerance_mm
+                                .is_some_and(|budget| layer_error > budget)
+                            {
+                                return Err(format!(
+                                    "roughing clearing_tolerance_mm cannot enclose layer construction error {layer_error} at Z{z}"
+                                ));
+                            }
+                            let layer_guides = match &plan {
+                                LayerPlan::Pocket(p) => p.report().xy_strokes,
+                                LayerPlan::Engagement(_) => 0,
+                            };
+                            let report = RoughingLayerReport {
+                                tip_z_mm: z,
+                                step_up_of_z_mm: step_up_of,
+                                region_index: bounds.map(|_| i),
+                                shadow: shadow.report.clone(),
+                                clearing: plan.report(),
+                            };
+                            layer_plans.push((
+                                plan,
+                                report,
+                                layer_vertices,
+                                layer_guides,
+                                layer_error,
+                            ));
                         }
-                    }
-                    let layer_error = plan.construction_error_mm();
-                    if op
-                        .clearing_tolerance_mm
-                        .is_some_and(|budget| layer_error > budget)
-                    {
-                        return Err(format!(
-                            "roughing clearing_tolerance_mm cannot enclose layer construction error {layer_error} at Z{z}"
-                        ));
-                    }
-                    let layer_guides = match &plan {
-                        LayerPlan::Pocket(p) => p.report().xy_strokes,
-                        LayerPlan::Engagement(_) => 0,
+                        Ok((layer_plans, bounds))
                     };
-                    let report = RoughingLayerReport {
-                        tip_z_mm: z,
-                        step_up_of_z_mm: step_up_of,
-                        shadow: shadow.report,
-                        clearing: plan.report(),
+                    // The simplified shadow only grows the protected area, so it
+                    // can narrow a gap the cutter still fits until no entry
+                    // reaches it (#123): that layer keeps the exact shadow.
+                    let simplified = shadow
+                        .report
+                        .simplified
+                        .as_ref()
+                        .is_some_and(|s| s.reason.is_none());
+                    let (plans, bounds) = match plan_layer(shadow) {
+                        Err(e) if simplified && e.contains(crate::entry::NO_ENTRY) => {
+                            let exact = target
+                                .shadow_simplified(
+                                    z,
+                                    op.bottom_allowance_mm,
+                                    r,
+                                    0.,
+                                    &mut work,
+                                    &cancel,
+                                )
+                                .map_err(|e| format!("roughing shadow at Z{z}: {e}"))?;
+                            let exact_vertices = exact.report.output_vertices;
+                            let (mut plans, bounds) = plan_layer(exact)?;
+                            for (_, report, _, _, _) in &mut plans {
+                                report.shadow.simplified = Some(SimplifiedShadow {
+                                    tolerance_mm: contour,
+                                    exact_vertices,
+                                    reason: Some(format!(
+                                        "kept the exact shadow: the simplified one left a region no entry reaches ({e})"
+                                    )),
+                                });
+                            }
+                            (plans, bounds)
+                        }
+                        result => result?,
                     };
-                    Ok((plan, report, layer_vertices, layer_guides, layer_error))
-                };
-                // The simplified shadow only grows the protected area, so it
-                // can narrow a gap the cutter still fits until no entry
-                // reaches it (#123): that layer keeps the exact shadow.
-                let simplified = shadow
-                    .report
-                    .simplified
-                    .as_ref()
-                    .is_some_and(|s| s.reason.is_none());
-                let (plan, report, layer_vertices, layer_guides, layer_error) = match plan_layer(
-                    shadow,
-                ) {
-                    Err(e) if simplified && e.contains(crate::entry::NO_ENTRY) => {
-                        let exact = target
-                            .shadow_simplified(z, op.bottom_allowance_mm, r, 0., &mut work, &cancel)
-                            .map_err(|e| format!("roughing shadow at Z{z}: {e}"))?;
-                        let exact_vertices = exact.report.output_vertices;
-                        let (plan, mut report, v, g, error) = plan_layer(exact)?;
-                        report.shadow.simplified = Some(SimplifiedShadow {
-                            tolerance_mm: contour,
-                            exact_vertices,
-                            reason: Some(format!(
-                                "kept the exact shadow: the simplified one left a region no entry reaches ({e})"
-                            )),
-                        });
-                        (plan, report, v, g, error)
+                    Ok((plans, bounds, work))
+                },
+                |(plans, _, layer_work)| {
+                    for (_, _, layer_vertices, layer_guides, _) in plans {
+                        vertices += layer_vertices;
+                        guides += layer_guides;
                     }
-                    result => result?,
-                };
-                Ok((
-                    plan,
-                    report,
-                    layer_vertices,
-                    layer_guides,
-                    work,
-                    layer_error,
-                ))
-            },
-            |(_, _, layer_vertices, layer_guides, layer_work, _)| {
-                vertices += layer_vertices;
-                guides += layer_guides;
-                work += layer_work;
-                // Prepared layers are retained until drained: check the
-                // accumulated geometry against available memory.
-                crate::resources::check_memory(
-                    (vertices as u128 * 3 + guides as u128 * 8) * 8,
-                    "prepared roughing layers",
-                )
-            },
-        )?;
+                    work += layer_work;
+                    crate::resources::check_memory(
+                        (vertices as u128 * 3 + guides as u128 * 8) * 8,
+                        "prepared roughing layers",
+                    )
+                },
+            )?;
+            if let Some((_, Some(first), _)) = prepared.first()
+                && prepared.iter().any(|(_, bounds, _)| {
+                    bounds.as_ref().is_none_or(|b| {
+                        first
+                            .iter()
+                            .flatten()
+                            .flatten()
+                            .zip(b.iter().flatten().flatten())
+                            .any(|(a, b)| (a - b).abs() > numeric_guard)
+                    })
+                })
+            {
+                return Err("roughing pocket bounds change between depths".into());
+            }
+            let mut ordered: Vec<_> = prepared
+                .into_iter()
+                .flat_map(|(plans, _, _)| plans)
+                .collect();
+            if region_reach.is_some() {
+                ordered.sort_by_key(|(_, report, _, _, _)| report.region_index);
+            }
+            Ok::<_, String>((ordered, work, vertices, guides))
+        };
+        let eligible = op.region_first
+            && depths.len() > 1
+            && op.stepup_mm.is_none()
+            && op.limits.is_none()
+            && op.rest_tolerance_mm.is_none()
+            && !matches!(op.clearing, RoughingClearing::Adaptive { .. })
+            && material_spec.max_mm[2] - floor <= tool.cutter.cutting_length_mm;
+        let mut applied = false;
+        let mut fallback = None;
+        let (prepared, work, vertices, guides) = if eligible {
+            let reach = crate::verification::parts(&prepared_tool)?
+                .iter()
+                .map(|p| p.radius.max_over(p.min, p.max))
+                .fold(r, f64::max);
+            match prepare_layers(Some(reach)) {
+                Ok(plans) => {
+                    applied = true;
+                    plans
+                }
+                Err(reason) => {
+                    check(cancel)?;
+                    fallback = Some(reason);
+                    prepare_layers(None)?
+                }
+            }
+        } else {
+            prepare_layers(None)?
+        };
         // One clearance scene for all layers: each layer extends it with the
         // sweeps committed since, instead of rebuilding from the whole job.
         let entry_scene = crate::pocket::EntrySceneCache::default();
-        for (mut plan, report, _, _, _, error) in prepared {
+        for (mut plan, report, _, _, error) in prepared {
             maximum_error = maximum_error.max(error);
             if let LayerPlan::Pocket(p) = &mut plan {
                 p.share_entry_scene(&entry_scene);
@@ -1613,13 +1817,22 @@ impl RoughingPlan {
         let prefix = plans.front().map_or_else(Vec::new, LayerPlan::prefix);
         let suffix = plans.front().map_or_else(Vec::new, LayerPlan::suffix);
 
-        let report=RoughingReport{rest_tolerance_mm:op.rest_tolerance_mm,no_op,maximum_construction_error_mm:op.clearing_tolerance_mm.map(|_|maximum_error),height_schedule,strategy:"roughing",geometric_residual_status:ResidualStatus::Pending,clearing,source_error_mm:target.mesh.surface_error_mm,
+        let mut report=RoughingReport{rest_tolerance_mm:op.rest_tolerance_mm,no_op,maximum_construction_error_mm:op.clearing_tolerance_mm.map(|_|maximum_error),height_schedule,strategy:"roughing",geometric_residual_status:ResidualStatus::Pending,clearing,source_error_mm:target.mesh.surface_error_mm,
             requested_floor_z_mm:op.floor_z_mm,target_z_mm:floor,floor_geometry_guard_mm:guard,
             radial_allowance_mm:op.radial_allowance_mm,bottom_allowance_mm:op.bottom_allowance_mm,
-            max_radial_engagement_mm:width,max_engagement_deg:engagement,layers:reports,completed_layers:0,active_layer:0,
+            max_radial_engagement_mm:width,max_engagement_deg:engagement,layers:reports,region_first_applied:op.region_first.then_some(applied),completed_layers:0,active_layer:0,
             prepared_guides:guides,prepared_region_vertices:vertices,clipping_work:work,motions:0,stock_edge_entries:0,helical_entries:0,
             diagnostics:vec!["Flat-cutter column shadows protect the downward closure of all original facets above each tip; source/Boolean engineering errors included".into(),
                 "Per-layer nominal residual areas are estimates; actual remaining stock and independent part/assembly/fixture checks are separate".into()]};
+        if op.region_first && !applied {
+            let reason = fallback
+                .as_deref()
+                .unwrap_or("operation is outside the supported schedule");
+            report.diagnostics.push(format!(
+                "kept depth-by-depth roughing: {}",
+                reason.chars().take(240).collect::<String>()
+            ));
+        }
         check(cancel)?;
         Ok(Self {
             depth_parts: if material_spec.max_mm[2] - floor > tool.cutter.cutting_length_mm {

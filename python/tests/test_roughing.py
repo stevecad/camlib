@@ -73,6 +73,135 @@ def stream(adaptive=False):
 
 
 class RoughingTest(unittest.TestCase):
+    def test_region_first_two_pockets_through_posting_and_stock_checks(self):
+        import cadquery as cq
+
+        import camlib
+        from camlib.dynamics import MotionPolicy, schedule
+        from camlib.material import SurfaceTarget
+        from camlib.motion import Coolant, Spindle, Stop, ToolChange, WorkOffset
+        from camlib.postprocessor import _typed
+        from camlib.verification import MaterialCheck, StockContactOptions, StreamChecks
+        from test_machine import model
+        from test_post import fixture
+
+        blank = cq.Workplane("XY").box(60, 30, 5, centered=(True, True, False))
+        stock = camlib.StockSpec((-30, -15, 0), (30, 15, 5), 0.5)
+        tool = camlib.ToolAssembly(
+            "d4",
+            camlib.EndMill("e4", diameter=4, flute_length=16, overall_length=45),
+            20,
+            50,
+            (camlib.HolderSection(20, 50, 3, 3),),
+        )
+        start = (0, 0, 9)
+        for connected in (False, True):
+            with self.subTest(connected=connected):
+                part = blank
+                for center in (0.0,) if connected else (-15.0, 15.0):
+                    pocket = (
+                        cq.Workplane("XY")
+                        .box(42 if connected else 12, 12, 5, centered=(True, True, False))
+                        .translate((center, 0, 1))
+                    )
+                    part = part.cut(pocket)
+                op = Roughing.from_solid(
+                    "rough",
+                    tool,
+                    part,
+                    top_z_mm=5,
+                    floor_z_mm=1.05,
+                    stepdown_mm=1.0,
+                    clearance_z_mm=9,
+                    clearing=camlib.OffsetClearing(1.2),
+                    feed_mm_min=360,
+                    plunge_mm_min=108,
+                    spindle_rpm=2000,
+                    tool_number=1,
+                    length_register=1,
+                    coolant="flood",
+                )
+                checks = StreamChecks(
+                    stock_contact=StockContactOptions(),
+                    material=(MaterialCheck(SurfaceTarget("pockets", "1", op.target, 0)),),
+                )
+                measurements = []
+                for enabled in (False, True):
+                    job = Job(
+                        "pockets",
+                        "1",
+                        (
+                            Setup(
+                                "top", stock, (tool,), (replace(op, region_first=enabled),), start, verification=checks
+                            ),
+                        ),
+                    )
+                    compiled = job.compile().setup("top")
+                    if enabled:
+                        report = None
+                        with Simulation(**compiled.simulation_options()) as sim:
+                            for update in sim.run_operations():
+                                if isinstance(update, OperationUpdate) and update.stage == "end":
+                                    report = update.report
+                        self.assertIsNotNone(report)
+                        self.assertEqual(report["region_first_applied"], not connected, report["diagnostics"])
+                        if not connected:
+                            self.assertEqual(
+                                [layer["region_index"] for layer in report["layers"]], [0] * 4 + [1] * 4 + [2] * 4
+                            )
+                    header = compiled.program_header()
+                    machine = replace(
+                        fixture()[1],
+                        motion_policy=MotionPolicy(300.0, 6000.0),
+                        tools=(
+                            ToolSetting.for_tool(header.tools[0], number=1, length_register=1, position_after_mm=start),
+                        ),
+                    )
+                    crash = replace(model(header, machine), initial_axes_mm=(0, 0, 9 + tool.gauge_length_mm))
+                    with job.post("top", machine=replace(machine, crash_model=crash)) as posted:
+                        result = posted.export()
+                        self.assertEqual(result["findings"], ())
+                        self.assertEqual(result["accepted"], ())
+                        self.assertEqual(result["machine"]["status"], "clear")
+                        moves = [posted.posted_motion(i)["motion"] for i in range(result["motions"])]
+                        events = tuple(_typed({"kind": "motion", "motion": m}) for m in moves)
+                        posted_plan = replace(
+                            header,
+                            events=(
+                                WorkOffset(1),
+                                ToolChange(tool.id, 1, 1, start),
+                                Spindle(2000),
+                                Coolant("flood"),
+                                *events,
+                                Coolant("off"),
+                                Spindle(0),
+                                Stop(True),
+                            ),
+                        )
+                        seconds = schedule(posted_plan, machine, adjust_feeds=False).motion_seconds
+                        rapid = sum(
+                            math.dist(m["curve"]["start"][:2], m["curve"]["end"][:2])
+                            for m in moves
+                            if m["kind"] == "rapid"
+                        )
+                        retracts = sum(
+                            m["curve"]["end"][2] > m["curve"]["start"][2]
+                            and m["curve"]["start"][:2] == m["curve"]["end"][:2]
+                            for m in moves
+                        )
+                        player = Player(posted)
+                        player.seek(Cursor(posted.status()["available"]))
+                        measurements.append((result["text"], rapid, retracts, seconds, player.state.volume()))
+                fixed, region = measurements
+                if connected:
+                    self.assertEqual(region[0], fixed[0])
+                else:
+                    print("Two pockets. Rapid XY mm, retracts, modeled seconds, material", fixed[1:], region[1:])
+                    self.assertLess(region[1], fixed[1])
+                    self.assertLessEqual(region[2], fixed[2])
+                    for bound in ("removed_lower_mm3", "removed_upper_mm3"):
+                        self.assertAlmostEqual(region[4][bound], fixed[4][bound], delta=5.0)
+
     def test_step_up_layers_follow_each_stepdown_and_remove_the_wall_stair(self):
         base = example().roughing_job(offset=True)
         operation = base['operations'][0]
