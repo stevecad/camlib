@@ -93,7 +93,104 @@ def nc(posted):
     return lines
 
 
+def adaptive_job(stepover):
+    """Issue #445's pocket: a 104 x 64 x 21 mm block (Z0 on top) faced to
+    Z-1, then an AdaptivePocket X27..77 Y17..47 to Z-9 with a 12 mm end mill,
+    90 degree engagement limit and a helical entry."""
+    from camlib.operations import AdaptivePocket, Facing, HelicalEntry
+
+    mill = ToolAssembly(
+        "em", EndMill("em", diameter=12, flute_length=26, overall_length=75), 40, 90, (HolderSection(40, 90, 12, 12),)
+    )
+    common = dict(
+        feed_mm_min=1000, plunge_mm_min=300, spindle_rpm=10000, tool_number=1, length_register=1, coolant="flood"
+    )
+    region = PlanarRegion("pocket", (Component(Boundary(((27, 47, 0), (27, 17, 0), (77, 17, 0), (77, 47, 0)))),))
+    operations = (
+        Facing("face", mill, -1, 1, 6, 10, **common),
+        AdaptivePocket(
+            "pocket", mill, region, 0, -9, 12, stepover, 10, max_engagement_deg=90, entry=HelicalEntry(), **common
+        ),
+    )
+    setup = Setup(
+        "top",
+        StockSpec((0, 0, -21), (104, 64, 0), 0.5),
+        (mill,),
+        operations,
+        (0, 0, 10),
+        verification=StreamChecks(stock_contact=StockContactOptions()),
+    )
+    job = Job("adaptive-arcs", "1", (setup,))
+    header = job.compile().setup("top").program_header()
+    machine = Machine(
+        "Three-axis mill",
+        (
+            ToolSetting.for_tool(
+                header.tools[0], number=1, length_register=1, position_after_mm=header.initial_position_mm
+            ),
+        ),
+        dialect=GCodeDialect.linuxcnc(),
+        output_units='mm',
+        decimals=3,
+        max_feed_mm_min=10000,
+        max_spindle_rpm=30000,
+        planes=('xy', 'xz', 'yz'),
+        arcs=True,
+        helices=True,
+        max_sweep_rad=6.283185307179586,
+        max_tool_number=99999,
+        max_length_register=99999,
+        tool_changes=True,
+        flood=True,
+        mist=True,
+        # The tool change keeps the tip where it is (both operations change
+        # to the same tool).
+        tool_change_position_mode='preserve_tip',
+        rapid_mm_min=6000,
+    )
+    return job, machine
+
+
 class ArcOutputPolicyTest(unittest.TestCase):
+    def test_an_adaptive_pocket_posts_its_arcs_natively(self):
+        # #445: the engagement front plans its strokes as arcs (711 of this
+        # pocket's 1,128 moves). Lowered to chords they were 11,414 blocks.
+        # Posted with native arcs, an arc that has no exactly consistent words
+        # from where the native arc before it ended is lowered from that
+        # decoded start, which the words moved: its uniform first chord plus
+        # that offset exceeded the output tolerance and the whole program was
+        # refused ("continuous lowering error"). A shorter lead chord now
+        # takes the offset, and every block is still certified. Posted as the
+        # benchmark posts a run: its streamed events as a Program, through
+        # post_program, which decodes every block and certifies it against its
+        # source move.
+        from camlib.motion import Program
+        from camlib.post import post_program
+        from camlib.postprocessor import _typed
+        from camlib.simulation import OperationUpdate, Simulation, Update
+
+        job, machine = adaptive_job(0.6)
+        setup = job.compile().setup("top")
+        events, curves = [], 0
+        with Simulation(**setup.simulation_options()) as sim:
+            manifest = sim.state.manifest
+            for u in sim.run_operations():
+                if isinstance(u, OperationUpdate):
+                    events.extend(_typed(e) for e in u.events)
+                elif isinstance(u, Update):
+                    events.append(_typed(dict(kind="motion", motion=u.motion)))
+                    curves += u.motion["curve"]["kind"] in ("arc", "helix")
+        tools = tuple(ToolAssembly.from_dict(t) for t in manifest["tools"])
+        program = Program("adaptive-arcs", "1", tools, tuple(manifest["initial_position_mm"]), tuple(events))
+        self.assertEqual(curves, 720)
+        text = "".join(c.text for c in post_program(program, machine, lowering=LoweringOptions(native_arcs=True)))
+        lines = text.splitlines()
+        native = sum(line.startswith(("G2 ", "G3 ")) for line in lines)
+        # Lowered to chords these were 11,414 blocks; here most stay arcs.
+        self.assertGreaterEqual(native, 700)
+        self.assertLess(len(lines), 2000)
+        self.check_exact_circles(lines)
+
     def test_default_precision_rejects_and_native_arcs_policy_is_exact_and_reported(self):
         job, machine = island_job()
         self.assertEqual(machine.decimals, 3)

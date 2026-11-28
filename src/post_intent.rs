@@ -1261,29 +1261,48 @@ impl IntentChecker {
                 return Err("native arc requires lowering native_arcs and a curve within the machine's arc/helix/plane/sweep capabilities".into());
             }
         }
-        let total = if whole {
-            1
+        // The decoded start is taken when the source begins emitting; with
+        // nothing queued before it, it is the decoded position now.
+        let start = self.decoded.summary.final_position_mm;
+        let (total, lead) = if whole {
+            (1, None)
         } else if let Event::Motion { motion } = &event {
             let n = crate::post_lowering::segment_count(&motion.curve, options.chord_tolerance_mm)?;
-            if n > options.max_total_segments.saturating_sub(self.posted) {
+            // A curve queued behind other sources starts where they end,
+            // which is not known yet: it keeps the uniform plan.
+            let lead = self
+                .pending
+                .is_empty()
+                .then(|| {
+                    crate::post_lowering::lead_fraction(
+                        &motion.curve,
+                        start,
+                        n,
+                        self.settings.tolerance_mm,
+                    )
+                })
+                .flatten();
+            if n + u64::from(lead.is_some())
+                > options.max_total_segments.saturating_sub(self.posted)
+            {
                 return Err("job segment work budget exceeded before output".into());
             }
-            n
+            (n, lead)
         } else {
-            1
+            (1, None)
         };
-        if total > options.max_segments_per_source {
+        if total + u64::from(lead.is_some()) > options.max_segments_per_source {
             return Err("source segment work budget exceeded before output".into());
         }
-        // The decoded start is taken when the source begins emitting.
         let mut pending = crate::post_lowering::SourceCursor::new(
             event,
             self.source.summary.events,
             self.source_tolerance,
             Some(total),
-            self.decoded.summary.final_position_mm,
+            start,
         )?;
         pending.whole = whole;
+        pending.lead = lead;
         if let Some(s) = &scheduled {
             pending.hash = format!(
                 "{:x}",
@@ -2062,3 +2081,7 @@ mod scheduling_tests;
 #[cfg(test)]
 #[path = "post_intent/travel_tests.rs"]
 mod travel_tests;
+
+#[cfg(test)]
+#[path = "post_intent/lead_tests.rs"]
+mod lead_tests;

@@ -319,6 +319,15 @@ accept a small start/end radius mismatch and cut a spiral between the two radii:
 | Centroid CNC12 | Not documented, so the example post uses `radius_tolerance_mm=0` |
 
 A representable arc end can differ from the planned end by part of a word.
+With `native_arcs=True`, an arc's exactly consistent words can move its end
+further along the word grid, within `tolerance_mm` of the arc. A curve lowered
+to lines right after it starts from that decoded end, and its first chord is
+charged with the offset as well as its own sagitta. Where the uniform first
+chord would exceed `tolerance_mm` that way, the lowering starts with a shorter
+lead chord, of half the sagitta the offset leaves room for, and continues with
+the uniform chords (#445). Every chord, the lead included, is still certified
+independently against the planned curve within `tolerance_mm`; an offset that
+leaves no room is refused.
 A full circle (an adaptive orbit, a closed helix turn) always closes exactly:
 its end word repeats the controller's actual start, so start and end radius
 are identical and only the I/J rounding remains (checked against the planned

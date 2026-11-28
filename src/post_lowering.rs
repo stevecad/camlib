@@ -93,6 +93,10 @@ pub(crate) struct SourceCursor {
     pub actual_start: Vec3,
     /// Emit the source curve itself as one interval [0, 1] (native arc).
     pub whole: bool,
+    /// A shorter first interval [0, lead] before the uniform plan, for an
+    /// arc or helix whose decoded start lies further from its planned start
+    /// than the uniform first chord leaves room for (`lead_fraction`).
+    pub lead: Option<f64>,
 }
 
 impl SourceCursor {
@@ -122,23 +126,39 @@ impl SourceCursor {
             next: 0.,
             actual_start,
             whole: false,
+            lead: None,
         })
+    }
+    /// The segments this cursor emits in all: the uniform plan, and the
+    /// lead interval before it if there is one.
+    pub fn segments(&self) -> Result<u64, String> {
+        let total = self.total.ok_or("cursor has no generated uniform plan")?;
+        Ok(total + u64::from(self.lead.is_some()))
     }
     pub fn ranges(&self, limit: usize) -> Result<Vec<[f64; 2]>, String> {
         if !(1..=64).contains(&limit) {
             return Err("cursor preview needs 1..64 segments".into());
         }
         let total = self.total.ok_or("cursor has no generated uniform plan")?;
-        let n = (total - self.emitted).min(limit as u64);
+        // Boundary k of the plan: k / total, or with a lead, 0, the lead,
+        // then (k - 1) / total (its second interval is the rest of the
+        // uniform first one).
+        let boundary = |k: u64| match self.lead {
+            _ if k == 0 => 0.,
+            Some(lead) if k == 1 => lead,
+            Some(_) => (k - 1) as f64 / total as f64,
+            None => k as f64 / total as f64,
+        };
+        let n = (self.segments()? - self.emitted).min(limit as u64);
         Ok((0..n)
             .map(|i| {
                 [
                     if i == 0 {
                         self.next
                     } else {
-                        (self.emitted + i) as f64 / total as f64
+                        boundary(self.emitted + i)
                     },
-                    (self.emitted + i + 1) as f64 / total as f64,
+                    boundary(self.emitted + i + 1),
                 ]
             })
             .collect())
@@ -220,6 +240,48 @@ pub(crate) fn segment_count(curve: &Curve, budget: f64) -> Result<u64, String> {
     } else {
         Ok(1)
     }
+}
+/// The end of a shorter first interval for an arc or helix lowered in
+/// `total` uniform chords from a decoded `start` away from its planned
+/// start, or None when the uniform plan's first chord already fits.
+///
+/// The decoded start is where the controller is: the end of the block
+/// before, whose words may lie anywhere within the output tolerance of its
+/// own curve (a native arc's exactly consistent words move its end along
+/// the word grid, `post_rounding::circular_words`). `certify` charges the
+/// first chord with that start offset on top of its sagitta, so a uniform
+/// first chord, sized for the chord tolerance alone, can exceed the output
+/// tolerance. A lead chord whose sagitta is half the room the offset
+/// leaves takes it instead; the rest of the curve keeps its uniform plan.
+/// Nothing is relaxed: `certify` still bounds every interval
+/// independently, and refuses where even a lead does not fit (an offset
+/// that leaves no room). Pinned math (`metallic`), so every platform plans
+/// the same intervals.
+pub(crate) fn lead_fraction(curve: &Curve, start: Vec3, total: u64, tolerance: f64) -> Option<f64> {
+    let (radius, sweep, plane, center) = circular(curve)?;
+    let planned = curve.start();
+    let offset = metallic::hypot(
+        metallic::hypot(start[0] - planned[0], start[1] - planned[1]),
+        start[2] - planned[2],
+    );
+    let sagitta = |angle: f64| 2. * radius * metallic::sin(angle / 4.).powi(2);
+    // The source end's own gap from its centre and sweep (`endpoint_gap`).
+    let [u, v, _] = plane.axes();
+    let end = curve.end();
+    let angle = metallic::atan2(planned[v] - center[v], planned[u] - center[u]) + sweep;
+    let gap = metallic::hypot(
+        center[u] + radius * metallic::cos(angle) - end[u],
+        center[v] + radius * metallic::sin(angle) - end[v],
+    );
+    if sagitta(sweep.abs() / total as f64) + offset + gap <= tolerance {
+        return None;
+    }
+    let room = (tolerance - offset - gap) / 2.;
+    if room <= 0. || total == 0 {
+        return None;
+    }
+    let lead = 4. * metallic::asin((room / (2. * radius)).sqrt().min(1.)) / sweep.abs();
+    (lead > 0. && lead < 1. / total as f64).then_some(lead)
 }
 /// Independent full-interval bound. Does not trust the generator's segment count,
 /// angular-step choice, chord endpoints or claimed bound.

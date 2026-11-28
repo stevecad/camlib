@@ -611,6 +611,18 @@ no full-width slotting, for hard materials and high-speed toolpaths.
 - `max_stay_down_mm` and `rest_tolerance_mm` do not apply and are refused.
   Corners the cutter cannot reach are left and reported as the level's
   residual area.
+- **Arcs in the program (#445).** Each pass's steps are fitted as lines and
+  XY arcs within a quarter of a steering cell, and every fitted arc is
+  certified like any stroke (inside the region, and within the engagement
+  limit against the committed cleared sweeps; an arc that bows out of the
+  region between its points is cut as its points' lines instead, counted in
+  `refitted_arcs`). The report counts them in `arcs`. On a 50 x 30 x 9 mm
+  pocket with a 12 mm cutter at a 0.6 mm stepover, 711 of the 1,128 moves are
+  arcs. Post them with `LoweringOptions(native_arcs=True)` on a machine that
+  takes G2/G3: they are then about 1,200 to 1,600 blocks. With
+  `LoweringOptions()`, or a controller post whose curve policy is linear,
+  every arc becomes checked chords within `chord_tolerance_mm`, and the same
+  program is about 11,400 blocks.
 
 ## Surface mesh inputs
 
