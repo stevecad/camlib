@@ -1,0 +1,34 @@
+{
+  "name": "facing-clamps",
+  "operations": {
+    "face": {
+      "air_cut_mm": 123.982,
+      "cut_mm": 1673.559,
+      "cycle_seconds_exact_stop": 90.845,
+      "cycle_seconds_tangent": 90.605,
+      "link_mm": 40.696,
+      "moves": 66,
+      "plunges": 3,
+      "rapid_mm": 209.911,
+      "removed_mm3": 5726.943,
+      "retracts": 3
+    }
+  },
+  "toolpath": {
+    "cycle_seconds_exact_stop": 90.845,
+    "cycle_seconds_tangent": 90.605,
+    "material": {
+      "leftover_mm3": [
+        190.0,
+        273.057
+      ],
+      "overcut_mm3": [
+        0.0,
+        140.058
+      ]
+    },
+    "moves": 66,
+    "post_error": null,
+    "posted_blocks": 89
+  }
+}

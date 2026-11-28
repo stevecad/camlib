@@ -76,150 +76,6 @@ pub enum OperationPlan {
     /// The caller's own moves, run unchanged (#157).
     SuppliedToolpath(Box<crate::supplied::SuppliedToolpathPlan>),
 }
-/// Facing with limits (#411). Limits that cannot touch anything the facing
-/// sweeps are left out and the native facing runs unchanged:
-/// - an avoid area constrains only a tip below its top, and every facing move
-///   keeps its tip at or above `floor_z_mm`, so an area whose top is at or
-///   below the floor never constrains it;
-/// - when every move of the native facing is proven inside what remains (the
-///   proof region operations and the run's link guard use), the limits do not
-///   reach it either.
-///
-/// Otherwise the stock rectangle is cleared as a raster pocket restricted by
-/// the limits. Its region runs past the stock along the rows by
-/// 2r + `entry_air_gap_mm` (plus the entry's numerical margins), so each area
-/// is entered by a vertical descent with the whole cutter in air at least
-/// `entry_air_gap_mm` from the stock, as the native facing enters; an area
-/// with no such entry is refused (no helix into the stock). The pocket's rows
-/// run along X and are linked in zigzag, so `axis="y"`, `mode="one_way"` and
-/// `reverse` are refused by name there rather than ignored.
-fn facing_limits(
-    op: Operation,
-    tool: &ToolAssembly,
-    spec: &StockSpec,
-    initial: Vec3,
-    first_id: u64,
-    cancel: &impl CancelSignal,
-) -> Result<Operation, String> {
-    use crate::planar::{Boundary, Component, PlanarRegion};
-    let Operation::Facing(f) = op else {
-        return Ok(op);
-    };
-    let Some(limits) = f.limits.clone().filter(|l| !l.is_empty()) else {
-        return Ok(Operation::Facing(f));
-    };
-    limits.validate()?;
-    let reaching = crate::limits::Limits {
-        contain: limits.contain.clone(),
-        avoid: limits
-            .avoid
-            .iter()
-            .filter(|a| a.top_z_mm > f.floor_z_mm)
-            .cloned()
-            .collect(),
-    };
-    let mut native = f.clone();
-    native.limits = None;
-    if reaching.is_empty() {
-        return Ok(Operation::Facing(native));
-    }
-    let r = tool.cutter.diameter_mm / 2.;
-    if FacingPlan::prepare(native.clone(), tool, spec, initial, first_id, cancel)?
-        .proven_within(&reaching, r, cancel)?
-    {
-        return Ok(Operation::Facing(native));
-    }
-    if f.axis == crate::facing::TraverseAxis::Auto || f.auto_rapid_mm_min.is_some() {
-        return Err("automatic facing axis is unavailable with in-plane limits; choose an explicit axis without auto_rapid_mm_min".into());
-    }
-    let pocket = |what: &str| {
-        format!(
-            "facing {}: the limits reach the facing passes, so it is planned as a pocket around them, whose rows run along X and are linked in zigzag; {what}, or keep the limits clear of the facing",
-            f.id
-        )
-    };
-    if f.axis == crate::facing::TraverseAxis::Y {
-        return Err(pocket("axis \"y\" is unavailable there: use axis \"x\""));
-    }
-    if f.mode == crate::facing::FacingMode::OneWay {
-        return Err(pocket(
-            "mode \"one_way\" is unavailable there: use mode \"zigzag\"",
-        ));
-    }
-    if f.reverse {
-        return Err(pocket("reverse is unavailable there: use reverse=False"));
-    }
-    if f.stepover_mm > r {
-        return Err(format!(
-            "facing {}: with limits, facing is planned as a pocket around them, whose stepover_mm {} must be at most the tool radius {r}",
-            f.id, f.stepover_mm
-        ));
-    }
-    // A stock-edge entry admits a descent centre only where the disk of the
-    // cutter plus the entry's radius `h` clears the stock (by 16 tolerances),
-    // and its candidates lie that far inside the region's edge
-    // (`PocketPlan::entry_centers`, `outside_stock_disk`). Growing the
-    // rectangle along the rows by 2(r + h) + gap + 48 tolerances puts such a
-    // centre r + h + gap + 32 tolerances from the stock: the cutter clears it
-    // by more than `entry_air_gap_mm`. `h` is the smallest radius an entry
-    // takes (above 64 tolerances); a stock-edge entry descends vertically, so
-    // it only widens that clearance.
-    let tol = f.tolerance_mm;
-    let h = (128. * tol).min(r);
-    let along = 2. * (r + h) + f.entry_air_gap_mm + 48. * tol;
-    let across = r + f.edge_overlap_mm.unwrap_or(tool.cutter.diameter_mm * 0.1);
-    let (lo, hi) = (spec.min_mm, spec.max_mm);
-    let corners = [
-        [lo[0] - along, lo[1] - across, 0.],
-        [hi[0] + along, lo[1] - across, 0.],
-        [hi[0] + along, hi[1] + across, 0.],
-        [lo[0] - along, hi[1] + across, 0.],
-    ];
-    let region = PlanarRegion {
-        version: 1,
-        units: "mm".into(),
-        name: format!("{} stock face", f.id),
-        boundary_error_mm: 0.,
-        source: serde_json::Value::Null,
-        components: vec![Component {
-            outer: Boundary {
-                vertices: corners.to_vec(),
-            },
-            holes: vec![],
-        }],
-    };
-    let entry = crate::pocket::PocketEntry::StockEdge(crate::pocket::HelicalEntry {
-        radius_mm: Some(h),
-        ..Default::default()
-    });
-    Ok(Operation::Pocket(crate::pocket::PocketOperation {
-        max_stay_down_mm: None,
-        id: f.id,
-        tool: f.tool,
-        region,
-        top_z_mm: spec.max_mm[2],
-        floor_z_mm: f.floor_z_mm,
-        stepdown_mm: f.stepdown_mm,
-        stepover_mm: f.stepover_mm,
-        feed_mm_min: f.feed_mm_min,
-        plunge_mm_min: f.plunge_mm_min,
-        clearance_z_mm: f.clearance_z_mm,
-        radial_allowance_mm: 0.,
-        bottom_allowance_mm: 0.,
-        tolerance_mm: f.tolerance_mm,
-        spindle_rpm: f.spindle_rpm,
-        work_offset: f.work_offset,
-        tool_number: f.tool_number,
-        length_register: f.length_register,
-        coolant: f.coolant,
-        rest_tolerance_mm: None,
-        boundary_clockwise: None,
-        entry: Some(entry),
-        retract_z_mm: f.retract_z_mm,
-        feed_z_mm: f.feed_z_mm,
-        limits: Some(limits),
-    }))
-}
 /// Holes take no part of their footprint into an avoid area or out of the
 /// containment: such a hole is refused, never skipped.
 fn hole_limits(op: Operation, tool: &ToolAssembly) -> Result<Operation, String> {
@@ -339,7 +195,6 @@ impl OperationPlan {
         first_id: u64,
         cancel: &impl CancelSignal,
     ) -> Result<Self, String> {
-        let op = facing_limits(op, tool, stock.spec(), initial, first_id, cancel)?;
         probe_only_probes(&op, tool)?;
         match op {
             Operation::Parallel(p) => Ok(Self::Parallel(Box::new(
@@ -408,14 +263,7 @@ impl OperationPlan {
         first_id: u64,
         cancel: &impl CancelSignal,
     ) -> Result<Self, String> {
-        let op = facing_limits(
-            hole_limits(op, tool)?,
-            tool,
-            stock,
-            initial,
-            first_id,
-            cancel,
-        )?;
+        let op = hole_limits(op, tool)?;
         probe_only_probes(&op, tool)?;
         match op {
             Operation::Probe(p) => Ok(Self::Probe(Box::new(crate::probe::ProbePlan::prepare(

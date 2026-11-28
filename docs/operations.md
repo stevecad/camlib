@@ -68,7 +68,7 @@ How each operation honours them:
 | Operation | Behaviour |
 | --- | --- |
 | Pocket, adaptive, roughing | The region to clear becomes (region ∩ containment) − avoid areas, so the planner routes around them; a 0.02 mm clearance is kept from their edges |
-| Facing | Limits that cannot reach the facing are left out and the native facing runs, move for move: avoid areas whose top is at or below `floor_z_mm`, and any limits every native move is proven clear of (setup jaws beside the stock, say). Limits that reach it make it a raster pocket over the stock restricted by them, its rows along X running 2 × radius + `entry_air_gap_mm` past the stock so every entry is a plunge with the whole cutter that far in air (an area with no such entry is refused, never entered by a helix); it needs `stepover_mm` at most the tool radius, and refuses `axis="y"`, `axis="auto"`, `mode="one_way"` and `reverse` by name |
+| Facing | Limits that cannot reach the facing are left out and the native facing runs, move for move: avoid areas whose top is at or below `floor_z_mm`, and any limits every native move is proven clear of (setup jaws beside the stock, say). Limits that reach it keep the facing's own rows and stop each where the limits stop the cutter, link them at depth where a proven link exists, and finish with one climb pass along each limit's edge; every entry is a plunge with the whole cutter `entry_air_gap_mm` clear of the stock (a stretch no such entry or link reaches is refused, never plunged into). See [Facing round limits](#facing-round-limits). It refuses `axis="y"`, `axis="auto"`, `mode="one_way"` and `reverse` there by name |
 | Contour, chamfer, trace | Blocked stretches of a loop are lifted over (to the highest avoid top, at least the retract height); blocked starts, leads and entries are refused, as is lifting with wear compensation |
 | Parallel and its patterns, waterline, flat areas | Pass stretches whose cutter is not proven inside the limits are left out; the rest is cut as separate runs |
 | Drilling, bore, reaming, tapping, thread milling, slots | A hole or slot whose footprint enters an avoid area or leaves the containment is refused, naming it |
@@ -105,6 +105,47 @@ checks. Scoring cannot establish fixture or machine clearance.
 
 The Rust planner refuses exhausted motion IDs before emitting another move or
 changing its position; IDs never wrap to zero during facing.
+
+### Facing round limits
+
+When avoid areas or a containment reach the passes (a clamp over the stock's
+edge, say), the facing is planned as direction-parallel (zigzag) area milling
+round them, as established practice does it (M. Held, *On the Computational
+Geometry of Pocket Machining*, 1991; S. C. Park and B. K. Choi, *Tool-path
+planning for direction-parallel area milling*, Computer-Aided Design 32, 2000):
+
+- **Rows.** The plain facing's rows (same Y, same ends outside the stock), each
+  stopped where the whole cutter would come within 0.02 mm of an avoid area
+  (or of leaving the containment). Each depth pass goes round only the areas
+  whose top is above it: an area lower than a pass's depth does not stop it.
+  A stretch along which the whole cutter stays clear of the stock (its distance
+  from the stock rectangle at least the cutter radius) cuts nothing and is
+  left out, counted as `air_stretches_omitted`.
+- **Links.** The tool stays down from one row's stretch to a neighbouring
+  row's when a straight step across the rows joins them clear of the limits:
+  back along the row just cut to where the step clears them, across, and into
+  the next row from its nearer end. A stretch that could also be entered from
+  air is linked so only while the travel this adds to a plain zigzag link is no
+  longer than the fed part of a retract and re-entry, `(feed_z - z) × (1 +
+  feed / plunge)`, the rule pockets link by. Otherwise the tool lifts straight
+  up and enters the next stretch from air.
+- **Entries.** Every descent is vertical with the whole cutter
+  `entry_air_gap_mm` clear of the stock, as in the plain facing. A stretch
+  closed off at both ends is reached at depth along a neighbouring row; one
+  that nothing reaches is refused with the stretch named.
+- **Edges.** After the rows of each depth, the edge of each limit that brings
+  the cutter over the stock is followed once with the material on the cutter's
+  right (climb milling with a clockwise spindle), cutting what the stopped rows
+  leave against it. A row stretch that runs from air up to that edge is cut on
+  the way into it instead of with an entry of its own.
+
+Every move is proven inside the limits before it is planned, with the proof
+the run's link guard uses. The report's `strategy` is `facing_round_limits`,
+and `around_limits` counts what was planned (`row_stretches`, `edge_runs`,
+`entries`, `stay_down_links` and what was left out in air).
+`unreachable_area_mm2` (also `nominal_uncovered_area_mm2`) is the stock top
+area at the floor that no allowed cutter position reaches: the material the
+limits leave standing, which a material check against the target reports.
 
 ## Pocket: `Pocket`, `RestPocket`
 
