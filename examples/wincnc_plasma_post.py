@@ -95,7 +95,7 @@ def _torch_comment(machine):
     return f'(TORCH {machine.tools[0].tool.upper()})'
 
 
-def _dialect(end, arc_radius_tolerance_mm=0):
+def _dialect(end, arc_radius_tolerance_mm=0, dwell_max_s=None):
     # G41/G42 O#: "O# is the compensation amount on machines without a tool
     # changer" (Users Guide, Controller 3.1, revision 3.1.04, pp. 138-139).
     commands = (
@@ -145,6 +145,7 @@ def _dialect(end, arc_radius_tolerance_mm=0):
         fixed_modes=('center_incremental', 'feed_per_minute', 'rpm_mode', 'cycles_off', 'exact_stop'),
         beam_s_max=1,
         compensation_amount_word='O',
+        dwell_max_s=dwell_max_s,
     )
 
 
@@ -210,7 +211,11 @@ class WinCNCPlasmaMachine(Machine):
             raise ValueError('edge_start_cut_z_mm needs a finite cut Z and program_height_control=True')
         if len(self.tools) != 1 or self.planes != ('xy',) or self.max_sweep_rad > math.pi:
             raise ValueError('WinCNC plasma: one torch, XY arcs of at most half a turn')
-        if self.dialect != _dialect(self.end_code, self.arc_radius_tolerance_mm) or self.flood or self.mist:
+        if (
+            self.dialect != _dialect(self.end_code, self.arc_radius_tolerance_mm, self.dialect.dwell_max_s)
+            or self.flood
+            or self.mist
+        ):
             raise ValueError('dialect differs from the WinCNC plasma subset')
         if self.control_kerf not in (None, 'g41', 'material'):
             raise ValueError(
@@ -261,6 +266,7 @@ def define_machine(
     cutcomp_arc_radius_mm=200 * 25.4,
     cutcomp_arc_angle_deg=0.5,
     cutcomp_full_circle_mm=None,
+    dwell_max_s=None,
     **settings,
 ):
     """``torch``: the torch's ToolSetting. The macro codes are those of your
@@ -288,7 +294,7 @@ def define_machine(
     return WinCNCPlasmaMachine(
         name,
         (torch,),
-        dialect=_dialect(end_code, arc_radius_tolerance_mm),
+        dialect=_dialect(end_code, arc_radius_tolerance_mm, dwell_max_s),
         flood=False,
         mist=False,
         planes=('xy',),
@@ -445,6 +451,19 @@ class WinCNCPlasmaPost(GCodePost):
         if self._edge_delay:
             from decimal import Decimal
 
+            d = self.machine.dialect
+            op = getattr(self, '_operation', None)
+            prefix = f'{op}: ' if op else ''
+            if d.dwell_max_s is None:
+                raise ValueError(
+                    f'{prefix}dwell {event.seconds} s cannot be written: '
+                    'the dialect declares no dwell range (GCodeDialect.dwell_max_s)'
+                )
+            if not math.isfinite(event.seconds) or event.seconds <= 0 or event.seconds > d.dwell_max_s + 1e-12:
+                raise ValueError(
+                    f'{prefix}dwell {event.seconds} s is outside the controller range (at most {d.dwell_max_s} s, '
+                    'GCodeDialect.dwell_max_s)'
+                )
             # Guide p.137: G4 D is seconds. Preserve the planned delay;
             # it is distinct from the material setup's pierce delay.
             # WinCNC numeric words use decimal notation, not Python's
@@ -600,6 +619,16 @@ class WinCNCPlasmaDecoder(NativeGCodeDecoder):
             seconds = float(match[1])
             if not math.isfinite(seconds) or seconds <= 0:
                 raise ValueError('WinCNC edge start: delay must be finite and positive')
+            if m.dialect.dwell_max_s is None:
+                raise ValueError(
+                    f'dwell {seconds} s cannot be decoded: '
+                    'the dialect declares no dwell range (GCodeDialect.dwell_max_s)'
+                )
+            if seconds > m.dialect.dwell_max_s:
+                raise ValueError(
+                    f'WinCNC edge start: delay {seconds} s exceeds the controller range {m.dialect.dwell_max_s} s '
+                    '(GCodeDialect.dwell_max_s)'
+                )
             self._edge_delay = False
             return [Dwell(seconds)]
         self._edge_delay = False

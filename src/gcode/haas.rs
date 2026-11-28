@@ -76,13 +76,16 @@ impl HaasNGC {
                 && m.work_to_machine.z == [0., 0., 1.],
             "reference stored work offsets require Cartesian translation only",
         )?;
+        // Numeric safety only: finite and nonnegative; the installed Setting 22 /
+        // Setting 52 values are the owner's declaration (no upper range is cited
+        // from Haas 96-8210 Rev N).
         for (name, value) in [
             ("setting_22_mm", h.setting_22_mm),
             ("setting_52_mm", h.setting_52_mm),
         ] {
             require(
-                value.is_none_or(|v| v.is_finite() && (0. ..=100.).contains(&v)),
-                &format!("{name} must be a declared distance in mm (0..100)"),
+                value.is_none_or(|v| v.is_finite() && v >= 0.),
+                &format!("{name} must be a finite, nonnegative distance in mm"),
             )?;
         }
         require(

@@ -78,7 +78,9 @@ cancelled by `G80`:
 A standalone dwell (`Drilling(dwell_s=...)` without a cycle) is `G4 P`. Every P
 is written in seconds with a decimal point, to the millisecond: Haas reads
 `P10.` as 10 seconds but `P10` as 10 milliseconds (G04 note), and the decoder
-refuses an undotted P.
+refuses an undotted P. The cited manual sections state no upper dwell range, so
+`dwell_max_s` is unset by default and dwells are refused by name until the
+owner declares `dwell_max_s` on `define_machine`.
 
 Settings are declared, never assumed. A peck or chip-break hole with
 `canned_cycle=True` is refused, naming Setting 22 or Setting 52, when the setting

@@ -169,7 +169,9 @@ selected material's cut height, and fires without the touch-off or pierce
 steps. `~L38` explicitly invokes the built-in command even if a macro
 overrides `L38` (Users Guide 3.1r5, Macro File Configuration, p. 112).
 The edge-start delay is written as `G4 D...` in seconds; the normal material
-pierce delay is not applied. With `material_feed_mm_min` declared, an edge
+pierce delay is not applied. `dwell_max_s` has no default: declare it on
+`define_machine` to write a nonzero edge-start delay (otherwise it is refused
+by name). With `material_feed_mm_min` declared, an edge
 start also writes `F{THF}` to select the material's feed, which `M61` would
 otherwise do. This reads the controller setting instead of supplying a
 numeric feed. Other cutting moves still carry no `F` words in this mode.

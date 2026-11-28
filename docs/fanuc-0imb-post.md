@@ -58,7 +58,9 @@ Without the parameter value declared, pecking holes are written as explicit
 moves. The operation's `reentry_clearance_mm` or `chip_break_lift_mm` must equal
 the declared value, or posting stops with that message. The small-hole G83 mode
 (§13.1.7) needs the M code from parameter 5163, which this post never writes.
-Standalone dwell (`G04`) is not declared; drilling dwell uses `G82`.
+Standalone dwell (`G04`) is not declared; drilling dwell uses `G82`. The cited
+manual sections state no maximum dwell, so `dwell_max_s` is unset by default
+and canned-cycle dwells are refused by name until declared on `define_machine`.
 
 Rigid tapping needs `rigid_tapping=True`, the premise that parameter No.
 5200#0 (G84) is 1, so G84 and G74 are rigid tapping cycles without `M29`

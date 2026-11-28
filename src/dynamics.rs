@@ -71,24 +71,67 @@ pub struct Report {
 
 impl Settings {
     pub fn validate(&self) -> Result<(), String> {
-        let positive = |x: f64, hi: f64| x.is_finite() && (1e-6..=hi).contains(&x);
-        if !positive(self.policy.tangential_accel_mm_s2, 1e9)
-            || !positive(self.policy.rapid_feed_mm_min, 1e7)
-            || !positive(self.max_feed_mm_min, 1e7)
-            || !self.policy.feed_reserve_fraction.is_finite()
+        let positive = |x: f64| x.is_finite() && x > 0.;
+        // Numeric safety only: these values are the machine's declarations
+        // (#433).
+        if !positive(self.policy.tangential_accel_mm_s2) {
+            return Err(format!(
+                "motion policy: tangential_accel_mm_s2 {} must be positive and finite (MotionPolicy.tangential_accel_mm_s2)",
+                self.policy.tangential_accel_mm_s2
+            ));
+        }
+        if !positive(self.policy.rapid_feed_mm_min) {
+            return Err(format!(
+                "motion policy: rapid_feed_mm_min {} must be positive and finite (MotionPolicy.rapid_feed_mm_min)",
+                self.policy.rapid_feed_mm_min
+            ));
+        }
+        if !positive(self.max_feed_mm_min) {
+            return Err(format!(
+                "motion policy: max_feed_mm_min {} must be positive and finite (Machine.max_feed_mm_min)",
+                self.max_feed_mm_min
+            ));
+        }
+        // Definition: a fraction in [0, 1) so (1 - reserve) stays positive.
+        if !self.policy.feed_reserve_fraction.is_finite()
             || !(0.0..1.0).contains(&self.policy.feed_reserve_fraction)
-            || !self.policy.per_block_s.is_finite()
-            || !(0.0..=10.0).contains(&self.policy.per_block_s)
-            || !self.feed_quantum_mm_min.is_finite()
-            || !(1e-12..=1e3).contains(&self.feed_quantum_mm_min)
-            || self
-                .max_normal_accel_mm_s2
-                .is_some_and(|x| !positive(x, 1e9))
-            || self
-                .max_axis_feed_mm_min
-                .is_some_and(|v| v.into_iter().any(|x| !positive(x, 1e7)))
         {
-            return Err("invalid motion policy, machine limits or feed quantum".into());
+            return Err(format!(
+                "motion policy: feed_reserve_fraction {} must be finite and in [0, 1) (MotionPolicy.feed_reserve_fraction)",
+                self.policy.feed_reserve_fraction
+            ));
+        }
+        // Numeric safety only: finite and nonnegative (#433).
+        if !(self.policy.per_block_s.is_finite() && self.policy.per_block_s >= 0.) {
+            return Err(format!(
+                "motion policy: per_block_s {} must be finite and nonnegative (MotionPolicy.per_block_s)",
+                self.policy.per_block_s
+            ));
+        }
+        // Numeric safety only: positive and finite (derived from
+        // Machine.output_units and Machine.decimals); quantization checks that
+        // the resulting scheduled feed is finite and positive.
+        if !positive(self.feed_quantum_mm_min) {
+            return Err(format!(
+                "motion policy: feed_quantum_mm_min {} must be positive and finite",
+                self.feed_quantum_mm_min
+            ));
+        }
+        if let Some(x) = self.max_normal_accel_mm_s2
+            && !positive(x)
+        {
+            return Err(format!(
+                "motion policy: max_normal_accel_mm_s2 {x} must be positive and finite (Machine.max_normal_accel_mm_s2)"
+            ));
+        }
+        if let Some(v) = self.max_axis_feed_mm_min {
+            for (k, x) in v.into_iter().enumerate() {
+                if !positive(x) {
+                    return Err(format!(
+                        "motion policy: max_axis_feed_mm_min[{k}] {x} must be positive and finite (Machine.max_axis_feed_mm_min)"
+                    ));
+                }
+            }
         }
         self.work_to_machine.validate()
     }

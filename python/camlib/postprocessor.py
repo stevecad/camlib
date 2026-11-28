@@ -395,10 +395,12 @@ class GCodeDialect:
     # pp. 138-139: "G41 O# ... O# is the compensation amount on machines
     # without a tool changer"). None: compensation="control" is refused.
     compensation_amount_word: str | None = None
-    # Dwell time word (seconds), its resolution and its maximum.
+    # Dwell time word (seconds), its resolution and the controller's declared
+    # maximum dwell (None: no dwell range is declared and any dwell is refused
+    # by name).
     dwell_word: str = 'P'
     dwell_resolution_s: float = 0.001
-    dwell_max_s: float = 1e5
+    dwell_max_s: float | None = None
     # Canned drilling cycles: unit of the G82 dwell word P ('s', or 'ms' as
     # an integer: FANUC), and the controller's fixed return amounts: G83
     # rapids back down to peck_reentry_mm above the last peck, G73 rapids up
@@ -489,11 +491,29 @@ class GCodeDialect:
                 'compensation_amount_word must be a free uppercase letter (not the register word), '
                 'and the amount is written with G41/G42 on a block of their own (compensation_with_move=False)'
             )
+        # Numeric safety: dwell ticks (seconds / step, and whole milliseconds
+        # when cycle_dwell_unit == 'ms') stay exact binary64 integers (<= 2^53)
+        # so ceil(seconds / step - 1e-9) never loses integer precision or
+        # overflows. The control's own maximum is the declared dwell_max_s.
+        tick_step = min(self.dwell_resolution_s, 1e-3) if self.cycle_dwell_unit == 'ms' else self.dwell_resolution_s
         if (
             not re.fullmatch('[A-Z]', self.dwell_word)
             or self.dwell_word in (*letters, 'G', 'M', 'N')
+            or isinstance(self.dwell_resolution_s, bool)
             or not (math.isfinite(self.dwell_resolution_s) and 0 < self.dwell_resolution_s <= 1)
-            or not (math.isfinite(self.dwell_max_s) and self.dwell_resolution_s <= self.dwell_max_s <= 1e5)
+            or (
+                self.dwell_max_s is not None
+                and (
+                    isinstance(self.dwell_max_s, bool)
+                    or not isinstance(self.dwell_max_s, (int, float))
+                    or not (
+                        math.isfinite(self.dwell_max_s)
+                        and self.dwell_resolution_s <= self.dwell_max_s
+                        and math.isfinite(self.dwell_max_s / tick_step)
+                        and self.dwell_max_s / tick_step <= (1 << 53)
+                    )
+                )
+            )
         ):
             raise ValueError('invalid declared dwell word/resolution/maximum')
         if not re.fullmatch('[A-Z]', self.thread_lead_word) or self.thread_lead_word in (
@@ -512,8 +532,11 @@ class GCodeDialect:
             )
         if self.cycle_dwell_unit not in ('s', 'ms'):
             raise ValueError("cycle_dwell_unit must be 's' or 'ms'")
+        # Numeric safety only: positive and finite; the return amount is the
+        # controller's declared parameter (e.g. Haas Setting 22, FANUC
+        # 5115/5114, Centroid 83/73).
         for value in (self.peck_reentry_mm, self.chip_break_lift_mm):
-            if value is not None and not (math.isfinite(value) and 0 < value <= 100):
+            if value is not None and (isinstance(value, bool) or not (math.isfinite(value) and 0 < value)):
                 raise ValueError('canned cycle return amounts must be positive millimetres')
         declared = {c.effect for c in self.commands}
         if self.beam_s_max is not None and not (math.isfinite(self.beam_s_max) and 0 < self.beam_s_max <= 1e6):
@@ -581,8 +604,11 @@ class GCodeDialect:
             raise ValueError(
                 'declare probe_fast_feed_mm_min (#119) and probe_switching exactly with inspection_plus probing'
             )
-        if self.probe_fast_feed_mm_min is not None and not (
-            math.isfinite(self.probe_fast_feed_mm_min) and 0 < self.probe_fast_feed_mm_min <= 1e5
+        # Numeric safety only: positive and finite; Machine.__post_init__ holds
+        # probe_fast_feed_mm_min to Machine.max_feed_mm_min.
+        if self.probe_fast_feed_mm_min is not None and (
+            isinstance(self.probe_fast_feed_mm_min, bool)
+            or not (math.isfinite(self.probe_fast_feed_mm_min) and 0 < self.probe_fast_feed_mm_min)
         ):
             raise ValueError('probe_fast_feed_mm_min must be a positive feed')
         if self.css_limit_word is not None and (
@@ -864,6 +890,25 @@ class Machine:
             value = getattr(self, name)
             if not math.isfinite(value) or not 1e-9 <= value <= 0.1:
                 raise ValueError(f'{name} must be finite and in [1e-9, .1]')
+        # Declared machine limit: the probe macro's fast feed (#119) is at
+        # most Machine.max_feed_mm_min.
+        if self.dialect.probe_fast_feed_mm_min is not None:
+            if (
+                isinstance(self.max_feed_mm_min, bool)
+                or not isinstance(self.max_feed_mm_min, (int, float))
+                or not math.isfinite(self.max_feed_mm_min)
+                or self.max_feed_mm_min <= 0
+            ):
+                raise ValueError(
+                    'probing: inspection_plus probing requires a positive finite maximum feed '
+                    '(GCodeDialect.probe_fast_feed_mm_min, Machine.max_feed_mm_min)'
+                )
+            if self.dialect.probe_fast_feed_mm_min > self.max_feed_mm_min:
+                raise ValueError(
+                    f"probing: the probe macro's fast feed {self.dialect.probe_fast_feed_mm_min} mm/min is above the "
+                    f"machine's maximum feed {self.max_feed_mm_min} mm/min "
+                    '(GCodeDialect.probe_fast_feed_mm_min, Machine.max_feed_mm_min)'
+                )
         if self.traverse_feed_mm_min is not None and (
             not math.isfinite(self.traverse_feed_mm_min) or not 0 < self.traverse_feed_mm_min <= self.max_feed_mm_min
         ):
@@ -952,6 +997,8 @@ class Machine:
         for tool in data['tools']:
             if tool['carriage_to_tip_mm'] is None:
                 tool.pop('carriage_to_tip_mm')
+        if data['dialect']['dwell_max_s'] is None:
+            data['dialect'].pop('dwell_max_s')
         if data['dialect']['beam_mark'] is None:
             data['dialect'].pop('beam_mark')
         if not data['dialect']['arc_word_mismatch_mm']:
@@ -1142,6 +1189,8 @@ class PostProcessor(_TransactionCopy):
         # pose, or a tool change's machine position), with no block written
         # since that names it. Set by _call from the blocks each hook writes.
         self._placed = (False, False, False)
+        # The operation currently being posted (for dwell refusals that name it).
+        self._operation = None
 
     def emit(self, *words):
         line = ' '.join(str(w) for w in words if w is not None and w != '')
@@ -1865,11 +1914,27 @@ class GCodePost(PostProcessor):
 
     def on_dwell(self, event):
         # Rounded up to the controller's dwell resolution: never shorter.
+        # Checked against the dialect's declared dwell_max_s (None => refused).
         d = self.machine.dialect
+        op = getattr(self, '_operation', None)
+        prefix = f'{op}: ' if op else ''
+        if d.dwell_max_s is None:
+            raise ValueError(
+                f'{prefix}dwell {event.seconds} s cannot be written: '
+                'the dialect declares no dwell range (GCodeDialect.dwell_max_s)'
+            )
         step = d.dwell_resolution_s
+        if not math.isfinite(event.seconds) or event.seconds <= 0 or event.seconds > d.dwell_max_s + 1e-12:
+            raise ValueError(
+                f'{prefix}dwell {event.seconds} s is outside the controller range {step}..{d.dwell_max_s} s '
+                '(GCodeDialect.dwell_resolution_s, GCodeDialect.dwell_max_s)'
+            )
         ticks = math.ceil(event.seconds / step - 1e-9)
         if not 1 <= ticks or ticks * step > d.dwell_max_s + 1e-12:
-            raise ValueError(f'dwell {event.seconds}s outside the controller range {step}..{d.dwell_max_s}s')
+            raise ValueError(
+                f'{prefix}dwell {event.seconds} s is outside the controller range {step}..{d.dwell_max_s} s '
+                '(GCodeDialect.dwell_resolution_s, GCodeDialect.dwell_max_s)'
+            )
         digits = max(0, -math.floor(math.log10(step) + 1e-9))
         # Always with a decimal point: no control reads it as milliseconds.
         self.emit(d.code('dwell'), d.dwell_word + f'{ticks * step:.{digits}f}'.rstrip('0'))
@@ -1931,17 +1996,40 @@ class GCodePost(PostProcessor):
             self.select_plane('xy')
 
     def cycle_dwell(self, seconds):
-        """The G82 P word, rounded up to the controller resolution."""
+        """The G82/G89/G76 P word, rounded up to the controller resolution."""
         d = self.machine.dialect
+        op = getattr(self, '_operation', None)
+        prefix = f'{op}: ' if op else ''
+        if d.dwell_max_s is None:
+            raise ValueError(
+                f'{prefix}dwell {seconds} s cannot be written: '
+                'the dialect declares no dwell range (GCodeDialect.dwell_max_s)'
+            )
         if d.cycle_dwell_unit == 'ms':
+            if not math.isfinite(seconds) or seconds <= 0 or seconds > d.dwell_max_s + 1e-12:
+                raise ValueError(
+                    f'{prefix}dwell {seconds} s is outside the controller range 0.001..{d.dwell_max_s} s '
+                    '(GCodeDialect.dwell_max_s)'
+                )
             ms = math.ceil(seconds * 1000 - 1e-9)
             if not 1 <= ms <= d.dwell_max_s * 1000:
-                raise ValueError(f'dwell {seconds}s outside the controller range')
+                raise ValueError(
+                    f'{prefix}dwell {seconds} s is outside the controller range 0.001..{d.dwell_max_s} s '
+                    '(GCodeDialect.dwell_max_s)'
+                )
             return f'P{ms}'
         step = d.dwell_resolution_s
+        if not math.isfinite(seconds) or seconds <= 0 or seconds > d.dwell_max_s + 1e-12:
+            raise ValueError(
+                f'{prefix}dwell {seconds} s is outside the controller range {step}..{d.dwell_max_s} s '
+                '(GCodeDialect.dwell_resolution_s, GCodeDialect.dwell_max_s)'
+            )
         ticks = math.ceil(seconds / step - 1e-9)
         if not 1 <= ticks or ticks * step > d.dwell_max_s + 1e-12:
-            raise ValueError(f'dwell {seconds}s outside the controller range {step}..{d.dwell_max_s}s')
+            raise ValueError(
+                f'{prefix}dwell {seconds} s is outside the controller range {step}..{d.dwell_max_s} s '
+                '(GCodeDialect.dwell_resolution_s, GCodeDialect.dwell_max_s)'
+            )
         digits = max(0, -math.floor(math.log10(step) + 1e-9))
         return 'P' + f'{ticks * step:.{digits}f}'.rstrip('0')
 
@@ -2704,8 +2792,18 @@ class GCodeDecoder(_TransactionCopy):
             elif effect == 'dwell':
                 seconds = values.get(d.dwell_word)
                 used.add(d.dwell_word)
-                if seconds is None or not 0 < seconds <= d.dwell_max_s:
+                if seconds is None or not (math.isfinite(seconds) and seconds > 0):
                     raise ValueError('NC dwell needs a positive time')
+                if d.dwell_max_s is None:
+                    raise ValueError(
+                        f'dwell {seconds} s cannot be decoded: '
+                        'the dialect declares no dwell range (GCodeDialect.dwell_max_s)'
+                    )
+                if seconds > d.dwell_max_s:
+                    raise ValueError(
+                        f'NC dwell {seconds} s exceeds the controller range {d.dwell_max_s} s '
+                        '(GCodeDialect.dwell_max_s)'
+                    )
                 output.append(Dwell(seconds))
             elif effect == 'end':
                 if (
@@ -2932,8 +3030,17 @@ class GCodeDecoder(_TransactionCopy):
                 if dwell != int(dwell):
                     raise ValueError('dwell P is whole milliseconds')
                 dwell /= 1000
-            if not 0 < dwell <= d.dwell_max_s:
+            if not (math.isfinite(dwell) and dwell > 0):
                 raise ValueError('invalid drilling cycle dwell')
+            if d.dwell_max_s is None:
+                raise ValueError(
+                    f'dwell {dwell} s cannot be decoded: the dialect declares no dwell range (GCodeDialect.dwell_max_s)'
+                )
+            if dwell > d.dwell_max_s:
+                raise ValueError(
+                    f'drilling cycle dwell {dwell} s exceeds the controller range {d.dwell_max_s} s '
+                    '(GCodeDialect.dwell_max_s)'
+                )
         q = None
         if effect in ('peck_cycle', 'chip_break_cycle', 'fine_bore_cycle'):
             if 'Q' not in values or values['Q'] <= 0:
@@ -2948,8 +3055,17 @@ class GCodeDecoder(_TransactionCopy):
                 if dwell != int(dwell):
                     raise ValueError('dwell P is whole milliseconds')
                 dwell /= 1000
-            if not 0 < dwell <= d.dwell_max_s:
+            if not (math.isfinite(dwell) and dwell > 0):
                 raise ValueError('invalid drilling cycle dwell')
+            if d.dwell_max_s is None:
+                raise ValueError(
+                    f'dwell {dwell} s cannot be decoded: the dialect declares no dwell range (GCodeDialect.dwell_max_s)'
+                )
+            if dwell > d.dwell_max_s:
+                raise ValueError(
+                    f'drilling cycle dwell {dwell} s exceeds the controller range {d.dwell_max_s} s '
+                    '(GCodeDialect.dwell_max_s)'
+                )
         if set(values) - used:
             raise ValueError('unused/unsupported NC words: ' + str(sorted(set(values) - used)))
         if effect == 'bore_stop_cycle' and (self.rpm <= 0 or self.direction not in ('cw', 'ccw')):
@@ -3998,6 +4114,17 @@ class PostEngine:
             self._native_default = native_post
         return native_post
 
+    @staticmethod
+    def _track_operation(post, events, idx, event):
+        kind = event['kind']
+        if kind == 'motion':
+            post._operation = event['motion']['operation']
+        elif kind == 'cycle' or (kind == 'dwell' and getattr(post, '_operation', None) is None):
+            for later in events[idx + 1 :]:
+                if later['kind'] == 'motion':
+                    post._operation = later['motion']['operation']
+                    break
+
     def _format(self, events, originals, ranges, cancel, renumber=False):
         """renumber: a lowered batch's motion ids follow the decoded motions
         so far (a segment that rounds to no move takes no id), as the
@@ -4012,7 +4139,7 @@ class PostEngine:
         if fast is not None:
             return self._format_default(fast, post, decoder, events, originals, ranges, cancel, renumber)
         next_id = None
-        for event, original, interval in zip(events, originals, ranges):
+        for idx, (event, original, interval) in enumerate(zip(events, originals, ranges)):
             self._session.check_cancel(cancel)
             kind = event['kind']
             if renumber and kind == 'motion':
@@ -4026,6 +4153,7 @@ class PostEngine:
                 and self.machine.traverse_feed_mm_min is not None
             ):
                 typed = replace(typed, feed_mm_min=self.machine.traverse_feed_mm_min)
+            self._track_operation(post, events, idx, event)
             post.position_mm = decoder.position
             post.source_event = _typed(original) if isinstance(original, dict) else original
             post.source_fraction = interval if kind == 'motion' else None
@@ -4123,6 +4251,7 @@ class PostEngine:
                     # plane in step (later hooks select a plane only when it
                     # changes; canned cycles select G17 from it, #183).
                     post._plane = plane
+                post._operation = events[j - 1]['motion']['operation']
                 i = j
                 continue
             # One event through the Python hooks.
@@ -4132,6 +4261,7 @@ class PostEngine:
                 next_id = event['motion']['id'] if next_id is None else next_id
                 event = dict(event, motion=dict(event['motion'], id=next_id))
             typed = _typed(event) if self.lowering is not None or self.machine.schedule_post_feeds else original
+            self._track_operation(post, events, i, event)
             post.position_mm = decoder.position
             post.source_event = _typed(original) if isinstance(original, dict) else original
             post.source_fraction = interval if kind == 'motion' else None
@@ -4199,6 +4329,7 @@ class PostEngine:
                 d.ready.add('plane')
                 # As in _format_default: the post's plane follows the batch.
                 self.post._plane = plane
+            self.post._operation = source[-1]['motion']['operation']
             return Chunk(raw)
         originals = [
             e

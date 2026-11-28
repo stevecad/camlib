@@ -38,6 +38,7 @@ def machine_for(job):
         flood=False,
         mist=True,
         rapid_mm_min=6000,
+        dwell_max_s=1e5,
     )
 
 

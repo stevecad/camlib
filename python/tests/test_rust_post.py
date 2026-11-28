@@ -153,7 +153,9 @@ class RustPostTest(unittest.TestCase):
         from test_drill_cycles import linuxcnc
         from test_fine_boring import job
 
-        dialect = GCodeDialect.linuxcnc(oriented_edge_deg=0).with_commands(spindle_orient="M19", fine_bore_cycle="G76")
+        dialect = GCodeDialect.linuxcnc(oriented_edge_deg=0, dwell_max_s=1e5).with_commands(
+            spindle_orient="M19", fine_bore_cycle="G76"
+        )
         for canned in (True, False):
             j = job(canned_cycle=canned)
             rust = self.assert_same(j, linuxcnc(j, dialect=dialect))
@@ -185,7 +187,7 @@ class RustPostTest(unittest.TestCase):
         from test_thermal import job, table
 
         j = job()
-        dialect = GCodeDialect(beam_s_max=1, height_control_word="P2").with_commands(
+        dialect = GCodeDialect(beam_s_max=1, height_control_word="P2", dwell_max_s=1e5).with_commands(
             height_control_on="M63", height_control_off="M62"
         )
         m = Machine(
@@ -415,7 +417,7 @@ def summary_machine(report):
 
 def mill(tools, dialect=None, **settings):
     values = dict(
-        dialect=dialect or GCodeDialect.linuxcnc(),
+        dialect=dialect or GCodeDialect.linuxcnc(dwell_max_s=1e5),
         output_units="mm",
         decimals=4,
         max_feed_mm_min=10000,
@@ -445,9 +447,9 @@ def lathe_regroup():
     p, _ = fixture()
     t1 = p.tools[0]
     t2 = replace(t1, id="t2")
-    dialect = GCodeDialect.linuxcnc(x_diameter=True, tool_change="lathe_t", compensation_register=False).with_commands(
-        lathe_diameter_mode="G7", tool_change=None, length_on=None
-    )
+    dialect = GCodeDialect.linuxcnc(
+        x_diameter=True, tool_change="lathe_t", compensation_register=False, dwell_max_s=1e5
+    ).with_commands(lathe_diameter_mode="G7", tool_change=None, length_on=None)
     start = (20, 0, 5)
     events = (
         WorkOffset(1),

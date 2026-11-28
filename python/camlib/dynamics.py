@@ -6,8 +6,13 @@ It does not predict controller blending, jerk, rapid routing or operator waits.
 
 from dataclasses import asdict, dataclass, replace
 import json
+import math
 
 from .motion import Motion, Program
+
+
+def _positive_finite(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value > 0
 
 
 @dataclass(frozen=True)
@@ -22,6 +27,46 @@ class MotionPolicy:
     # in-position checks. 0 keeps the schedule and its identity unchanged.
     per_block_s: float = 0.0
 
+    def __post_init__(self):
+        # Numeric safety only: the machine's declarations (#433).
+        if not _positive_finite(self.tangential_accel_mm_s2):
+            raise ValueError(
+                f'motion policy: tangential_accel_mm_s2 {self.tangential_accel_mm_s2} must be positive and finite '
+                '(MotionPolicy.tangential_accel_mm_s2)'
+            )
+        if not _positive_finite(self.rapid_feed_mm_min):
+            raise ValueError(
+                f'motion policy: rapid_feed_mm_min {self.rapid_feed_mm_min} must be positive and finite '
+                '(MotionPolicy.rapid_feed_mm_min)'
+            )
+        if self.junction_mode not in ('exact_stop', 'tangent'):
+            raise ValueError(
+                f'motion policy: junction_mode {self.junction_mode!r} must be "exact_stop" or "tangent" '
+                '(MotionPolicy.junction_mode)'
+            )
+        # Definition: a fraction in [0, 1) so (1 - reserve) stays positive.
+        if (
+            isinstance(self.feed_reserve_fraction, bool)
+            or not isinstance(self.feed_reserve_fraction, (int, float))
+            or not math.isfinite(self.feed_reserve_fraction)
+            or not 0 <= self.feed_reserve_fraction < 1
+        ):
+            raise ValueError(
+                f'motion policy: feed_reserve_fraction {self.feed_reserve_fraction} must be finite and in [0, 1) '
+                '(MotionPolicy.feed_reserve_fraction)'
+            )
+        # Numeric safety only: finite and nonnegative (#433).
+        if (
+            isinstance(self.per_block_s, bool)
+            or not isinstance(self.per_block_s, (int, float))
+            or not math.isfinite(self.per_block_s)
+            or self.per_block_s < 0
+        ):
+            raise ValueError(
+                f'motion policy: per_block_s {self.per_block_s} must be finite and nonnegative '
+                '(MotionPolicy.per_block_s)'
+            )
+
 
 @dataclass(frozen=True)
 class ScheduledProgram:
@@ -34,13 +79,35 @@ class ScheduledProgram:
 
 
 def _settings(machine, adjust_feeds):
+    # Numeric safety only: validate machine feed/accel limits before JSON
+    # serialization so non-finite values name the field and value (#433).
+    if not _positive_finite(machine.max_feed_mm_min):
+        raise ValueError(
+            f'motion policy: max_feed_mm_min {machine.max_feed_mm_min} must be positive and finite '
+            '(Machine.max_feed_mm_min)'
+        )
+    if machine.max_normal_accel_mm_s2 is not None and not _positive_finite(machine.max_normal_accel_mm_s2):
+        raise ValueError(
+            f'motion policy: max_normal_accel_mm_s2 {machine.max_normal_accel_mm_s2} must be positive and finite '
+            '(Machine.max_normal_accel_mm_s2)'
+        )
+    if machine.max_axis_feed_mm_min is not None:
+        for k, x in enumerate(machine.max_axis_feed_mm_min):
+            if not _positive_finite(x):
+                raise ValueError(
+                    f'motion policy: max_axis_feed_mm_min[{k}] {x} must be positive and finite '
+                    '(Machine.max_axis_feed_mm_min)'
+                )
+    feed_quantum_mm_min = (25.4 if machine.output_units == 'inch' else 1) * 10**-machine.decimals
+    if not _positive_finite(feed_quantum_mm_min):
+        raise ValueError(f'motion policy: feed_quantum_mm_min {feed_quantum_mm_min} must be positive and finite')
     settings = dict(
         policy=asdict(machine.motion_policy),
         max_feed_mm_min=machine.max_feed_mm_min,
         max_normal_accel_mm_s2=machine.max_normal_accel_mm_s2,
         max_axis_feed_mm_min=machine.max_axis_feed_mm_min,
         work_to_machine=asdict(machine.work_to_machine),
-        feed_quantum_mm_min=(25.4 if machine.output_units == 'inch' else 1) * 10**-machine.decimals,
+        feed_quantum_mm_min=feed_quantum_mm_min,
         adjust_feeds=adjust_feeds,
     )
     return settings

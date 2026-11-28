@@ -125,13 +125,18 @@ fn omitted_stop_cost_defaults_to_zero_and_preserves_schedule_identity() {
 }
 
 #[test]
-fn stop_cost_requires_finite_seconds_in_range() {
+fn stop_cost_requires_finite_nonnegative_seconds() {
     let p = program(vec![line(0., 20.)], vec![1200.]);
-    for invalid in [-0.001, f64::NAN, f64::INFINITY, 10.001] {
+    for invalid in [-0.001, f64::NAN, f64::INFINITY] {
         let mut s = settings(JunctionMode::ExactStop);
         s.policy.per_block_s = invalid;
-        assert!(schedule(&p, s, &|| false).is_err(), "{invalid} accepted");
+        let err = schedule(&p, s, &|| false).unwrap_err();
+        assert!(err.contains("per_block_s"), "{invalid} -> {err}");
     }
+    // Previously refused only by the invented 10 s cap (#433).
+    let mut s = settings(JunctionMode::ExactStop);
+    s.policy.per_block_s = 10.001;
+    near(schedule(&p, s, &|| false).unwrap().motion_seconds, 11.201);
     let mut s = settings(JunctionMode::ExactStop);
     s.policy.per_block_s = 10.;
     near(schedule(&p, s, &|| false).unwrap().motion_seconds, 11.2);

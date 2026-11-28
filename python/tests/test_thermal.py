@@ -176,7 +176,7 @@ class ThermalCutTest(unittest.TestCase):
 
     def test_generic_post_writes_torch_and_thc_words(self):
         j = job()
-        dialect = GCodeDialect(beam_s_max=1, height_control_word="P2").with_commands(
+        dialect = GCodeDialect(beam_s_max=1, height_control_word="P2", dwell_max_s=1e5).with_commands(
             height_control_on="M63", height_control_off="M62"
         )
         m = Machine(
@@ -737,6 +737,7 @@ def wincnc_edge_start_job(units="mm", material_feed=False, from_kerfs=False, del
         program_height_control=True,
         edge_start_cut_z_mm=7.5,
         material_feed_mm_min=2500 if material_feed else None,
+        dwell_max_s=1e5,
     )
     return w, j, machine
 

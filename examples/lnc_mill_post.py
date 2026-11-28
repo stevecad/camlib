@@ -29,6 +29,7 @@ def _dialect(
     chip_break_return_mm=None,
     fine_bore_edge_deg=None,
     rigid_tapping_m29=False,
+    dwell_max_s=None,
 ):
     if set(m_codes) != _OEM or len(set(m_codes.values())) != len(_OEM):
         raise ValueError('bind distinct builder M functions for tool change, spindle CW/CCW/off, flood and coolant off')
@@ -90,6 +91,7 @@ def _dialect(
         radius_tolerance_mm=arc_radius_tolerance_mm,
         radius_relative_tolerance=0,
         cycle_dwell_unit='ms',
+        dwell_max_s=dwell_max_s,
         peck_reentry_mm=peck_return_mm,
         chip_break_lift_mm=chip_break_return_mm,
         oriented_edge_deg=fine_bore_edge_deg,
@@ -152,6 +154,7 @@ class ReferenceMachine(Machine):
                 self.chip_break_return_mm,
                 self.fine_bore_edge_deg,
                 self.rigid_tapping_m29,
+                self.dialect.dwell_max_s,
             )
             or self.mist
         ):
@@ -179,6 +182,7 @@ def define_machine(
     chip_break_return_mm=None,
     fine_bore_edge_deg=None,
     rigid_tapping_m29=False,
+    dwell_max_s=None,
     **settings,
 ):
     """Define the installed machine in ordinary Python; no controller writes.
@@ -199,6 +203,7 @@ def define_machine(
             chip_break_return_mm,
             fine_bore_edge_deg,
             rigid_tapping_m29,
+            dwell_max_s,
         ),
         arc_radius_tolerance_mm=arc_radius_tolerance_mm,
         rigid_tapping_m29=rigid_tapping_m29,

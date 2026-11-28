@@ -41,6 +41,7 @@ class HaasNGCTest(unittest.TestCase):
                 'rapid_mm_min': 6000,
                 'output_units': (settings).get('output_units', 'mm'),
                 'decimals': 3 if (settings).get('output_units', 'mm') == 'mm' else 4,
+                'dwell_max_s': 1e5,
                 **(settings),
             },
         )

@@ -67,15 +67,15 @@ def _machine(family, program):
     )
     if family == "lathe":
         # LinuxCNC lathe: radius-mode X, spindle-synchronized threading.
-        dialect = GCodeDialect().with_commands(lathe_radius_mode="G8", thread_synchronized="G33")
+        dialect = GCodeDialect(dwell_max_s=1e5).with_commands(lathe_radius_mode="G8", thread_synchronized="G33")
         planes = ("xz",)
     elif family == "thermal":
-        dialect = GCodeDialect(beam_s_max=1, height_control_word="P2").with_commands(
+        dialect = GCodeDialect(beam_s_max=1, height_control_word="P2", dwell_max_s=1e5).with_commands(
             height_control_on="M63", height_control_off="M62"
         )
         planes = ("xy", "xz", "yz")
     else:
-        dialect, planes = GCodeDialect.linuxcnc(), ("xy", "xz", "yz")
+        dialect, planes = GCodeDialect.linuxcnc(dwell_max_s=1e5), ("xy", "xz", "yz")
     return Machine(
         f"benchmark {family}",
         tools,

@@ -40,7 +40,7 @@ from camlib.motion import Beam, BeamMark
 from camlib.post import Machine, GCodeDialect, GCodePost, NativeGCodeDecoder
 
 
-def _dialect():
+def _dialect(dwell_max_s=None):
     commands = (
         GCodeDialect(beam_s_max=1, height_control_word='P2')
         .with_commands(
@@ -58,6 +58,7 @@ def _dialect():
         GCodeDialect(beam_s_max=1, height_control_word='P2'),
         commands=commands,
         fixed_modes=('center_incremental', 'rpm_mode'),
+        dwell_max_s=dwell_max_s,
     )
 
 
@@ -91,12 +92,20 @@ class QtPlasmaCMachine(Machine):
             raise ValueError('G64 blend must be positive and within half of tolerance_mm')
         if len(self.tools) != 1 or self.tools[0].number != 1 or self.tools[0].length_register != 1:
             raise ValueError('QtPlasmaC: one torch, entered as number 1 / length register 1 (posted T0 / H0)')
-        if self.dialect != _dialect() or self.flood or self.mist:
+        if self.dialect != _dialect(self.dialect.dwell_max_s) or self.flood or self.mist:
             raise ValueError('dialect differs from the QtPlasmaC subset')
 
 
 def define_machine(
-    name, tool, *, blend_mm=0.005, mark_material=None, cut_material=None, material_wait_s=None, **settings
+    name,
+    tool,
+    *,
+    blend_mm=0.005,
+    mark_material=None,
+    cut_material=None,
+    material_wait_s=None,
+    dwell_max_s=None,
+    **settings,
 ):
     """``tool``: the torch ToolSetting (number 1, length register 1).
     ``mark_material``, ``cut_material`` and ``material_wait_s`` declare
@@ -104,7 +113,7 @@ def define_machine(
     return QtPlasmaCMachine(
         name,
         (tool,),
-        dialect=_dialect(),
+        dialect=_dialect(dwell_max_s),
         flood=False,
         mist=False,
         blend_mm=blend_mm,

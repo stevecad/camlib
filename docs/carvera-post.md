@@ -71,7 +71,9 @@ and Makera's [Carvera.cps](https://github.com/MakeraInc/CarveraProfiles/blob/mai
   table specifies `[400,7]` / `[400,9]`. Both independent decoders reject air
   changes without the barrier, or M400 followed by any other block.
   M30 has no stopping side effects according to the table, so M5/M9 are handled
-  explicitly. G4 P is seconds. No M0/M1, compensation, probing, tapping, beam,
+  explicitly. G4 P is seconds; the firmware docs state no maximum dwell, so
+  `dwell_max_s` is unset by default and G4 dwells are refused by name unless
+  declared on `define_machine`. No M0/M1, compensation, probing, tapping, beam,
   vacuum, rotary axes or undocumented path-control words are declared.
 
 ## Setup premises and retract contract

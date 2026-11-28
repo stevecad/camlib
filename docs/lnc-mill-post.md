@@ -19,7 +19,7 @@ machine builder's PLC configuration, and it has not run on a real LNC control
 | G00 | 5 | Not written. Each axis runs at its own rapid rate and the manual does not say the path is straight, so traverses are `G1` at the declared `traverse_feed_mm_min` |
 | G02/G03 | 7 | Native arcs in G17, G18 and G19 with incremental I/J/K, at most 180° per block |
 | Arc end-point check | 7 | Alarm 510204 when the radii differ by more than parameter 50048: declared as `arc_radius_tolerance_mm`, with no relative allowance |
-| G04 | 9 | Not written (X is seconds but X is an axis word; P is integer ms). Drilling dwell uses G82/G89 P |
+| G04 | 9 | Not written (X is seconds but X is an axis word; P is integer ms). Drilling dwell uses G82/G89 P (declare `dwell_max_s` on `define_machine`; unset by default) |
 | G43/G49 | 38 | `G1 G43 H Z F` and `G1 G49 Z F`, the Z keeping the physical tip still. H is 1..400 |
 | G52 | 48 | `G52 X0. Y0. Z0.` clears the local coordinate system at the start |
 | G53 | 50 | Not written: G53 **cancels the active tool length compensation**. The decoder refuses it |

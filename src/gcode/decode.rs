@@ -912,11 +912,20 @@ impl Decoder {
                 }),
                 "dwell" => {
                     used.insert(letter(&d.dwell_word));
-                    let Some(seconds) =
-                        get(&d.dwell_word).filter(|s| 0. < *s && *s <= d.dwell_max_s)
+                    let Some(seconds) = get(&d.dwell_word).filter(|s| s.is_finite() && *s > 0.)
                     else {
                         return Err("NC dwell needs a positive time".into());
                     };
+                    let Some(max_s) = d.dwell_max_s else {
+                        return Err(format!(
+                            "dwell {seconds} s cannot be decoded: the dialect declares no dwell range (GCodeDialect.dwell_max_s)"
+                        ));
+                    };
+                    if seconds > max_s {
+                        return Err(format!(
+                            "NC dwell {seconds} s exceeds the controller range {max_s} s (GCodeDialect.dwell_max_s)"
+                        ));
+                    }
                     output.push(Event::Dwell { seconds });
                 }
                 "end" => {
@@ -1316,8 +1325,18 @@ impl Decoder {
                 }
                 dwell /= 1000.;
             }
-            if !(0. < dwell && dwell <= d.dwell_max_s) {
+            if !(dwell.is_finite() && dwell > 0.) {
                 return Err("invalid drilling cycle dwell".into());
+            }
+            let Some(max_s) = d.dwell_max_s else {
+                return Err(format!(
+                    "dwell {dwell} s cannot be decoded: the dialect declares no dwell range (GCodeDialect.dwell_max_s)"
+                ));
+            };
+            if dwell > max_s {
+                return Err(format!(
+                    "drilling cycle dwell {dwell} s exceeds the controller range {max_s} s (GCodeDialect.dwell_max_s)"
+                ));
             }
             Ok(dwell)
         };

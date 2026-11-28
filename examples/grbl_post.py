@@ -47,7 +47,7 @@ _REFERENCE = "GRBL 1.1h (gcode.c, nuts_bolts.c read_float, config.h)"
 _LINE_LIMIT = 79
 
 
-def _dialect(beam_s_max=None, beam_mark=None):
+def _dialect(beam_s_max=None, beam_mark=None, dwell_max_s=None):
     commands = (
         GCodeDialect()
         .with_commands(
@@ -80,6 +80,7 @@ def _dialect(beam_s_max=None, beam_mark=None):
         beam_s_max=beam_s_max,
         beam_mark=beam_mark,
         radius_tolerance_mm=0,
+        dwell_max_s=dwell_max_s,
     )
 
 
@@ -96,7 +97,7 @@ class GrblMachine(Machine):
         super().__post_init__()
         if self.dialect.beam_mark not in (None, "power"):
             raise ValueError('GRBL has no marking process: a laser marks by its power word (beam_mark="power")')
-        if self.dialect != _dialect(self.dialect.beam_s_max, self.dialect.beam_mark):
+        if self.dialect != _dialect(self.dialect.beam_s_max, self.dialect.beam_mark, self.dialect.dwell_max_s):
             raise ValueError("dialect differs from the GRBL 1.1h subset")
         if (
             len(self.tools) != 1
@@ -116,7 +117,15 @@ class GrblMachine(Machine):
 
 
 def define_machine(
-    name, tool, *, work_offset_machine_mm, initial_machine_mm, beam_s_max=None, beam_mark=None, **machine
+    name,
+    tool,
+    *,
+    work_offset_machine_mm,
+    initial_machine_mm,
+    beam_s_max=None,
+    beam_mark=None,
+    dwell_max_s=None,
+    **machine,
 ):
     """``tool``: the preloaded tool's ToolSetting (its position_after_mm is the
     program's initial position). ``machine``: units, precision, limits and
@@ -127,7 +136,7 @@ def define_machine(
     return GrblMachine(
         name,
         (tool,),
-        dialect=_dialect(beam_s_max, beam_mark),
+        dialect=_dialect(beam_s_max, beam_mark, dwell_max_s),
         planes=("xy",),
         arcs=False,
         helices=False,
