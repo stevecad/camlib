@@ -2,33 +2,33 @@
   "name": "steep-and-shallow",
   "operations": {
     "finish-shallow": {
-      "air_cut_mm": 433.115,
-      "cut_mm": 1053.183,
-      "cycle_seconds_exact_stop": 173.692,
-      "cycle_seconds_tangent": 169.992,
+      "air_cut_mm": 269.446,
+      "cut_mm": 889.514,
+      "cycle_seconds_exact_stop": 161.289,
+      "cycle_seconds_tangent": 157.589,
       "link_mm": 0.0,
-      "moves": 804,
+      "moves": 828,
       "plunges": 24,
-      "rapid_mm": 46.19,
+      "rapid_mm": 209.86,
       "removed_mm3": 23.086,
-      "retracts": 24
+      "retracts": 48
     },
     "finish-steep": {
-      "air_cut_mm": 716.708,
-      "cut_mm": 1747.782,
-      "cycle_seconds_exact_stop": 350.371,
-      "cycle_seconds_tangent": 342.431,
+      "air_cut_mm": 652.475,
+      "cut_mm": 1683.549,
+      "cycle_seconds_exact_stop": 345.626,
+      "cycle_seconds_tangent": 337.686,
       "link_mm": 0.0,
-      "moves": 2532,
+      "moves": 2543,
       "plunges": 1051,
-      "rapid_mm": 256.259,
+      "rapid_mm": 320.492,
       "removed_mm3": 0.0,
-      "retracts": 13
+      "retracts": 24
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 524.062,
-    "cycle_seconds_tangent": 512.422,
+    "cycle_seconds_exact_stop": 506.914,
+    "cycle_seconds_tangent": 495.274,
     "material": {
       "leftover_mm3": [
         0.0,
@@ -39,8 +39,8 @@
         151.979
       ]
     },
-    "moves": 3336,
+    "moves": 3371,
     "post_error": null,
-    "posted_blocks": 3367
+    "posted_blocks": 3402
   }
 }

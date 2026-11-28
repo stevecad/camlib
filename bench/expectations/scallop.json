@@ -2,21 +2,21 @@
   "name": "scallop",
   "operations": {
     "scallop": {
-      "air_cut_mm": 555.587,
-      "cut_mm": 1338.061,
-      "cycle_seconds_exact_stop": 256.975,
-      "cycle_seconds_tangent": 237.736,
+      "air_cut_mm": 426.921,
+      "cut_mm": 1209.396,
+      "cycle_seconds_exact_stop": 247.383,
+      "cycle_seconds_tangent": 228.145,
       "link_mm": 0.0,
-      "moves": 3481,
+      "moves": 3502,
       "plunges": 606,
-      "rapid_mm": 284.121,
+      "rapid_mm": 412.786,
       "removed_mm3": 23.015,
-      "retracts": 34
+      "retracts": 55
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 256.975,
-    "cycle_seconds_tangent": 237.736,
+    "cycle_seconds_exact_stop": 247.383,
+    "cycle_seconds_tangent": 228.145,
     "material": {
       "leftover_mm3": [
         0.0,
@@ -27,8 +27,8 @@
         79.144
       ]
     },
-    "moves": 3481,
+    "moves": 3502,
     "post_error": null,
-    "posted_blocks": 3504
+    "posted_blocks": 3525
   }
 }

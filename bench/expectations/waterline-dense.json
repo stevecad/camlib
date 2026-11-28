@@ -2,21 +2,21 @@
   "name": "waterline-dense",
   "operations": {
     "finish-levels": {
-      "air_cut_mm": 44.505,
-      "cut_mm": 2941.903,
-      "cycle_seconds_exact_stop": 347.508,
-      "cycle_seconds_tangent": 346.966,
+      "air_cut_mm": 40.805,
+      "cut_mm": 2938.203,
+      "cycle_seconds_exact_stop": 347.26,
+      "cycle_seconds_tangent": 346.718,
       "link_mm": 0.0,
-      "moves": 1967,
+      "moves": 1968,
       "plunges": 120,
-      "rapid_mm": 18.734,
+      "rapid_mm": 22.434,
       "removed_mm3": 63.378,
-      "retracts": 1
+      "retracts": 2
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 347.508,
-    "cycle_seconds_tangent": 346.966,
+    "cycle_seconds_exact_stop": 347.26,
+    "cycle_seconds_tangent": 346.718,
     "material": {
       "leftover_mm3": [
         33.219,
@@ -27,8 +27,8 @@
         102.537
       ]
     },
-    "moves": 1967,
+    "moves": 1968,
     "post_error": null,
-    "posted_blocks": 1990
+    "posted_blocks": 1991
   }
 }

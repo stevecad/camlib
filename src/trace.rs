@@ -443,6 +443,11 @@ impl TracePlan {
         self.report.geometric_residual_status = ResidualStatus::Unknown;
         Ok(())
     }
+    /// Split the straight-up lift after each loop where the stock beside
+    /// the tool ends (#441, `OperationPlan::split_lifts`).
+    pub(crate) fn split_lifts(&mut self, lifts: crate::lift::Lifts) {
+        self.motion.lift_split = Some(lifts);
+    }
     pub fn next_motion_with_stock(
         &mut self,
         stock: &Stock,

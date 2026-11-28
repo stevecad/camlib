@@ -249,11 +249,48 @@ impl OperationPlan {
         if let Operation::Drilling(d) = &mut op {
             d.preparation = None;
         }
+        let lifts = manifest.lifts(&op);
         let mut plan = Self::prepare_with_stock(op, tool, stock, initial, first_id, cancel)?;
         if let Self::Drilling(d) = &mut plan {
             d.set_preparation_report(report);
         }
+        if let Some(lifts) = lifts {
+            plan.split_lifts(lifts);
+        }
         Ok(plan)
+    }
+    /// Split every straight-up retract out of a cut where the stock beside
+    /// the tool ends (#441): feed to the highest whole-cell bound within
+    /// reach of the tool, then lift the rest, which the run's retract policy
+    /// makes a rapid. Operations that declare their retract feed (hole
+    /// cycles, supplied moves) and plans that never lift out of a cut in a
+    /// height field (thermal, probing, lathe, undercut) keep their retracts.
+    pub(crate) fn split_lifts(&mut self, lifts: crate::lift::Lifts) {
+        match self {
+            Self::Roughing(p) => p.split_lifts(lifts),
+            Self::AdaptiveFront(p) => p.split_lifts(lifts),
+            Self::Pocket(p) => p.split_lifts(lifts),
+            Self::Slot(p) => p.split_lifts(lifts),
+            Self::Facing(p) => p.split_lifts(lifts),
+            Self::Contour(p) => p.split_lifts(lifts),
+            Self::Chamfer(p) => p.split_lifts(lifts),
+            Self::Deburr(p) => p.split_lifts(lifts),
+            Self::Parallel(p) => p.split_lifts(lifts),
+            Self::Waterline(p) => p.split_lifts(lifts),
+            Self::Trace(p) => p.split_lifts(lifts),
+            Self::ThreadMill(p) => p.split_lifts(lifts),
+            Self::Flat(p) => p.split_lifts(lifts),
+            Self::VCarve(p) => p.split_lifts(lifts),
+            Self::Drilling(_)
+            | Self::Bore(_)
+            | Self::Tapping(_)
+            | Self::Reaming(_)
+            | Self::Undercut(_)
+            | Self::ThermalCut(_)
+            | Self::ThermalMark(_)
+            | Self::Probe(_)
+            | Self::SuppliedToolpath(_) => {}
+        }
     }
     pub fn prepare(
         op: Operation,

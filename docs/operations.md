@@ -49,10 +49,14 @@ wall loop or of an adaptive wall pass. The cutter stops short of the wall, so
 the cells along it keep the wall's height. A check without the cut history
 reads only those bounds: the machine check of an independent-axis rapid (G0
 with each axis on its own) could not decide such a lift, and the program
-could not be released. The tool then leaves straight up at feed to
-`feed_z_mm` and rapids from there. The stock-contact check, when configured,
-verifies each rapid again. `Setup(rapid_retracts=False)` keeps every retract
-at feed.
+could not be released. The operation then splits the lift (#441): it feeds
+until the tool's lowest point is at the highest whole-cell stock bound within
+reach of any part of the tool (holder included), and lifts from there to
+`feed_z_mm` as a second retract. That one starts above every cell within
+reach, so it becomes a rapid, and the machine check decides it. Where the
+stock within reach stands at or above `feed_z_mm`, the whole lift stays at
+feed. The stock-contact check, when configured, verifies each rapid again.
+`Setup(rapid_retracts=False)` keeps every retract at feed, in one move.
 
 ## Machining limits: avoid areas and containment
 

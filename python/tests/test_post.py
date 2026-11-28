@@ -174,11 +174,11 @@ class PostTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             nc = Path(tmp) / 'pocket.ngc'
             result = run(nc)
-            self.assertEqual(result['motions'], 352)
+            self.assertEqual(result['motions'], 400)
             self.assertFalse(result['first_posted_motion']['source_finished'])
             self.assertFalse(result['first_posted_motion']['source_native_exited'])
             self.assertEqual(result['source_heights_sha256'], result['posted_heights_sha256'])
-            self.assertEqual(result['posted_scene_stock_counts'], dict(clear=352, violation=0, uncertain=0))
+            self.assertEqual(result['posted_scene_stock_counts'], dict(clear=400, violation=0, uncertain=0))
             self.assertTrue(result['posted_material']['complete'])
             self.assertEqual(result['posted_material']['residual']['definite_cells'], 12)
             self.assertTrue(nc.read_text().endswith('M2\n'))

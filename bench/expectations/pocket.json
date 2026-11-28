@@ -2,21 +2,21 @@
   "name": "pocket",
   "operations": {
     "clear-pocket": {
-      "air_cut_mm": 480.0,
-      "cut_mm": 3892.095,
-      "cycle_seconds_exact_stop": 547.224,
-      "cycle_seconds_tangent": 547.184,
+      "air_cut_mm": 240.0,
+      "cut_mm": 3652.095,
+      "cycle_seconds_exact_stop": 530.012,
+      "cycle_seconds_tangent": 529.972,
       "link_mm": 101.11,
-      "moves": 352,
+      "moves": 400,
       "plunges": 48,
-      "rapid_mm": 657.431,
+      "rapid_mm": 897.431,
       "removed_mm3": 8697.589,
-      "retracts": 48
+      "retracts": 96
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 547.224,
-    "cycle_seconds_tangent": 547.184,
+    "cycle_seconds_exact_stop": 530.012,
+    "cycle_seconds_tangent": 529.972,
     "material": {
       "leftover_mm3": [
         3.84,
@@ -27,8 +27,8 @@
         489.611
       ]
     },
-    "moves": 352,
+    "moves": 400,
     "post_error": null,
-    "posted_blocks": 375
+    "posted_blocks": 423
   }
 }

@@ -853,6 +853,8 @@ pub struct WaterlinePlan {
     position: Vec3,
     next_id: u64,
     expected_generation: Option<u64>,
+    /// How the run splits a straight-up retract out of the cut (#441).
+    lift_split: Option<crate::lift::Lifts>,
     /// Every level in cutting order: main levels (depth 0) at today's
     /// heights, then the in-between scallop levels inserted between them
     /// (#46). Flat and bull-nose cutters have main levels only.
@@ -1969,6 +1971,7 @@ impl WaterlinePlan {
             position: initial,
             next_id: first_id,
             expected_generation: None,
+            lift_split: None,
             schedule,
             slot: 0,
             profile: None,
@@ -2068,6 +2071,11 @@ impl WaterlinePlan {
         self.report.geometric_residual_status = ResidualStatus::Unknown;
         Ok(())
     }
+    /// Split each straight-up retract where the stock beside the tool ends
+    /// (#441, `OperationPlan::split_lifts`).
+    pub(crate) fn split_lifts(&mut self, lifts: crate::lift::Lifts) {
+        self.lift_split = Some(lifts);
+    }
     pub fn next_motion_with_stock(
         &mut self,
         stock: &Stock,
@@ -2158,6 +2166,7 @@ impl WaterlinePlan {
                     self.next_id,
                 );
                 profile.ramp_from = ramp_from;
+                profile.lift_split = self.lift_split.clone();
                 if let Some(limits) = self.op.limits.as_ref().filter(|l| !l.is_empty()) {
                     profile.limits = Some(crate::limits::PreparedLimits::new(
                         limits,
@@ -2593,7 +2602,15 @@ impl WaterlinePlan {
                 return Err("waterline motion id space exhausted".into());
             }
             let emission = self.emission.as_mut().unwrap();
-            if let Some((curve, kind, feed)) = emission.queue.pop_front() {
+            if let Some((mut curve, kind, feed)) = emission.queue.pop_front() {
+                // A straight-up retract feeds only through the stock beside
+                // the tool; the rest follows as its own retract (#441).
+                if let Some((fed, rest)) =
+                    crate::lift::split(self.lift_split.as_ref(), stock, kind, &curve)
+                {
+                    emission.queue.push_front((rest, kind, feed));
+                    curve = fed;
+                }
                 if let Some(motion) = self.emit(curve, kind, feed, stock, cancel)? {
                     return Ok(Some(motion));
                 }

@@ -2,21 +2,21 @@
   "name": "spiral",
   "operations": {
     "spiral": {
-      "air_cut_mm": 294.007,
-      "cut_mm": 1230.964,
-      "cycle_seconds_exact_stop": 239.555,
-      "cycle_seconds_tangent": 239.185,
+      "air_cut_mm": 180.054,
+      "cut_mm": 1117.011,
+      "cycle_seconds_exact_stop": 231.162,
+      "cycle_seconds_tangent": 230.792,
       "link_mm": 0.0,
-      "moves": 2552,
+      "moves": 2572,
       "plunges": 30,
-      "rapid_mm": 569.191,
+      "rapid_mm": 683.144,
       "removed_mm3": 22.971,
-      "retracts": 31
+      "retracts": 51
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 239.555,
-    "cycle_seconds_tangent": 239.185,
+    "cycle_seconds_exact_stop": 231.162,
+    "cycle_seconds_tangent": 230.792,
     "material": {
       "leftover_mm3": [
         0.0,
@@ -27,8 +27,8 @@
         78.955
       ]
     },
-    "moves": 2552,
+    "moves": 2572,
     "post_error": null,
-    "posted_blocks": 2575
+    "posted_blocks": 2595
   }
 }

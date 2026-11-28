@@ -2,24 +2,24 @@
   "name": "trace",
   "operations": {
     "engrave": {
-      "air_cut_mm": 11.0,
-      "cut_mm": 118.85,
-      "cycle_seconds_exact_stop": 16.238,
-      "cycle_seconds_tangent": 16.238,
+      "air_cut_mm": 3.0,
+      "cut_mm": 110.85,
+      "cycle_seconds_exact_stop": 15.795,
+      "cycle_seconds_tangent": 15.795,
       "link_mm": 0.0,
-      "moves": 24,
+      "moves": 28,
       "plunges": 4,
-      "rapid_mm": 48.745,
+      "rapid_mm": 56.745,
       "removed_mm3": 169.686,
-      "retracts": 4
+      "retracts": 8
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 16.238,
-    "cycle_seconds_tangent": 16.238,
+    "cycle_seconds_exact_stop": 15.795,
+    "cycle_seconds_tangent": 15.795,
     "material": null,
-    "moves": 24,
+    "moves": 28,
     "post_error": null,
-    "posted_blocks": 47
+    "posted_blocks": 51
   }
 }

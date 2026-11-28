@@ -3,20 +3,20 @@
   "operations": {
     "morph": {
       "air_cut_mm": 181.277,
-      "cut_mm": 1027.533,
-      "cycle_seconds_exact_stop": 166.252,
-      "cycle_seconds_tangent": 164.592,
+      "cut_mm": 977.533,
+      "cycle_seconds_exact_stop": 163.488,
+      "cycle_seconds_tangent": 161.828,
       "link_mm": 0.0,
-      "moves": 466,
+      "moves": 491,
       "plunges": 25,
-      "rapid_mm": 69.187,
+      "rapid_mm": 119.187,
       "removed_mm3": 1238.843,
-      "retracts": 25
+      "retracts": 50
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 166.252,
-    "cycle_seconds_tangent": 164.592,
+    "cycle_seconds_exact_stop": 163.488,
+    "cycle_seconds_tangent": 161.828,
     "material": {
       "leftover_mm3": [
         192.899,
@@ -27,8 +27,8 @@
         52.83
       ]
     },
-    "moves": 466,
+    "moves": 491,
     "post_error": null,
-    "posted_blocks": 489
+    "posted_blocks": 514
   }
 }

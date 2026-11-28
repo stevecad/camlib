@@ -1,16 +1,18 @@
-//! The lift out of a pocket beside its wall (#430).
+//! The lift out of a pocket beside its wall (#430, #441).
 //!
 //! A pocket ends on its wall loop, with the cutter against the wall. The
 //! machine check boxes an independent-axis rapid against the stock's
 //! whole-cell bounds, and the cells along the wall keep the wall's height.
 //! A rapid lift from there could not be decided, so the program could not be
-//! released. Such a lift now stays at feed.
+//! released (#430). Such a lift now feeds only until the tool stands on the
+//! highest whole-cell bound within reach of any part of it, and lifts the
+//! rest of the way at rapid (#441), which the machine check decides.
 use camlib::{
     machine::*,
     motion::*,
-    operation::OperationPlan,
+    regeneration,
     stock::*,
-    stream::StreamManifest,
+    stream::{DEFAULT_FRAME_LIMIT, StreamManifest, StreamProducer, StreamReceiver},
 };
 use serde_json::{Value, json};
 use std::sync::atomic::AtomicBool;
@@ -75,48 +77,92 @@ fn pocket(kind: &str, stepover: f64, first: usize) -> Value {
     p
 }
 
-/// The run as the stream plans it: every operation against the committed
-/// stock, each move through the run's retract policy, then committed.
-/// Every rapid is checked against the stock before it, independently of
-/// the planner: it removes nothing, and the stream's stock-contact check
-/// finds it clear.
+/// The run as the stream plans and sends it (`regeneration::run_uncached`):
+/// every operation against the committed stock, each move through the run's
+/// retract policy. The moves are then replayed on stock of the test's own,
+/// and checked independently of the planner:
+/// - every rapid removes nothing, and the stream's stock-contact check finds
+///   it clear;
+/// - every fed straight-up retract that a straight-up rapid continues (a
+///   lift split by #441) ends with the tool's tip on the highest whole-cell
+///   upper bound within reach of the tool where it starts, read here from
+///   the cells (`highest_within`), and no two fed retracts lie in line.
 fn run(m: &StreamManifest) -> Vec<Motion> {
+    let mut producer = StreamProducer::new(m.clone()).unwrap();
+    let mut receiver = StreamReceiver::new(m.clone()).unwrap();
+    let mut moves = vec![];
+    regeneration::run_uncached(&mut producer, &AtomicBool::new(false), |frame| {
+        if u16::from_le_bytes([frame[10], frame[11]]) == 1 {
+            moves.push(receiver.accept(frame, DEFAULT_FRAME_LIMIT)?);
+        }
+        Ok(())
+    })
+    .unwrap();
     let cancel = AtomicBool::new(false);
     let tool = m.tools[0].prepare().unwrap();
     let mut stock = Stock::new(m.stock.height().unwrap().clone()).unwrap();
     stock.enable_contact_queries(&cancel).unwrap();
     let mut position = m.initial_position_mm;
-    let mut id = 1;
-    let mut moves = vec![];
-    for op in &m.operations {
-        let mut plan =
-            OperationPlan::prepare_with_stock(op.clone(), &m.tools[0], &stock, position, id, &cancel)
-                .unwrap();
-        while let Some(motion) = plan.next_motion_with_stock(&stock, &cancel).unwrap() {
-            let motion = m.retract_policy(motion, &stock, op.declares_retract_feed());
-            assert_eq!(motion.curve.start(), position, "{motion:?}");
-            position = motion.curve.end();
-            id = motion.id + 1;
-            let delta = stock
-                .preview_sweep(&tool, &motion, 1., m.sweep, &cancel)
-                .unwrap();
-            if motion.kind == MoveKind::Rapid {
-                assert_eq!(delta.stats().changed_cells, 0, "a rapid cuts: {motion:?}");
-                let contact = camlib::stock_contact::check(
-                    &stock,
-                    &tool,
-                    &motion,
-                    camlib::stock_contact::Options::default(),
-                    &cancel,
-                )
-                .unwrap();
-                assert_eq!(contact.status, camlib::verification::Status::Clear, "{motion:?}: {contact:?}");
-            }
-            stock.apply_delta(&delta).unwrap();
-            moves.push(motion);
+    for (i, motion) in moves.iter().enumerate() {
+        assert_eq!(motion.curve.start(), position, "{motion:?}");
+        position = motion.curve.end();
+        if let Some(next) = moves.get(i + 1)
+            && motion.kind == MoveKind::Retract
+            && vertical(motion)
+            && vertical(next)
+            && next.curve.start() == motion.curve.end()
+        {
+            assert_eq!(next.kind, MoveKind::Rapid, "two fed retracts in line: {motion:?} {next:?}");
+            let start = motion.curve.start();
+            let highest = highest_within(&stock, m, [start[0], start[1]]);
+            assert_eq!(motion.curve.end()[2], highest, "{motion:?}");
+            assert!(highest > start[2], "{motion:?}");
         }
+        let delta = stock
+            .preview_sweep(&tool, motion, 1., m.sweep, &cancel)
+            .unwrap();
+        if motion.kind == MoveKind::Rapid {
+            assert_eq!(delta.stats().changed_cells, 0, "a rapid cuts: {motion:?}");
+            let contact = camlib::stock_contact::check(
+                &stock,
+                &tool,
+                motion,
+                camlib::stock_contact::Options::default(),
+                &cancel,
+            )
+            .unwrap();
+            assert_eq!(contact.status, camlib::verification::Status::Clear, "{motion:?}: {contact:?}");
+        }
+        stock.apply_delta(&delta).unwrap();
     }
     moves
+}
+/// Whether `m` is a straight line up along Z.
+fn vertical(m: &Motion) -> bool {
+    matches!(m.curve, Curve::Line { start, end }
+        if start[0] == end[0] && start[1] == end[1] && end[2] > start[2])
+}
+/// The highest whole-cell upper bound within reach of the test's tool about
+/// the axis through `xy`: of every cell whose box comes within the tool's
+/// widest radius (the 12 mm holder, wider than every cutter here) plus 32
+/// sweep tolerances of it.
+fn highest_within(stock: &Stock, m: &StreamManifest, xy: [f64; 2]) -> f64 {
+    let reach = 12. + 32. * m.sweep.tolerance_mm;
+    let [nx, ny] = stock.dimensions();
+    let [wx, wy] = stock.cell_widths_mm();
+    let min = stock.spec().min_mm;
+    let mut highest = min[2];
+    for j in 0..ny {
+        for i in 0..nx {
+            let (x0, y0) = (min[0] + i as f64 * wx, min[1] + j as f64 * wy);
+            let dx = (x0 - xy[0]).max(xy[0] - x0 - wx).max(0.);
+            let dy = (y0 - xy[1]).max(xy[1] - y0 - wy).max(0.);
+            if dx.hypot(dy) <= reach {
+                highest = highest.max(stock.cells()[j * nx + i].upper_mm);
+            }
+        }
+    }
+    highest
 }
 
 /// The machine check of the moves (#412's model): the work frame known to
@@ -219,25 +265,39 @@ fn released(m: &StreamManifest, moves: &[Motion]) {
 fn near(p: Vec3, x: f64, y: f64, z: f64) -> bool {
     (p[0] - x).abs() < 1e-3 && (p[1] - y).abs() < 1e-3 && (p[2] - z).abs() < 1e-9
 }
-/// Whether `m` is a straight lift at feed from `from` to the clearance.
-fn fed_lift(m: &Motion, from: Vec3) {
-    assert_eq!(m.kind, MoveKind::Retract, "{m:?}");
-    assert_eq!(m.feed_mm_min, Some(1000.), "{m:?}");
-    assert_eq!(m.curve.start(), from, "{m:?}");
-    assert_eq!(m.curve.end(), [from[0], from[1], 10.], "{m:?}");
+/// Whether `lift` (two moves) leaves `from` straight up: at feed to the
+/// faced top Z-1 that stands within reach (its cells keep the facing's
+/// one-tolerance guard, Z-1 + 1e-5), then at rapid to the clearance (#441).
+fn split_lift(lift: &[Motion], from: Vec3) {
+    let [fed, rapid] = lift else {
+        panic!("{lift:?}");
+    };
+    assert_eq!(fed.kind, MoveKind::Retract, "{fed:?}");
+    assert_eq!(fed.feed_mm_min, Some(1000.), "{fed:?}");
+    assert_eq!(fed.curve.start(), from, "{fed:?}");
+    let top = fed.curve.end();
+    assert_eq!([top[0], top[1]], [from[0], from[1]], "{fed:?}");
+    assert!((top[2] - (-1. + 1e-5)).abs() < 1e-9, "{fed:?}");
+    assert_eq!(rapid.kind, MoveKind::Rapid, "{rapid:?}");
+    assert_eq!(rapid.feed_mm_min, None, "{rapid:?}");
+    assert_eq!(rapid.curve.start(), top, "{rapid:?}");
+    assert_eq!(rapid.curve.end(), [from[0], from[1], 10.], "{rapid:?}");
 }
 
 /// The issue's setup: the wall loop is cut whole, its fourth side at feed,
-/// and the tool leaves from where that side ends, straight up at feed. The
-/// machine check releases it with independent-axis and with linear rapids.
-/// Before #430 the lift was a rapid and the independent-axis check left it
-/// undecided ("body swept into evolving stock"). The other outline orders
-/// end on another corner (or lift at a row end against a wall): the same.
+/// and the tool leaves from where that side ends, straight up: at feed
+/// through the 8 mm of wall beside it, to the faced top Z-1, then at rapid
+/// to the clearance (#441). The machine check releases it with
+/// independent-axis and with linear rapids. Before #430 the whole lift was
+/// a rapid and the independent-axis check left it undecided ("body swept
+/// into evolving stock"); since #430 it fed the whole 19 mm to the
+/// clearance. The other outline orders end on another corner (or lift at a
+/// row end against a wall): the same.
 #[test]
 fn a_pocket_is_left_beside_its_wall_at_feed_and_released() {
     let m = manifest(12., pocket("pocket", 3., 3));
     let moves = run(&m);
-    let tail: Vec<_> = moves[moves.len() - 7..]
+    let tail: Vec<_> = moves[moves.len() - 8..moves.len() - 1]
         .iter()
         .map(|m| (m.kind, m.curve.start(), m.curve.end()))
         .collect();
@@ -255,10 +315,9 @@ fn a_pocket_is_left_beside_its_wall_at_feed_and_released() {
         assert!(near(got.1, want.1[0], want.1[1], -9.), "{tail:#?}");
         assert!(near(got.2, want.2[0], want.2[1], -9.), "{tail:#?}");
     }
-    let last = moves.last().unwrap();
-    fed_lift(last, tail[5].2);
+    split_lift(&moves[moves.len() - 2..], tail[5].2);
     // The facing before it ends past the stock's edge, where no stock stands
-    // within reach: that lift is still a rapid.
+    // within reach: that lift is still one rapid.
     let faced = moves.iter().rev().find(|m| m.operation == "face").unwrap();
     assert_eq!(faced.kind, MoveKind::Rapid, "{faced:?}");
     assert_eq!(faced.curve.start()[2], -1.);
@@ -268,36 +327,38 @@ fn a_pocket_is_left_beside_its_wall_at_feed_and_released() {
     for first in 0..3 {
         let m = manifest(12., pocket("pocket", 3., first));
         let moves = run(&m);
-        let fourth = &moves[moves.len() - 2];
+        let fourth = &moves[moves.len() - 3];
         assert_eq!(fourth.kind, MoveKind::Cut);
-        fed_lift(moves.last().unwrap(), fourth.curve.end());
+        split_lift(&moves[moves.len() - 2..], fourth.curve.end());
         released(&m, &moves);
     }
 }
 
 /// AdaptivePocket on the same region ends its wall pass against the Y17
 /// wall: at stepovers 0.6, 2 and 4 mm with the 12 mm end mill, and 2 mm
-/// with a 6 mm one, it leaves straight up at feed and is released.
+/// with a 6 mm one, it leaves straight up, at feed to the faced top beside
+/// it and at rapid from there (#441), and is released.
 #[test]
 fn an_adaptive_pocket_is_left_beside_its_wall_at_feed_and_released() {
     for (diameter, stepover) in [(12., 0.6), (12., 2.), (12., 4.), (6., 2.)] {
         let m = manifest(diameter, pocket("adaptive_pocket", stepover, 3));
         let moves = run(&m);
-        let last = moves.last().unwrap();
-        let before = &moves[moves.len() - 2];
+        let lift = &moves[moves.len() - 2..];
+        let before = &moves[moves.len() - 3];
         assert!(before.kind.cuts(), "{before:?}");
-        fed_lift(last, before.curve.end());
+        split_lift(lift, before.curve.end());
         // Against the wall: the cutter's edge reaches Y17.
-        let edge = last.curve.start()[1] - diameter / 2.;
-        assert!((edge - 17.).abs() < 1e-3, "{diameter} {stepover}: {last:?}");
+        let edge = lift[0].curve.start()[1] - diameter / 2.;
+        assert!((edge - 17.).abs() < 1e-3, "{diameter} {stepover}: {lift:?}");
         released(&m, &moves);
     }
 }
 
 /// Facing planned as a pocket round a clamp that stands on the stock (#411,
 /// #417): its rows end beside the stock the clamp leaves standing, and a
-/// lift from there stays at feed, so the program is released (#417's PR
-/// found such a facing's last lift undecided).
+/// lift from there feeds through it, to its uncut top Z0, then rapids
+/// (#441), so the program is released (#417's PR found such a facing's last
+/// lift undecided).
 #[test]
 fn a_facing_round_a_clamp_is_left_beside_the_clamp_at_feed_and_released() {
     let mut face = facing(12.);
@@ -309,10 +370,48 @@ fn a_facing_round_a_clamp_is_left_beside_the_clamp_at_feed_and_released() {
     let mut m = manifest(12., pocket("pocket", 3., 3));
     m.operations = vec![serde_json::from_value(face).unwrap()];
     let moves = run(&m);
-    assert!(
-        moves.iter().any(|m| m.kind == MoveKind::Retract),
-        "a lift beside the clamp stays at feed"
-    );
+    let split: Vec<_> = moves
+        .windows(2)
+        .filter(|w| w[0].kind == MoveKind::Retract && vertical(&w[0]))
+        .collect();
+    assert!(!split.is_empty(), "a lift beside the clamp feeds through its stock");
+    for lift in split {
+        // `run` checked the stop against the cells; here: the uncut top.
+        assert_eq!(lift[0].curve.end()[2], 0., "{lift:?}");
+        assert_eq!(lift[1].kind, MoveKind::Rapid, "{lift:?}");
+        assert!(vertical(&lift[1]), "{lift:?}");
+    }
+    released(&m, &moves);
+}
+
+/// A contour round a 24 x 16 mm boss, down to Z-5 in levels 2 mm apart:
+/// after each level it leads out 3 mm from the boss's wall, which still
+/// stands within reach, and leaves straight up. Each such lift feeds
+/// to the faced top beside it and is a rapid from there (#441); since #430
+/// they fed to the clearance. The run is released.
+#[test]
+fn a_contour_leaves_each_level_at_feed_through_the_wall_then_at_rapid() {
+    let contour = json!({
+        "kind": "contour", "id": "boss", "tool": "em",
+        "region": {"version": 1, "units": "mm", "name": "boss", "boundary_error_mm": 0,
+            "components": [{"outer": {"vertices": [
+                [40, 24, 0], [64, 24, 0], [64, 40, 0], [40, 40, 0]]}, "holes": []}]},
+        "boundaries": "outer", "floor_z_mm": -5, "stepdown_mm": 2, "clearance_z_mm": 10,
+        "feed_mm_min": 1000, "plunge_mm_min": 300, "radial_allowance_mm": 0,
+        "bottom_allowance_mm": 0, "boundary_tolerance_mm": 0.0078125, "tolerance_mm": 1e-5,
+        "reverse": false, "lead_in_mm": 3, "lead_out_mm": 3, "spindle_rpm": 10000,
+        "work_offset": 1, "tool_number": 1, "length_register": 1, "coolant": "flood"
+    });
+    let m = manifest(12., contour);
+    let moves = run(&m);
+    let lifts: Vec<_> = moves
+        .windows(2)
+        .filter(|w| w[0].operation == "boss" && w[0].kind == MoveKind::Retract)
+        .collect();
+    assert!(!lifts.is_empty(), "{moves:#?}");
+    for lift in lifts {
+        split_lift(lift, lift[0].curve.start());
+    }
     released(&m, &moves);
 }
 

@@ -2,21 +2,21 @@
   "name": "pencil",
   "operations": {
     "pencil": {
-      "air_cut_mm": 7.995,
-      "cut_mm": 67.38,
-      "cycle_seconds_exact_stop": 10.014,
-      "cycle_seconds_tangent": 9.984,
+      "air_cut_mm": 3.095,
+      "cut_mm": 62.48,
+      "cycle_seconds_exact_stop": 9.664,
+      "cycle_seconds_tangent": 9.634,
       "link_mm": 0.0,
-      "moves": 68,
+      "moves": 69,
       "plunges": 1,
-      "rapid_mm": 13.498,
+      "rapid_mm": 18.398,
       "removed_mm3": 3.438,
-      "retracts": 1
+      "retracts": 2
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 10.014,
-    "cycle_seconds_tangent": 9.984,
+    "cycle_seconds_exact_stop": 9.664,
+    "cycle_seconds_tangent": 9.634,
     "material": {
       "leftover_mm3": [
         34.163,
@@ -27,8 +27,8 @@
         4.669
       ]
     },
-    "moves": 68,
+    "moves": 69,
     "post_error": null,
-    "posted_blocks": 91
+    "posted_blocks": 92
   }
 }
