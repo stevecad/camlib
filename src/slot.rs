@@ -434,6 +434,8 @@ pub struct SlotPlan {
     /// the z each remaining turn ends at is spread evenly down to `z`.
     helix: Option<HelixDescent>,
     report: SlotReport,
+    /// How the run splits the straight-up lift after each pass (#441).
+    lift_split: Option<crate::lift::Lifts>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -734,6 +736,7 @@ impl SlotPlan {
             phase: 0,
             next_id: first_motion_id,
             expected_generation: None,
+            lift_split: None,
             query_work_left: STOCK_QUERY_WORK,
             plunge_work_left: PLUNGE_PROOF_WORK,
             prev_center: None,
@@ -1028,6 +1031,11 @@ impl SlotPlan {
         self.next_id += 1;
         self.position = m.curve.end();
         Ok(m)
+    }
+    /// Split the straight-up lift after each pass where the stock beside the
+    /// tool ends (#441, `OperationPlan::split_lifts`).
+    pub(crate) fn split_lifts(&mut self, lifts: crate::lift::Lifts) {
+        self.lift_split = Some(lifts);
     }
     pub fn next_motion_with_stock(
         &mut self,
@@ -1443,15 +1451,25 @@ impl SlotPlan {
                     self.expected_generation = Some(stock.generation() + 1);
                     return Ok(Some(motion));
                 }
-                6 => (
-                    Curve::Line {
-                        start: self.position,
-                        end: [self.position[0], self.position[1], self.heights.feed],
-                    },
-                    MoveKind::Retract,
-                    false,
-                    8,
-                ),
+                6 => {
+                    // Fed only through the stock beside the tool, then the
+                    // rest of the way as its own retract (#441).
+                    let top = crate::lift::feed_to(
+                        self.lift_split.as_ref(),
+                        stock,
+                        self.position,
+                        self.heights.feed,
+                    );
+                    (
+                        Curve::Line {
+                            start: self.position,
+                            end: [self.position[0], self.position[1], top],
+                        },
+                        MoveKind::Retract,
+                        false,
+                        if top < self.heights.feed { 6 } else { 8 },
+                    )
+                }
                 // Feed height -> retract height; clearance after the last pass.
                 8 => {
                     let last = self.pass == self.report.depth_passes;
@@ -1477,7 +1495,7 @@ impl SlotPlan {
                 continue;
             }
             let motion = self.emit(curve, kind, entry)?;
-            if self.phase == 6 {
+            if self.phase == 6 && next_phase != 6 {
                 self.pass += 1;
                 self.piece = 0;
                 self.distance = 0.;

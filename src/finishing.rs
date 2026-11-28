@@ -755,8 +755,15 @@ pub struct ParallelPlan {
     /// move (the depth the pass actually cuts, not the stock top over the
     /// floor; issues #88, #161).
     move_depth: Option<crate::reach::MoveDepth>,
+    /// How the run splits the straight-up lift after each row (#441).
+    lift_split: Option<crate::lift::Lifts>,
 }
 impl ParallelPlan {
+    /// Split the straight-up lift after each row where the stock beside the
+    /// tool ends (#441, `OperationPlan::split_lifts`).
+    pub(crate) fn split_lifts(&mut self, lifts: crate::lift::Lifts) {
+        self.lift_split = Some(lifts);
+    }
     pub fn prepare_with_stock(
         op: ParallelOperation,
         tool: &ToolAssembly,
@@ -1441,6 +1448,7 @@ impl ParallelPlan {
                 .map(|l| crate::limits::PreparedLimits::new(l, radius, op.tolerance_mm))
                 .transpose()?,
             prepared_segment: None,
+            lift_split: None,
             phase: Phase::Lift,
             next_id: first_id,
             expected_generation: None,
@@ -2670,16 +2678,17 @@ impl ParallelPlan {
                     result
                 }
                 Phase::Retract => {
-                    // Feed only up to the feed height (never downward).
-                    let r = self.emit(
-                        [
-                            self.position[0],
-                            self.position[1],
-                            self.heights.feed.max(self.position[2]),
-                        ],
-                        MoveKind::Retract,
-                    )?;
-                    self.phase = Phase::Rise;
+                    // Feed only up to the feed height (never downward), and
+                    // only through the stock beside the tool: the rest of
+                    // the way is its own retract (#441).
+                    let feed = self.heights.feed.max(self.position[2]);
+                    let top =
+                        crate::lift::feed_to(self.lift_split.as_ref(), stock, self.position, feed);
+                    let r =
+                        self.emit([self.position[0], self.position[1], top], MoveKind::Retract)?;
+                    if top == feed {
+                        self.phase = Phase::Rise;
+                    }
                     r
                 }
                 Phase::Rise => {

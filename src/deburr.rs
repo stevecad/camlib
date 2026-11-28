@@ -277,6 +277,8 @@ pub struct DeburrPlan {
     center_cutting: bool,
     tip_radius: f64,
     report: DeburrReport,
+    /// How the run splits the straight-up lift after each run (#441).
+    lift_split: Option<crate::lift::Lifts>,
 }
 
 /// Exact half-space clip of a triangle (keep z >= c when `above`), as
@@ -1369,6 +1371,7 @@ impl DeburrPlan {
             center_cutting: cutter.center_cutting,
             tip_radius,
             report,
+            lift_split: None,
             op,
         })
     }
@@ -1660,6 +1663,11 @@ impl DeburrPlan {
         self.expected_generation = Some(stock.generation() + 1);
         Ok(m)
     }
+    /// Split the straight-up lift after each run where the stock beside the
+    /// tool ends (#441, `OperationPlan::split_lifts`).
+    pub(crate) fn split_lifts(&mut self, lifts: crate::lift::Lifts) {
+        self.lift_split = Some(lifts);
+    }
     pub fn next_motion_with_stock(
         &mut self,
         stock: &Stock,
@@ -1738,8 +1746,16 @@ impl DeburrPlan {
                     (curve, MoveKind::Cut, next)
                 }
                 5 => {
-                    self.run += 1;
-                    (line([p[0], p[1], self.heights.feed]), MoveKind::Retract, 0)
+                    // Fed only through the stock beside the tool, then the
+                    // rest of the way as its own retract (#441).
+                    let feed = self.heights.feed;
+                    let top = crate::lift::feed_to(self.lift_split.as_ref(), stock, p, feed);
+                    if top < feed {
+                        (line([p[0], p[1], top]), MoveKind::Retract, 5)
+                    } else {
+                        self.run += 1;
+                        (line([p[0], p[1], feed]), MoveKind::Retract, 0)
+                    }
                 }
                 _ => return Ok(None),
             };

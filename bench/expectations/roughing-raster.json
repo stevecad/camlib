@@ -2,21 +2,21 @@
   "name": "roughing-raster",
   "operations": {
     "rough": {
-      "air_cut_mm": 21407.597,
-      "cut_mm": 27581.251,
-      "cycle_seconds_exact_stop": 7945.306,
-      "cycle_seconds_tangent": 7944.541,
+      "air_cut_mm": 21359.597,
+      "cut_mm": 27533.251,
+      "cycle_seconds_exact_stop": 7942.653,
+      "cycle_seconds_tangent": 7941.888,
       "link_mm": 17096.816,
-      "moves": 2169,
+      "moves": 2193,
       "plunges": 13,
-      "rapid_mm": 447.403,
+      "rapid_mm": 495.403,
       "removed_mm3": 5803.069,
-      "retracts": 24
+      "retracts": 48
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 7945.306,
-    "cycle_seconds_tangent": 7944.541,
+    "cycle_seconds_exact_stop": 7942.653,
+    "cycle_seconds_tangent": 7941.888,
     "material": {
       "leftover_mm3": [
         930.821,
@@ -27,8 +27,8 @@
         83.073
       ]
     },
-    "moves": 2169,
+    "moves": 2193,
     "post_error": null,
-    "posted_blocks": 2192
+    "posted_blocks": 2216
   }
 }

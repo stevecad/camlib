@@ -1650,6 +1650,16 @@ impl RoughingPlan {
             refusal: None,
         })
     }
+    /// Split each layer's straight-up retracts where the stock beside the
+    /// tool ends (#441, `OperationPlan::split_lifts`).
+    pub(crate) fn split_lifts(&mut self, lifts: crate::lift::Lifts) {
+        for plan in &mut self.plans {
+            match plan {
+                LayerPlan::Pocket(p) => p.split_lifts(lifts.clone()),
+                LayerPlan::Engagement(p) => p.split_lifts(lifts.clone()),
+            }
+        }
+    }
     pub fn report(&self) -> &RoughingReport {
         &self.report
     }

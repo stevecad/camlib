@@ -302,10 +302,10 @@ class PythonLowering(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             raw = run(Path(directory) / 'raw.nc', profile='python', lowering=True)
             reserved = run(Path(directory) / 'reserved.nc', profile='python', lowering=True, radial_allowance_mm=0.01)
-        self.assertEqual(raw['source_motions'], 352)
+        self.assertEqual(raw['source_motions'], 400)
         self.assertGreater(raw['posted_scene_stock_counts']['violation'], 0)
         self.assertIsNotNone(raw['issue_samples'][0]['source_mapping'])
-        self.assertEqual(reserved['source_motions'], 352)
+        self.assertEqual(reserved['source_motions'], 400)
         self.assertEqual(
             reserved['posted_scene_stock_counts'], dict(clear=reserved['motions'], violation=0, uncertain=0)
         )

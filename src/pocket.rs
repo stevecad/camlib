@@ -1516,6 +1516,8 @@ pub struct PocketPlan {
     stroke: usize,
     next_id: u64,
     pending: VecDeque<PendingMove>,
+    /// How the run splits a straight-up retract out of the cut (#441).
+    lift_split: Option<crate::lift::Lifts>,
     entries: Option<PocketEntries>,
     finished: bool,
     stock_spec: StockSpec,
@@ -1956,6 +1958,7 @@ impl PocketPlan {
             stroke: 0,
             next_id: first_motion_id,
             pending: VecDeque::with_capacity(4),
+            lift_split: None,
             entries: None,
             finished: false,
             stock_spec: stock.clone(),
@@ -2838,8 +2841,14 @@ impl PocketPlan {
     pub(crate) fn source_region(&self) -> &PreparedRegion {
         &self.source
     }
+    /// Split each straight-up retract where the stock beside the tool ends
+    /// (#441, `OperationPlan::split_lifts`).
+    pub(crate) fn split_lifts(&mut self, lifts: crate::lift::Lifts) {
+        self.lift_split = Some(lifts);
+    }
     /// Leave the cut at feed up to the feed height (above all stock), then
-    /// rapid to `to_z`. Returns the point reached.
+    /// rapid to `to_z`. Returns the point reached. With `split_lifts`, the
+    /// retract feeds only through the stock beside the tool (#441).
     fn queue_lift(&mut self, from: Vec3, to_z: f64) -> Vec3 {
         let feed_z = self.operation.feed_z().max(from[2]);
         let safe = [from[0], from[1], feed_z];
@@ -3249,9 +3258,18 @@ impl PocketPlan {
                 self.advance_to(next);
             }
         }
-        let Some((curve, kind, entry_feed)) = self.pending.pop_front() else {
+        let Some((mut curve, kind, entry_feed)) = self.pending.pop_front() else {
             return Ok(None);
         };
+        // A straight-up retract feeds only through the stock beside the
+        // tool; the rest follows as its own retract (#441).
+        if let Some(stock) = stock
+            && let Some((fed, rest)) =
+                crate::lift::split(self.lift_split.as_ref(), stock, kind, &curve)
+        {
+            self.pending.push_front((rest, kind, entry_feed));
+            curve = fed;
+        }
         let path = curve.prepare(self.operation.tolerance_mm)?;
         let mut motion = Motion {
             id: self.next_id,

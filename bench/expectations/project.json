@@ -2,21 +2,21 @@
   "name": "project",
   "operations": {
     "project": {
-      "air_cut_mm": 30.55,
-      "cut_mm": 89.794,
-      "cycle_seconds_exact_stop": 18.859,
-      "cycle_seconds_tangent": 18.734,
+      "air_cut_mm": 26.329,
+      "cut_mm": 80.356,
+      "cycle_seconds_exact_stop": 18.189,
+      "cycle_seconds_tangent": 18.064,
       "link_mm": 0.0,
-      "moves": 184,
+      "moves": 186,
       "plunges": 88,
-      "rapid_mm": 11.683,
+      "rapid_mm": 21.121,
       "removed_mm3": 2.088,
-      "retracts": 2
+      "retracts": 4
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 18.859,
-    "cycle_seconds_tangent": 18.734,
+    "cycle_seconds_exact_stop": 18.189,
+    "cycle_seconds_tangent": 18.064,
     "material": {
       "leftover_mm3": [
         5.026,
@@ -27,8 +27,8 @@
         30.9
       ]
     },
-    "moves": 184,
+    "moves": 186,
     "post_error": null,
-    "posted_blocks": 207
+    "posted_blocks": 209
   }
 }

@@ -156,7 +156,10 @@ not wholly cut and keep the wall's height. The interval reaches into them, so
 an independent-axis rapid lift there cannot be decided. The run therefore
 plans no such rapid: with `Setup(rapid_retracts=True)` a retract becomes a
 rapid only where the whole-cell bounds show it clear too, and a lift beside a
-wall stays at feed (#430; see
+wall feeds through the stock beside it (#430). It feeds until the tool's
+lowest point is at the highest cell bound within reach of the tool, and the
+rest of the lift, which starts above every one of those cells, is a rapid
+that this rule decides (#441; see
 [Common parameters](operations.md#common-parameters)). A feed lift's cutter
 contact is decided by the exact stock kernel.
 

@@ -2,21 +2,21 @@
   "name": "pocket-dense",
   "operations": {
     "clear-pocket": {
-      "air_cut_mm": 11388.0,
-      "cut_mm": 90931.535,
-      "cycle_seconds_exact_stop": 12764.713,
-      "cycle_seconds_tangent": 12764.393,
+      "air_cut_mm": 5308.0,
+      "cut_mm": 84851.535,
+      "cycle_seconds_exact_stop": 12328.682,
+      "cycle_seconds_tangent": 12328.362,
       "link_mm": 819.189,
-      "moves": 9088,
+      "moves": 10304,
       "plunges": 1216,
-      "rapid_mm": 15286.501,
+      "rapid_mm": 21366.501,
       "removed_mm3": 8698.869,
-      "retracts": 1216
+      "retracts": 2432
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 12764.713,
-    "cycle_seconds_tangent": 12764.393,
+    "cycle_seconds_exact_stop": 12328.682,
+    "cycle_seconds_tangent": 12328.362,
     "material": {
       "leftover_mm3": [
         3.84,
@@ -27,8 +27,8 @@
         489.611
       ]
     },
-    "moves": 9088,
+    "moves": 10304,
     "post_error": null,
-    "posted_blocks": 9111
+    "posted_blocks": 10327
   }
 }

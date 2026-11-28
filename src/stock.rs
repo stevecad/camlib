@@ -1150,39 +1150,76 @@ impl Stock {
         reach_guard: f64,
         height_guard: f64,
     ) -> bool {
-        let [wx, wy] = self.step;
-        let min = self.spec.min_mm;
         for &(radius, bottom) in sections {
-            let reach = radius + reach_guard;
             let level = tip[2] + bottom + height_guard;
-            if !(reach.is_finite() && level.is_finite()) {
+            if !level.is_finite() {
                 return false;
             }
-            let span = |v: f64, o: f64, w: f64, n: usize| {
-                let lo = ((v - reach - o) / w).floor().max(0.);
-                let hi = ((v + reach - o) / w).floor().min(n as f64 - 1.);
-                (lo as usize, hi)
-            };
-            let (i0, i1) = span(tip[0], min[0], wx, self.nx);
-            let (j0, j1) = span(tip[1], min[1], wy, self.ny);
-            if i1 < 0. || j1 < 0. {
-                continue;
-            }
-            for j in j0..=j1 as usize {
-                for i in i0..=i1 as usize {
-                    if self.cells[j * self.nx + i].upper_mm <= level {
-                        continue;
-                    }
-                    let (x0, y0) = (min[0] + i as f64 * wx, min[1] + j as f64 * wy);
-                    let dx = (x0 - tip[0]).max(tip[0] - x0 - wx).max(0.);
-                    let dy = (y0 - tip[1]).max(tip[1] - y0 - wy).max(0.);
-                    if dx.hypot(dy) <= reach {
-                        return false;
-                    }
-                }
+            let within = self.cells_within([tip[0], tip[1]], radius + reach_guard, |upper| {
+                upper <= level
+            });
+            if within != Some(true) {
+                return false;
             }
         }
         true
+    }
+    /// The highest whole-cell upper bound within reach of any of the tool's
+    /// `sections` (as in `bounds_below_tool`) about the tool axis at `xy`
+    /// (#441). None when the reach is not finite; the stock's bottom when no
+    /// cell is within reach.
+    pub(crate) fn highest_bound_within(
+        &self,
+        sections: &[(f64, f64)],
+        xy: [f64; 2],
+        reach_guard: f64,
+    ) -> Option<f64> {
+        let mut highest = self.spec.min_mm[2];
+        for &(radius, _) in sections {
+            self.cells_within(xy, radius + reach_guard, |upper| {
+                highest = highest.max(upper);
+                true
+            })?;
+        }
+        Some(highest)
+    }
+    /// Calls `keep` with the upper bound of every cell whose whole-cell box
+    /// comes within `reach` of the vertical axis through `xy`, stopping at
+    /// the first it answers false for. Some(true) when every call answered
+    /// true, Some(false) when one did not, None when `reach` is not finite.
+    fn cells_within(
+        &self,
+        xy: [f64; 2],
+        reach: f64,
+        mut keep: impl FnMut(f64) -> bool,
+    ) -> Option<bool> {
+        if !reach.is_finite() {
+            return None;
+        }
+        let [wx, wy] = self.step;
+        let min = self.spec.min_mm;
+        let span = |v: f64, o: f64, w: f64, n: usize| {
+            let lo = ((v - reach - o) / w).floor().max(0.);
+            let hi = ((v + reach - o) / w).floor().min(n as f64 - 1.);
+            (lo as usize, hi)
+        };
+        let (i0, i1) = span(xy[0], min[0], wx, self.nx);
+        let (j0, j1) = span(xy[1], min[1], wy, self.ny);
+        if i1 < 0. || j1 < 0. {
+            return Some(true);
+        }
+        for j in j0..=j1 as usize {
+            for i in i0..=i1 as usize {
+                let upper = self.cells[j * self.nx + i].upper_mm;
+                let (x0, y0) = (min[0] + i as f64 * wx, min[1] + j as f64 * wy);
+                let dx = (x0 - xy[0]).max(xy[0] - x0 - wx).max(0.);
+                let dy = (y0 - xy[1]).max(xy[1] - y0 - wy).max(0.);
+                if dx.hypot(dy) <= reach && !keep(upper) {
+                    return Some(false);
+                }
+            }
+        }
+        Some(true)
     }
     /// The bore an oriented-spindle shift of `tool` starting at `start` is
     /// in: the axis and the lowest certified tip of the plunge the shifts

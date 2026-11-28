@@ -123,6 +123,8 @@ pub struct ThreadMillPlan {
     turn: usize,
     turns: usize,
     report: ThreadMillReport,
+    /// How the run splits the straight-up lift out of each pass (#441).
+    lift_split: Option<crate::lift::Lifts>,
 }
 
 /// Every stock cell touching the disk is at or below `z`.
@@ -357,6 +359,7 @@ impl ThreadMillPlan {
             turns: (turns_exact - 1e-9).ceil().max(1.) as usize,
             report,
             op,
+            lift_split: None,
         })
     }
     pub fn report(&self) -> &ThreadMillReport {
@@ -446,6 +449,11 @@ impl ThreadMillPlan {
         }
         self.report.open_columns_proven += 1;
         Ok(())
+    }
+    /// Split the straight-up lift out of each pass where the stock beside
+    /// the tool ends (#441, `OperationPlan::split_lifts`).
+    pub(crate) fn split_lifts(&mut self, lifts: crate::lift::Lifts) {
+        self.lift_split = Some(lifts);
     }
     pub fn next_motion_with_stock(
         &mut self,
@@ -548,13 +556,22 @@ impl ThreadMillPlan {
                     self.core.feed,
                     Phase::Retract,
                 ),
-                Phase::Retract => (
-                    self.core
-                        .line([position[0], position[1], self.heights.feed.max(position[2])]),
-                    MoveKind::Retract,
-                    self.core.retract_feed,
-                    Phase::Rise,
-                ),
+                Phase::Retract => {
+                    // Fed only through the stock beside the tool, then the
+                    // rest of the way as its own retract (#441).
+                    let feed = self.heights.feed.max(position[2]);
+                    let top = crate::lift::feed_to(self.lift_split.as_ref(), stock, position, feed);
+                    (
+                        self.core.line([position[0], position[1], top]),
+                        MoveKind::Retract,
+                        self.core.retract_feed,
+                        if top < feed {
+                            Phase::Retract
+                        } else {
+                            Phase::Rise
+                        },
+                    )
+                }
                 Phase::Rise => {
                     self.pass += 1;
                     let mut last = false;

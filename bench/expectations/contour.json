@@ -2,21 +2,21 @@
   "name": "contour",
   "operations": {
     "profile": {
-      "air_cut_mm": 56.0,
-      "cut_mm": 413.593,
-      "cycle_seconds_exact_stop": 60.136,
-      "cycle_seconds_tangent": 60.056,
+      "air_cut_mm": 40.0,
+      "cut_mm": 397.593,
+      "cycle_seconds_exact_stop": 59.251,
+      "cycle_seconds_tangent": 59.171,
       "link_mm": 0.0,
-      "moves": 40,
+      "moves": 48,
       "plunges": 8,
-      "rapid_mm": 92.13,
+      "rapid_mm": 108.13,
       "removed_mm3": 2191.997,
-      "retracts": 8
+      "retracts": 16
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 60.136,
-    "cycle_seconds_tangent": 60.056,
+    "cycle_seconds_exact_stop": 59.251,
+    "cycle_seconds_tangent": 59.171,
     "material": {
       "leftover_mm3": [
         0.0,
@@ -27,8 +27,8 @@
         430.247
       ]
     },
-    "moves": 40,
+    "moves": 48,
     "post_error": null,
-    "posted_blocks": 63
+    "posted_blocks": 71
   }
 }

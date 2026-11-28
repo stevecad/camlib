@@ -2,10 +2,10 @@
   "name": "adaptive-pocket-corner-cap",
   "operations": {
     "adaptive": {
-      "air_cut_mm": 271.006,
-      "cut_mm": 592.545,
-      "cycle_seconds_exact_stop": 80.818,
-      "cycle_seconds_tangent": 80.652,
+      "air_cut_mm": 265.006,
+      "cut_mm": 586.545,
+      "cycle_seconds_exact_stop": 80.486,
+      "cycle_seconds_tangent": 80.32,
       "engagement": {
         "cut_mm": 269.832,
         "entry_feed_mean_deg": 103.9,
@@ -22,16 +22,16 @@
         "within_10_share": 0.3001
       },
       "link_mm": 248.689,
-      "moves": 267,
+      "moves": 270,
       "plunges": 3,
-      "rapid_mm": 18.097,
+      "rapid_mm": 24.097,
       "removed_mm3": 472.318,
-      "retracts": 3
+      "retracts": 6
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 80.818,
-    "cycle_seconds_tangent": 80.652,
+    "cycle_seconds_exact_stop": 80.486,
+    "cycle_seconds_tangent": 80.32,
     "material": {
       "leftover_mm3": [
         0.0,
@@ -42,8 +42,8 @@
         56.037
       ]
     },
-    "moves": 267,
+    "moves": 270,
     "post_error": null,
-    "posted_blocks": 290
+    "posted_blocks": 293
   }
 }

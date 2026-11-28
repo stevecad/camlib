@@ -109,6 +109,8 @@ pub(crate) struct ProfileMotion {
     /// lead point (None for a loop: the tangent lead). Set by an operation
     /// that has proven the horizontal lead from it to the loop start clear.
     pub entry_points: Vec<Option<[f64; 2]>>,
+    /// How the run splits the lift after each loop (#441); None: whole.
+    pub lift_split: Option<crate::lift::Lifts>,
 }
 type CutMove = (crate::motion::Curve, crate::motion::MoveKind);
 /// Holding tabs on the tool-center loops: around each center (arc length),
@@ -512,6 +514,7 @@ impl ProfileMotion {
             entry_ramp: None,
             ramp_feed: 0.,
             entry_points: vec![],
+            lift_split: None,
         }
     }
     /// The stretches of a loop at depth z the limits block, as arc-length
@@ -809,14 +812,28 @@ impl ProfileMotion {
                     MoveKind::Lead,
                     Phase::Retract,
                 ),
-                Phase::Retract => (
-                    Curve::Line {
-                        start: self.position,
-                        end: [self.position[0], self.position[1], s.heights.feed],
-                    },
-                    MoveKind::Retract,
-                    Phase::Rise,
-                ),
+                Phase::Retract => {
+                    // Fed only through the stock beside the tool, then the
+                    // rest of the way as its own retract (#441).
+                    let top = crate::lift::feed_to(
+                        self.lift_split.as_ref(),
+                        stock,
+                        self.position,
+                        s.heights.feed,
+                    );
+                    (
+                        Curve::Line {
+                            start: self.position,
+                            end: [self.position[0], self.position[1], top],
+                        },
+                        MoveKind::Retract,
+                        if top < s.heights.feed {
+                            Phase::Retract
+                        } else {
+                            Phase::Rise
+                        },
+                    )
+                }
                 Phase::Rise => {
                     let last = self.ring + 1 == self.loops.len() && self.pass + 1 == self.passes;
                     let z = if last {

@@ -392,7 +392,7 @@ class SiemensISO(unittest.TestCase):
                 count += len(observed)
             self.assertTrue(oracle.ended and decoder.ended)
         self.assertEqual(count, result['motions'])
-        self.assertEqual(result['source_motions'], 352)
+        self.assertEqual(result['source_motions'], 400)
         self.assertEqual(result['posted_scene_stock_counts'], dict(clear=count, violation=0, uncertain=0))
         self.assertTrue(result['posted_material']['complete'])
         self.assertFalse(result['first_posted_motion']['source_finished'])
