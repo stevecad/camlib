@@ -55,110 +55,111 @@ comparable only on the same machine; CI runs the same benchmark on every push.
 
 ## Environment
 
-- Measured at 2026-11-27T23:59:28.885432+00:00
-- Commit `2b71583cba50b621645d262de33744a237ffc4fc`
-- Intel(R) Xeon(R) 6975P-C (4 threads), Linux-7.0.0-1018-aws-x86_64-with-glibc2.43
+- Measured at 2026-11-28T02:01:10.748342+00:00
+- Commit `333ca4b6a92d64cee08c51b77abf7d05847a8a08`
+- AMD EPYC 7763 64-Core Processor (4 threads), Linux-7.0.0-1020-azure-x86_64-with-glibc2.43
 - rustc 1.100.0 (0ef1bc386 2026-11-09), Python 3.12.16
 
 ## Per toolpath
 
 | Toolpath | Issue | Workload | Moves | Cut mm | Air cut | Rapid mm | Plunges | Retracts | Removed mm³ | Cycle s (exact / tangent) | Engine s |
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| ThermalCut common line | [#17](https://github.com/stevecad/camlib/issues/17) | `plasma-common-line` (plasma) | 34 | 518 | 0 (0%) | 355 | 4 | 4 | 3035 | 18.3 / 18.0 | 0.006 |
-| Facing | [#24](https://github.com/stevecad/camlib/issues/24) | `facing` (face) | 20 | 442 | 42 (10%) | 31 | 2 | 2 | 1920 | 47.1 / 47.1 | 0.005 |
-| Facing | [#24](https://github.com/stevecad/camlib/issues/24) | `facing-axis-auto` (face) | 20 | 442 | 42 (10%) | 31 | 2 | 2 | 1920 | 47.1 / 47.1 | 0.005 |
-| Facing | [#24](https://github.com/stevecad/camlib/issues/24) | `facing-axis-x` (face) | 32 | 550 | 74 (13%) | 61 | 2 | 2 | 1920 | 58.4 / 58.4 | 0.005 |
-| Facing | [#24](https://github.com/stevecad/camlib/issues/24) | `facing-large` (face) | 140 | 21474 | 394 (2%) | 207 | 2 | 2 | 119999 | 2153.3 / 2153.3 | 0.130 |
-| Facing | [#24](https://github.com/stevecad/camlib/issues/24) | `indexable-facing` (face) | 60 | 969 | 153 (16%) | 68 | 6 | 6 | 960 | 140.3 / 140.3 | 0.062 |
-| Facing | [#24](https://github.com/stevecad/camlib/issues/24) | `rest-pocket` (face) | 18 | 256 | 16 (6%) | 6 | 1 | 1 | 384 | 26.9 / 26.9 | 0.001 |
-| AdaptivePocket | [#25](https://github.com/stevecad/camlib/issues/25) | `adaptive-pocket-corner-cap` (adaptive) | 267 | 581 | 259 (45%) | 30 | 3 | 3 | 472 | 80.0 / 79.8 | 0.110 |
-| Pocket | [#25](https://github.com/stevecad/camlib/issues/25) | `pocket` (clear-pocket) | 352 | 3412 | 0 (0%) | 1137 | 48 | 48 | 8698 | 508.3 / 508.3 | 0.024 |
-| Pocket | [#25](https://github.com/stevecad/camlib/issues/25) | `pocket-dense` (clear-pocket) | 9088 | 79836 | 292 (0%) | 26383 | 1216 | 1216 | 8699 | 11873.8 / 11873.4 | 0.289 |
-| Pocket | [#25](https://github.com/stevecad/camlib/issues/25) | `rest-pocket` (pocket) | 30 | 99 | 8 (8%) | 44 | 4 | 4 | 124 | 16.7 / 16.7 | 0.002 |
-| RestPocket | [#25](https://github.com/stevecad/camlib/issues/25) | `rest-pocket` (rest) | 66 | 94 | 28 (30%) | 107 | 10 | 20 | 2 | 22.5 / 22.5 | 0.002 |
-| AdaptivePocket | [#26](https://github.com/stevecad/camlib/issues/26) | `adaptive-pocket` (adaptive) | 528 | 1122 | 519 (46%) | 51 | 6 | 6 | 472 | 144.3 / 144.0 | 0.220 |
-| Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `indexable-roughing` (rough) | 918 | 28888 | 24107 (83%) | 313 | 6 | 6 | 829 | 8604.7 / 8604.2 | 2.790 |
-| Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `indexable-roughing-exterior-feed` (rough) | 918 | 28888 | 24107 (83%) | 313 | 6 | 6 | 829 | 4992.0 / 4991.3 | 2.790 |
-| Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `rough-parallel` (rough) | 2927 | 37872 | 33811 (89%) | 212 | 12 | 12 | 1984 | 8900.3 / 8898.9 | 0.030 |
-| Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-adaptive` (rough) | 5067 | 16332 | 3267 (20%) | 441 | 30 | 30 | 5803 | 1808.3 / 1807.4 | 4.155 |
-| Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-fine-mesh` (rough) | 3278 | 7855 | 6439 (82%) | 200 | 3 | 3 | 5423 | 550.2 / 527.3 | 0.052 |
-| Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-offset` (rough) | 924 | 10665 | 6089 (57%) | 250 | 5 | 8 | 5776 | 1439.8 / 1436.8 | 0.030 |
-| Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-raster` (rough) | 2169 | 27414 | 21241 (77%) | 614 | 13 | 24 | 5803 | 7932.3 / 7931.6 | 0.028 |
-| Contour | [#28](https://github.com/stevecad/camlib/issues/28) | `chamfer` (rough-profile) | 40 | 358 | 0 (0%) | 148 | 8 | 8 | 2243 | 55.8 / 55.7 | 0.004 |
-| Contour | [#28](https://github.com/stevecad/camlib/issues/28) | `contour` (profile) | 40 | 358 | 0 (0%) | 148 | 8 | 8 | 2192 | 55.8 / 55.7 | 0.003 |
-| Drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-clearance-pecks` (holes) | 38 | 126 | 109 (87%) | 41 | 12 | 12 | 184 | 18.6 / 18.6 | 0.009 |
-| drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-data-manual` (holes) | 8 | 14 | 0 (0%) | 41 | 2 | 2 | 184 | 6.2 / 6.2 | 0.002 |
-| drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-data-recommended` (holes) | 8 | 14 | 0 (0%) | 41 | 2 | 2 | 184 | 6.2 / 6.2 | 0.002 |
-| Drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-decreasing-pecks` (holes) | 19 | 77 | 62 (80%) | 32 | 6 | 6 | 184 | 12.9 / 12.9 | 0.005 |
-| Drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-g98` (holes) | 44 | 17 | 0 (0%) | 154 | 14 | 14 | 184 | 10.9 / 10.9 | 0.007 |
-| Drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-g99` (holes) | 44 | 17 | 0 (0%) | 136 | 14 | 15 | 184 | 10.7 / 10.7 | 0.008 |
-| Drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-given-order` (holes) | 60 | 186 | 141 (76%) | 164 | 18 | 18 | 525 | 35.0 / 35.0 | 0.004 |
-| Drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-multistart-baseline` (holes) | 90 | 279 | 211 (76%) | 223 | 27 | 27 | 582 | 52.3 / 52.2 | 0.003 |
-| Drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-multistart-nearest` (holes) | 90 | 279 | 211 (76%) | 204 | 27 | 27 | 582 | 52.1 / 52.1 | 0.003 |
-| Drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-ordered` (holes) | 60 | 186 | 141 (76%) | 85 | 18 | 18 | 525 | 34.2 / 34.2 | 0.004 |
-| drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-preparation-bound` (holes) | 8 | 30 | 16 (53%) | 26 | 2 | 2 | 175 | 7.8 / 7.8 | 0.002 |
-| drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-preparation-bound` (pilot) | 8 | 13 | 8 (57%) | 26 | 2 | 2 | 8 | 3.7 / 3.7 | 0.001 |
+| ThermalCut common line | [#17](https://github.com/stevecad/camlib/issues/17) | `plasma-common-line` (plasma) | 34 | 518 | 0 (0%) | 355 | 4 | 4 | 3035 | 18.3 / 18.0 | 0.007 |
+| Facing | [#24](https://github.com/stevecad/camlib/issues/24) | `facing` (face) | 20 | 442 | 42 (10%) | 31 | 2 | 2 | 1920 | 47.1 / 47.1 | 0.008 |
+| Facing | [#24](https://github.com/stevecad/camlib/issues/24) | `facing-axis-auto` (face) | 20 | 442 | 42 (10%) | 31 | 2 | 2 | 1920 | 47.1 / 47.1 | 0.008 |
+| Facing | [#24](https://github.com/stevecad/camlib/issues/24) | `facing-axis-x` (face) | 32 | 550 | 74 (13%) | 61 | 2 | 2 | 1920 | 58.4 / 58.4 | 0.009 |
+| Facing | [#24](https://github.com/stevecad/camlib/issues/24) | `facing-large` (face) | 140 | 21474 | 394 (2%) | 207 | 2 | 2 | 119999 | 2153.3 / 2153.3 | 0.214 |
+| Facing | [#24](https://github.com/stevecad/camlib/issues/24) | `indexable-facing` (face) | 60 | 969 | 153 (16%) | 68 | 6 | 6 | 960 | 140.3 / 140.3 | 0.094 |
+| Facing | [#24](https://github.com/stevecad/camlib/issues/24) | `rest-pocket` (face) | 18 | 256 | 16 (6%) | 6 | 1 | 1 | 384 | 26.9 / 26.9 | 0.003 |
+| AdaptivePocket | [#25](https://github.com/stevecad/camlib/issues/25) | `adaptive-pocket-corner-cap` (adaptive) | 267 | 581 | 259 (45%) | 30 | 3 | 3 | 472 | 80.0 / 79.8 | 0.148 |
+| Pocket | [#25](https://github.com/stevecad/camlib/issues/25) | `pocket` (clear-pocket) | 352 | 3412 | 0 (0%) | 1137 | 48 | 48 | 8698 | 508.3 / 508.3 | 0.025 |
+| Pocket | [#25](https://github.com/stevecad/camlib/issues/25) | `pocket-dense` (clear-pocket) | 9088 | 79836 | 292 (0%) | 26383 | 1216 | 1216 | 8699 | 11873.8 / 11873.4 | 0.409 |
+| Pocket | [#25](https://github.com/stevecad/camlib/issues/25) | `rest-pocket` (pocket) | 30 | 99 | 8 (8%) | 44 | 4 | 4 | 124 | 16.7 / 16.7 | 0.001 |
+| RestPocket | [#25](https://github.com/stevecad/camlib/issues/25) | `rest-pocket` (rest) | 66 | 94 | 28 (30%) | 107 | 10 | 20 | 2 | 22.5 / 22.5 | 0.004 |
+| AdaptivePocket | [#26](https://github.com/stevecad/camlib/issues/26) | `adaptive-pocket` (adaptive) | 528 | 1122 | 519 (46%) | 51 | 6 | 6 | 472 | 144.3 / 144.0 | 0.290 |
+| Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `indexable-roughing` (rough) | 918 | 28888 | 24107 (83%) | 313 | 6 | 6 | 829 | 8604.7 / 8604.2 | 4.236 |
+| Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `indexable-roughing-exterior-feed` (rough) | 918 | 28888 | 24107 (83%) | 313 | 6 | 6 | 829 | 4992.0 / 4991.3 | 4.288 |
+| Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `rough-parallel` (rough) | 2927 | 37872 | 33811 (89%) | 212 | 12 | 12 | 1984 | 8900.3 / 8898.9 | 0.046 |
+| Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-adaptive` (rough) | 5067 | 16332 | 3267 (20%) | 441 | 30 | 30 | 5803 | 1808.3 / 1807.4 | 5.725 |
+| Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-fine-mesh` (rough) | 3278 | 7855 | 6439 (82%) | 200 | 3 | 3 | 5423 | 550.2 / 527.3 | 0.071 |
+| Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-offset` (rough) | 924 | 10665 | 6089 (57%) | 250 | 5 | 8 | 5776 | 1439.8 / 1436.8 | 0.034 |
+| Roughing | [#27](https://github.com/stevecad/camlib/issues/27) | `roughing-raster` (rough) | 2169 | 27414 | 21241 (77%) | 614 | 13 | 24 | 5803 | 7932.3 / 7931.6 | 0.043 |
+| Contour | [#28](https://github.com/stevecad/camlib/issues/28) | `chamfer` (rough-profile) | 40 | 358 | 0 (0%) | 148 | 8 | 8 | 2243 | 55.8 / 55.7 | 0.007 |
+| Contour | [#28](https://github.com/stevecad/camlib/issues/28) | `contour` (profile) | 40 | 358 | 0 (0%) | 148 | 8 | 8 | 2192 | 55.8 / 55.7 | 0.005 |
+| Drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-clearance-pecks` (holes) | 38 | 126 | 109 (87%) | 41 | 12 | 12 | 184 | 18.6 / 18.6 | 0.017 |
+| drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-data-manual` (holes) | 8 | 14 | 0 (0%) | 41 | 2 | 2 | 184 | 6.2 / 6.2 | 0.003 |
+| drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-data-recommended` (holes) | 8 | 14 | 0 (0%) | 41 | 2 | 2 | 184 | 6.2 / 6.2 | 0.003 |
+| Drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-decreasing-pecks` (holes) | 19 | 77 | 62 (80%) | 32 | 6 | 6 | 184 | 12.9 / 12.9 | 0.008 |
+| Drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-g98` (holes) | 44 | 17 | 0 (0%) | 154 | 14 | 14 | 184 | 10.9 / 10.9 | 0.012 |
+| Drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-g99` (holes) | 44 | 17 | 0 (0%) | 136 | 14 | 15 | 184 | 10.7 / 10.7 | 0.012 |
+| Drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-given-order` (holes) | 60 | 186 | 141 (76%) | 164 | 18 | 18 | 525 | 35.0 / 35.0 | 0.005 |
+| Drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-multistart-baseline` (holes) | 90 | 279 | 211 (76%) | 223 | 27 | 27 | 582 | 52.3 / 52.2 | 0.004 |
+| Drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-multistart-nearest` (holes) | 90 | 279 | 211 (76%) | 204 | 27 | 27 | 582 | 52.1 / 52.1 | 0.004 |
+| Drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-ordered` (holes) | 60 | 186 | 141 (76%) | 85 | 18 | 18 | 525 | 34.2 / 34.2 | 0.006 |
+| drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-preparation-bound` (holes) | 8 | 30 | 16 (53%) | 26 | 2 | 2 | 175 | 7.8 / 7.8 | 0.003 |
+| drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-preparation-bound` (pilot) | 8 | 13 | 8 (57%) | 26 | 2 | 2 | 8 | 3.7 / 3.7 | 0.002 |
 | drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-preparation-bound` (spot) | 8 | 7 | 5 (64%) | 25 | 2 | 2 | 0 | 2.1 / 2.1 | 0.001 |
-| drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-preparation-manual` (holes) | 8 | 30 | 16 (53%) | 26 | 2 | 2 | 175 | 7.8 / 7.8 | 0.002 |
+| drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-preparation-manual` (holes) | 8 | 30 | 16 (53%) | 26 | 2 | 2 | 175 | 7.8 / 7.8 | 0.003 |
 | drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-preparation-manual` (pilot) | 8 | 13 | 8 (57%) | 26 | 2 | 2 | 8 | 3.7 / 3.7 | 0.001 |
-| drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-preparation-manual` (spot) | 8 | 7 | 5 (64%) | 25 | 2 | 2 | 0 | 2.1 / 2.1 | 0.001 |
-| Drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-r-plane-pecks` (holes) | 37 | 117 | 100 (86%) | 32 | 12 | 12 | 184 | 17.5 / 17.5 | 0.009 |
+| drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-preparation-manual` (spot) | 8 | 7 | 5 (64%) | 25 | 2 | 2 | 0 | 2.1 / 2.1 | 0.002 |
+| Drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `drilling-r-plane-pecks` (holes) | 37 | 117 | 100 (86%) | 32 | 12 | 12 | 184 | 17.5 / 17.5 | 0.018 |
 | Drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `holes` (pilot) | 20 | 62 | 46 (74%) | 36 | 6 | 6 | 111 | 11.8 / 11.8 | 0.001 |
-| Drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `reaming` (drill) | 8 | 44 | 23 (52%) | 25 | 2 | 2 | 313 | 11.3 / 11.3 | 0.002 |
-| Drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `tapping` (drill) | 8 | 44 | 23 (52%) | 25 | 2 | 2 | 313 | 11.3 / 11.3 | 0.002 |
-| Bore | [#30](https://github.com/stevecad/camlib/issues/30) | `holes` (finish-holes) | 42 | 370 | 44 (12%) | 36 | 2 | 2 | 1177 | 39.2 / 39.2 | 0.010 |
-| Bore | [#30](https://github.com/stevecad/camlib/issues/30) | `thread-milling` (bore) | 21 | 185 | 12 (6%) | 16 | 1 | 1 | 661 | 19.6 / 19.6 | 0.020 |
+| Drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `reaming` (drill) | 8 | 44 | 23 (52%) | 25 | 2 | 2 | 313 | 11.3 / 11.3 | 0.004 |
+| Drilling | [#29](https://github.com/stevecad/camlib/issues/29) | `tapping` (drill) | 8 | 44 | 23 (52%) | 25 | 2 | 2 | 313 | 11.3 / 11.3 | 0.003 |
+| Bore | [#30](https://github.com/stevecad/camlib/issues/30) | `holes` (finish-holes) | 42 | 370 | 44 (12%) | 36 | 2 | 2 | 1177 | 39.2 / 39.2 | 0.015 |
+| Bore | [#30](https://github.com/stevecad/camlib/issues/30) | `thread-milling` (bore) | 21 | 185 | 12 (6%) | 16 | 1 | 1 | 661 | 19.6 / 19.6 | 0.031 |
 | Reaming | [#31](https://github.com/stevecad/camlib/issues/31) | `reaming` (bore) | 8 | 28 | 14 (50%) | 26 | 2 | 3 | 19 | 17.4 / 17.4 | 0.001 |
-| Tapping | [#32](https://github.com/stevecad/camlib/issues/32) | `tapping` (tap) | 10 | 28 | 28 (100%) | 28 | 0 | 2 | 0 | 3.5 / 3.5 | 0.000 |
-| ThreadMilling | [#33](https://github.com/stevecad/camlib/issues/33) | `thread-milling` (thread) | 14 | 140 | 97 (69%) | 0 | 2 | 2 | 23 | 28.1 / 28.1 | 0.124 |
-| TrochoidalSlot | [#34](https://github.com/stevecad/camlib/issues/34) | `trochoidal-slot` (slot) | 1060 | 1056 | 403 (38%) | 42 | 10 | 2 | 269 | 137.3 / 126.8 | 0.027 |
-| Chamfer | [#35](https://github.com/stevecad/camlib/issues/35) | `chamfer` (top-bevel) | 10 | 82 | 0 (0%) | 19 | 2 | 2 | 37 | 10.9 / 10.9 | 0.010 |
-| Trace | [#36](https://github.com/stevecad/camlib/issues/36) | `trace` (engrave) | 24 | 108 | 0 (0%) | 60 | 4 | 4 | 170 | 15.5 / 15.5 | 0.002 |
-| VCarve | [#37](https://github.com/stevecad/camlib/issues/37) | `vcarve` (carve) | 1986 | 97 | 21 (22%) | 17 | 1 | 1 | 107 | 28.8 / 20.5 | 1.172 |
-| Flat | [#38](https://github.com/stevecad/camlib/issues/38) | `flat` (flats) | 197 | 329 | 39 (12%) | 55 | 3 | 3 | 38 | 40.4 / 38.9 | 0.004 |
-| Parallel | [#39](https://github.com/stevecad/camlib/issues/39) | `parallel` (finish-roof) | 3321 | 1723 | 543 (32%) | 427 | 41 | 41 | 1508 | 334.8 / 316.9 | 0.069 |
-| Parallel | [#39](https://github.com/stevecad/camlib/issues/39) | `parallel-dense` (finish-roof) | 14023 | 8457 | 3170 (37%) | 2005 | 201 | 201 | 1511 | 1618.0 / 1555.8 | 0.324 |
-| Parallel | [#39](https://github.com/stevecad/camlib/issues/39) | `rough-parallel` (parallel) | 3321 | 1805 | 625 (35%) | 508 | 41 | 41 | 292 | 368.4 / 350.5 | 0.070 |
-| Spiral | [#40](https://github.com/stevecad/camlib/issues/40) | `spiral` (spiral) | 2552 | 1060 | 123 (12%) | 740 | 30 | 31 | 23 | 225.9 / 225.5 | 0.042 |
-| Spiral | [#40](https://github.com/stevecad/camlib/issues/40) | `spiral-dense` (spiral) | 12767 | 5291 | 1052 (20%) | 3603 | 152 | 152 | 29 | 1125.9 / 1123.9 | 0.208 |
-| Radial | [#41](https://github.com/stevecad/camlib/issues/41) | `radial` (radial) | 745 | 504 | 77 (15%) | 215 | 159 | 24 | 10 | 115.7 / 114.7 | 0.023 |
-| Project | [#42](https://github.com/stevecad/camlib/issues/42) | `project` (project) | 184 | 78 | 25 (32%) | 24 | 88 | 2 | 2 | 17.9 / 17.8 | 0.007 |
-| Morph | [#43](https://github.com/stevecad/camlib/issues/43) | `morph` (morph) | 466 | 839 | 181 (22%) | 258 | 25 | 25 | 1239 | 151.5 / 149.8 | 0.048 |
-| Scallop | [#44](https://github.com/stevecad/camlib/issues/44) | `scallop` (scallop) | 3481 | 1172 | 389 (33%) | 451 | 606 | 34 | 23 | 243.8 / 224.6 | 0.088 |
-| Scallop | [#44](https://github.com/stevecad/camlib/issues/44) | `scallop-dense` (scallop) | 34950 | 7488 | 4092 (55%) | 4360 | 8437 | 589 | 29 | 1904.7 / 1781.7 | 1.140 |
-| Pencil | [#45](https://github.com/stevecad/camlib/issues/45) | `pencil` (pencil) | 68 | 59 | 0 (0%) | 21 | 1 | 1 | 3 | 9.4 / 9.4 | 0.076 |
-| Waterline | [#46](https://github.com/stevecad/camlib/issues/46) | `waterline` (finish-levels) | 251 | 412 | 24 (6%) | 28 | 73 | 1 | 58 | 78.0 / 77.9 | 0.202 |
-| Waterline | [#46](https://github.com/stevecad/camlib/issues/46) | `waterline-dense` (finish-levels) | 1967 | 2932 | 35 (1%) | 28 | 120 | 1 | 63 | 346.7 / 346.2 | 1.282 |
-| Steep-and-shallow | [#47](https://github.com/stevecad/camlib/issues/47) | `steep-and-shallow` (finish-shallow) | 804 | 856 | 236 (28%) | 243 | 24 | 24 | 23 | 158.1 / 154.4 | 0.044 |
-| Steep-and-shallow | [#47](https://github.com/stevecad/camlib/issues/47) | `steep-and-shallow` (finish-steep) | 2532 | 1667 | 636 (38%) | 337 | 1051 | 13 | 0 | 344.0 / 336.1 | 0.867 |
-| ThermalCut | [#48](https://github.com/stevecad/camlib/issues/48) | `plasma` (plasma) | 66 | 757 | 0 (0%) | 397 | 6 | 6 | 4689 | 26.5 / 25.5 | 0.008 |
-| TurnFace | [#49](https://github.com/stevecad/camlib/issues/49) | `lathe-bar-over-size` (face) | 8 | 55 | 4 (7%) | 53 | 0 | 2 | 3181 | 22.8 / 22.8 | 0.003 |
-| TurnFace | [#49](https://github.com/stevecad/camlib/issues/49) | `lathe-face-groove` (face) | 6 | 18 | 2 (11%) | 84 | 0 | 2 | 531 | 8.4 / 8.4 | 0.004 |
-| TurnFace | [#49](https://github.com/stevecad/camlib/issues/49) | `lathe-groove` (face) | 8 | 50 | 4 (8%) | 53 | 0 | 2 | 2513 | 20.8 / 20.8 | 0.003 |
-| TurnFace | [#49](https://github.com/stevecad/camlib/issues/49) | `lathe-second-chucking` (face) | 8 | 42 | 4 (10%) | 53 | 0 | 2 | 1608 | 17.6 / 17.6 | 0.003 |
-| TurnFace | [#49](https://github.com/stevecad/camlib/issues/49) | `lathe-shaft` (face) | 8 | 50 | 4 (8%) | 53 | 0 | 2 | 2513 | 20.8 / 20.8 | 0.002 |
-| TurnFace | [#49](https://github.com/stevecad/camlib/issues/49) | `lathe-thread` (face) | 8 | 50 | 4 (8%) | 53 | 0 | 2 | 2513 | 20.8 / 20.8 | 0.002 |
+| Tapping | [#32](https://github.com/stevecad/camlib/issues/32) | `tapping` (tap) | 10 | 28 | 28 (100%) | 28 | 0 | 2 | 0 | 3.5 / 3.5 | 0.001 |
+| ThreadMilling | [#33](https://github.com/stevecad/camlib/issues/33) | `thread-milling` (thread) | 14 | 140 | 97 (69%) | 0 | 2 | 2 | 23 | 28.1 / 28.1 | 0.221 |
+| TrochoidalSlot | [#34](https://github.com/stevecad/camlib/issues/34) | `trochoidal-slot` (slot) | 1060 | 1056 | 403 (38%) | 42 | 10 | 2 | 269 | 137.3 / 126.8 | 0.044 |
+| Chamfer | [#35](https://github.com/stevecad/camlib/issues/35) | `chamfer` (top-bevel) | 10 | 82 | 0 (0%) | 19 | 2 | 2 | 37 | 10.9 / 10.9 | 0.016 |
+| Trace | [#36](https://github.com/stevecad/camlib/issues/36) | `trace` (engrave) | 24 | 108 | 0 (0%) | 60 | 4 | 4 | 170 | 15.5 / 15.5 | 0.003 |
+| VCarve | [#37](https://github.com/stevecad/camlib/issues/37) | `vcarve` (carve) | 1986 | 97 | 21 (22%) | 17 | 1 | 1 | 107 | 28.8 / 20.5 | 1.966 |
+| Flat | [#38](https://github.com/stevecad/camlib/issues/38) | `flat` (flats) | 197 | 329 | 39 (12%) | 55 | 3 | 3 | 38 | 40.4 / 38.9 | 0.005 |
+| Parallel | [#39](https://github.com/stevecad/camlib/issues/39) | `parallel` (finish-roof) | 3321 | 1723 | 543 (32%) | 427 | 41 | 41 | 1508 | 334.8 / 316.9 | 0.107 |
+| Parallel | [#39](https://github.com/stevecad/camlib/issues/39) | `parallel-dense` (finish-roof) | 14023 | 8457 | 3170 (37%) | 2005 | 201 | 201 | 1511 | 1618.0 / 1555.8 | 0.506 |
+| Parallel | [#39](https://github.com/stevecad/camlib/issues/39) | `rough-parallel` (parallel) | 3321 | 1805 | 625 (35%) | 508 | 41 | 41 | 292 | 368.4 / 350.5 | 0.105 |
+| Spiral | [#40](https://github.com/stevecad/camlib/issues/40) | `spiral` (spiral) | 2552 | 1060 | 123 (12%) | 740 | 30 | 31 | 23 | 225.9 / 225.5 | 0.063 |
+| Spiral | [#40](https://github.com/stevecad/camlib/issues/40) | `spiral-dense` (spiral) | 12767 | 5291 | 1052 (20%) | 3603 | 152 | 152 | 29 | 1125.9 / 1123.9 | 0.313 |
+| Radial | [#41](https://github.com/stevecad/camlib/issues/41) | `radial` (radial) | 745 | 504 | 77 (15%) | 215 | 159 | 24 | 10 | 115.7 / 114.7 | 0.034 |
+| Project | [#42](https://github.com/stevecad/camlib/issues/42) | `project` (project) | 184 | 78 | 25 (32%) | 24 | 88 | 2 | 2 | 17.9 / 17.8 | 0.010 |
+| Morph | [#43](https://github.com/stevecad/camlib/issues/43) | `morph` (morph) | 466 | 839 | 181 (22%) | 258 | 25 | 25 | 1239 | 151.5 / 149.8 | 0.078 |
+| Scallop | [#44](https://github.com/stevecad/camlib/issues/44) | `scallop` (scallop) | 3481 | 1172 | 389 (33%) | 451 | 606 | 34 | 23 | 243.8 / 224.6 | 0.134 |
+| Scallop | [#44](https://github.com/stevecad/camlib/issues/44) | `scallop-dense` (scallop) | 34950 | 7488 | 4092 (55%) | 4360 | 8437 | 589 | 29 | 1904.7 / 1781.7 | 1.817 |
+| Pencil | [#45](https://github.com/stevecad/camlib/issues/45) | `pencil` (pencil) | 68 | 59 | 0 (0%) | 21 | 1 | 1 | 3 | 9.4 / 9.4 | 0.120 |
+| Waterline | [#46](https://github.com/stevecad/camlib/issues/46) | `waterline` (finish-levels) | 251 | 412 | 24 (6%) | 28 | 73 | 1 | 58 | 78.0 / 77.9 | 0.290 |
+| Waterline | [#46](https://github.com/stevecad/camlib/issues/46) | `waterline-dense` (finish-levels) | 1967 | 2932 | 35 (1%) | 28 | 120 | 1 | 63 | 346.7 / 346.2 | 1.846 |
+| Steep-and-shallow | [#47](https://github.com/stevecad/camlib/issues/47) | `steep-and-shallow` (finish-shallow) | 804 | 856 | 236 (28%) | 243 | 24 | 24 | 23 | 158.1 / 154.4 | 0.059 |
+| Steep-and-shallow | [#47](https://github.com/stevecad/camlib/issues/47) | `steep-and-shallow` (finish-steep) | 2532 | 1667 | 636 (38%) | 337 | 1051 | 13 | 0 | 344.0 / 336.1 | 1.256 |
+| ThermalCut | [#48](https://github.com/stevecad/camlib/issues/48) | `plasma` (plasma) | 66 | 757 | 0 (0%) | 397 | 6 | 6 | 4689 | 26.5 / 25.5 | 0.011 |
+| TurnFace | [#49](https://github.com/stevecad/camlib/issues/49) | `lathe-bar-over-size` (face) | 8 | 55 | 4 (7%) | 53 | 0 | 2 | 3181 | 22.8 / 22.8 | 0.004 |
+| TurnFace | [#49](https://github.com/stevecad/camlib/issues/49) | `lathe-face-groove` (face) | 6 | 18 | 2 (11%) | 84 | 0 | 2 | 531 | 8.4 / 8.4 | 0.003 |
+| TurnFace | [#49](https://github.com/stevecad/camlib/issues/49) | `lathe-groove` (face) | 8 | 50 | 4 (8%) | 53 | 0 | 2 | 2513 | 20.8 / 20.8 | 0.004 |
+| TurnFace | [#49](https://github.com/stevecad/camlib/issues/49) | `lathe-second-chucking` (face) | 8 | 42 | 4 (10%) | 53 | 0 | 2 | 1608 | 17.6 / 17.6 | 0.002 |
+| TurnFace | [#49](https://github.com/stevecad/camlib/issues/49) | `lathe-shaft` (face) | 8 | 50 | 4 (8%) | 53 | 0 | 2 | 2513 | 20.8 / 20.8 | 0.005 |
+| TurnFace | [#49](https://github.com/stevecad/camlib/issues/49) | `lathe-thread` (face) | 8 | 50 | 4 (8%) | 53 | 0 | 2 | 2513 | 20.8 / 20.8 | 0.003 |
 | TurnRough | [#50](https://github.com/stevecad/camlib/issues/50) | `lathe-bar-over-size` (rough) | 30 | 250 | 5 (2%) | 285 | 0 | 15 | 42660 | 64.2 / 64.2 | 0.006 |
 | TurnRough | [#50](https://github.com/stevecad/camlib/issues/50) | `lathe-groove` (rough) | 28 | 229 | 4 (2%) | 296 | 0 | 14 | 33227 | 59.4 / 59.4 | 0.005 |
-| TurnRough | [#50](https://github.com/stevecad/camlib/issues/50) | `lathe-second-chucking` (rough) | 14 | 72 | 2 (3%) | 95 | 0 | 7 | 6396 | 18.9 / 18.9 | 0.005 |
-| TurnRough | [#50](https://github.com/stevecad/camlib/issues/50) | `lathe-shaft` (rough) | 26 | 229 | 4 (2%) | 260 | 0 | 13 | 33227 | 58.8 / 58.8 | 0.005 |
+| TurnRough | [#50](https://github.com/stevecad/camlib/issues/50) | `lathe-second-chucking` (rough) | 14 | 72 | 2 (3%) | 95 | 0 | 7 | 6396 | 18.9 / 18.9 | 0.002 |
+| TurnRough | [#50](https://github.com/stevecad/camlib/issues/50) | `lathe-shaft` (rough) | 26 | 229 | 4 (2%) | 260 | 0 | 13 | 33227 | 58.8 / 58.8 | 0.003 |
 | TurnRough | [#50](https://github.com/stevecad/camlib/issues/50) | `lathe-thread` (rough) | 26 | 229 | 4 (2%) | 260 | 0 | 13 | 33227 | 58.8 / 58.8 | 0.005 |
 | TurnFinish | [#51](https://github.com/stevecad/camlib/issues/51) | `lathe-bar-over-size` (finish) | 12 | 69 | 23 (33%) | 105 | 1 | 1 | 1165 | 35.8 / 35.8 | 0.003 |
-| TurnFinish | [#51](https://github.com/stevecad/camlib/issues/51) | `lathe-second-chucking` (finish) | 11 | 41 | 17 (42%) | 78 | 1 | 1 | 517 | 21.7 / 21.7 | 0.001 |
+| TurnFinish | [#51](https://github.com/stevecad/camlib/issues/51) | `lathe-second-chucking` (finish) | 11 | 41 | 17 (42%) | 78 | 1 | 1 | 517 | 21.7 / 21.7 | 0.002 |
 | TurnFinish | [#51](https://github.com/stevecad/camlib/issues/51) | `lathe-shaft` (finish) | 12 | 61 | 15 (25%) | 108 | 1 | 1 | 1152 | 32.1 / 32.0 | 0.002 |
-| TurnFinish | [#51](https://github.com/stevecad/camlib/issues/51) | `lathe-thread` (finish) | 12 | 61 | 15 (25%) | 108 | 1 | 1 | 1152 | 32.1 / 32.0 | 0.004 |
+| TurnFinish | [#51](https://github.com/stevecad/camlib/issues/51) | `lathe-thread` (finish) | 12 | 61 | 15 (25%) | 108 | 1 | 1 | 1152 | 32.1 / 32.0 | 0.003 |
 | TurnGroove | [#52](https://github.com/stevecad/camlib/issues/52) | `lathe-groove` (groove) | 43 | 38 | 26 (68%) | 77 | 20 | 1 | 841 | 58.3 / 58.3 | 0.004 |
 | TurnPartOff | [#53](https://github.com/stevecad/camlib/issues/53) | `lathe-groove` (part) | 5 | 22 | 0 (0%) | 107 | 1 | 1 | 1287 | 34.8 / 34.8 | 0.002 |
-| TurnThread | [#54](https://github.com/stevecad/camlib/issues/54) | `lathe-thread` (thread) | 31 | 155 | 22 (14%) | 293 | 0 | 7 | 0 | 12.9 / 12.9 | 0.002 |
-| TurnDrill | [#55](https://github.com/stevecad/camlib/issues/55) | `lathe-bore` (drill) | 12 | 34 | 0 (0%) | 194 | 3 | 4 | 5324 | 21.6 / 21.6 | 0.004 |
-| TurnBore | [#56](https://github.com/stevecad/camlib/issues/56) | `lathe-bore` (bore_finish) | 8 | 29 | 3 (10%) | 88 | 1 | 3 | 332 | 19.4 / 19.4 | 0.002 |
+| TurnThread | [#54](https://github.com/stevecad/camlib/issues/54) | `lathe-thread` (thread) | 31 | 155 | 22 (14%) | 293 | 0 | 7 | 0 | 12.9 / 12.9 | 0.003 |
+| TurnDrill | [#55](https://github.com/stevecad/camlib/issues/55) | `lathe-bore` (drill) | 12 | 34 | 0 (0%) | 194 | 3 | 4 | 5324 | 21.6 / 21.6 | 0.006 |
+| TurnBore | [#56](https://github.com/stevecad/camlib/issues/56) | `lathe-bore` (bore_finish) | 8 | 29 | 3 (10%) | 88 | 1 | 3 | 332 | 19.4 / 19.4 | 0.003 |
 | TurnBore | [#56](https://github.com/stevecad/camlib/issues/56) | `lathe-bore` (bore_rough) | 9 | 53 | 1 (3%) | 92 | 0 | 4 | 4009 | 22.8 / 22.8 | 0.003 |
-| TurnFaceGroove | [#57](https://github.com/stevecad/camlib/issues/57) | `lathe-face-groove` (fg) | 29 | 22 | 22 (100%) | 98 | 12 | 13 | 308 | 75.0 / 75.0 | 0.002 |
-| Geodesic | [#118](https://github.com/stevecad/camlib/issues/118) | `geodesic` (geodesic) | 5337 | 767 | 84 (11%) | 21 | 1 | 1 | 24 | 131.1 / 127.9 | 0.116 |
-| Geodesic | [#118](https://github.com/stevecad/camlib/issues/118) | `geodesic-boundary` (geodesic) | 801 | 727 | 37 (5%) | 52 | 90 | 3 | 23 | 90.2 / 86.9 | 0.043 |
-| Roughing | [#202](https://github.com/stevecad/camlib/issues/202) | `roughing-adaptive-large` (rough) | 3994 | 61340 | 5499 (9%) | 23424 | 174 | 174 | 2418061 | 4700.3 / 4698.0 | 4.965 |
-| ThermalCut edge starts | [#306](https://github.com/stevecad/camlib/issues/306) | `plasma-edge-starts` (plasma) | 26 | 247 | 0 (0%) | 117 | 0 | 0 | 1462 | 8.3 / 7.6 | 0.006 |
-| Flat | [#371](https://github.com/stevecad/camlib/issues/371) | `flat-cad-walls` (flats) | 100 | 270 | 40 (15%) | 108 | 9 | 5 | 35 | 37.0 / 36.9 | 0.004 |
+| TurnFaceGroove | [#57](https://github.com/stevecad/camlib/issues/57) | `lathe-face-groove` (fg) | 29 | 22 | 22 (100%) | 98 | 12 | 13 | 308 | 75.0 / 75.0 | 0.004 |
+| Geodesic | [#118](https://github.com/stevecad/camlib/issues/118) | `geodesic` (geodesic) | 5337 | 767 | 84 (11%) | 21 | 1 | 1 | 24 | 131.1 / 127.9 | 0.152 |
+| Geodesic | [#118](https://github.com/stevecad/camlib/issues/118) | `geodesic-boundary` (geodesic) | 801 | 727 | 37 (5%) | 52 | 90 | 3 | 23 | 90.2 / 86.9 | 0.065 |
+| Roughing | [#202](https://github.com/stevecad/camlib/issues/202) | `roughing-adaptive-large` (rough) | 3994 | 61340 | 5499 (9%) | 23424 | 174 | 174 | 2418061 | 4700.3 / 4698.0 | 6.790 |
+| ThermalCut edge starts | [#306](https://github.com/stevecad/camlib/issues/306) | `plasma-edge-starts` (plasma) | 26 | 247 | 0 (0%) | 117 | 0 | 0 | 1462 | 8.3 / 7.6 | 0.007 |
+| Flat | [#371](https://github.com/stevecad/camlib/issues/371) | `flat-cad-walls` (flats) | 100 | 270 | 40 (15%) | 108 | 9 | 5 | 35 | 37.0 / 36.9 | 0.006 |
+| Facing | [#422](https://github.com/stevecad/camlib/issues/422) | `facing-clamps` (face) | 66 | 1674 | 124 (7%) | 210 | 3 | 3 | 5727 | 90.8 / 90.6 | 0.009 |
 
 ## Engagement of adaptive clearing
 
@@ -201,70 +202,71 @@ limit the cutter actually runs, measured from the streamed moves alone
 
 | Workload | What | Moves | Cycle s (exact / tangent) | Blocks | Leftover mm³ | Over-cut mm³ | Run s | First move s | Post s | Peak memory MiB |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `indexable-facing` | Synthetic 45-degree face mill, six insert-depth layers | 60 | 140.3 / 140.3 | 83 | 0.0 / 53.3 | 0.0 / 0.0 | 0.065 | 0.005 | 0.004 | 54 |
-| `indexable-roughing` | Synthetic curved high-feed insert, layered raster roughing | 918 | 8604.7 / 8604.2 | 941 | 0.9 / 129.6 | 0.0 / 30.6 | 2.799 | 0.006 | 0.048 | 50 |
-| `indexable-roughing-exterior-feed` | Synthetic high-feed raster roughing with a declared exterior link feed | 918 | 4992.0 / 4991.3 | 941 | 0.9 / 129.6 | 0.0 / 30.6 | 2.799 | 0.006 | 0.047 | 49 |
-| `drilling-data-manual` | Synthetic declared drill rates written explicitly | 8 | 6.2 / 6.2 | 27 | – | – | 0.006 | 0.004 | 0.003 | 57 |
-| `drilling-data-recommended` | Same synthetic rates selected from declared tool/material data | 8 | 6.2 / 6.2 | 27 | – | – | 0.006 | 0.005 | 0.003 | 57 |
-| `drilling-preparation-manual` | Explicit spot, pilot and final stages without preparation metadata | 24 | 13.5 / 13.5 | 63 | – | – | 0.012 | 0.005 | 0.003 | 57 |
-| `drilling-preparation-bound` | The same stages with checked source-bound preparation | 24 | 13.5 / 13.5 | 63 | – | – | 0.012 | 0.006 | 0.003 | 57 |
-| `facing` | Face a 40 x 24 block 2 mm | 20 | 47.1 / 47.1 | 43 | 0.0 / 254.0 | 0.0 / 0.0 | 0.009 | 0.004 | 0.003 | 49 |
-| `facing-axis-x` | Face a 24 x 40 block along X | 32 | 58.4 / 58.4 | 55 | 0.0 / 0.0 | 0.0 / 63.5 | 0.009 | 0.004 | 0.003 | 49 |
-| `facing-axis-auto` | Face the same block with automatic axis selection | 20 | 47.1 / 47.1 | 43 | 0.0 / 0.0 | 0.0 / 63.5 | 0.010 | 0.005 | 0.003 | 49 |
-| `pocket` | Pocket around a round island (CAD region) | 352 | 508.3 / 508.3 | 375 | 3.8 / 537.6 | 0.0 / 489.6 | 0.031 | 0.007 | 0.014 | 54 |
-| `rest-pocket` | Face, 4 mm pocket, 2 mm rest pocket | 114 | 66.1 / 66.1 | 153 | 0.0 / 267.0 | 0.0 / 66.0 | 0.009 | 0.003 | 0.007 | 49 |
-| `adaptive-pocket` | Adaptive clearing of an L pocket | 528 | 144.3 / 144.0 | 551 | 0.0 / 481.6 | 0.0 / 56.0 | 0.223 | 0.019 | 2.195 | 581 |
-| `adaptive-pocket-corner-cap` | L pocket with a hard cap on confined corner strokes | 267 | 80.0 / 79.8 | 290 | 0.0 / 72.0 | 0.0 / 56.0 | 0.114 | 0.019 | 1.099 | 579 |
-| `roughing-raster` | 3D raster roughing around a frustum | 2169 | 7932.3 / 7931.6 | 2192 | 930.8 / 1468.4 | 0.0 / 83.1 | 0.034 | 0.005 | 0.105 | 585 |
-| `roughing-offset` | 3D offset roughing around a frustum | 924 | 1439.8 / 1436.8 | 947 | 930.8 / 1495.2 | 0.0 / 83.1 | 0.041 | 0.011 | 0.153 | 585 |
-| `roughing-adaptive` | 3D adaptive roughing around a frustum | 5067 | 1808.3 / 1807.4 | 5090 | 930.8 / 1468.4 | 0.0 / 83.1 | 4.162 | 0.857 | 24.867 | 605 |
-| `roughing-fine-mesh` | 3D offset roughing of a filleted boss from a fine mesh | 3278 | 550.2 / 527.3 | 3301 | 816.3 / 1380.1 | 0.0 / 0.4 | 0.194 | 0.141 | 6.478 | 602 |
-| `contour` | Outer and inner walls of an annulus | 40 | 55.8 / 55.7 | 63 | 0.0 / 825.6 | 0.0 / 430.2 | 0.005 | 0.002 | 0.007 | 579 |
-| `holes` | Pilot drilling then helical bore milling | 62 | 51.0 / 50.9 | 93 | 0.0 / 413.1 | 0.0 / 125.1 | 0.014 | 0.003 | 0.007 | 583 |
-| `drilling-given-order` | Six-hole given-order control with fixed final hole | 60 | 35.0 / 35.0 | 83 | – | – | 0.008 | 0.003 | 0.004 | 51 |
-| `drilling-ordered` | Same six-hole pattern with bounded dynamics-aware 2-opt | 60 | 34.2 / 34.2 | 83 | – | – | 0.011 | 0.006 | 0.004 | 51 |
-| `drilling-multistart-baseline` | Nine-hole baseline 2-opt with fixed final hole | 90 | 52.3 / 52.2 | 113 | – | – | 0.007 | 0.004 | 0.005 | 51 |
-| `drilling-multistart-nearest` | Same nine-hole pattern with bounded nearest-neighbour multi-start | 90 | 52.1 / 52.1 | 113 | – | – | 0.007 | 0.004 | 0.005 | 51 |
-| `drilling-clearance-pecks` | Declared fixed explicit pecks, clearance travel with scene/stock checks | 38 | 18.6 / 18.6 | 61 | – | – | 0.015 | 0.005 | 0.003 | 57 |
-| `drilling-r-plane-pecks` | Same fixed explicit pecks with proven R-plane travel | 37 | 17.5 / 17.5 | 60 | – | – | 0.016 | 0.005 | 0.003 | 57 |
-| `drilling-decreasing-pecks` | Same R-plane pattern with caller-declared decreasing explicit pecks | 19 | 12.9 / 12.9 | 42 | – | – | 0.011 | 0.005 | 0.002 | 57 |
-| `drilling-g98` | Declared fixed canned pecks, G98 clearance return with scene/stock checks | 44 | 10.9 / 10.9 | 27 | – | – | 0.012 | 0.004 | 0.004 | 57 |
-| `drilling-g99` | Same fixed canned pecks with G99 and proven R-plane travel | 44 | 10.7 / 10.7 | 28 | – | – | 0.015 | 0.006 | 0.004 | 57 |
-| `reaming` | Drill then ream two holes | 16 | 28.7 / 28.7 | 46 | – | – | 0.009 | 0.005 | 0.004 | 51 |
-| `tapping` | Drill then rigid-tap two holes | 18 | 14.8 / 14.8 | 49 | – | – | 0.008 | 0.004 | 0.003 | 52 |
-| `thread-milling` | Bore then thread-mill M14 x 1.5 | 35 | 47.7 / 47.7 | 66 | – | – | 0.149 | 0.004 | 0.006 | 53 |
-| `trochoidal-slot` | Straight trochoidal slot | 1060 | 137.3 / 126.8 | 1083 | 0.0 / 407.8 | 0.0 / 53.7 | 0.029 | 0.002 | 7.807 | 51 |
-| `chamfer` | Chamfer the top edges of an annulus | 50 | 66.7 / 66.6 | 81 | 0.0 / 719.2 | 0.0 / 343.4 | 0.018 | 0.003 | 0.007 | 580 |
-| `trace` | Engrave a rectangle and a hook | 24 | 15.5 / 15.5 | 47 | – | – | 0.006 | 0.003 | 0.003 | 49 |
-| `vcarve` | V-carve an L-shaped letter | 1986 | 28.8 / 20.5 | 2009 | – | – | 1.180 | 0.008 | 0.061 | 56 |
-| `flat` | Flat areas of a stepped part | 197 | 40.4 / 38.9 | 224 | 0.0 / 103.1 | 0.0 / 48.0 | 0.048 | 0.043 | 0.438 | 583 |
-| `flat-cad-walls` | CAD floor trims and final wall contours of a stepped part | 100 | 37.0 / 36.9 | 132 | 1.3 / 105.8 | 0.0 / 37.3 | 0.015 | 0.010 | 0.066 | 583 |
-| `rough-parallel` | Rough then parallel ball finish a roof | 6248 | 9268.7 / 9249.5 | 6279 | 0.0 / 146.1 | 0.0 / 99.6 | 0.109 | 0.006 | 0.245 | 593 |
-| `parallel` | Parallel finishing of a roof | 3321 | 334.8 / 316.9 | 3344 | 0.0 / 146.1 | 0.0 / 99.6 | 0.072 | 0.002 | 0.100 | 588 |
-| `spiral` | Spiral finishing of a roof | 2552 | 225.9 / 225.5 | 2575 | 0.0 / 149.9 | 0.0 / 79.0 | 0.051 | 0.009 | 0.083 | 590 |
-| `radial` | Radial finishing of a roof | 745 | 115.7 / 114.7 | 768 | 1.1 / 162.7 | 0.0 / 67.3 | 0.031 | 0.008 | 0.025 | 586 |
-| `project` | Project curves onto a roof | 184 | 17.9 / 17.8 | 207 | 5.0 / 170.8 | 0.0 / 30.9 | 0.016 | 0.008 | 0.007 | 584 |
-| `morph` | Morph between two edges of a roof | 466 | 151.5 / 149.8 | 489 | 192.9 / 415.9 | 0.0 / 52.8 | 0.053 | 0.003 | 0.016 | 580 |
-| `scallop` | Scallop finishing of a roof | 3481 | 243.8 / 224.6 | 3504 | 0.0 / 149.9 | 0.0 / 79.1 | 0.108 | 0.020 | 0.111 | 591 |
-| `geodesic` | Geodesic finishing of a roof, rings from a point | 5337 | 131.1 / 127.9 | 5360 | 0.0 / 148.6 | 0.0 / 65.6 | 0.904 | 0.785 | 0.170 | 598 |
-| `geodesic-boundary` | Geodesic finishing of a roof, inward from its boundary | 801 | 90.2 / 86.9 | 824 | 0.0 / 150.2 | 0.0 / 81.9 | 0.154 | 0.110 | 0.026 | 586 |
-| `pencil` | Pencil the inside corner of a stepped part | 68 | 9.4 / 9.4 | 91 | 34.2 / 55.7 | 0.0 / 4.7 | 0.219 | 0.194 | 0.004 | 592 |
-| `waterline` | Waterline finishing of a tapered island | 251 | 78.0 / 77.9 | 274 | 33.2 / 250.0 | 0.0 / 95.1 | 0.209 | 0.204 | 0.010 | 585 |
-| `steep-and-shallow` | Steep-and-shallow finishing of a roof | 3336 | 502.2 / 490.5 | 3367 | 0.0 / 149.8 | 0.0 / 152.0 | 0.922 | 0.852 | 0.107 | 591 |
-| `facing-large` | Face a 300 x 200 block 2 mm (production size) | 140 | 2153.3 / 2153.3 | 163 | – | – | 0.150 | 0.020 | 0.006 | 96 |
-| `roughing-adaptive-large` | 3D adaptive roughing of a 420 x 300 mm plate with bosses (production size) | 3994 | 4700.3 / 4698.0 | 4151 | 87492.3 / 138763.0 | 0.0 / 17399.6 | 4.987 | 0.852 | 22.054 | 130 |
-| `pocket-dense` | Pocket around a round island, 0.4 mm stepover, 0.25 mm stepdown | 9088 | 11873.8 / 11873.4 | 9111 | 3.8 / 536.3 | 0.0 / 489.6 | 0.293 | 0.004 | 0.306 | 68 |
-| `parallel-dense` | Parallel finishing of a roof, 0.1 mm stepover | 14023 | 1618.0 / 1555.8 | 14046 | 0.0 / 143.9 | 0.0 / 101.0 | 0.326 | 0.002 | 0.434 | 613 |
-| `spiral-dense` | Spiral finishing of a roof, 0.15 mm stepover | 12767 | 1125.9 / 1123.9 | 12790 | 0.0 / 144.2 | 0.0 / 86.6 | 0.218 | 0.010 | 0.408 | 612 |
-| `scallop-dense` | Scallop finishing of a roof, 0.15 mm stepover | 34950 | 1904.7 / 1781.7 | 34973 | 0.0 / 143.6 | 0.0 / 81.0 | 1.577 | 0.436 | 1.106 | 649 |
-| `waterline-dense` | Waterline finishing of a tapered island, 0.1 mm stepdown | 1967 | 346.7 / 346.2 | 1990 | 33.2 / 244.7 | 0.0 / 102.5 | 1.289 | 1.259 | 0.062 | 589 |
-| `plasma` | Plasma-cut a plate with holes and a nested washer | 66 | 26.5 / 25.5 | 270 | – | – | 0.038 | 0.031 | 0.044 | 68 |
-| `plasma-common-line` | Plasma-cut a row of four flush rectangles with common lines | 34 | 18.3 / 18.0 | 73 | – | – | 0.035 | 0.029 | 0.005 | 67 |
-| `plasma-edge-starts` | Two squares with a sheet-edge start and an ordinary pierce, posted for WinCNC | 26 | 8.3 / 7.6 | 46 | – | – | 0.025 | 0.019 | 0.006 | 68 |
-| `lathe-shaft` | Face, rough and finish a stepped shaft | 46 | 111.6 / 111.6 | 71 | 0.9 / 194.2 | 0.0 / 0.0 | 0.027 | 0.007 | 0.004 | 54 |
-| `lathe-groove` | Rough, groove and part off a shaft | 84 | 173.2 / 173.2 | 115 | 857.3 / 1386.6 | 0.0 / 0.0 | 0.027 | 0.007 | 0.006 | 54 |
-| `lathe-thread` | Turn and single-point thread M30 x 2 | 77 | 124.5 / 124.5 | 109 | 0.9 / 194.2 | 0.0 / 0.0 | 0.030 | 0.007 | 0.006 | 54 |
-| `lathe-bore` | Drill on the axis, rough and finish bore | 29 | 63.8 / 63.8 | 61 | 9596.7 / 10035.8 | 0.0 / 0.0 | 0.017 | 0.006 | 0.004 | 54 |
-| `lathe-face-groove` | Face and cut a face groove | 35 | 83.3 / 83.3 | 66 | 3122.0 / 3254.7 | 0.0 / 0.0 | 0.014 | 0.008 | 0.004 | 53 |
-| `lathe-second-chucking` | Second chucking of a stepped shaft: turned around, held on its finished diameter, on the stock the first left | 33 | 58.2 / 58.2 | 58 | 2.1 / 361.3 | 0.0 / 0.0 | 0.021 | 0.007 | 0.004 | 54 |
-| `lathe-bar-over-size` | First chucking from a bar well over the largest diameter: the finish feeds out up the wall roughing left | 50 | 122.7 / 122.7 | 75 | 21832.2 / 22373.6 | 0.0 / 0.0 | 0.030 | 0.008 | 0.004 | 54 |
+| `indexable-facing` | Synthetic 45-degree face mill, six insert-depth layers | 60 | 140.3 / 140.3 | 83 | 0.0 / 53.3 | 0.0 / 0.0 | 0.097 | 0.007 | 0.005 | 52 |
+| `indexable-roughing` | Synthetic curved high-feed insert, layered raster roughing | 918 | 8604.7 / 8604.2 | 941 | 0.9 / 129.6 | 0.0 / 30.6 | 4.242 | 0.009 | 0.072 | 49 |
+| `indexable-roughing-exterior-feed` | Synthetic high-feed raster roughing with a declared exterior link feed | 918 | 4992.0 / 4991.3 | 941 | 0.9 / 129.6 | 0.0 / 30.6 | 4.298 | 0.009 | 0.073 | 48 |
+| `drilling-data-manual` | Synthetic declared drill rates written explicitly | 8 | 6.2 / 6.2 | 27 | – | – | 0.011 | 0.007 | 0.004 | 56 |
+| `drilling-data-recommended` | Same synthetic rates selected from declared tool/material data | 8 | 6.2 / 6.2 | 27 | – | – | 0.009 | 0.006 | 0.005 | 56 |
+| `drilling-preparation-manual` | Explicit spot, pilot and final stages without preparation metadata | 24 | 13.5 / 13.5 | 63 | – | – | 0.017 | 0.009 | 0.004 | 56 |
+| `drilling-preparation-bound` | The same stages with checked source-bound preparation | 24 | 13.5 / 13.5 | 63 | – | – | 0.016 | 0.008 | 0.004 | 56 |
+| `facing` | Face a 40 x 24 block 2 mm | 20 | 47.1 / 47.1 | 43 | 0.0 / 254.0 | 0.0 / 0.0 | 0.013 | 0.005 | 0.004 | 48 |
+| `facing-axis-x` | Face a 24 x 40 block along X | 32 | 58.4 / 58.4 | 55 | 0.0 / 0.0 | 0.0 / 63.5 | 0.013 | 0.004 | 0.004 | 48 |
+| `facing-axis-auto` | Face the same block with automatic axis selection | 20 | 47.1 / 47.1 | 43 | 0.0 / 0.0 | 0.0 / 63.5 | 0.014 | 0.005 | 0.004 | 48 |
+| `facing-clamps` | Face a 100 x 60 block 1 mm round two clamps over its X- and X+ edges | 66 | 90.8 / 90.6 | 89 | 190.0 / 273.1 | 0.0 / 140.1 | 0.022 | 0.012 | 0.132 | 49 |
+| `pocket` | Pocket around a round island (CAD region) | 352 | 508.3 / 508.3 | 375 | 3.8 / 537.6 | 0.0 / 489.6 | 0.031 | 0.006 | 0.019 | 53 |
+| `rest-pocket` | Face, 4 mm pocket, 2 mm rest pocket | 114 | 66.1 / 66.1 | 153 | 0.0 / 267.0 | 0.0 / 66.0 | 0.013 | 0.004 | 0.008 | 48 |
+| `adaptive-pocket` | Adaptive clearing of an L pocket | 528 | 144.3 / 144.0 | 551 | 0.0 / 481.6 | 0.0 / 56.0 | 0.295 | 0.026 | 3.181 | 580 |
+| `adaptive-pocket-corner-cap` | L pocket with a hard cap on confined corner strokes | 267 | 80.0 / 79.8 | 290 | 0.0 / 72.0 | 0.0 / 56.0 | 0.154 | 0.026 | 1.596 | 578 |
+| `roughing-raster` | 3D raster roughing around a frustum | 2169 | 7932.3 / 7931.6 | 2192 | 930.8 / 1468.4 | 0.0 / 83.1 | 0.050 | 0.007 | 0.163 | 584 |
+| `roughing-offset` | 3D offset roughing around a frustum | 924 | 1439.8 / 1436.8 | 947 | 930.8 / 1495.2 | 0.0 / 83.1 | 0.047 | 0.013 | 0.238 | 582 |
+| `roughing-adaptive` | 3D adaptive roughing around a frustum | 5067 | 1808.3 / 1807.4 | 5090 | 930.8 / 1468.4 | 0.0 / 83.1 | 5.733 | 1.179 | 36.086 | 604 |
+| `roughing-fine-mesh` | 3D offset roughing of a filleted boss from a fine mesh | 3278 | 550.2 / 527.3 | 3301 | 816.3 / 1380.1 | 0.0 / 0.4 | 0.271 | 0.192 | 9.325 | 601 |
+| `contour` | Outer and inner walls of an annulus | 40 | 55.8 / 55.7 | 63 | 0.0 / 825.6 | 0.0 / 430.2 | 0.007 | 0.003 | 0.011 | 578 |
+| `holes` | Pilot drilling then helical bore milling | 62 | 51.0 / 50.9 | 93 | 0.0 / 413.1 | 0.0 / 125.1 | 0.020 | 0.003 | 0.011 | 582 |
+| `drilling-given-order` | Six-hole given-order control with fixed final hole | 60 | 35.0 / 35.0 | 83 | – | – | 0.012 | 0.005 | 0.005 | 50 |
+| `drilling-ordered` | Same six-hole pattern with bounded dynamics-aware 2-opt | 60 | 34.2 / 34.2 | 83 | – | – | 0.012 | 0.005 | 0.005 | 50 |
+| `drilling-multistart-baseline` | Nine-hole baseline 2-opt with fixed final hole | 90 | 52.3 / 52.2 | 113 | – | – | 0.010 | 0.006 | 0.006 | 50 |
+| `drilling-multistart-nearest` | Same nine-hole pattern with bounded nearest-neighbour multi-start | 90 | 52.1 / 52.1 | 113 | – | – | 0.010 | 0.005 | 0.006 | 50 |
+| `drilling-clearance-pecks` | Declared fixed explicit pecks, clearance travel with scene/stock checks | 38 | 18.6 / 18.6 | 61 | – | – | 0.024 | 0.006 | 0.004 | 55 |
+| `drilling-r-plane-pecks` | Same fixed explicit pecks with proven R-plane travel | 37 | 17.5 / 17.5 | 60 | – | – | 0.027 | 0.007 | 0.004 | 56 |
+| `drilling-decreasing-pecks` | Same R-plane pattern with caller-declared decreasing explicit pecks | 19 | 12.9 / 12.9 | 42 | – | – | 0.015 | 0.006 | 0.003 | 56 |
+| `drilling-g98` | Declared fixed canned pecks, G98 clearance return with scene/stock checks | 44 | 10.9 / 10.9 | 27 | – | – | 0.020 | 0.007 | 0.005 | 56 |
+| `drilling-g99` | Same fixed canned pecks with G99 and proven R-plane travel | 44 | 10.7 / 10.7 | 28 | – | – | 0.020 | 0.008 | 0.005 | 55 |
+| `reaming` | Drill then ream two holes | 16 | 28.7 / 28.7 | 46 | – | – | 0.013 | 0.006 | 0.006 | 50 |
+| `tapping` | Drill then rigid-tap two holes | 18 | 14.8 / 14.8 | 49 | – | – | 0.010 | 0.005 | 0.005 | 50 |
+| `thread-milling` | Bore then thread-mill M14 x 1.5 | 35 | 47.7 / 47.7 | 66 | – | – | 0.259 | 0.005 | 0.011 | 52 |
+| `trochoidal-slot` | Straight trochoidal slot | 1060 | 137.3 / 126.8 | 1083 | 0.0 / 407.8 | 0.0 / 53.7 | 0.048 | 0.003 | 11.475 | 50 |
+| `chamfer` | Chamfer the top edges of an annulus | 50 | 66.7 / 66.6 | 81 | 0.0 / 719.2 | 0.0 / 343.4 | 0.028 | 0.004 | 0.012 | 579 |
+| `trace` | Engrave a rectangle and a hook | 24 | 15.5 / 15.5 | 47 | – | – | 0.008 | 0.004 | 0.005 | 48 |
+| `vcarve` | V-carve an L-shaped letter | 1986 | 28.8 / 20.5 | 2009 | – | – | 1.978 | 0.012 | 0.087 | 55 |
+| `flat` | Flat areas of a stepped part | 197 | 40.4 / 38.9 | 224 | 0.0 / 103.1 | 0.0 / 48.0 | 0.068 | 0.060 | 0.639 | 582 |
+| `flat-cad-walls` | CAD floor trims and final wall contours of a stepped part | 100 | 37.0 / 36.9 | 132 | 1.3 / 105.8 | 0.0 / 37.3 | 0.023 | 0.015 | 0.097 | 582 |
+| `rough-parallel` | Rough then parallel ball finish a roof | 6248 | 9268.7 / 9249.5 | 6279 | 0.0 / 146.1 | 0.0 / 99.6 | 0.165 | 0.008 | 0.362 | 592 |
+| `parallel` | Parallel finishing of a roof | 3321 | 334.8 / 316.9 | 3344 | 0.0 / 146.1 | 0.0 / 99.6 | 0.110 | 0.003 | 0.143 | 587 |
+| `spiral` | Spiral finishing of a roof | 2552 | 225.9 / 225.5 | 2575 | 0.0 / 149.9 | 0.0 / 79.0 | 0.077 | 0.013 | 0.117 | 589 |
+| `radial` | Radial finishing of a roof | 745 | 115.7 / 114.7 | 768 | 1.1 / 162.7 | 0.0 / 67.3 | 0.048 | 0.013 | 0.035 | 584 |
+| `project` | Project curves onto a roof | 184 | 17.9 / 17.8 | 207 | 5.0 / 170.8 | 0.0 / 30.9 | 0.024 | 0.012 | 0.010 | 583 |
+| `morph` | Morph between two edges of a roof | 466 | 151.5 / 149.8 | 489 | 192.9 / 415.9 | 0.0 / 52.8 | 0.082 | 0.004 | 0.023 | 580 |
+| `scallop` | Scallop finishing of a roof | 3481 | 243.8 / 224.6 | 3504 | 0.0 / 149.9 | 0.0 / 79.1 | 0.166 | 0.030 | 0.157 | 590 |
+| `geodesic` | Geodesic finishing of a roof, rings from a point | 5337 | 131.1 / 127.9 | 5360 | 0.0 / 148.6 | 0.0 / 65.6 | 1.270 | 1.120 | 0.243 | 597 |
+| `geodesic-boundary` | Geodesic finishing of a roof, inward from its boundary | 801 | 90.2 / 86.9 | 824 | 0.0 / 150.2 | 0.0 / 81.9 | 0.223 | 0.157 | 0.037 | 585 |
+| `pencil` | Pencil the inside corner of a stepped part | 68 | 9.4 / 9.4 | 91 | 34.2 / 55.7 | 0.0 / 4.7 | 0.367 | 0.329 | 0.006 | 591 |
+| `waterline` | Waterline finishing of a tapered island | 251 | 78.0 / 77.9 | 274 | 33.2 / 250.0 | 0.0 / 95.1 | 0.298 | 0.290 | 0.014 | 583 |
+| `steep-and-shallow` | Steep-and-shallow finishing of a roof | 3336 | 502.2 / 490.5 | 3367 | 0.0 / 149.8 | 0.0 / 152.0 | 1.334 | 1.229 | 0.152 | 589 |
+| `facing-large` | Face a 300 x 200 block 2 mm (production size) | 140 | 2153.3 / 2153.3 | 163 | – | – | 0.244 | 0.030 | 0.008 | 94 |
+| `roughing-adaptive-large` | 3D adaptive roughing of a 420 x 300 mm plate with bosses (production size) | 3994 | 4700.3 / 4698.0 | 4151 | 87492.3 / 138763.0 | 0.0 / 17399.6 | 6.829 | 1.184 | 31.534 | 131 |
+| `pocket-dense` | Pocket around a round island, 0.4 mm stepover, 0.25 mm stepdown | 9088 | 11873.8 / 11873.4 | 9111 | 3.8 / 536.3 | 0.0 / 489.6 | 0.415 | 0.006 | 0.430 | 66 |
+| `parallel-dense` | Parallel finishing of a roof, 0.1 mm stepover | 14023 | 1618.0 / 1555.8 | 14046 | 0.0 / 143.9 | 0.0 / 101.0 | 0.509 | 0.003 | 0.611 | 613 |
+| `spiral-dense` | Spiral finishing of a roof, 0.15 mm stepover | 12767 | 1125.9 / 1123.9 | 12790 | 0.0 / 144.2 | 0.0 / 86.6 | 0.329 | 0.015 | 0.579 | 610 |
+| `scallop-dense` | Scallop finishing of a roof, 0.15 mm stepover | 34950 | 1904.7 / 1781.7 | 34973 | 0.0 / 143.6 | 0.0 / 81.0 | 2.518 | 0.700 | 1.570 | 647 |
+| `waterline-dense` | Waterline finishing of a tapered island, 0.1 mm stepdown | 1967 | 346.7 / 346.2 | 1990 | 33.2 / 244.7 | 0.0 / 102.5 | 1.856 | 1.815 | 0.087 | 587 |
+| `plasma` | Plasma-cut a plate with holes and a nested washer | 66 | 26.5 / 25.5 | 270 | – | – | 0.056 | 0.045 | 0.067 | 66 |
+| `plasma-common-line` | Plasma-cut a row of four flush rectangles with common lines | 34 | 18.3 / 18.0 | 73 | – | – | 0.038 | 0.031 | 0.007 | 66 |
+| `plasma-edge-starts` | Two squares with a sheet-edge start and an ordinary pierce, posted for WinCNC | 26 | 8.3 / 7.6 | 46 | – | – | 0.028 | 0.021 | 0.009 | 67 |
+| `lathe-shaft` | Face, rough and finish a stepped shaft | 46 | 111.6 / 111.6 | 71 | 0.9 / 194.2 | 0.0 / 0.0 | 0.027 | 0.007 | 0.007 | 52 |
+| `lathe-groove` | Rough, groove and part off a shaft | 84 | 173.2 / 173.2 | 115 | 857.3 / 1386.6 | 0.0 / 0.0 | 0.029 | 0.008 | 0.009 | 52 |
+| `lathe-thread` | Turn and single-point thread M30 x 2 | 77 | 124.5 / 124.5 | 109 | 0.9 / 194.2 | 0.0 / 0.0 | 0.031 | 0.007 | 0.010 | 52 |
+| `lathe-bore` | Drill on the axis, rough and finish bore | 29 | 63.8 / 63.8 | 61 | 9596.7 / 10035.8 | 0.0 / 0.0 | 0.026 | 0.008 | 0.005 | 52 |
+| `lathe-face-groove` | Face and cut a face groove | 35 | 83.3 / 83.3 | 66 | 3122.0 / 3254.7 | 0.0 / 0.0 | 0.022 | 0.008 | 0.005 | 52 |
+| `lathe-second-chucking` | Second chucking of a stepped shaft: turned around, held on its finished diameter, on the stock the first left | 33 | 58.2 / 58.2 | 58 | 2.1 / 361.3 | 0.0 / 0.0 | 0.018 | 0.005 | 0.006 | 53 |
+| `lathe-bar-over-size` | First chucking from a bar well over the largest diameter: the finish feeds out up the wall roughing left | 50 | 122.7 / 122.7 | 75 | 21832.2 / 22373.6 | 0.0 / 0.0 | 0.031 | 0.009 | 0.007 | 52 |
