@@ -3935,6 +3935,16 @@ lathe `Setup` with its own program. Four declarations make the pair:
   itself stands in front above the pass (a smaller diameter behind a
   collar), the refusal says so: that stretch is turned from the part's other
   end, or grooved. A `z_to_mm` behind the chuck clearance is refused.
+  Each pass runs from where it starts and stops where the nose-centre path
+  stands above it, the path between `z_from_mm` and that start included: a
+  pass that the profile in front of `z_from_mm` stops before it enters the
+  window removes nothing there and is not cut. Behind a front larger than
+  what follows (a collar's far shoulder at the bound, or a barrel tapered
+  toward the chuck), the window's profile lying below that front is
+  therefore not turned to its allowance; a bounded `TurnRough` (either
+  bound, or a grip) lists it in `left_for_another_setup_z_mm` with the rest
+  of the profile outside the window (ranges that meet are joined). Turn it
+  from the part's other end, or groove it.
   The bar may be well over the largest diameter (45 mm for a 30 mm collar):
   roughing then leaves a wall at `z_to_mm`, each of its passes leaving it
   at 45 degrees as before, and the finishing pass feeds out along X up

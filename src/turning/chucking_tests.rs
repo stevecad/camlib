@@ -15,13 +15,19 @@ use std::sync::atomic::AtomicBool;
 
 /// An 80 degree insert on a 95 degree holder (the turning tests' tool).
 fn cnmg() -> Value {
-    let insert = Insert::iso_turning(80., 95., 12., 0.8).unwrap();
-    let holder = Holder::rectangle(&insert, 0.8, TurnSide::Outer, 20., 100., 0.).unwrap();
+    rhombic("cnmg", 12., 0.8, 20.)
+}
+
+/// An 80 degree insert (`edge` long, nose radius `nose`) on a 95 degree
+/// right-hand holder `width` square.
+fn rhombic(id: &str, edge: f64, nose: f64, width: f64) -> Value {
+    let insert = Insert::iso_turning(80., 95., edge, nose).unwrap();
+    let holder = Holder::rectangle(&insert, nose, TurnSide::Outer, width, 100., 0.).unwrap();
     json!({
         "tool": {
-            "id": "cnmg",
+            "id": id,
             "insert": insert,
-            "nose_radius_mm": 0.8,
+            "nose_radius_mm": nose,
             "side": TurnSide::Outer,
             "hand": Hand::Right,
             "holder": holder,
@@ -57,12 +63,24 @@ pub(super) fn job(
     grip: Option<[f64; 2]>,
     operations: Value,
 ) -> TurningJob {
+    job_with(cnmg(), stock, profile, chuck, grip, operations)
+}
+
+/// `job` with another tool.
+fn job_with(
+    tool: Value,
+    stock: Value,
+    profile: &[[f64; 3]],
+    chuck: f64,
+    grip: Option<[f64; 2]>,
+    operations: Value,
+) -> TurningJob {
     let mut job = json!({
         "id": "shaft",
         "stock": stock,
         "part": {"points": profile},
         "chuck_z_mm": chuck,
-        "tools": [cnmg()],
+        "tools": [tool],
         "operations": operations,
         "initial_position_mm": [30.0, 20.0],
         "clearance_mm": 2.0,
@@ -1024,25 +1042,184 @@ fn a_front_bound_behind_stock_not_turned_is_refused_by_name_before_any_move() {
 }
 
 #[test]
-fn a_front_bound_behind_a_larger_diameter_names_the_part_in_front() {
+fn a_front_bound_at_a_larger_diameter_leaves_what_lies_below_it() {
     // The 24 mm end behind the 30 mm collar, roughed from the collar's far
     // shoulder after the collar was turned: the collar itself stands in
-    // front of the passes that reach the 24 mm diameter.
+    // front of the passes that would reach the 24 mm diameter, within the
+    // clearance in front of the bound where the passes start (#447). Those
+    // passes cannot enter the window without crossing the collar and are
+    // not cut; the ones above the collar are, and what lies below the
+    // collar is reported left with the rest of the profile in front.
     let operations = json!([
         face(),
         between(rough(), None, Some(-40.)),
         {"kind": "rough", "id": "rough24", "tool": "cnmg", "depth_of_cut_mm": 2.0, "allowance_mm": 0.3,
          "feed_mm_rev": 0.25, "rpm": 1200.0, "z_from_mm": -40.0},
     ]);
+    let j = job(bar45(), &A_SIDE, -67., None, operations);
+    let plan = planned(&j).unwrap();
+    let cuts = ends(&plan, "rough24", MoveKind::Cut);
+    // The collar's offset: 15 + 0.3 + 0.8, the tool tip 0.8 inside it.
+    assert!(
+        !cuts.is_empty() && cuts.iter().all(|p| p[0] >= 15.3 - 1e-6),
+        "{cuts:?}"
+    );
+    replays(&j, &plan);
+    assert_eq!(
+        plan.reports[2].left_for_another_setup_z_mm,
+        vec![[-60., 0.]]
+    );
+}
+
+#[test]
+fn a_front_bound_behind_a_larger_diameter_names_the_part_in_front() {
+    // The same 24 mm end roughed from 5 mm behind the collar: the passes
+    // start in front of the bound on the 24 mm diameter, behind the
+    // collar, and the stock the first roughing left there (it could not
+    // reach under the collar) stands above the pass that reaches the
+    // diameter. Its rapid down is refused by name, the collar named as the
+    // part standing in front.
+    let operations = json!([
+        face(),
+        between(rough(), None, Some(-45.)),
+        {"kind": "rough", "id": "rough24", "tool": "cnmg", "depth_of_cut_mm": 2.0, "allowance_mm": 0.3,
+         "feed_mm_rev": 0.25, "rpm": 1200.0, "z_from_mm": -45.0},
+    ]);
     let error = planned(&job(bar45(), &A_SIDE, -67., None, operations))
         .err()
         .unwrap();
     assert!(
         error.starts_with("rough24: the roughing pass at radius ")
-            && error.contains("behind z_from_mm -40 cannot be reached")
+            && error.contains("behind z_from_mm -45 cannot be reached")
             && error.contains(
                 "and the part itself stands there up to radius 15 (15.300 with allowance_mm 0.3): no axial pass from the front reaches behind it. Turn that stretch from the part's other end (a second chucking), or groove it (TurnGroove)"
             ),
         "{error}"
     );
 }
+
+/// A barrel tapered toward the chuck (#447): radius 14 at its front face
+/// (z 0), 11 at z -75, r = 14 + 0.04 z.
+const BARREL: [[f64; 3]; 3] = [[0., 0., 0.], [14., 0., 0.], [11., -75., 0.]];
+
+/// The barrel's bar (30 mm, z -92 to 2) and job: chuck face at z -82, an
+/// 80 degree insert with a 0.4 mm nose, faced to z 0 and then roughed.
+fn barrel(rough: Value) -> TurningJob {
+    let bar = json!({
+        "version": 1, "units": "mm", "z_min_mm": -92.0, "z_max_mm": 2.0,
+        "outer_radius_mm": 15.0, "cell_mm": 0.25, "max_cells": 10000,
+    });
+    let mut face = face();
+    face["tool"] = json!("ccmt");
+    let mut rough = rough;
+    rough["tool"] = json!("ccmt");
+    job_with(
+        rhombic("ccmt", 9.7, 0.4, 16.),
+        bar,
+        &BARREL,
+        -82.,
+        None,
+        json!([face, rough]),
+    )
+}
+
+/// The plan's moves replayed independently on the setup's stock: each is
+/// taken, and the replayed stock is the planned one, with no gouge.
+fn replays(j: &TurningJob, plan: &TurnPlan) {
+    let mut replay = TurnReplay::new(j.clone()).unwrap();
+    let mut replayed = TurnStock::new(j.stock.clone()).unwrap();
+    for event in &plan.events {
+        if let Event::Motion { motion } = event {
+            let delta = replay.motion(motion).unwrap();
+            replayed.apply_move(&delta.changes, &delta.rings).unwrap();
+        }
+    }
+    assert_eq!(replayed.cells(), plan.stock.cells());
+    let material = material_report(j, &replayed).unwrap();
+    assert_eq!(material["gouge"]["definite_cells"], 0, "{material}");
+}
+
+#[test]
+fn a_rough_behind_a_larger_front_cuts_no_pass_through_it_and_reports_what_it_leaves() {
+    // #447: the deepest pass inside the window (the nose centre at
+    // r(-10) + 0.3 + 0.4 = 14.3) lies below the front corner's own offset
+    // (14.7). It cannot enter the window without crossing the corner: from
+    // z_from_mm 0 or -1 alike it was cut from the clearance plane through
+    // the corner, 0.4 - 0.3 = 0.1 mm into the part.
+    for z_from in [0., -1.] {
+        let j = barrel(between(rough(), Some(z_from), Some(-10.)));
+        let plan = planned(&j).unwrap_or_else(|e| panic!("z_from {z_from}: {e}"));
+        // Its only pass level (one depth of cut under the bar would be
+        // below it already) is that deepest one, and it is not cut: the
+        // rough makes no cut, plunge or retract anywhere, only its rapids
+        // back to the initial position from in front of the stock (z 2).
+        let rough = motions(&plan, "rough");
+        assert!(
+            !rough.is_empty()
+                && rough
+                    .iter()
+                    .all(|m| m.kind == MoveKind::Rapid && line(m).iter().all(|p| p[1] >= 2.)),
+            "z_from {z_from}: {rough:?}"
+        );
+        assert_eq!(plan.reports[1].passes, 0);
+        replays(&j, &plan);
+        // The window's taper, behind a front larger than all of it, is
+        // left with the rest of the profile outside the window: here the
+        // whole profile, as one range.
+        assert_eq!(
+            plan.reports[1].left_for_another_setup_z_mm,
+            vec![[-75., 0.]],
+            "z_from {z_from}"
+        );
+    }
+    // Ending at -10 only (no front bound): the passes come in from in
+    // front of the stock as always and stop at the front face's offset, as
+    // without bounds. The window's taper lies below the front corner there
+    // too: reported with what lies behind z -10.
+    let j = barrel(between(rough(), None, Some(-10.)));
+    let plan = planned(&j).unwrap();
+    replays(&j, &plan);
+    assert_eq!(
+        plan.reports[1].left_for_another_setup_z_mm,
+        vec![[-75., 0.]]
+    );
+}
+
+#[test]
+fn the_unbounded_barrel_rough_plans_as_before() {
+    let j = barrel(rough());
+    let plan = planned(&j).unwrap();
+    replays(&j, &plan);
+    assert!(plan.reports[1].left_for_another_setup_z_mm.is_empty());
+    let moves: Vec<String> = motions(&plan, "rough")
+        .iter()
+        .map(|m| {
+            let [from, to] = line(m);
+            format!(
+                "{:?} {:.6} {:.6} -> {:.6} {:.6}",
+                m.kind, from[0], from[1], to[0], to[1]
+            )
+        })
+        .collect();
+    assert_eq!(moves, BARREL_ROUGH);
+}
+
+/// The unbounded barrel rough's moves (kind, then the tool tip's radius
+/// and z from -> to), as planned before #447. Both passes (nose centre at
+/// 13.4 and 11.7, below the front corner's 14.7) stop where they meet the
+/// front face's offset, at z 0.7 (the tip at 0.3), as every pass stops
+/// where it meets the path.
+const BARREL_ROUGH: [&str; 12] = [
+    "Rapid -0.400000 2.000000 -> 17.000000 2.000000",
+    "Rapid 17.000000 2.000000 -> 17.000000 3.600000",
+    "Rapid 17.000000 3.600000 -> 13.000000 3.600000",
+    "Cut 13.000000 3.600000 -> 13.000000 0.300000",
+    "Retract 13.000000 0.300000 -> 13.500000 0.800000",
+    "Rapid 13.500000 0.800000 -> 13.500000 3.600000",
+    "Rapid 13.500000 3.600000 -> 11.299441 3.600000",
+    "Cut 11.299441 3.600000 -> 11.299441 0.300000",
+    "Retract 11.299441 0.300000 -> 11.799441 0.800000",
+    "Rapid 11.799441 0.800000 -> 11.799441 3.600000",
+    "Rapid 11.799441 3.600000 -> 30.000000 3.600000",
+    "Rapid 30.000000 3.600000 -> 30.000000 20.000000",
+];
