@@ -21,17 +21,29 @@
 //! - `sweep_deg`: the same with an arc of that sweep (`Lead.arc`, and
 //!   `Lead.line_arc` / `Lead.arc_line` with a straight part tangent to it).
 //! - `angle_deg`: a straight lead alone, at that angle to the edge's tangent
-//!   (`Lead.line`): 90 is square to it, 0 in line with it, along the edge's
-//!   extension. An in-line lead at a corner of the kerf path (the arc the
-//!   offset puts round a drawn outside corner) runs along the next edge's
-//!   extension past the corner; an in-line lead-out there runs on along the
-//!   previous edge's extension, and the corner's arc is not cut: the two
-//!   straight kerfs cross beyond it (see `corner`).
+//!   (`Lead.line`): 0 in line with it (along the edge's extension), 90 square
+//!   to it. Lead-ins allow 0..=90; lead-outs allow 0 up to below
+//!   `LEAD_OUT_LINE_ANGLE_LIMIT_DEG` (180), so an angle above 90 turns back
+//!   into the scrap as a dogleg (e.g. about 120 degrees: Hypertherm, *Thick
+//!   metal cutting techniques*, white paper 807850 r2, p. 3). An in-line lead
+//!   at a corner of the kerf path (the arc the offset puts round a drawn
+//!   outside corner) runs along the next edge's extension past the corner; an
+//!   in-line lead-out there runs on along the previous edge's extension, and
+//!   the corner's arc is not cut: the two straight kerfs cross beyond it (see
+//!   `corner`).
 use super::{Lead, add};
 use crate::pocket::Stroke;
 use std::f64::consts::FRAC_PI_2;
 
 type P2 = [f64; 2];
+
+/// Exclusive upper bound for a `Lead.line` lead-out angle in degrees.
+///
+/// 180 degrees would run straight back along the cut, opposite the 0-degree
+/// in-line overrun, and is not offered. Angles above 90 and below this limit
+/// turn back into the scrap as a dogleg (e.g. about 120 degrees: Hypertherm,
+/// *Thick metal cutting techniques*, white paper 807850 r2, p. 3).
+pub(crate) const LEAD_OUT_LINE_ANGLE_LIMIT_DEG: f64 = 180.;
 
 /// cos and sin of `deg` degrees, exact at 0 and 90.
 fn turn(deg: f64) -> (f64, f64) {
@@ -79,6 +91,13 @@ impl Lead {
         self.angle_deg == Some(0.)
     }
 
+    /// A straight dogleg lead-out turning past the scrap normal
+    /// (`angle_deg` above 90 and below `LEAD_OUT_LINE_ANGLE_LIMIT_DEG`).
+    pub(crate) fn is_dogleg(&self) -> bool {
+        self.angle_deg
+            .is_some_and(|a| a > 90. && a < LEAD_OUT_LINE_ANGLE_LIMIT_DEG)
+    }
+
     /// The arc's sweep in radians (unsigned), when the lead has an arc.
     pub(crate) fn sweep_rad(&self) -> f64 {
         match self.sweep_deg {
@@ -102,7 +121,13 @@ impl Lead {
             return Err("lead lengths and radii must not be negative".into());
         }
         if let Some(angle) = self.angle_deg {
-            if !(angle.is_finite() && (0. ..=90.).contains(&angle)) {
+            if which == "lead_out" {
+                if !(angle.is_finite() && (0. ..LEAD_OUT_LINE_ANGLE_LIMIT_DEG).contains(&angle)) {
+                    return Err(format!(
+                        "{which} Lead.line angle_deg {angle} must be 0 (in line with the edge) to below {LEAD_OUT_LINE_ANGLE_LIMIT_DEG} (90 square to it; above 90 turns back into the scrap as a dogleg)"
+                    ));
+                }
+            } else if !(angle.is_finite() && (0. ..=90.).contains(&angle)) {
                 return Err(format!(
                     "{which} Lead.line angle_deg {angle} must be 0 (in line with the edge) to 90 (square to it)"
                 ));
@@ -155,7 +180,7 @@ impl Lead {
         let (r, l) = (self.radius_mm, self.length_mm);
         if let Some(angle) = self.angle_deg {
             let (c, s) = turn(angle);
-            return [l * c, l * s];
+            return [l * c.abs(), l * s];
         }
         let (c, s) = self.sweep_turn();
         let sweep = self.sweep_rad();
@@ -387,6 +412,27 @@ mod tests {
         assert_eq!(lead_in([0., 0.], t, n, &inline).pierce, [-5., 0.]);
         assert_eq!(lead_out([0., 0.], t, n, &inline).q, [5., 0.]);
         assert_eq!(inline.reach_mm(), 5.);
+        assert_eq!(inline.extent(), [5., 0.]);
+        let square = Lead {
+            angle_deg: Some(90.),
+            ..line
+        };
+        assert_eq!(square.extent(), [0., 5.]);
+        // Dogleg lead-out at 120 degrees: past the scrap normal, back against
+        // the cut tangent, with positive tangent reach in extent().
+        let dogleg = Lead {
+            angle_deg: Some(120.),
+            ..line
+        };
+        let o = lead_out([0., 0.], t, n, &dogleg);
+        let (c120, s120) = (120f64.to_radians().cos(), 120f64.to_radians().sin());
+        assert!((o.q[0] - 5. * c120).abs() < 1e-12 && (o.q[1] - 5. * s120).abs() < 1e-12);
+        assert!(o.q[0] < 0. && o.q[1] > 0.);
+        assert_eq!(dogleg.reach_mm(), 5.);
+        assert!(
+            (dogleg.extent()[0] - 5. * c120.abs()).abs() < 1e-12
+                && (dogleg.extent()[1] - 5. * s120).abs() < 1e-12
+        );
         // A half-turn arc of radius 2 with a straight part of 1 tangent to
         // it: the arc starts 4 out, square above the start, and the line
         // runs on from there along the edge's direction.
@@ -428,6 +474,26 @@ mod tests {
         assert!(ok(line(0.)).is_ok() && ok(line(90.)).is_ok());
         assert!(ok(line(91.)).unwrap_err().contains("angle_deg"));
         assert!(ok(line(-1.)).unwrap_err().contains("angle_deg"));
+        assert!(ok(line(f64::NAN)).unwrap_err().contains("angle_deg"));
+        let ok_out = |l: Lead| l.validate("lead_out");
+        assert!(
+            ok_out(line(0.)).is_ok()
+                && ok_out(line(90.)).is_ok()
+                && ok_out(line(91.)).is_ok()
+                && ok_out(line(120.)).is_ok()
+        );
+        for bad in [
+            LEAD_OUT_LINE_ANGLE_LIMIT_DEG,
+            181.,
+            -1.,
+            f64::NAN,
+            f64::INFINITY,
+        ] {
+            assert!(
+                ok_out(line(bad)).unwrap_err().contains("angle_deg"),
+                "{bad}"
+            );
+        }
         assert!(
             ok(Lead {
                 radius_mm: 1.,

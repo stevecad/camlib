@@ -2490,10 +2490,12 @@ cut = camlib.ThermalCut("plasma", torch, parts, feed_mm_min=2500, cut_height_mm=
     are what they were before the other shapes.
   - `Lead.line(length_mm, angle_deg)`: straight, at `angle_deg` to the edge's
     tangent, from 0 (in line with the edge, along its extension) to 90 (square
-    to it). An in-line lead-out is the in-line overrun along the cut. An
-    in-line lead-in belongs at a corner (below): on a straight edge its
-    pierce would lie on the kerf path, against the part, and is refused by
-    the pierce clearance.
+    to it) for a lead-in, and from 0 up to below 180 for a lead-out. A
+    lead-out angle above 90 turns back into the scrap as a dogleg (for example
+    120 degrees); 180 would run straight back along the cut and is refused. An
+    in-line lead-out is the in-line overrun along the cut. An in-line lead-in
+    belongs at a corner (below): on a straight edge its pierce would lie on
+    the kerf path, against the part, and is refused by the pierce clearance.
   - `Lead.arc(radius_mm, sweep_deg)`: a tangent arc of that sweep, more than 0
     and at most 180 degrees (beyond a half turn the arc turns back towards the
     cut).
@@ -2513,9 +2515,10 @@ cut = camlib.ThermalCut("plasma", torch, parts, feed_mm_min=2500, cut_height_mm=
   "Extension", which puts the leads at a corner). How long: Hypertherm,
   *Thick metal cutting techniques*, white paper 807850 r2, p. 8 ("as a general
   rule lead-in length should be equal to the material thickness"); its p. 3
-  "dogleg" lead-out turns about 120 degrees into the skeleton, which these
-  shapes do not offer (an angle beyond 90 to the edge). None is assumed: the
-  lengths, radii, angles and sweeps are the caller's.
+  "dogleg" lead-out turns about 120 degrees into the skeleton, which a
+  lead-out `Lead.line` accepts with angles above 90 up to below 180 (lead-ins
+  stay 0 to 90). None is assumed: the lengths, radii, angles and sweeps are
+  the caller's.
 
   - **At a corner**: an in-line lead-in that meets the loop at a corner of the
     kerf path (the arc the offset puts round a drawn outside corner, or its
@@ -2543,7 +2546,9 @@ cut = camlib.ThermalCut("plasma", torch, parts, feed_mm_min=2500, cut_height_mm=
     straight along its line, `lead_in.length_mm` long, whatever the shape.
   - **Compensation**: `compensation="wear"` turns G41/G42 on over the lead-in's
     straight part and off over the lead-out's, so both need one (`Lead.arc`
-    has none and is refused). `compensation="control"` also needs the written
+    has none and is refused). Both `compensation="wear"` and
+    `compensation="control"` refuse a dogleg lead-out (`Lead.line` with
+    `angle_deg` above 90). `compensation="control"` also needs the written
     lead to run tangent into the cut: a straight part and an arc, so
     `Lead.line` is refused there; its lead arcs are cut in pieces of at most a
     quarter turn, like the loop's arcs.

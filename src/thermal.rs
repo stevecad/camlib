@@ -60,7 +60,8 @@ pub enum HeightMode {
 /// quarter turn; `sweep_deg` sets the arc's sweep (the straight part then
 /// tangent to the arc), and `angle_deg` makes it a straight lead alone at
 /// that angle to the edge's tangent (0: in line with the edge, 90: square to
-/// it). See `thermal/leads.rs`.
+/// it; for a lead-out, above 90 up to below 180 turns back into the scrap as
+/// a dogleg). See `thermal/leads.rs`.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Lead {
@@ -623,6 +624,10 @@ impl ThermalCutPlan {
                     op.compensation == Compensation::Computer
                         || (op.lead_in.length_mm > guard && op.lead_out.length_mm > guard),
                     "cutter compensation (wear or control) turns G41/G42 on over the straight lead-in and off over the straight lead-out: set both lead length_mm (a lead with a straight part: Lead(length_mm, radius_mm), Lead.line or Lead.line_arc / Lead.arc_line; Lead.arc has none)".into(),
+                ),
+                (
+                    op.compensation == Compensation::Computer || !op.lead_out.is_dogleg(),
+                    "cutter compensation (wear or control) does not allow a dogleg lead-out (Lead.line with angle_deg above 90): the lead-out turns back past the scrap normal while cancelling the offset; use an angle up to 90, Lead.arc_line or compensation=\"computer\"".into(),
                 ),
                 (
                     op.compensation != Compensation::Control

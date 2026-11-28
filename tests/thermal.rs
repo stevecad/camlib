@@ -1480,6 +1480,10 @@ fn each_lead_shape_lies_as_declared_and_in_the_scrap() {
     let cases = [
         // A line at 30 degrees in, at 60 out.
         (json!({"length_mm": 5., "angle_deg": 30.}), json!({"length_mm": 4., "angle_deg": 60.})),
+        // A dogleg lead-out at 120 degrees (Hypertherm 807850 r2, p. 3).
+        (json!({"length_mm": 5., "angle_deg": 30.}), json!({"length_mm": 4., "angle_deg": 120.})),
+        // Square lines at 90 degrees both ways.
+        (json!({"length_mm": 4., "angle_deg": 90.}), json!({"length_mm": 4., "angle_deg": 90.})),
         // Arcs of 45 and 150 degrees.
         (json!({"radius_mm": 6., "sweep_deg": 45.}), json!({"radius_mm": 3., "sweep_deg": 150.})),
         // Line then arc in, arc then line out.
@@ -1514,8 +1518,15 @@ fn each_lead_shape_lies_as_declared_and_in_the_scrap() {
                 // Its angle to the edge's tangent, on the scrap side.
                 let far = if inward { a } else { b };
                 let [u, v] = along(far);
-                assert!(near(v.atan2(u.abs()).to_degrees(), angle), "{lead}: {u} {v}");
-                assert!(if inward { u <= 1e-9 } else { u >= -1e-9 });
+                let measured = if inward { v.atan2(-u) } else { v.atan2(u) }.to_degrees();
+                assert!(near(measured, angle), "{lead}: {u} {v} ({measured})");
+                if inward {
+                    assert!(u <= 1e-9);
+                } else if angle <= 90. {
+                    assert!(u >= -1e-9);
+                } else {
+                    assert!(u < -1e-9 && v > 1e-9, "{lead}: {u} {v}");
+                }
                 continue;
             }
             let sweep = lead["sweep_deg"].as_f64().unwrap();
@@ -1628,6 +1639,54 @@ fn lead_shapes_need_their_parameters_and_compensation_its_straight_part() {
     let events = shaped(json!({"length_mm": 4., "angle_deg": 45.}), json!({"length_mm": 3., "angle_deg": 60.}), [55., 40.], vec![], json!({"compensation": "wear"})).unwrap();
     let comp: Vec<_> = events.iter().filter_map(|e| match e { Event::CutterCompensation { side, .. } => Some(*side), _ => None }).collect();
     assert_eq!(comp, [CompensationSide::Left, CompensationSide::Off]);
+}
+
+#[test]
+fn dogleg_lead_out_checks_neighbours_and_refusals() {
+    use serde_json::json;
+    let plain = json!({"length_mm": 2., "radius_mm": 2.});
+    // Start (55, 40) on the bottom edge of PLATE [40, 40, 70, 60] (cut
+    // towards -x, scrap -y): a 90-degree lead-in pierces at (55, 35.245),
+    // clear of a neighbour at [58.5, 25, 68, 34]. An 8 mm 120-degree dogleg
+    // lead-out runs to (59.0, 32.317) inside that neighbour, while an 8 mm
+    // 90-degree lead-out stays at x = 55 and clears it.
+    let lead_in = json!({"length_mm": 4., "angle_deg": 90.});
+    let neighbour = vec![rect(58.5, 25., 68., 34.)];
+    assert!(
+        shaped(
+            lead_in.clone(),
+            json!({"length_mm": 8., "angle_deg": 90.}),
+            [55., 40.],
+            neighbour.clone(),
+            json!({}),
+        )
+        .is_ok()
+    );
+    let error = shaped(
+        lead_in,
+        json!({"length_mm": 8., "angle_deg": 120.}),
+        [55., 40.],
+        neighbour,
+        json!({}),
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("declared start (55.000, 40.000)") && error.contains("not clear"),
+        "{error}"
+    );
+    // Lead-in stays 0..=90; lead-out refuses 180 and above (and negatives).
+    for (li, lo, more, message) in [
+        (json!({"length_mm": 3., "angle_deg": 91.}), plain.clone(), json!({}), "angle_deg"),
+        (plain.clone(), json!({"length_mm": 4., "angle_deg": 180.}), json!({}), "angle_deg"),
+        (plain.clone(), json!({"length_mm": 4., "angle_deg": 200.}), json!({}), "angle_deg"),
+        (plain.clone(), json!({"length_mm": 4., "angle_deg": -5.}), json!({}), "angle_deg"),
+        // Wear and control both refuse a dogleg lead-out by name.
+        (plain.clone(), json!({"length_mm": 4., "angle_deg": 120.}), json!({"compensation": "wear"}), "dogleg"),
+        (plain.clone(), json!({"length_mm": 4., "angle_deg": 120.}), json!({"compensation": "control"}), "dogleg"),
+    ] {
+        let error = shaped(li, lo, [55., 40.], vec![], more).unwrap_err();
+        assert!(error.contains(message), "{message}: {error}");
+    }
 }
 
 #[test]

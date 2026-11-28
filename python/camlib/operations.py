@@ -2001,8 +2001,10 @@ class Lead:
     tangent to the cut (either may be zero). The other shapes:
 
     - ``Lead.line(length_mm, angle_deg)``: straight, at ``angle_deg`` to the
-      edge's tangent: 90 square to it, 0 in line with it (along the edge's
-      extension; at a corner, past the corner).
+      edge's tangent: 0 in line with it (along the edge's extension; at a
+      corner, past the corner), 90 square to it. Lead-ins allow 0..90;
+      lead-outs allow 0 up to below 180 (above 90 turns back into the scrap as
+      a dogleg, e.g. 120).
     - ``Lead.arc(radius_mm, sweep_deg)``: a tangent arc of that sweep (up to
       180).
     - ``Lead.line_arc(length_mm, radius_mm, sweep_deg=90)``: a straight part
@@ -2021,8 +2023,8 @@ class Lead:
 
     @classmethod
     def line(cls, length_mm, angle_deg):
-        """A straight lead of ``length_mm`` at ``angle_deg`` (0..90) to the
-        edge's tangent."""
+        """A straight lead of ``length_mm`` at ``angle_deg`` to the edge's
+        tangent (0..90 for a lead-in; 0 to below 180 for a lead-out)."""
         return cls(length_mm, 0, angle_deg=angle_deg)
 
     @classmethod

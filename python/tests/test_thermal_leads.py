@@ -5,6 +5,7 @@ WinCNC posts, and its angle, length and sweep are measured from the posted
 program, with its kerf in the scrap."""
 
 from dataclasses import replace
+import hashlib
 import math
 import unittest
 
@@ -182,6 +183,8 @@ class LeadShapesTest(unittest.TestCase):
         along = lambda p: (s[0] - p[0], s[1] - p[1])  # noqa: E731 (t = -x, n = -y)
         cases = (
             (camlib.Lead.line(5, 30), camlib.Lead.line(4, 60)),
+            (camlib.Lead.line(5, 30), camlib.Lead.line(4, 120)),
+            (camlib.Lead.line(4, 90), camlib.Lead.line(4, 90)),
             (camlib.Lead.line_arc(2, 3), camlib.Lead.line(5, 0)),
             (camlib.Lead.arc(6, 45), camlib.Lead.arc(3, 150)),
             (camlib.Lead.line_arc(3, 2, 60), camlib.Lead.arc_line(2, 3, 120)),
@@ -209,9 +212,17 @@ class LeadShapesTest(unittest.TestCase):
             self.assertEqual(code, "G1")
             self.assertAlmostEqual(math.dist(a, b), lead.length_mm, delta=self.TOLERANCE)
             u, v = along(a if inward else b)
-            self.assertAlmostEqual(math.degrees(math.atan2(v, abs(u))), lead.angle_deg, delta=0.2)
-            # A lead-in comes from behind the start, a lead-out goes on.
-            self.assertTrue(u <= self.TOLERANCE if inward else u >= -self.TOLERANCE)
+            measured = math.degrees(math.atan2(v, -u if inward else u))
+            self.assertAlmostEqual(measured, lead.angle_deg, delta=0.2)
+            # A lead-in comes from behind the start; a lead-out up to 90 goes
+            # on along the cut, and a dogleg (>90) turns back into the scrap.
+            if inward:
+                self.assertLessEqual(u, self.TOLERANCE)
+            elif lead.angle_deg <= 90:
+                self.assertGreaterEqual(u, -self.TOLERANCE)
+            else:
+                self.assertLess(u, -self.TOLERANCE)
+                self.assertGreater(v, self.TOLERANCE)
             return
         arcs = [m for m in legs if m[3] is not None]
         lines = [m for m in legs if m[3] is None]
@@ -273,16 +284,108 @@ class LeadShapesTest(unittest.TestCase):
     def test_refusals_name_the_shape(self):
         from camlib.simulation import SimulationError
 
-        for lead_in, cut, message in (
-            (camlib.Lead.line(3, 120), {}, "angle_deg"),
-            (camlib.Lead.arc(2, 270), {}, "at most 180"),
-            (camlib.Lead.arc(2, 90), dict(compensation="wear"), "Lead.arc has none"),
+        for lead_in, lead_out, cut, message in (
+            (camlib.Lead.line(3, 120), camlib.Lead(1, 1), {}, "angle_deg"),
+            (camlib.Lead.line(3, 91), camlib.Lead(1, 1), {}, "angle_deg"),
+            (camlib.Lead(1, 1), camlib.Lead.line(4, 180), {}, "angle_deg"),
+            (camlib.Lead(1, 1), camlib.Lead.line(4, 200), {}, "angle_deg"),
+            (camlib.Lead(1, 1), camlib.Lead.line(4, -5), {}, "angle_deg"),
+            (camlib.Lead.arc(2, 270), camlib.Lead(1, 1), {}, "at most 180"),
+            (camlib.Lead.arc(2, 90), camlib.Lead(1, 1), dict(compensation="wear"), "Lead.arc has none"),
+            (camlib.Lead(2, 2), camlib.Lead.line(4, 120), dict(compensation="wear"), "dogleg"),
+            (camlib.Lead(2, 2), camlib.Lead.line(4, 120), dict(compensation="control"), "dogleg"),
         ):
-            with self.subTest(message):
-                _, j = cut_job(lead_in, camlib.Lead(1, 1), (55, 40), **cut)
+            with self.subTest((lead_in, lead_out, cut, message)):
+                _, j = cut_job(lead_in, lead_out, (55, 40), **cut)
                 with self.assertRaisesRegex(SimulationError, message):
                     with j.regenerate() as run:
                         list(run)
+
+    def test_dogleg_lead_out_refuses_neighbour_in_reach(self):
+        from camlib.simulation import SimulationError
+
+        x0, y0, x1, y1 = PLATE
+        # Neighbour lies inside an 8 mm 120-degree dogleg lead-out from
+        # (55, 40) (end at (59.0, 32.317)), but clear of the 90-degree lead-in
+        # and of an 8 mm 90-degree lead-out.
+        parts = PlanarRegion(
+            "parts",
+            (
+                Component(Boundary.polygon(((x0, y0), (x1, y0), (x1, y1), (x0, y1)))),
+                Component(Boundary.polygon(((58.5, 25), (68, 25), (68, 34), (58.5, 34)))),
+            ),
+            0,
+        )
+        tool = camlib.Torch("torch", kerf_width=KERF)
+        make_job = lambda lead_out: camlib.Job(  # noqa: E731
+            "plasma",
+            "1",
+            (
+                camlib.Setup(
+                    "sheet",
+                    stock=camlib.StockSpec((0, 0, 0), (120, 100, 6), 0.25),
+                    tools=(tool,),
+                    operations=(
+                        camlib.OperationNode(
+                            camlib.ThermalCut(
+                                "plasma",
+                                tool,
+                                parts,
+                                2500,
+                                1.5,
+                                lead_in=camlib.Lead.line(4, 90),
+                                lead_out=lead_out,
+                                pierce_delay_s=0,
+                                power_percent=100,
+                                tool_number=1,
+                                length_register=1,
+                                lead_placement=camlib.LeadPlacement(keep_off_distance_mm=0, starts=((55, 40),)),
+                            ),
+                            sources=(),
+                        ),
+                    ),
+                    initial_position_mm=(0, 0, 7.5),
+                    verification=camlib.StreamChecks(stock_contact=camlib.StockContactOptions()),
+                ),
+            ),
+        )
+        with make_job(camlib.Lead.line(8, 90)).regenerate() as run:
+            list(run)
+        with self.assertRaisesRegex(SimulationError, "not clear"):
+            with make_job(camlib.Lead.line(8, 120)).regenerate() as run:
+                list(run)
+
+    def test_existing_leads_stay_byte_identical(self):
+        # Exact SHA-256 prefixes recorded before #402 for plain Lead and
+        # Lead.line at 0..90 across all three posts.
+        expected = {
+            (0, "generic"): "77ed6a65d6d5b091",
+            (0, "qtplasmac_post"): "62b4d1e9c9036747",
+            (0, "wincnc_plasma_post"): "3909f7f141637e89",
+            (1, "generic"): "684dea284a5b1536",
+            (1, "qtplasmac_post"): "04bac9700f811763",
+            (1, "wincnc_plasma_post"): "c9e4cc96cebf283d",
+            (2, "generic"): "a12c48eed177e172",
+            (2, "qtplasmac_post"): "c3f1f777df710314",
+            (2, "wincnc_plasma_post"): "67bb09fbceb8b90d",
+            (3, "generic"): "2d96364fc3e4abe7",
+            (3, "qtplasmac_post"): "2f9dc5ccabd599ad",
+            (3, "wincnc_plasma_post"): "fc1fc643090543b1",
+            (4, "generic"): "947ebed09de47d3d",
+            (4, "qtplasmac_post"): "79c0dfdf4c046c56",
+            (4, "wincnc_plasma_post"): "d67decdbd71b7611",
+        }
+        cases = (
+            (camlib.Lead(2, 2), camlib.Lead(2, 2), (55, 40)),
+            (camlib.Lead.line(5, 30), camlib.Lead.line(4, 60), (55, 40)),
+            (camlib.Lead.line(4, 90), camlib.Lead.line(4, 90), (55, 40)),
+            (camlib.Lead.line_arc(2, 3), camlib.Lead.line(5, 0), (55, 40)),
+            (camlib.Lead.line(6, 0), camlib.Lead.line(6, 0), (70, 40)),
+        )
+        for i, (lead_in, lead_out, start) in enumerate(cases):
+            for name, lines, _, _ in programs(lead_in, lead_out, start):
+                digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()[:16]
+                self.assertEqual(digest, expected[(i, name)], (i, name))
 
     def test_the_nest_keeps_room_for_the_shapes(self):
         # Lead room at the leads: the room holds each shape's reach along the
@@ -315,6 +418,48 @@ class LeadShapesTest(unittest.TestCase):
         lead_out_height = 3 * (1 - math.cos(math.radians(150))) + KERF / 2
         self.assertAlmostEqual(room["height_mm"], OFFSET + max(lead_in_height, lead_out_height))
         # And the cut from the nest's starts is clear.
+        op = replace(
+            cut,
+            parts=result.region,
+            lead_placement=camlib.LeadPlacement(keep_off_distance_mm=0, starts=result.lead_starts),
+        )
+        setup = replace(j.setups[0], operations=(camlib.OperationNode(op, sources=()),))
+        from camlib.simulation import VerificationUpdate
+
+        statuses = set()
+        with camlib.Job("nest", "1", (setup,)).regenerate() as run:
+            for u in run:
+                if isinstance(u.update, VerificationUpdate):
+                    statuses.add(u.update.status)
+        self.assertEqual(statuses, {"clear"})
+
+    def test_the_nest_keeps_room_for_a_dogleg_lead_out(self):
+        sheet = PlanarRegion("sheet", (Component(Boundary.polygon(((0, 0), (200, 0), (200, 120), (0, 120)))),), 0)
+        x0, y0, x1, y1 = PLATE
+        part = camlib.NestPart(
+            PlanarRegion("plate", (Component(Boundary.polygon(((x0, y0), (x1, y0), (x1, y1), (x0, y1)))),), 0), 2, (0,)
+        )
+        _, j = cut_job(camlib.Lead.line(2, 90), camlib.Lead.line(8, 120), (55, 40))
+        cut = j.setups[0].operations[0].operation
+        planned = camlib.Nest.for_cut(
+            replace(cut, lead_placement=None),
+            sheet,
+            (part,),
+            part_spacing_mm=1,
+            edge_margin_mm=3,
+            resolution_mm=1,
+            part_in_part=False,
+            lead_room="at_leads",
+        )
+        result = planned.run()
+        room = result.check["lead_room"]
+        crater = KERF / 2 + KERF
+        lead_in_width = crater
+        lead_out_width = 8 * abs(math.cos(math.radians(120))) + KERF / 2
+        self.assertAlmostEqual(room["half_width_mm"], max(lead_in_width, lead_out_width))
+        lead_in_height = 2 + crater
+        lead_out_height = 8 * math.sin(math.radians(120)) + KERF / 2
+        self.assertAlmostEqual(room["height_mm"], OFFSET + max(lead_in_height, lead_out_height))
         op = replace(
             cut,
             parts=result.region,
