@@ -84,8 +84,9 @@ combinations and impossible dimensions are rejected before any motion.
   feed ≤ retract ≤ clearance), so rapids at these heights cannot touch stock.
 - Straight-up retracts are rapids by default. Each is proven clear from where
   the cut left the tool and by the stock's whole-cell bounds, so a lift beside
-  a wall it just cut stays fed (`Setup(rapid_retracts=False)` keeps them all
-  fed).
+  a wall it just cut feeds through the stock beside it, to the highest
+  whole-cell bound within reach of the tool, and rapids from there
+  (`Setup(rapid_retracts=False)` keeps them all fed).
 - Pocket links stay at depth only through stock proven cleared, when faster
   than leaving, or up to `max_stay_down_mm`.
 - `Setup(tool_change=ToolChangePosition(...))`, `ToolChangeTable(...)` or

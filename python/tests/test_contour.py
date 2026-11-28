@@ -105,11 +105,16 @@ class ContourTest(unittest.TestCase):
                 for m in rapids
             )
         )
-        # The tool leaves each pass straight up to the feed height: at feed,
-        # since the stock outside the pass stands beside it (#430).
+        # The tool leaves each pass straight up to the feed height: at feed
+        # through the stock outside the pass, which stands beside it (#430),
+        # and at rapid from its top (#441).
         self.assertTrue(any(straight_up_to_feed_height(m) for m in moves if m["kind"] in ("rapid", "retract")))
         self.assertIn(11, [m["curve"]["end"][2] for m in rapids])
-        self.assertTrue(all(m["curve"]["end"][2] == 10.5 for m in moves if m["kind"] == "retract"))
+        for m, n in zip(moves, moves[1:]):
+            if m["kind"] == "retract" and m["curve"]["end"][2] != 10.5:
+                self.assertEqual(n["kind"], "rapid", (m, n))
+                self.assertEqual(n["curve"]["start"], m["curve"]["end"], (m, n))
+                self.assertTrue(straight_up_to_feed_height(n), (m, n))
         self.assertEqual(moves[-1]["curve"]["end"][2], 12)
         config["operations"] = (replace(op, feed_z_mm=10),)
         with Simulation(**config) as sim:

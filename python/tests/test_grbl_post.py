@@ -162,15 +162,15 @@ class GrblPostTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             unsafe = run(Path(tmp) / 'unsafe.ngc', profile='grbl')
-            self.assertEqual(unsafe['source_motions'], 352)
-            self.assertGreater(unsafe['motions'], 352)
+            self.assertEqual(unsafe['source_motions'], 400)
+            self.assertGreater(unsafe['motions'], 400)
             self.assertGreater(unsafe['posted_scene_stock_counts']['violation'], 0)
             sample = unsafe['issue_samples'][0]
             self.assertEqual(sample['posted_motion_id'], sample['source_mapping']['posted_motion_id'])
             finding = sample['findings'][0]
             self.assertIsNotNone(finding.get('witness') or finding['finding']['witness'])
             reserved = run(Path(tmp) / 'reserved.ngc', profile='grbl', radial_allowance_mm=0.001)
-            self.assertEqual(reserved['source_motions'], 352)
+            self.assertEqual(reserved['source_motions'], 400)
             self.assertEqual(
                 reserved['posted_scene_stock_counts'], dict(clear=reserved['motions'], violation=0, uncertain=0)
             )

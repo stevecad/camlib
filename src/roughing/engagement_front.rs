@@ -2455,6 +2455,8 @@ pub(crate) struct EngagementFrontPlan {
     /// unchanged (see `take_memory`).
     carried_generation: Option<u64>,
     pending: VecDeque<Pending>,
+    /// How the run splits a straight-up retract out of the cut (#441).
+    lift_split: Option<crate::lift::Lifts>,
     position: Vec3,
     next_id: u64,
     generation: Option<u64>,
@@ -2647,6 +2649,7 @@ impl EngagementFrontPlan {
             memory: None,
             carried_generation: None,
             pending: VecDeque::new(),
+            lift_split: None,
             position: initial,
             next_id: 1,
             generation: None,
@@ -4049,7 +4052,14 @@ impl EngagementFrontPlan {
         (feed > reference).then_some(feed)
     }
 
-    /// Lift at feed to the feed height, then rapid to `to_z`; returns the pose.
+    /// Split each straight-up retract where the stock beside the tool ends
+    /// (#441, `OperationPlan::split_lifts`).
+    pub(crate) fn split_lifts(&mut self, lifts: crate::lift::Lifts) {
+        self.lift_split = Some(lifts);
+    }
+    /// Lift at feed to the feed height, then rapid to `to_z`; returns the
+    /// pose. With `split_lifts`, the retract feeds only through the stock
+    /// beside the tool (#441).
     fn lift(&mut self, from: Vec3, to_z: f64) -> Vec3 {
         let feed_z = self.heights.feed.max(from[2]);
         let safe = [from[0], from[1], feed_z];
@@ -6306,9 +6316,16 @@ impl EngagementFrontPlan {
                 self.finished = true;
             }
         }
-        let Some((curve, kind, entry_feed)) = self.pending.pop_front() else {
+        let Some((mut curve, kind, entry_feed)) = self.pending.pop_front() else {
             return Ok(None);
         };
+        // A straight-up retract feeds only through the stock beside the
+        // tool; the rest follows as its own retract (#441).
+        if let Some((fed, rest)) = crate::lift::split(self.lift_split.as_ref(), stock, kind, &curve)
+        {
+            self.pending.push_front((rest, kind, entry_feed));
+            curve = fed;
+        }
         curve.prepare(self.op.tolerance_mm)?;
         let motion = Motion {
             id: self.next_id,

@@ -501,10 +501,11 @@ class MachineJobExportTest(unittest.TestCase):
         self.assertEqual(result.machine['status'], 'clear', result.machine)
         self.assertEqual(result.machine['findings'], [], result.machine)
         self.assertEqual(result.findings, ())
-        # The program's last move is the pocket's lift to the clearance, at feed.
+        # The program ends with the pocket's lift: at feed through the wall
+        # beside the tool, to the faced top Z-1, then at rapid to the
+        # clearance (#441), which the independent-axis check decided.
         blocks = [line for line in result.text.splitlines() if line.startswith(('G0', 'G1', 'X', 'Y', 'Z'))]
-        self.assertIn('Z10', blocks[-1], blocks[-3:])
-        self.assertFalse(blocks[-1].startswith('G0'), blocks[-3:])
+        self.assertEqual(blocks[-2:], ['G1 X33 Y41 Z-1 F1000', 'G0 X33 Y41 Z10'], blocks[-3:])
 
 
 if __name__ == '__main__':

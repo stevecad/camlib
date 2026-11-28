@@ -2,10 +2,10 @@
   "name": "adaptive-pocket",
   "operations": {
     "adaptive": {
-      "air_cut_mm": 540.012,
-      "cut_mm": 1143.34,
-      "cycle_seconds_exact_stop": 145.747,
-      "cycle_seconds_tangent": 145.431,
+      "air_cut_mm": 528.012,
+      "cut_mm": 1131.34,
+      "cycle_seconds_exact_stop": 145.084,
+      "cycle_seconds_tangent": 144.768,
       "engagement": {
         "cut_mm": 539.664,
         "entry_feed_mean_deg": 103.9,
@@ -22,16 +22,16 @@
         "within_10_share": 0.3001
       },
       "link_mm": 497.379,
-      "moves": 528,
+      "moves": 534,
       "plunges": 6,
-      "rapid_mm": 29.739,
+      "rapid_mm": 41.739,
       "removed_mm3": 472.318,
-      "retracts": 6
+      "retracts": 12
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 145.747,
-    "cycle_seconds_tangent": 145.431,
+    "cycle_seconds_exact_stop": 145.084,
+    "cycle_seconds_tangent": 144.768,
     "material": {
       "leftover_mm3": [
         0.0,
@@ -42,8 +42,8 @@
         56.037
       ]
     },
-    "moves": 528,
+    "moves": 534,
     "post_error": null,
-    "posted_blocks": 551
+    "posted_blocks": 557
   }
 }

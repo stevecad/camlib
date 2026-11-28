@@ -1,6 +1,7 @@
 """Rapid retracts: a straight-up retract from the end of a cut is posted as a
 rapid where the stock proves it clear, cut history and whole-cell bounds both
-(#430), and the stock-contact check proves it clear."""
+(#430), and the stock-contact check proves it clear. Where stock stands beside
+the tool, the retract feeds only through it and the rest is a rapid (#441)."""
 
 import math
 import unittest
@@ -118,6 +119,33 @@ def stands_beside(state, motion):
     return False
 
 
+def lifts(slow, fast):
+    """Pair each move of the run without rapid retracts with the moves the
+    run with them made of it: the same move, or a retract split in two
+    (#441), a fed part and a straight-up rest, which together run the same
+    line."""
+    groups, j = [], 0
+    for m in slow:
+        f = fast[j]
+        g = fast[j + 1] if j + 1 < len(fast) else None
+        if (
+            m["kind"] == "retract"
+            and f["kind"] == "retract"
+            and g is not None
+            and f["curve"]["start"] == m["curve"]["start"]
+            and f["curve"]["end"] != m["curve"]["end"]
+            and g["curve"]["start"] == f["curve"]["end"]
+            and g["curve"]["end"] == m["curve"]["end"]
+        ):
+            groups.append((m, [f, g]))
+            j += 2
+        else:
+            groups.append((m, [f]))
+            j += 1
+    assert j == len(fast), (j, len(fast))
+    return groups
+
+
 class RapidRetractTest(unittest.TestCase):
     def test_retracts_become_rapids_and_check_clear(self):
         slow, slow_status = run(job(False))
@@ -127,24 +155,37 @@ class RapidRetractTest(unittest.TestCase):
         self.assertEqual(set(fast_status), {"clear"}, fast_status)
         retracts = [m for m in slow if m["kind"] == "retract"]
         self.assertTrue(retracts)
-        # Same path, same count: only the kind and feed of the retracts change.
-        self.assertEqual([m["curve"] for m in slow], [m["curve"] for m in fast])
-        planned = {m["id"] for m in retracts}
-        rapids = [m for m in fast if m["id"] in planned and m["kind"] == "rapid"]
-        kept = [m for m in fast if m["kind"] == "retract"]
+        groups = lifts(slow, fast)
+        # Same path: only the retracts change, in kind and feed, and where the
+        # stock stands beside the tool a retract is split in two on its line.
+        for m, made in groups:
+            if m["kind"] != "retract":
+                self.assertEqual([m["curve"]], [f["curve"] for f in made])
+                self.assertEqual(made[0]["kind"], m["kind"])
+                continue
+            for f in made:
+                a, b = f["curve"]["start"], f["curve"]["end"]
+                self.assertEqual((a[0], a[1]), (b[0], b[1]), f)
+                self.assertGreater(b[2], a[2], f)
+        whole = [made[0] for m, made in groups if m["kind"] == "retract" and len(made) == 1]
+        split = [made for m, made in groups if m["kind"] == "retract" and len(made) == 2]
+        rapids = [f for f in whole if f["kind"] == "rapid"] + [rest for _, rest in split]
+        kept = [f for f in whole if f["kind"] == "retract"] + [fed for fed, _ in split]
         self.assertTrue(rapids)
-        self.assertEqual(len(rapids) + len(kept), len(retracts))
-        self.assertEqual(
-            sum(1 for m in fast if m["kind"] == "rapid"), sum(1 for m in slow if m["kind"] == "rapid") + len(rapids)
-        )
-        # A retract stays at feed exactly where stock stands beside the cutter
-        # above its tip, which the whole-cell bounds cannot show clear (#430):
-        # here the pocket's and the contour's lifts. The facing's lift past
-        # the stock edge becomes a rapid.
+        self.assertTrue(split)
+        self.assertEqual(len(fast), len(slow) + len(split))
+        # A retract feeds exactly where stock stands beside the cutter above
+        # its tip, which the whole-cell bounds cannot show clear (#430): here
+        # the pocket's and the contour's lifts. Each feeds only through that
+        # stock, and the rest of it, which starts where nothing stands beside
+        # the cutter any more, is a rapid (#441). The facing's lift past the
+        # stock edge is one rapid.
         for m in rapids:
+            self.assertEqual(m["kind"], "rapid", m)
             self.assertFalse(beside[m["id"]], m)
             self.assertIsNone(m["feed_mm_min"])
         for m in kept:
+            self.assertEqual(m["kind"], "retract", m)
             self.assertTrue(beside[m["id"]], m)
             self.assertEqual(m["feed_mm_min"], 600, m)
 

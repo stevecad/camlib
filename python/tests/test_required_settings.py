@@ -116,12 +116,14 @@ class RequiredSettingsTest(unittest.TestCase):
 
         on = kinds(job)
         off = kinds(replace(job, setups=(replace(job.setups[0], rapid_retracts=False),)))
-        self.assertEqual(len(on), len(off))
         # With them on, the retracts proven clear become rapids; those that
-        # start beside stock the cutter just cut stay at feed (#430).
+        # start beside stock the cutter just cut feed through it (#430), and
+        # each is split there: its rest is a rapid (#441), one move more.
+        split = len(on) - len(off)
+        self.assertGreater(split, 0)
         self.assertLess(on.count("retract"), off.count("retract"))
         self.assertGreater(off.count("retract"), 0)
-        self.assertEqual(on.count("rapid") - off.count("rapid"), off.count("retract") - on.count("retract"))
+        self.assertEqual(on.count("rapid") - off.count("rapid"), off.count("retract") - on.count("retract") + split)
 
 
 if __name__ == "__main__":

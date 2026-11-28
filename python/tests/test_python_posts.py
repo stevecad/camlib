@@ -1058,11 +1058,11 @@ class PythonPosts(unittest.TestCase):
                 post_type=MyShopPost,
                 machine_options=dict(decimals=6, tolerance_mm=0.001),
             )
-        self.assertEqual(result['source_motions'], 352)
-        self.assertEqual(result['motions'], 352)
+        self.assertEqual(result['source_motions'], 400)
+        self.assertEqual(result['motions'], 400)
         self.assertFalse(result['first_posted_motion']['source_native_exited'])
         self.assertFalse(result['first_posted_motion']['source_finished'])
-        self.assertEqual(result['posted_scene_stock_counts'], dict(clear=352, violation=0, uncertain=0))
+        self.assertEqual(result['posted_scene_stock_counts'], dict(clear=400, violation=0, uncertain=0))
         self.assertEqual(result['source_heights_sha256'], result['posted_heights_sha256'])
         self.assertTrue(result['posted_material']['complete'])
         self.assertEqual(result['posted_material']['residual']['definite_cells'], 12)

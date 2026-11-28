@@ -1737,9 +1737,16 @@ pub struct FlatPlan {
     expected_generation: Option<u64>,
     drained: bool,
     report: FlatReport,
+    /// How the run splits the straight-up lift after each run (#441).
+    lift_split: Option<crate::lift::Lifts>,
 }
 
 impl FlatPlan {
+    /// Split the straight-up lift after each run where the stock beside the
+    /// tool ends (#441, `OperationPlan::split_lifts`).
+    pub(crate) fn split_lifts(&mut self, lifts: crate::lift::Lifts) {
+        self.lift_split = Some(lifts);
+    }
     pub fn prepare(
         op: FlatOperation,
         tool: &ToolAssembly,
@@ -2217,6 +2224,7 @@ impl FlatPlan {
             expected_generation: None,
             drained: false,
             report,
+            lift_split: None,
         })
     }
     pub fn report(&self) -> &FlatReport {
@@ -3092,7 +3100,7 @@ impl FlatPlan {
             let mut ramp_feed = None;
             // The move's curve: a straight line from the current position
             // unless the phase carries one (a ramp leg or an arc of the pass).
-            let (end, kind, next, carried) = match self.phase {
+            let (mut end, kind, mut next, carried) = match self.phase {
                 Phase::Done => {
                     self.drained = true;
                     return Ok(None);
@@ -3371,6 +3379,16 @@ impl FlatPlan {
                     )
                 }
             };
+            // A straight-up retract feeds only through the stock beside the
+            // tool; the rest of the way is its own retract (#441), from
+            // `Leave`, which lifts the rest and then rises.
+            if kind == MoveKind::Retract && carried.is_none() && end[0] == p[0] && end[1] == p[1] {
+                let top = crate::lift::feed_to(self.lift_split.as_ref(), stock, p, end[2]);
+                if top < end[2] {
+                    end[2] = top;
+                    next = Phase::Leave;
+                }
+            }
             self.phase = next;
             if end == p {
                 continue;

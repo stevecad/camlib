@@ -369,26 +369,31 @@ impl StreamManifest {
     /// decided, and the program could not be released. Such a lift stays at
     /// feed, the retract the operation planned. A feed move's cutter contact
     /// is checked by the exact stock kernel.
+    ///
+    /// The planners split such a lift where the stock beside the tool ends
+    /// (`StreamManifest::lifts`, #441): the rest starts above every cell
+    /// within reach, and this rule makes it a rapid.
     fn retract_bounds_clear(&self, tool: &str, start: Vec3, stock: &crate::stock::Stock) -> bool {
         // An undeclared tool or one that does not prepare has no sections to
         // prove anything with: the retract stays at feed.
-        let Some(prepared) = self
-            .tools
+        self.tools
             .iter()
             .find(|t| t.id == tool)
-            .and_then(|t| t.prepare().ok())
-        else {
-            return false;
-        };
-        let Ok(parts) = crate::verification::parts(&prepared) else {
-            return false;
-        };
-        let sections: Vec<(f64, f64)> = parts
+            .and_then(|t| crate::lift::Lifts::new(t, self.sweep.tolerance_mm))
+            .is_some_and(|l| l.bounds_clear(stock, start))
+    }
+    /// How operation `op`'s planner splits its straight-up retracts (#441),
+    /// by the same rule `retract_policy` judges them with. None when this
+    /// run turns no retract of it into a rapid: `rapid_retracts` is off, the
+    /// operation declares its retract feed, or its tool does not prepare.
+    pub(crate) fn lifts(&self, op: &crate::pocket::Operation) -> Option<crate::lift::Lifts> {
+        if !self.rapid_retracts || op.declares_retract_feed() {
+            return None;
+        }
+        self.tools
             .iter()
-            .map(|p| (p.radius.max_over(p.min, p.max), p.min))
-            .collect();
-        let tolerance = self.sweep.tolerance_mm;
-        stock.bounds_below_tool(&sections, start, 32. * tolerance, tolerance)
+            .find(|t| t.id == op.tool())
+            .and_then(|t| crate::lift::Lifts::new(t, self.sweep.tolerance_mm))
     }
     /// The tip position after changing to `tool` at `position`, or None when
     /// the manifest declares no tool-change pose (the tip stays put).

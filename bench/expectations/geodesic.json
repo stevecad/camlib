@@ -2,21 +2,21 @@
   "name": "geodesic",
   "operations": {
     "geodesic": {
-      "air_cut_mm": 92.165,
-      "cut_mm": 775.4,
-      "cycle_seconds_exact_stop": 131.724,
-      "cycle_seconds_tangent": 128.564,
+      "air_cut_mm": 85.527,
+      "cut_mm": 768.763,
+      "cycle_seconds_exact_stop": 131.223,
+      "cycle_seconds_tangent": 128.063,
       "link_mm": 0.0,
-      "moves": 5337,
+      "moves": 5338,
       "plunges": 1,
-      "rapid_mm": 13.174,
+      "rapid_mm": 19.811,
       "removed_mm3": 24.354,
-      "retracts": 1
+      "retracts": 2
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 131.724,
-    "cycle_seconds_tangent": 128.564,
+    "cycle_seconds_exact_stop": 131.223,
+    "cycle_seconds_tangent": 128.063,
     "material": {
       "leftover_mm3": [
         0.0,
@@ -27,8 +27,8 @@
         65.563
       ]
     },
-    "moves": 5337,
+    "moves": 5338,
     "post_error": null,
-    "posted_blocks": 5360
+    "posted_blocks": 5361
   }
 }

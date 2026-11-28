@@ -2,10 +2,10 @@
   "name": "roughing-adaptive-large",
   "operations": {
     "rough": {
-      "air_cut_mm": 10022.583,
-      "cut_mm": 65863.665,
-      "cycle_seconds_exact_stop": 4911.696,
-      "cycle_seconds_tangent": 4909.384,
+      "air_cut_mm": 8978.583,
+      "cut_mm": 64819.665,
+      "cycle_seconds_exact_stop": 4876.012,
+      "cycle_seconds_tangent": 4873.7,
       "engagement": {
         "cut_mm": 50013.094,
         "entry_feed_mean_deg": 87.35,
@@ -22,16 +22,16 @@
         "within_10_share": 0.8415
       },
       "link_mm": 6394.859,
-      "moves": 3994,
+      "moves": 4168,
       "plunges": 174,
-      "rapid_mm": 18900.363,
+      "rapid_mm": 19944.363,
       "removed_mm3": 2418061.169,
-      "retracts": 174
+      "retracts": 348
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 4911.696,
-    "cycle_seconds_tangent": 4909.384,
+    "cycle_seconds_exact_stop": 4876.012,
+    "cycle_seconds_tangent": 4873.7,
     "material": {
       "leftover_mm3": [
         87492.271,
@@ -42,8 +42,8 @@
         17399.627
       ]
     },
-    "moves": 3994,
+    "moves": 4168,
     "post_error": null,
-    "posted_blocks": 4151
+    "posted_blocks": 4325
   }
 }

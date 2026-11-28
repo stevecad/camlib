@@ -14,21 +14,21 @@
       "retracts": 41
     },
     "rough": {
-      "air_cut_mm": 33841.312,
-      "cut_mm": 37901.592,
-      "cycle_seconds_exact_stop": 8902.686,
-      "cycle_seconds_tangent": 8901.267,
+      "air_cut_mm": 33815.312,
+      "cut_mm": 37875.592,
+      "cycle_seconds_exact_stop": 8900.729,
+      "cycle_seconds_tangent": 8899.31,
       "link_mm": 17412.99,
-      "moves": 2927,
+      "moves": 2931,
       "plunges": 12,
-      "rapid_mm": 182.137,
+      "rapid_mm": 208.137,
       "removed_mm3": 1983.996,
-      "retracts": 12
+      "retracts": 16
     }
   },
   "toolpath": {
-    "cycle_seconds_exact_stop": 9271.075,
-    "cycle_seconds_tangent": 9251.816,
+    "cycle_seconds_exact_stop": 9269.118,
+    "cycle_seconds_tangent": 9249.859,
     "material": {
       "leftover_mm3": [
         0.0,
@@ -39,8 +39,8 @@
         99.569
       ]
     },
-    "moves": 6248,
+    "moves": 6252,
     "post_error": null,
-    "posted_blocks": 6279
+    "posted_blocks": 6283
   }
 }

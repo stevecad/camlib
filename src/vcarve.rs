@@ -75,6 +75,8 @@ pub struct VCarvePlan {
     expected_generation: Option<u64>,
     drained: bool,
     report: VCarveReport,
+    /// How the run splits the straight-up lift after each loop (#441).
+    lift_split: Option<crate::lift::Lifts>,
 }
 
 /// A point of an outline loop: position, inward normal (interior on the left).
@@ -360,6 +362,7 @@ impl VCarvePlan {
             expected_generation: None,
             drained: false,
             report,
+            lift_split: None,
         })
     }
     pub fn report(&self) -> &VCarveReport {
@@ -406,6 +409,11 @@ impl VCarvePlan {
         self.report.geometric_residual_status = ResidualStatus::Estimated;
         Ok(())
     }
+    /// Split the straight-up lift after each loop where the stock beside the
+    /// tool ends (#441, `OperationPlan::split_lifts`).
+    pub(crate) fn split_lifts(&mut self, lifts: crate::lift::Lifts) {
+        self.lift_split = Some(lifts);
+    }
     pub fn next_motion_with_stock(
         &mut self,
         stock: &Stock,
@@ -421,14 +429,21 @@ impl VCarvePlan {
         if cancel.is_cancelled() {
             return Err("v-carve cancelled".into());
         }
-        let Some((end, kind)) = self.moves.pop_front() else {
+        let Some((mut end, kind)) = self.moves.pop_front() else {
             self.drained = true;
             return Ok(None);
         };
-        let curve = Curve::Line {
+        let mut curve = Curve::Line {
             start: self.position,
             end,
         };
+        // A straight-up retract feeds only through the stock beside the
+        // tool; the rest follows as its own retract (#441).
+        if let Some((fed, _)) = crate::lift::split(self.lift_split.as_ref(), stock, kind, &curve) {
+            self.moves.push_front((end, kind));
+            end = fed.end();
+            curve = fed;
+        }
         curve.prepare(self.op.tolerance_mm)?;
         let m = Motion {
             id: self.next_id,

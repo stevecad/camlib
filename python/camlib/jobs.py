@@ -156,8 +156,10 @@ class Setup:
     # feed. A retract becomes a rapid only where the stock proves it clear: it
     # leaves from where the last cut left the tool, empty space with only empty
     # space above it in a height field, and no whole-cell stock bound within
-    # reach of the tool stands above it there (a lift beside a wall the cutter
-    # just cut stays at feed, #430). False keeps every retract at feed.
+    # reach of the tool stands above it there (#430). A lift beside a wall the
+    # cutter just cut feeds through that stock to the highest bound within
+    # reach, and rapids the rest of the way (#441). False keeps every retract
+    # at feed.
     rapid_retracts: bool = True
     # A lathe setup: its turning definition (camlib.turning.TurningSetup:
     # the part's profile and bore, the chuck, clearance and tolerance). Its

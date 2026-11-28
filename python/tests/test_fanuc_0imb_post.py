@@ -390,7 +390,7 @@ class Fanuc0iMBTest(unittest.TestCase):
                 )
                 count += len(actual)
             self.assertTrue(oracle.ended and decoder.ended)
-        self.assertEqual(result['source_motions'], 352)
+        self.assertEqual(result['source_motions'], 400)
         self.assertEqual(count, result['motions'])
         self.assertEqual(result['posted_scene_stock_counts'], dict(clear=count, violation=0, uncertain=0))
         self.assertTrue(result['posted_material']['complete'])

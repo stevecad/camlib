@@ -132,6 +132,8 @@ pub struct FacingPlan {
     next_id: u64,
     expected_generation: Option<u64>,
     report: FacingReport,
+    /// How the run splits a straight-up retract out of the cut (#441).
+    lift_split: Option<crate::lift::Lifts>,
 }
 const PLANNING_CANCELLED: &str = "facing planning cancelled";
 
@@ -425,6 +427,7 @@ impl FacingPlan {
             next_id: first_id,
             expected_generation: None,
             report,
+            lift_split: None,
         })
     }
     /// Facing with limits (#411, #422). Limits that cannot touch anything the
@@ -589,7 +592,7 @@ impl FacingPlan {
         {
             return Err("commit preceding facing motion to matching stock before planning".into());
         }
-        let motion = self.next_motion(cancel)?;
+        let motion = self.next_motion(Some(stock), cancel)?;
         if motion.is_some() {
             self.expected_generation = Some(stock.generation() + 1);
         }
@@ -611,7 +614,7 @@ impl FacingPlan {
     ) -> Result<bool, String> {
         let prepared = crate::limits::PreparedLimits::new(limits, radius, self.op.tolerance_mm)?;
         let mut plan = self.clone();
-        while let Some(motion) = plan.next_motion(cancel)? {
+        while let Some(motion) = plan.next_motion(None, cancel)? {
             let cutting = motion.kind != MoveKind::Rapid;
             if !prepared
                 .allows_curve(&motion.curve, cutting)
@@ -625,7 +628,7 @@ impl FacingPlan {
 
     fn route_seconds(mut self, rapid: f64, cancel: &impl CancelSignal) -> Result<f64, String> {
         let mut seconds = 0_f64;
-        while let Some(motion) = self.next_motion(cancel)? {
+        while let Some(motion) = self.next_motion(None, cancel)? {
             let (a, b) = (motion.curve.start(), motion.curve.end());
             let length = metallic::hypot(metallic::hypot(b[0] - a[0], b[1] - a[1]), b[2] - a[2]);
             seconds += 60. * length / motion.feed_mm_min.unwrap_or(rapid);
@@ -637,15 +640,38 @@ impl FacingPlan {
         }
     }
 
-    fn next_motion(&mut self, cancel: &impl CancelSignal) -> Result<Option<Motion>, String> {
+    /// Split each straight-up retract where the stock beside the tool ends
+    /// (#441, `OperationPlan::split_lifts`).
+    pub(crate) fn split_lifts(&mut self, lifts: crate::lift::Lifts) {
+        self.lift_split = Some(lifts);
+    }
+    /// The next planned move. `stock`: the committed stock, which splits a
+    /// straight-up retract (#441); None plans the moves without it (route
+    /// timing, the limits proof), whose retracts each stay one move along
+    /// the same line.
+    fn next_motion(
+        &mut self,
+        stock: Option<&Stock>,
+        cancel: &impl CancelSignal,
+    ) -> Result<Option<Motion>, String> {
         if let Some(steps) = &mut self.around {
             if cancel.is_cancelled() {
                 return Err(PLANNING_CANCELLED.into());
             }
-            let Some((curve, kind, count)) = steps.front().cloned() else {
+            let Some((mut curve, kind, count)) = steps.front().cloned() else {
                 self.drained = true;
                 return Ok(None);
             };
+            // A straight-up retract feeds only through the stock beside the
+            // tool; the rest follows as its own retract (#441).
+            if let Some(stock) = stock
+                && let Some((fed, rest)) =
+                    crate::lift::split(self.lift_split.as_ref(), stock, kind, &curve)
+            {
+                steps[0] = (fed.clone(), kind, count);
+                steps.insert(1, (rest, kind, around::Count::None));
+                curve = fed;
+            }
             if curve.start() != self.position {
                 return Err("facing: internal planning error: a planned move does not start at the tool position".into());
             }
@@ -734,12 +760,23 @@ impl FacingPlan {
                     m
                 }
                 Phase::Retract => {
-                    let m = self.emit(
-                        [self.position[0], self.position[1], self.heights.feed],
-                        MoveKind::Retract,
-                    )?;
-                    self.report.clearance_returns += 1;
-                    self.phase = Phase::Rise;
+                    // Fed only through the stock beside the tool, then the
+                    // rest of the way as its own retract (#441).
+                    let top = match stock {
+                        Some(stock) => crate::lift::feed_to(
+                            self.lift_split.as_ref(),
+                            stock,
+                            self.position,
+                            self.heights.feed,
+                        ),
+                        None => self.heights.feed,
+                    };
+                    let m =
+                        self.emit([self.position[0], self.position[1], top], MoveKind::Retract)?;
+                    if top == self.heights.feed {
+                        self.report.clearance_returns += 1;
+                        self.phase = Phase::Rise;
+                    }
                     m
                 }
                 Phase::Rise => {
@@ -867,8 +904,8 @@ mod tests {
             op.auto_rapid_mm_min = None;
             let mut explicit = prepare(op).unwrap();
             loop {
-                let a = auto.next_motion(&|| false).unwrap();
-                let b = explicit.next_motion(&|| false).unwrap();
+                let a = auto.next_motion(None, &|| false).unwrap();
+                let b = explicit.next_motion(None, &|| false).unwrap();
                 assert_eq!(
                     serde_json::to_value(&a).unwrap(),
                     serde_json::to_value(b).unwrap()
