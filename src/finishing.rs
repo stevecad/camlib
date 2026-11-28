@@ -905,7 +905,7 @@ impl ParallelPlan {
                             && !matches!(
                                 op.pattern,
                                 FinishPattern::Pencil { .. }
-                                    | FinishPattern::Scallop
+                                    | FinishPattern::Scallop | FinishPattern::ScallopIntrinsic
                                     | FinishPattern::Geodesic { .. }
                             )),
                     "slope limits, pencil, scallop and geodesic passes need a ball end mill (a flat end mill has no single contact normal)".into(),
@@ -962,7 +962,7 @@ impl ParallelPlan {
                     op.pattern,
                     FinishPattern::Raster
                         | FinishPattern::Spiral { .. }
-                        | FinishPattern::Scallop
+                        | FinishPattern::Scallop | FinishPattern::ScallopIntrinsic
                         | FinishPattern::Geodesic { .. }
                         | FinishPattern::Morph { .. }
                 ) {
@@ -1119,9 +1119,9 @@ impl ParallelPlan {
             FinishPattern::Radial { .. } => (passes.len(), spoke_pitch),
             FinishPattern::Project { .. } | FinishPattern::Pencil { .. } => (passes.len(), 0.),
             FinishPattern::Morph { .. } => (passes.len(), op.stepover_mm),
-            FinishPattern::Scallop | FinishPattern::Geodesic { .. } => {
-                (passes.len(), op.stepover_mm)
-            }
+            FinishPattern::Scallop
+            | FinishPattern::ScallopIntrinsic
+            | FinishPattern::Geodesic { .. } => (passes.len(), op.stepover_mm),
         };
         let mut slope_work = SurfaceWork::default();
         let corner = match cutter.shape {
@@ -1150,7 +1150,10 @@ impl ParallelPlan {
         } else {
             None
         };
-        if matches!(op.pattern, FinishPattern::Scallop) {
+        if matches!(
+            op.pattern,
+            FinishPattern::Scallop | FinishPattern::ScallopIntrinsic
+        ) {
             let spacing = (op.stepover_mm / 4.)
                 .min(radius / 4.)
                 .min((8. * radius * op.path_error_mm).sqrt());
@@ -1161,6 +1164,7 @@ impl ParallelPlan {
                 spacing,
                 op.stepover_mm,
                 inflated,
+                matches!(op.pattern, FinishPattern::ScallopIntrinsic),
                 &mut slope_work,
                 cancel,
             )?;
@@ -1326,7 +1330,10 @@ impl ParallelPlan {
             passes.len()
         } else if matches!(
             op.pattern,
-            FinishPattern::Pencil { .. } | FinishPattern::Scallop | FinishPattern::Geodesic { .. }
+            FinishPattern::Pencil { .. }
+                | FinishPattern::Scallop
+                | FinishPattern::ScallopIntrinsic
+                | FinishPattern::Geodesic { .. }
         ) {
             if passes.is_empty() {
                 return Err(match op.pattern {
@@ -1550,6 +1557,7 @@ impl ParallelPlan {
             FinishPattern::Raster
             | FinishPattern::Pencil { .. }
             | FinishPattern::Scallop
+            | FinishPattern::ScallopIntrinsic
             | FinishPattern::Geodesic { .. } => vec![],
             &FinishPattern::Spiral {
                 center_mm,

@@ -58,6 +58,9 @@ pub enum FinishPattern {
     /// Constant stepover: offsets of the stock outline (grown by the tool
     /// radius) measured along the surface, `stepover_mm` apart.
     Scallop,
+    /// Scallop guides from the boundary distance on a triangulated
+    /// ball-centre grid, without the eight-direction graph restriction.
+    ScallopIntrinsic,
     /// Constant stepover measured along the part's surface from a seed:
     /// iso-lines of the geodesic distance, `stepover_mm` apart, the spacing
     /// measured and the scallop reported (#12).
@@ -108,7 +111,7 @@ impl FinishPattern {
             Self::Project { .. } => "project",
             Self::Morph { .. } => "morph",
             Self::Pencil { .. } => "pencil",
-            Self::Scallop => "scallop",
+            Self::Scallop | Self::ScallopIntrinsic => "scallop",
             Self::Geodesic { .. } => "geodesic",
         }
     }

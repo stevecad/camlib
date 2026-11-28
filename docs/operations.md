@@ -1928,6 +1928,13 @@ distance is computed over the ball-center surface on a sample grid (8
 neighbours, so within about 8% of the true surface distance); each offset is
 cut as a pass with every chord lifted and checked like `Parallel`.
 
+Set `intrinsic_spacing=True` to use the geodesic boundary distance on the
+triangulated ball-centre samples. In Rust, select `FinishPattern::ScallopIntrinsic`.
+The existing grid contour interpolation and cutter-path checks still apply.
+The distance is measured on the sampled tool-centre mesh, so it depends on the
+sampling and describes the guide spacing. Use the existing material check to
+measure actual leftover stock and ridge height.
+
 ### Geodesic: `Geodesic`
 
 `Geodesic(id, tool, surface, floor_z_mm, stepover_mm, clearance_z_mm, seed)`

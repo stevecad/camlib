@@ -48,6 +48,40 @@ use std::{cmp::Ordering, collections::HashMap};
 
 type Vec3 = [f64; 3];
 
+fn boundary_sources(vertices: &[Vec3], topo: &Topology) -> Vec<Piece> {
+    topo.edges
+        .iter()
+        .zip(&topo.faces)
+        .filter(|(_, faces)| faces[1] == NONE)
+        .map(|(&[a, b], faces)| {
+            Piece::Segment(faces[0], vertices[a as usize], vertices[b as usize])
+        })
+        .collect()
+}
+
+pub(super) fn sampled_boundary_distances(
+    vertices: &[Vec3],
+    triangles: &[[u32; 3]],
+    boundary: &[bool],
+    cancel: &impl CancelSignal,
+) -> Result<Vec<f64>, String> {
+    let topology = Topology::new(vertices, triangles, boundary)?;
+    let sources = boundary_sources(vertices, &topology);
+    let distances = Field::compute(
+        vertices,
+        triangles,
+        &topology,
+        &sources,
+        f64::INFINITY,
+        cancel,
+    )?
+    .vertex;
+    if distances.iter().any(|d| !d.is_finite()) {
+        return Err("scallop distance does not reach the complete sampled grid".into());
+    }
+    Ok(distances)
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct GeodesicReport {
     pub seed: &'static str,
@@ -1764,20 +1798,10 @@ fn seeds(
     let mut contact_passes: Vec<(usize, bool, f64, ContactPath)> = vec![];
     let (name, sources, offset, first) = match seed {
         GeodesicSeed::Boundary => {
-            let topo = &drive.topo;
-            let open: Vec<usize> = (0..topo.edges.len())
-                .filter(|&e| topo.faces[e][1] == NONE)
-                .collect();
-            if open.is_empty() {
+            let pieces = boundary_sources(&drive.v, &drive.topo);
+            if pieces.is_empty() {
                 return Err("geodesic boundary seed: the drive surface has no boundary (a closed upward surface); give a point or curve seed".into());
             }
-            let pieces: Vec<Piece> = open
-                .iter()
-                .map(|&e| {
-                    let [a, b] = topo.edges[e];
-                    Piece::Segment(topo.faces[e][0], drive.v[a as usize], drive.v[b as usize])
-                })
-                .collect();
             // The boundary itself is the first pass (so every point has a
             // pass no farther than its distance from the seed).
             for path in boundary_loops(drive) {
