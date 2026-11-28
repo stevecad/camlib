@@ -44,7 +44,7 @@ CLAMPS = ((-1, 20, 6, 40), (94, 20, 101, 40))
 CLAMP_TOP_Z = 15
 
 
-def clamped_facing_job():
+def clamped_facing_job(*, clamp_allowance_mm=0.0):
     from camlib import AvoidArea, Limits
     from camlib.planar import Boundary, Component, PlanarRegion
 
@@ -71,6 +71,8 @@ def clamped_facing_job():
     )
 
     def area(x0, y0, x1, y1, name):
+        x0, y0 = x0 - clamp_allowance_mm, y0 - clamp_allowance_mm
+        x1, y1 = x1 + clamp_allowance_mm, y1 + clamp_allowance_mm
         corners = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
         return AvoidArea(PlanarRegion(name, (Component(Boundary.polygon(corners)),)), CLAMP_TOP_Z)
 

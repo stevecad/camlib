@@ -21,7 +21,7 @@
 //!   every avoid area grown by the cutter radius and the clearance region
 //!   operations keep (`limits::REGION_CLEARANCE`), inside the containment
 //!   shrunk by the same.
-//! - **Rows.** The rows of the plain facing (same Y, same ends outside the
+//! - **Rows.** The rows of the plain facing (same spacing and ends outside the
 //!   stock), each cut into the stretches inside the cutter centres. A stretch
 //!   along which the whole cutter stays clear of the stock cuts nothing and is
 //!   left out: that is decided by the distance from the stretch to the stock
@@ -60,6 +60,24 @@ use crate::{
 };
 use serde::Serialize;
 use std::collections::VecDeque;
+
+// Y-facing uses the same row layout in a frame rotated by 90 degrees.
+// A rotation preserves arc sweeps and keeps the climb direction of edges.
+fn to_row_space([x, y, z]: Vec3) -> Vec3 {
+    [y, -x, z]
+}
+
+fn rotate_region(mut region: PlanarRegion) -> PlanarRegion {
+    for component in &mut region.components {
+        for boundary in std::iter::once(&mut component.outer).chain(&mut component.holes) {
+            for vertex in &mut boundary.vertices {
+                let [x, y, bulge] = *vertex;
+                *vertex = to_row_space([x, y, bulge]);
+            }
+        }
+    }
+    region
+}
 
 /// What facing round limits planned, counted over every depth pass.
 #[derive(Clone, Debug, Default, Serialize)]
@@ -429,7 +447,8 @@ fn layout(
         if cancel.is_cancelled() {
             return Err(super::PLANNING_CANCELLED.into());
         }
-        let y = plan.row_y(row);
+        let across = plan.row_across(row);
+        let y = if plan.axis == 0 { across } else { -across };
         xs.clear();
         xs.extend(
             crossings
@@ -566,6 +585,33 @@ enum At {
     Stretch { stretch: usize, end: usize },
 }
 impl<C: CancelSignal> Builder<'_, C> {
+    fn world_curve(&self, curve: &Curve) -> Curve {
+        if self.plan.axis == 0 {
+            return curve.clone();
+        }
+        let world = |[along, cross, z]: Vec3| [-cross, along, z];
+        match *curve {
+            Curve::Line { start, end } => Curve::Line {
+                start: world(start),
+                end: world(end),
+            },
+            Curve::Arc {
+                start,
+                end,
+                center,
+                plane,
+                sweep_rad,
+            } => Curve::Arc {
+                start: world(start),
+                end: world(end),
+                center: world(center),
+                plane,
+                sweep_rad,
+            },
+            Curve::Helix { .. } => unreachable!("facing routes use lines and XY arcs"),
+        }
+    }
+
     fn poll(&self) -> Result<(), String> {
         if self.cancel.is_cancelled() {
             return Err(super::PLANNING_CANCELLED.into());
@@ -573,7 +619,8 @@ impl<C: CancelSignal> Builder<'_, C> {
         Ok(())
     }
     fn proven(&self, curve: &Curve, kind: MoveKind) -> Result<bool, String> {
-        self.limits.allows_curve(curve, kind != MoveKind::Rapid)
+        self.limits
+            .allows_curve(&self.world_curve(curve), kind != MoveKind::Rapid)
     }
     /// Plan one move, proven inside the limits first.
     fn push(&mut self, curve: Curve, kind: MoveKind, count: Count) -> Result<(), String> {
@@ -606,6 +653,7 @@ impl<C: CancelSignal> Builder<'_, C> {
                 )
             });
         }
+        let curve = self.world_curve(&curve);
         curve.prepare(self.plan.op.tolerance_mm)?;
         self.position = end;
         self.steps.push_back((curve, kind, count));
@@ -804,7 +852,7 @@ impl<C: CancelSignal> Builder<'_, C> {
                 continue;
             }
             // A new chain: the first stretch with an entry from air (the
-            // lowest row from its low end, as the plain facing starts), then
+            // first row from the preferred end, as the plain facing starts), then
             // the one whose entry is nearest.
             let here = [self.position[0], self.position[1]];
             let mut chain: Option<(f64, usize, usize)> = None;
@@ -824,7 +872,7 @@ impl<C: CancelSignal> Builder<'_, C> {
                         continue;
                     }
                     let d = if first {
-                        (s.row * 2 + end) as f64
+                        (s.row * 2 + (end ^ usize::from(self.plan.op.reverse))) as f64
                     } else {
                         metallic::hypot(s.x[end] - here[0], s.y - here[1])
                     };
@@ -1211,23 +1259,53 @@ pub(super) fn route(
     let op = &plan.op;
     let tol = op.tolerance_mm;
     let spec = &plan.spec;
+    let [low, high] = if plan.axis == 0 {
+        [spec.min_mm, spec.max_mm]
+    } else {
+        [
+            to_row_space([spec.max_mm[0], spec.min_mm[1], spec.min_mm[2]]),
+            to_row_space([spec.min_mm[0], spec.max_mm[1], spec.max_mm[2]]),
+        ]
+    };
     let geometry = Geometry {
         plan,
         radius,
-        stock_lo: [spec.min_mm[0], spec.min_mm[1]],
-        stock_hi: [spec.max_mm[0], spec.max_mm[1]],
+        stock_lo: [low[0], low[1]],
+        stock_hi: [high[0], high[1]],
     };
     let h = plan.heights;
+    let initial = if plan.axis == 0 {
+        plan.initial
+    } else {
+        to_row_space(plan.initial)
+    };
+    let prepared = PreparedLimits::new(limits, radius, tol)?;
+    let rows_limits = if plan.axis == 0 {
+        limits.clone()
+    } else {
+        Limits {
+            contain: limits.contain.clone().map(rotate_region),
+            avoid: limits
+                .avoid
+                .iter()
+                .cloned()
+                .map(|mut area| {
+                    area.region = rotate_region(area.region);
+                    area
+                })
+                .collect(),
+        }
+    };
     let mut builder = Builder {
         plan,
         geometry,
-        limits: PreparedLimits::new(limits, radius, tol)?,
+        limits: prepared,
         cancel,
-        position: plan.initial,
+        position: initial,
         steps: VecDeque::new(),
         report: AroundLimitsReport::default(),
     };
-    let [x, y, _] = plan.initial;
+    let [x, y, _] = initial;
     builder.line([x, y, h.clearance], MoveKind::Rapid, Count::None)?;
     // One layout per set of avoid areas whose tops are above the depth.
     let mut layouts: Vec<(Vec<bool>, Layout)> = vec![];
@@ -1235,13 +1313,13 @@ pub(super) fn route(
     let mut floor = None;
     for pass in 0..passes {
         let z = (spec.max_mm[2] - (pass + 1) as f64 * op.stepdown_mm).max(op.floor_z_mm);
-        let active: Vec<bool> = limits.avoid.iter().map(|a| a.top_z_mm > z).collect();
+        let active: Vec<bool> = rows_limits.avoid.iter().map(|a| a.top_z_mm > z).collect();
         let index = match layouts.iter().position(|(k, _)| *k == active) {
             Some(i) => i,
             None => {
                 let at_depth = Limits {
-                    contain: limits.contain.clone(),
-                    avoid: limits
+                    contain: rows_limits.contain.clone(),
+                    avoid: rows_limits
                         .avoid
                         .iter()
                         .zip(&active)

@@ -467,20 +467,11 @@ fn facing_around_a_clamp_enters_in_air_and_refuses_what_it_cannot_honour() {
         change(&mut op);
         run_limited(op, &m).unwrap_err()
     };
-    for (change, name) in [
-        (
-            &(|op: &mut FacingOperation| op.mode = FacingMode::OneWay) as &dyn Fn(&mut _),
-            "mode \"one_way\"",
-        ),
-        (&|op: &mut FacingOperation| op.reverse = true, "reverse"),
-        (&|op: &mut FacingOperation| op.axis = TraverseAxis::Y, "axis \"y\""),
-    ] {
-        let error = refused(change);
-        assert!(
-            error.contains(name) && error.contains("facing face"),
-            "{error}"
-        );
-    }
+    let error = refused(&|op| op.mode = FacingMode::OneWay);
+    assert!(
+        error.contains("mode \"one_way\"") && error.contains("facing face"),
+        "{error}"
+    );
 }
 
 /// Rectangular avoid areas: (low corner, high corner, top).
@@ -539,6 +530,14 @@ fn to_box(p: [f64; 2], lo: [f64; 2], hi: [f64; 2]) -> f64 {
 
 #[test]
 fn facing_round_clamps_cuts_up_to_them_links_at_depth_and_leaves_only_what_they_block() {
+    for axis in [TraverseAxis::X, TraverseAxis::Y] {
+        for reverse in [false, true] {
+            check_clamped_facing(axis, reverse);
+        }
+    }
+}
+
+fn check_clamped_facing(axis: TraverseAxis, reverse: bool) {
     // Clamps on the stock's X- and X+ edges whose keep-out reaches the
     // passes (#422), and a low block on its Y- edge whose top lies between
     // the two depth passes (9 and 8): only the last pass goes round it.
@@ -552,6 +551,8 @@ fn facing_round_clamps_cuts_up_to_them_links_at_depth_and_leaves_only_what_they_
         ([17., -1.], [23., 3.], 8.5),
     ];
     let mut op = operation();
+    op.axis = axis;
+    op.reverse = reverse;
     op.limits = Some(areas(&boxes));
     let cancel = AtomicBool::new(false);
     let mut stock = Stock::new(spec.clone()).unwrap();
@@ -575,6 +576,8 @@ fn facing_round_clamps_cuts_up_to_them_links_at_depth_and_leaves_only_what_they_
 
     let mut position = m.initial_position_mm;
     let mut entries = 0;
+    let along = usize::from(axis == TraverseAxis::Y);
+    let mut first_rows = Vec::new();
     for motion in &moves {
         let (a, b) = (motion.curve.start(), motion.curve.end());
         assert_eq!(a, position);
@@ -612,6 +615,14 @@ fn facing_round_clamps_cuts_up_to_them_links_at_depth_and_leaves_only_what_they_
         }
         // A cut brings the cutter over the stock (no pass in air).
         if motion.kind == MoveKind::Cut {
+            if matches!(motion.curve, Curve::Line { .. })
+                && a[1 - along] == b[1 - along]
+                && a[along] != b[along]
+                && !first_rows.contains(&b[2])
+            {
+                assert_eq!(b[along] < a[along], reverse, "{motion:?}");
+                first_rows.push(b[2]);
+            }
             let over = points.iter().any(|p| {
                 to_box([p[0], p[1]], [spec.min_mm[0], spec.min_mm[1]], [
                     spec.max_mm[0],
@@ -622,9 +633,12 @@ fn facing_round_clamps_cuts_up_to_them_links_at_depth_and_leaves_only_what_they_
         }
     }
     assert_eq!(position[2], op.clearance_z_mm);
+    assert_eq!(first_rows, [9., 8.]);
     // At most one entry for the rows and one for each area's edge per depth
     // pass (two areas at Z 9, three at Z 8): no entry per row.
-    assert!(entries <= (1 + 2) + (1 + 3), "{entries} entries: {report}");
+    if axis == TraverseAxis::X && !reverse {
+        assert!(entries <= (1 + 2) + (1 + 3), "{entries} entries: {report}");
+    }
     assert_eq!(report["around_limits"]["entries"], entries);
 
     // What stands above the floor is only what the areas block: within the

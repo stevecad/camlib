@@ -240,3 +240,110 @@ class FacingTest(unittest.TestCase):
                 near = min(distance_to_box(c, box) for box in module.CLAMPS)
                 self.assertLessEqual(near, 0.021 + half, (c, upper))
         self.assertGreaterEqual(min(heights[::2]), floor - 1e-3)
+
+    def test_posted_clamp_facing_y_and_reverse_match_the_x_stock_fixture(self):
+        from camlib import Job, Setup
+        from camlib.dynamics import MotionPolicy, schedule
+        from camlib.machine import AllowedContact, Box, MachineBody
+        from camlib.motion import Coolant, Spindle, Stop, ToolChange, WorkOffset
+        from camlib.post import ToolSetting
+        from camlib.postprocessor import _typed
+        from camlib.verification import StockContactOptions, StreamChecks
+        from test_limits import distance_to_box
+        from test_machine import model
+        from test_post import fixture
+
+        module = example()
+        # Reserve 0.05 mm in the declared limits for the machine kernel's
+        # outer tool enclosure. The independent model uses the actual boxes.
+        allowance = 0.05
+        config = module.clamped_facing_job(clamp_allowance_mm=allowance)
+        stock, (tool,) = config["stock"], config["tools"]
+        start = config["initial_position_mm"]
+        for axis in ("x", "y"):
+            along = int(axis == "y")
+            for reverse in (False, True):
+                with self.subTest(axis=axis, reverse=reverse):
+                    op = dict(config["operations"][0], axis=axis, reverse=reverse)
+                    checks = StreamChecks(stock_contact=StockContactOptions())
+                    job = Job("clamp-facing", "1", (Setup("top", stock, (tool,), (op,), start, verification=checks),))
+                    header = job.compile().setup("top").program_header()
+                    machine = replace(
+                        fixture()[1],
+                        motion_policy=MotionPolicy(100.0, 6000.0),
+                        tools=(ToolSetting.for_tool(tool, number=1, length_register=1, position_after_mm=start),),
+                    )
+                    declared = model(header, machine)
+                    route = replace(
+                        declared.tool_change_routes[tool.id],
+                        index_envelopes=(Box((-9, -9, -tool.gauge_length_mm - 1), (9, 9, 1)),),
+                    )
+                    clamps = tuple(
+                        MachineBody(
+                            f"clamp-{i}",
+                            "fixture",
+                            "fixed",
+                            (Box((x0, y0, 10), (x1, y1, module.CLAMP_TOP_Z)),),
+                            {},
+                        )
+                        for i, (x0, y0, x1, y1) in enumerate(module.CLAMPS)
+                    )
+                    declared = replace(
+                        declared,
+                        initial_axes_mm=(start[0], start[1], start[2] + tool.gauge_length_mm),
+                        bodies=(*declared.bodies, *clamps),
+                        tool_change_routes={tool.id: route},
+                        allowed_contacts=(
+                            *declared.allowed_contacts,
+                            *(
+                                AllowedContact((clamp.id, "@stock"), "strap clamps rest on the blank")
+                                for clamp in clamps
+                            ),
+                        ),
+                        options=replace(declared.options, max_axis_tests=25_000_000),
+                    )
+                    with job.post("top", machine=replace(machine, crash_model=declared)) as posted:
+                        result = posted.export()
+                        self.assertEqual(result["findings"], ())
+                        self.assertEqual(result["accepted"], ())
+                        self.assertEqual(result["machine"]["status"], "clear")
+                        moves = [posted.posted_motion(i)["motion"] for i in range(result["motions"])]
+                        cut = next(
+                            m
+                            for m in moves
+                            if m["kind"] == "cut"
+                            and m["curve"]["kind"] == "line"
+                            and m["curve"]["start"][1 - along] == m["curve"]["end"][1 - along]
+                            and m["curve"]["start"][along] != m["curve"]["end"][along]
+                        )
+                        self.assertEqual(cut["curve"]["end"][along] < cut["curve"]["start"][along], reverse)
+                        plan = replace(
+                            header,
+                            events=(
+                                WorkOffset(1),
+                                ToolChange(tool.id, 1, 1, start),
+                                Spindle(9000),
+                                Coolant("flood"),
+                                *(_typed({"kind": "motion", "motion": m}) for m in moves),
+                                Coolant("off"),
+                                Spindle(0),
+                                Stop(True),
+                            ),
+                        )
+                        seconds = schedule(plan, machine, adjust_feeds=False).motion_seconds
+                        player = Player(posted)
+                        player.seek(Cursor(posted.status()["available"]))
+                        heights = player.state.heights.tolist()
+                        nx, cell = 200, 0.5
+                        for i, upper in enumerate(heights[1::2]):
+                            if upper > 9.001:
+                                c = ((i % nx + 0.5) * cell, (i // nx + 0.5) * cell)
+                                near = min(distance_to_box(c, box) for box in module.CLAMPS)
+                                self.assertLessEqual(
+                                    near, 0.021 + allowance * 2**0.5 + cell / 2**0.5, (axis, reverse, c, upper)
+                                )
+                        self.assertGreaterEqual(min(heights[::2]), 8.999)
+                        stock_left = player.state.volume()
+                        print(
+                            f"Clamps {axis} reverse={reverse}: {len(moves)} moves, {seconds:.3f} modeled s, {stock_left}"
+                        )

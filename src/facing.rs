@@ -440,9 +440,9 @@ impl FacingPlan {
     /// (`around`): stopped where the limits stop the cutter, linked at depth
     /// where a proven link exists, and finished by a pass along each limit's
     /// edge, every entry a vertical descent with the whole cutter
-    /// `entry_air_gap_mm` clear of the stock. Those rows run along X and are
-    /// linked in zigzag, so `axis="y"`, `mode="one_way"` and `reverse` are
-    /// refused by name there rather than ignored.
+    /// `entry_air_gap_mm` clear of the stock. Both explicit axes use zigzag
+    /// links. One-way facing can leave stretches without an entry and is
+    /// refused by name where the limits reach the cut.
     fn prepare_limited(
         op: FacingOperation,
         limits: crate::limits::Limits,
@@ -472,22 +472,11 @@ impl FacingPlan {
         if op.axis == TraverseAxis::Auto || op.auto_rapid_mm_min.is_some() {
             return Err("automatic facing axis is unavailable with in-plane limits; choose an explicit axis without auto_rapid_mm_min".into());
         }
-        let refuse = |what: &str| {
-            format!(
-                "facing {}: the limits reach the facing passes, so its rows are planned round them, along X and linked in zigzag; {what}, or keep the limits clear of the facing",
-                op.id
-            )
-        };
-        if op.axis == TraverseAxis::Y {
-            return Err(refuse("axis \"y\" is unavailable there: use axis \"x\""));
-        }
         if op.mode == FacingMode::OneWay {
-            return Err(refuse(
-                "mode \"one_way\" is unavailable there: use mode \"zigzag\"",
+            return Err(format!(
+                "facing {}: mode \"one_way\" is unavailable with limits that reach the passes: a stretch closed at both ends needs an at-depth link from another row; use mode \"zigzag\"",
+                op.id
             ));
-        }
-        if op.reverse {
-            return Err(refuse("reverse is unavailable there: use reverse=False"));
         }
         let route = around::route(&plan, &reaching, r, plan.floor_radius, cancel)?;
         plan.around = Some(route.steps);
@@ -497,8 +486,8 @@ impl FacingPlan {
         plan.report.around_limits = Some(route.report);
         Ok(plan)
     }
-    /// The Y (across the rows) of row `row`.
-    fn row_y(&self, row: usize) -> f64 {
+    /// The world coordinate across the rows at row `row`.
+    fn row_across(&self, row: usize) -> f64 {
         if row + 1 == self.report.rows_per_pass {
             self.last_row
         } else {
@@ -551,11 +540,7 @@ impl FacingPlan {
         let reverse = self.op.reverse ^ (self.op.mode == FacingMode::Zigzag && row % 2 == 1);
         let mut p = [0., 0., z];
         p[self.axis] = if reverse ^ end { self.high } else { self.low };
-        p[1 - self.axis] = if row + 1 == self.report.rows_per_pass {
-            self.last_row
-        } else {
-            self.first_row + row as f64 * self.report.row_pitch_mm
-        };
+        p[1 - self.axis] = self.row_across(row);
         p
     }
     fn emit(&mut self, end: Vec3, kind: MoveKind) -> Result<Option<Motion>, String> {
