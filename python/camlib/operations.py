@@ -199,6 +199,7 @@ def steep_and_shallow(
     overlap_deg=5,
     shallow="parallel",
     center_mm=None,
+    transition_scallop_mm=None,
     **common,
 ):
     """Steep-and-shallow finishing as in commercial CAM: waterline contours
@@ -206,12 +207,27 @@ def steep_and_shallow(
     spiral, with ``center_mm``) passes where it is shallower, overlapping by
     ``overlap_deg``. Returns the two operations (steep first) to add to a
     setup; both use ``common`` settings (feeds, allowances, heights, tool
-    numbers)."""
+    numbers). A transition scallop sets a shared ball-end spacing limit for
+    waterline and slope-aware parallel passes."""
     if not 0 < threshold_deg < 90 or not 0 <= overlap_deg < min(threshold_deg, 90 - threshold_deg):
         raise ValueError(
             f"threshold_deg {threshold_deg} must be within (0, 90) and overlap_deg "
             f"{overlap_deg} smaller than its distance to 0 and 90"
         )
+    if transition_scallop_mm is not None:
+        cutter = getattr(tool, "cutter", None)
+        if shallow != "parallel" or dict(getattr(cutter, "shape", ())).get("kind") != "ball":
+            raise ValueError("transition scallop needs a ball-end tool assembly and parallel shallow passes")
+        radius = cutter.diameter_mm / 2
+        if not math.isfinite(transition_scallop_mm) or not 0 < transition_scallop_mm < radius:
+            raise ValueError("transition_scallop_mm must be positive and below the ball radius")
+        # Ball sagitta on a plane. The native waterline planner adds slope
+        # sublevels where this Z gap is too wide, and parallel projects the
+        # spacing onto its cross-feed direction using the contact slopes.
+        spacing = 2 * math.sqrt(transition_scallop_mm * (2 * radius - transition_scallop_mm))
+        stepdown_mm = min(stepdown_mm, spacing)
+        stepover_mm = min(stepover_mm, spacing)
+        common["slope_aware_stepover"] = True
     waterline_keys = set(Waterline.__dataclass_fields__)
     steep = Waterline(
         f"{id}-steep",

@@ -2144,6 +2144,15 @@ overlap_deg=5, shallow="parallel")` returns the two operations of the usual
 steep-and-shallow strategy: waterline above `threshold_deg − overlap_deg` and
 parallel (or spiral, with `center_mm`) below `threshold_deg + overlap_deg`.
 
+With a ball-end tool assembly and parallel passes, opt into shared spacing
+with `transition_scallop_mm=`. This caps the authored waterline stepdown and
+parallel stepover using the same ball sagitta. Waterline still adds its usual
+slope sublevels and parallel uses slope-aware spacing. The value must be
+positive and less than the radius. It is a spacing input. Actual cusp height
+also depends on the surface curvature, the handoff between the two sets of
+passes and the material left by the posted program. The authored overlap
+remains in effect. Check the posted result before tightening it.
+
 ## Waterline finishing: `Waterline`
 
 Required: `surface`, `floor_z_mm`, `top_z_mm`, `bottom_z_mm`, `stepdown_mm`,
