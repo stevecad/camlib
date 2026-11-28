@@ -35,13 +35,14 @@ _COMMANDS = dict(
 _FIXED = ('center_incremental', 'rpm_mode', 'radius_off', 'cycles_off', 'frame_reset', 'exact_stop')
 
 
-def _dialect():
+def _dialect(dwell_max_s=None):
     d = GCodeDialect()
     return replace(
         d,
         commands=tuple(type(d.commands[0])(k, v) for k, v in _COMMANDS.items()),
         fixed_modes=_FIXED,
         radius_tolerance_mm=0,
+        dwell_max_s=dwell_max_s,
     )
 
 
@@ -57,7 +58,7 @@ class ReferenceMachine(Machine):
         if self.output_units != 'mm':
             raise ValueError('Carvera requires mm: G20 halts the firmware')
         super().__post_init__()
-        if self.dialect != _dialect():
+        if self.dialect != _dialect(self.dialect.dwell_max_s):
             raise ValueError('Carvera command mapping differs from the documented subset')
         if not self.unmodified_coordinates or not self.automatic_tool_length:
             raise ValueError('Carvera requires unmodified coordinates and automatic M6 tool-length calibration')
@@ -82,16 +83,26 @@ class ReferenceMachine(Machine):
         return result
 
 
-def define_machine(name, tools, *, initial_gauge_length_mm, unmodified_coordinates, automatic_tool_length, **machine):
+def define_machine(
+    name,
+    tools,
+    *,
+    initial_gauge_length_mm,
+    unmodified_coordinates,
+    automatic_tool_length,
+    dwell_max_s=None,
+    **machine,
+):
     """Declare actual limits/offsets/tool table; mist=True explicitly means AIR.
 
     Initial and final poses must already have gauge-line machine Z=-3.
     Plan the retracts in the setup; the post never adds unverified travel.
+    ``dwell_max_s`` has no default: declare it to write G4 dwells.
     """
     return ReferenceMachine(
         name,
         tools,
-        dialect=_dialect(),
+        dialect=_dialect(dwell_max_s),
         planes=('xy', 'xz', 'yz'),
         arcs=True,
         helices=True,

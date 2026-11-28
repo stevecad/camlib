@@ -143,7 +143,7 @@ Key settings:
   "tangent")` enables `machine.schedule(program)` (time estimate, feeds that
   respect the limits) and `schedule_post_feeds=True` (posts the scheduled feeds).
   Optional `per_block_s=0.0` adds caller-declared seconds to every segment ending
-  at rest, including rapids. It must be finite and between 0 and 10 seconds.
+  at rest, including rapids. It must be finite and nonnegative.
   Exact-stop mode adds it to every motion block; tangent mode adds it only at
   stops, including the final endpoint. Checked posting reports exact-stop
   source and decoded totals separately, so lowering one source motion into
@@ -180,7 +180,7 @@ Key settings:
 | `radius_tolerance_mm` | Allowed start/end radius mismatch of written arcs (0 to 0.005; default LinuxCNC's 0.00127) |
 | `radius_relative_tolerance` | Relative mismatch also allowed up to 100 × `radius_tolerance_mm` (0 to 0.001; default LinuxCNC's 0.001) |
 | `arc_word_mismatch_mm` | Start/end radius mismatch the post may *write* (0 to `radius_tolerance_mm`; default 0: exactly consistent words only) |
-| `dwell_word`, `dwell_resolution_s`, `dwell_max_s` | Dwell word, step and range |
+| `dwell_word`, `dwell_resolution_s`, `dwell_max_s` | Dwell word, step and controller maximum dwell in seconds. `dwell_max_s` has no default (`None`): unless a dialect declares its controller's range, any dwell (G4, G82/G89/G76 P, pierce delay, edge-start delay) is refused by name |
 | `cycle_dwell_unit`, `peck_reentry_mm`, `chip_break_lift_mm` | Canned-cycle dwell unit and the controller's peck return amounts |
 | `tap_pitch_word` | Lead word of a rigid tapping cycle (Centroid Q), or feed |
 | `tap_cycle`, `tap_cycle_left` | Canned rigid tapping, right hand (`G84`) and left hand (`G74`), declared with `with_commands`. The spindle turns in the cycle's direction beforehand (M3 for G84, M4 for G74, FANUC 0i-MB §13.1.2); the decoder refuses a cycle under the other direction. Without `tap_cycle_left` (and without `tap_synchronized` G33.1) a left-hand tap is refused |
@@ -198,7 +198,7 @@ Key settings:
 | `beam_mark` | How the machine marks with its beam ([`ThermalMark`](operations.md#plasma-and-laser-marking-thermalmark), `BeamMark` events), declared by its owner. `None` (default): a marking program is refused. `"power"`: the beam word at the marking power (a laser; GRBL v1.1 laser mode scales the laser power with S). `"mode"`: the controller has a marking process; its codes are declared with `with_commands(mark_mode="M..", cut_mode="M..")` and written with the beam off before the program's first marking beam, before its first cutting beam, and at every change. camlib knows no such code. See [Beam marking](#beam-marking) |
 | `height_control_word` | Word after the `height_control_on`/`off` codes (e.g. `P2` for QtPlasmaC `M63 P2`/`M62 P2`) |
 | `probing` | Probing back end: `None` (probing cycles are refused), `"g38"` (LinuxCNC G38.x) or `"inspection_plus"` (Renishaw Inspection Plus macros); see [Probing](#probing) |
-| `probe_fast_feed_mm_min`, `probe_switching` | Inspection Plus: the installed fast feed #119, and whether each cycle switches the probe on and off (`G65 P9832`/`P9833`) |
+| `probe_fast_feed_mm_min`, `probe_switching` | Inspection Plus: the installed fast feed #119 (at most `Machine.max_feed_mm_min`), and whether each cycle switches the probe on and off (`G65 P9832`/`P9833`) |
 
 `LoweringOptions(native_arcs=..., chord_tolerance_mm=0.0025,
 max_segments_per_source=..., max_total_segments=...)` bounds the curve-to-line
@@ -460,7 +460,12 @@ Hooks: `on_begin(program)`, `on_work_offset`, `on_tool_change`,
 `on_cycle`, `on_cutter_compensation`, `on_spindle_orient`, `on_beam`,
 `on_beam_mark`, `on_height_control`, `on_surface_speed`, `on_feed_per_rev`, `on_finish()`. The default `on_dwell` writes the dialect's `dwell` code (G4)
 with the time in seconds in `dwell_word` (P), rounded up to
-`dwell_resolution_s` and limited to `dwell_max_s`.
+`dwell_resolution_s` and checked against `dwell_max_s`. `dwell_max_s` has no
+default (`None`): when unset, `on_dwell` and canned-cycle dwells refuse by
+name (`<op>: dwell <seconds> s cannot be written: the dialect declares no dwell
+range (GCodeDialect.dwell_max_s)`), and when set, a dwell outside
+`dwell_resolution_s..dwell_max_s` is refused naming the value, range and
+`GCodeDialect.dwell_max_s`.
 
 Plane selection is modal (G17/G18/G19, modal group 2 in the LinuxCNC G-code
 reference; FANUC, Haas and Centroid read it the same way), so the program

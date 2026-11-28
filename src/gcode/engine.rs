@@ -205,7 +205,7 @@ impl Engine {
         let mut actual = Vec::with_capacity(events.len());
         let mut held = Vec::with_capacity(events.len());
         let mut next_id: Option<u64> = None;
-        for (event, original) in events.iter().zip(originals) {
+        for (idx, (event, original)) in events.iter().zip(originals).enumerate() {
             if cancel.is_cancelled() {
                 return Err("post cancelled; batch not committed".into());
             }
@@ -221,6 +221,30 @@ impl Engine {
                 {
                     motion.feed_mm_min = Some(feed);
                 }
+            }
+            match &typed {
+                Event::Motion { motion } => {
+                    self.post.operation = Some(motion.operation.clone());
+                }
+                Event::Cycle { .. } => {
+                    if let Some(op) = events[idx + 1..].iter().find_map(|e| match e {
+                        Event::Motion { motion } => Some(motion.operation.clone()),
+                        _ => None,
+                    }) {
+                        self.post.operation = Some(op);
+                    }
+                }
+                Event::Dwell { .. } => {
+                    if self.post.operation.is_none()
+                        && let Some(op) = events[idx + 1..].iter().find_map(|e| match e {
+                            Event::Motion { motion } => Some(motion.operation.clone()),
+                            _ => None,
+                        })
+                    {
+                        self.post.operation = Some(op);
+                    }
+                }
+                _ => {}
             }
             self.post.position_mm = Some(self.decoder.position);
             self.post.source_event = Some(original.clone());

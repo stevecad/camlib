@@ -936,38 +936,42 @@ TIP_KEPT_SHA256 = {
 # What the three modes that existed before #421 compiled, declared and posted
 # at the commit before it (657ce97): SHA-256 of the compiled setup, of each
 # machine definition and of each program, for this file's two-tool job.
+# (#433 removed GCodeDialect's invented default dwell_max_s=1e5; fanuc_lathe_post
+# declares dwell=None and omits dwell_max_s, updating only its machine hash;
+# every NC program, setup and centroid_lathe_post hash is unchanged.)
 BEFORE_421 = {
     "tip_kept": {
         "setup": "5292485d88d9bb47446b3139321c57bb0c092ade2fdb196e23228966b224d539",
         "centroid_lathe_post.machine": "c36c22928be5ea05f0b6b7a8b96f335f9806b05d8c2d26de464ed83776dec4a1",
         "centroid_lathe_post.nc": "10982777b5c20581751af7a7e52386db0ac3a7f0b185f8f07bc3e3876d686f6b",
-        "fanuc_lathe_post.machine": "f58cfaccd754a96cff39968a3631e07179daf1630604058874076a43083263f3",
+        "fanuc_lathe_post.machine": "25342c67f1aca0c66ee8790c8ef06eebea8690fde6aed88bf48fd36f3b4b6923",
         "fanuc_lathe_post.nc": "fa14250eee23c2855837517676be9ab7feca74d1d2853c66a047ac357812e846",
     },
     "carriage_kept": {
         "setup": "3ab045d70e0af676672ecaaf4021cd18882f9d493fec8da0a1cff2158d6439d3",
         "centroid_lathe_post.machine": "517dad99fd66f45055fd631480776a940839a52e0ae3df6abbeb5cf2c5bd4673",
         "centroid_lathe_post.nc": "10982777b5c20581751af7a7e52386db0ac3a7f0b185f8f07bc3e3876d686f6b",
-        "fanuc_lathe_post.machine": "21ba39d7ab04c3645edfa73c90c3494cdbd223f7f2a47ec7b0fc1f804ab103d6",
+        "fanuc_lathe_post.machine": "30119e3bad82cec04b4b236170c68b42acb09b0037362452c1c456ff0b8f4c07",
         "fanuc_lathe_post.nc": "fa14250eee23c2855837517676be9ab7feca74d1d2853c66a047ac357812e846",
     },
     "machine_position": {
         "setup": "552421501f7ce69405672bca6cc217bf17502a949978127312952ccf00b69fe9",
         "centroid_lathe_post.machine": "23d9d70bb2eda84ec37e54afb60ed36b718f936371d3fd2d4d08c5a738e18d6f",
         "centroid_lathe_post.nc": "61d9b3d2f594387a76f99842bfd30761404e1d4087987c38f6cc5dd15c5f4ad7",
-        "fanuc_lathe_post.machine": "321b899734cd1110ae4599607570039bcd0d6e241c4901d0ba0ec8adf08f7c22",
+        "fanuc_lathe_post.machine": "3ba2222ab219370d4c7063e1768804921db98b98d2c6a7a9b1d8d194714a4166",
         "fanuc_lathe_post.nc": "3776a3ba9ba8f88b8675d494e42761a10068de77dfbeb8acc621c06d7f49ac88",
     },
 }
 
 
 # What the bounded job without tip_travel_mm compiled, declared and posted
-# at 7c7ffbc (before #432).
+# at 7c7ffbc (before #432; fanuc_lathe_post.machine updated for #433 omitting
+# the unrequested dwell_max_s default).
 BOUNDED_NO_TRAVEL_7C7FFBC = {
     "setup": "3955e793414156da957c229b468d7636b6ed4f1b03bfe738887b634ff3c7a5a7",
     "centroid_lathe_post.machine": "3e96541fd9ca511978b7b6a70354cc629408290f6beb8ed5c9e0bcfc38bed172",
     "centroid_lathe_post.nc": "8b7c0a1655d95b4cf7eb078c9e7940b12e5c85b10f1f656836471e56fd41ebf6",
-    "fanuc_lathe_post.machine": "e40ffac769ce70d04ff45bd98a5a4bdcaf4df0de1fc9b677f2b4b40e83411778",
+    "fanuc_lathe_post.machine": "041f9d667c8da8b257b4c55f2e6fc55eb5c792f8914e38f105fc269aac040c71",
     "fanuc_lathe_post.nc": "b79a478a60f987c73acc0c31ee39b98a9f910455de72b48f9b7c4e92e17a6710",
 }
 

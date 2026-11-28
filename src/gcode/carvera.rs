@@ -108,7 +108,6 @@ impl Carvera {
                 && d.compensation_word == "D"
                 && d.compensation_register
                 && d.dwell_resolution_s == 0.001
-                && d.dwell_max_s == 1e5
                 && d.cycle_dwell_unit == "s"
                 && d.peck_reentry_mm == Some(0.254)
                 && d.chip_break_lift_mm == Some(0.254)

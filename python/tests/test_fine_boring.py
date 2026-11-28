@@ -109,6 +109,7 @@ def fanuc(j, edge):
         tool_changes=True,
         flood=True,
         rapid_mm_min=6000,
+        dwell_max_s=1e5,
     )
     return m, f.Fanuc0iMBPost, f.Fanuc0iMBDecoder
 
@@ -174,7 +175,7 @@ class FineBoringTest(unittest.TestCase):
             nc[i + 1 : i + 5], ["G1 X8 Y7.5 Z4 F3000", "G1 X8 Y7.5 Z11 F3000", "G1 X8 Y8 Z11 F3000", "M3 S1000"]
         )
         self.assertFalse(any(line.startswith("G76") for line in nc))
-        dialect = GCodeDialect(oriented_edge_deg=90).with_commands(spindle_orient="M19")
+        dialect = GCodeDialect(oriented_edge_deg=90, dwell_max_s=1e5).with_commands(spindle_orient="M19")
         linuxcnc = Machine(
             "mill",
             tool_table(j),
@@ -211,7 +212,7 @@ class FineBoringTest(unittest.TestCase):
                     "mill",
                     tool_table(j),
                     tool_change_position_mode="preserve_tip",
-                    dialect=GCodeDialect.linuxcnc(),
+                    dialect=GCodeDialect.linuxcnc(dwell_max_s=1e5),
                     output_units='mm',
                     decimals=3,
                     max_feed_mm_min=10000,
@@ -235,7 +236,7 @@ class FineBoringTest(unittest.TestCase):
                     "mill",
                     tool_table(j),
                     tool_change_position_mode="preserve_tip",
-                    dialect=GCodeDialect.linuxcnc(),
+                    dialect=GCodeDialect.linuxcnc(dwell_max_s=1e5),
                     output_units='mm',
                     decimals=3,
                     max_feed_mm_min=10000,

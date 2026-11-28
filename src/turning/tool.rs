@@ -178,6 +178,12 @@ pub(super) fn at(center: [f64; 2], radius: f64, angle_deg: f64) -> [f64; 2] {
     let d = dir(angle_deg);
     [center[0] + radius * d[0], center[1] + radius * d[1]]
 }
+/// Numeric safety: turning tool coordinates within ±1e4 mm keep binary64 ULP
+/// below 1.9e-12 mm (over 500x finer than the 1e-9 mm geometry comparisons and
+/// below the 1e-12 * (1 + |p|) vertex-deduplication guard), while signed areas
+/// stay <= 1e8 mm^2 and `orient2d` products `o1 * o2` stay <= 1e18 (far from
+/// overflow), matching the ±1e4 mm turning envelope in `turning/body.rs` and
+/// `turning/model.rs`.
 fn finite(p: [f64; 2]) -> bool {
     p.iter().all(|v| v.is_finite() && v.abs() <= 1e4)
 }
@@ -290,6 +296,10 @@ impl Outline {
                     start_deg,
                     end_deg,
                 } => {
+                    // Numeric safety: radius <= 1e4 mm keeps arc endpoints
+                    // (`center + radius * dir`) within ±2e4 mm (ULP <= 3.7e-12 mm,
+                    // well below the 1e-6 mm closure gap and 1e-9*(1+r) nose check)
+                    // and arc-area terms `r^2 * (t - sin t)` <= 6.3e8 mm^2.
                     let sweep = end_deg - start_deg;
                     if !finite(*center_mm)
                         || !(radius_mm.is_finite() && (0. ..=1e4).contains(radius_mm))
@@ -544,6 +554,8 @@ impl Insert {
             edge_length_mm,
             nose_radius_mm,
         );
+        // Numeric safety: edge length <= 1e4 mm keeps generated outline
+        // vertices inside `finite`'s ±1e4 mm bound (ULP <= 1.9e-12 mm).
         if !(5. ..=120.).contains(&e)
             || !(30. ..=120.).contains(&k)
             || !(l.is_finite() && l > 0. && l <= 1e4)
@@ -980,6 +992,10 @@ impl Holder {
         length_mm: f64,
         offset_mm: f64,
     ) -> Result<Holder, String> {
+        // Numeric safety: holder dimensions and offset <= 1e4 mm keep the
+        // constructed rectangle coordinates bounded (ULP <= 7.3e-12 mm, well
+        // below 1e-9 mm comparisons) and area/orient2d products well below
+        // overflow.
         let positive = |v: f64| v.is_finite() && v > 0. && v <= 1e4;
         if !positive(width_mm)
             || !positive(length_mm)
@@ -1215,6 +1231,9 @@ fn insert_shape(
 
 impl TurningTool {
     pub fn validate(&self) -> Result<(), String> {
+        // Numeric safety: insert and bar dimensions <= 1e4 mm keep derived
+        // tool geometry inside `finite`'s ±1e4 mm coordinate envelope (ULP <=
+        // 1.9e-12 mm, orient2d products well below overflow).
         let positive = |v: f64| v.is_finite() && v > 0. && v <= 1e4;
         if !crate::tool::valid_id(&self.id)
             || !(self.nose_radius_mm.is_finite()
@@ -1359,6 +1378,8 @@ impl TurningTool {
                     .map_err(|e| format!("turning tool {id:?}: {e}"))?;
             }
         }
+        // Numeric safety: bar axis within ±1e4 mm matches `finite`'s coordinate
+        // envelope (ULP <= 1.9e-12 mm).
         if let Some(bar) = &self.holder.bar
             && (!positive(bar.diameter_mm)
                 || !(bar.axis_x_mm.is_finite() && bar.axis_x_mm.abs() <= 1e4)

@@ -60,6 +60,8 @@ pub struct DefaultPost {
     pub position_mm: Option<Vec3>,
     /// The source event a (possibly lowered) motion was taken from.
     pub source_event: Option<Event>,
+    /// The operation currently being posted (for dwell refusals that name it).
+    pub operation: Option<String>,
     spindle_on: bool,
     /// The beam process the controller is in (`beam_mark = "mode"`): marking
     /// (true), cutting (false) or not yet selected by this program.
@@ -212,6 +214,7 @@ impl DefaultPost {
             geometry_tolerance_mm: 1e-6,
             position_mm: None,
             source_event: None,
+            operation: None,
             spindle_on: false,
             beam_marking: None,
             coolant_mode: Coolant::Off,
@@ -743,12 +746,26 @@ impl DefaultPost {
             }
             Event::Dwell { seconds } => {
                 // Rounded up to the controller's dwell resolution: never shorter.
-                let step = d.dwell_resolution_s;
-                let ticks = (seconds / step - 1e-9).ceil();
-                if ticks.is_nan() || ticks < 1. || ticks * step > d.dwell_max_s + 1e-12 {
+                // Checked against the dialect's declared dwell_max_s (none => refused).
+                let prefix = self
+                    .operation
+                    .as_deref()
+                    .map_or(String::new(), |op| format!("{op}: "));
+                let Some(max_s) = d.dwell_max_s else {
                     return Err(format!(
-                        "dwell {seconds}s outside the controller range {step}..{}s",
-                        d.dwell_max_s
+                        "{prefix}dwell {seconds} s cannot be written: the dialect declares no dwell range (GCodeDialect.dwell_max_s)"
+                    ));
+                };
+                let step = d.dwell_resolution_s;
+                if !seconds.is_finite() || *seconds <= 0. || *seconds > max_s + 1e-12 {
+                    return Err(format!(
+                        "{prefix}dwell {seconds} s is outside the controller range {step}..{max_s} s (GCodeDialect.dwell_resolution_s, GCodeDialect.dwell_max_s)"
+                    ));
+                }
+                let ticks = (seconds / step - 1e-9).ceil();
+                if ticks.is_nan() || ticks < 1. || ticks * step > max_s + 1e-12 {
+                    return Err(format!(
+                        "{prefix}dwell {seconds} s is outside the controller range {step}..{max_s} s (GCodeDialect.dwell_resolution_s, GCodeDialect.dwell_max_s)"
                     ));
                 }
                 let text = format!("{:.*}", step_digits(step), ticks * step);
@@ -1393,22 +1410,42 @@ impl DefaultPost {
         Ok(())
     }
 
-    /// The G82 P word, rounded up to the controller resolution.
+    /// The G82/G89/G76 P word, rounded up to the controller resolution.
     fn cycle_dwell(&self, seconds: f64) -> Result<String, String> {
         let d = &self.machine.dialect;
+        let prefix = self
+            .operation
+            .as_deref()
+            .map_or(String::new(), |op| format!("{op}: "));
+        let Some(max_s) = d.dwell_max_s else {
+            return Err(format!(
+                "{prefix}dwell {seconds} s cannot be written: the dialect declares no dwell range (GCodeDialect.dwell_max_s)"
+            ));
+        };
         if d.cycle_dwell_unit == "ms" {
+            if !seconds.is_finite() || seconds <= 0. || seconds > max_s + 1e-12 {
+                return Err(format!(
+                    "{prefix}dwell {seconds} s is outside the controller range 0.001..{max_s} s (GCodeDialect.dwell_max_s)"
+                ));
+            }
             let ms = (seconds * 1000. - 1e-9).ceil();
-            if ms.is_nan() || ms < 1. || ms > d.dwell_max_s * 1000. {
-                return Err(format!("dwell {seconds}s outside the controller range"));
+            if ms.is_nan() || ms < 1. || ms > max_s * 1000. {
+                return Err(format!(
+                    "{prefix}dwell {seconds} s is outside the controller range 0.001..{max_s} s (GCodeDialect.dwell_max_s)"
+                ));
             }
             return Ok(format!("P{ms}"));
         }
         let step = d.dwell_resolution_s;
-        let ticks = (seconds / step - 1e-9).ceil();
-        if ticks.is_nan() || ticks < 1. || ticks * step > d.dwell_max_s + 1e-12 {
+        if !seconds.is_finite() || seconds <= 0. || seconds > max_s + 1e-12 {
             return Err(format!(
-                "dwell {seconds}s outside the controller range {step}..{}s",
-                d.dwell_max_s
+                "{prefix}dwell {seconds} s is outside the controller range {step}..{max_s} s (GCodeDialect.dwell_resolution_s, GCodeDialect.dwell_max_s)"
+            ));
+        }
+        let ticks = (seconds / step - 1e-9).ceil();
+        if ticks.is_nan() || ticks < 1. || ticks * step > max_s + 1e-12 {
+            return Err(format!(
+                "{prefix}dwell {seconds} s is outside the controller range {step}..{max_s} s (GCodeDialect.dwell_resolution_s, GCodeDialect.dwell_max_s)"
             ));
         }
         let text = format!("{:.*}", step_digits(step), ticks * step);

@@ -170,9 +170,15 @@ impl ReamingPlan {
                     ),
                 ),
                 (
-                    op.dwell_s
-                        .is_none_or(|s| s.is_finite() && s > 0. && s <= 1e5),
-                    format!("dwell_s {:?} must be a positive time in seconds", op.dwell_s),
+                    // Numeric safety only: positive and finite. The control's
+                    // dwell range is its dialect's declaration
+                    // (GCodeDialect.dwell_max_s), checked when the dwell is
+                    // written.
+                    op.dwell_s.is_none_or(|s| s.is_finite() && s > 0.),
+                    format!(
+                        "{}: dwell_s {:?} must be a positive finite time in seconds",
+                        op.id, op.dwell_s
+                    ),
                 ),
                 (
                     !(op.canned_cycle && op.spindle_stop && op.dwell_s.is_some()),

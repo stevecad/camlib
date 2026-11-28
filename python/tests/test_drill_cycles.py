@@ -64,7 +64,7 @@ def linuxcnc(j, dialect=None):
         "mill",
         tool_table(j),
         tool_change_position_mode="preserve_tip",
-        dialect=dialect or GCodeDialect.linuxcnc(),
+        dialect=dialect or GCodeDialect.linuxcnc(dwell_max_s=1e5),
         output_units='mm',
         decimals=3,
         max_feed_mm_min=10000,
@@ -175,6 +175,7 @@ class DrillCycleTest(unittest.TestCase):
             tool_changes=True,
             flood=True,
             rapid_mm_min=6000,
+            dwell_max_s=settings.pop("dwell_max_s", 1e5),
             **settings,
         )
         return haas, m
@@ -292,6 +293,7 @@ class DrillCycleTest(unittest.TestCase):
             tool_changes=True,
             flood=True,
             rapid_mm_min=6000,
+            dwell_max_s=1e5,
         )
         nc = posted_text(job(dwell_s=0.25), f, fanuc.Fanuc0iMBPost, fanuc.Fanuc0iMBDecoder)
         self.assertEqual(

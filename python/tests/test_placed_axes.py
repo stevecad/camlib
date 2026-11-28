@@ -22,7 +22,7 @@ from camlib.machine import (
     ToolChangeRoute,
 )
 from camlib.motion import WorkFrame
-from camlib.post import GCodePost, post_job, post_job_input
+from camlib.post import GCodeDialect, GCodePost, post_job, post_job_input
 from camlib.verification import StockContactOptions
 from support.facing import facing_job
 from test_rust_post import ROOT, example, plain
@@ -85,6 +85,7 @@ def facing_from_home(work_error_mm=0.02, tool_change=None):
     setting = ToolSetting.for_tool(tool, number=1, length_register=1)
     m = mill(
         {},
+        dialect=GCodeDialect.linuxcnc(dwell_max_s=1e5),
         mode='preserve_spindle',
         tool_table=(setting,),
         work_to_machine=WorkFrame(ORIGIN),

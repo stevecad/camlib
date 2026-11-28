@@ -22,6 +22,7 @@ def _dialect(
     rigid_tapping_m29=False,
     inspection_plus_fast_feed_mm_min=None,
     inspection_plus_switching=False,
+    dwell_max_s=None,
 ):
     if set(m_codes) != _OEM or len(set(m_codes.values())) != len(_OEM):
         raise ValueError('bind distinct OEM tool/spindle/flood/off M functions')
@@ -73,6 +74,7 @@ def _dialect(
         fixed_modes=('center_incremental', 'rpm_mode'),
         radius_tolerance_mm=0,
         cycle_dwell_unit='ms',
+        dwell_max_s=dwell_max_s,
         peck_reentry_mm=peck_return_mm,
         chip_break_lift_mm=chip_break_return_mm,
         oriented_edge_deg=fine_bore_edge_deg,
@@ -165,6 +167,7 @@ class ReferenceMachine(Machine):
                 self.rigid_tapping_m29,
                 self.inspection_plus_fast_feed_mm_min,
                 self.inspection_plus_switching,
+                self.dialect.dwell_max_s,
             )
             or self.mist
         ):
@@ -220,6 +223,7 @@ def define_machine(
     rigid_tapping_m29=False,
     inspection_plus_fast_feed_mm_min=None,
     inspection_plus_switching=False,
+    dwell_max_s=None,
     **settings,
 ):
     """Define the installed machine in ordinary Python; no controller writes.
@@ -246,6 +250,7 @@ def define_machine(
             rigid_tapping_m29=rigid_tapping_m29,
             inspection_plus_fast_feed_mm_min=inspection_plus_fast_feed_mm_min,
             inspection_plus_switching=inspection_plus_switching,
+            dwell_max_s=dwell_max_s,
         ),
         rigid_tapping=rigid_tapping,
         rigid_tapping_m29=rigid_tapping_m29,

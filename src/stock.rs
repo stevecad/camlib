@@ -758,6 +758,12 @@ pub struct Stock {
 
 impl StockSpec {
     pub(crate) fn grid(&self) -> Result<(usize, usize, [f64; 2]), String> {
+        // Numeric safety (mirrors python/camlib/simulation.py): extents are
+        // within ±1e6 mm (span <= 2e6 mm, ULP <= 1.2e-10 mm), so cell_size_mm
+        // >= 1e-5 keeps (max - min) / cell_size_mm <= 2e11 (finite and exact in
+        // binary64 before ceil and the max_cells check) and stays well above
+        // the 128 * EPSILON * magnitude step floor below; <= 1e6 stays within
+        // the coordinate envelope.
         if self.version != 1
             || self.units != "mm"
             || !self

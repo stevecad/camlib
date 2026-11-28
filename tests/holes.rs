@@ -565,11 +565,16 @@ fn drilling_dwell_follows_the_final_depth_cut_of_each_hole() {
         }
         assert_eq!(dwells, holes);
     }
-    for bad in [0., -1., f64::NAN, 1e6] {
+    for bad in [0., -1., f64::NAN, f64::INFINITY] {
         let mut op = drilling();
         op.dwell_s = Some(bad);
         assert!(drill_plan(op).err().unwrap().contains("dwell_s"));
     }
+    // Previously refused only by the invented 1e5 cap (#433): the control's
+    // dwell range is the dialect's dwell_max_s at post time.
+    let mut long = drilling();
+    long.dwell_s = Some(1e6);
+    assert!(drill_plan(long).is_ok());
 }
 
 /// LinuxCNC interp_cycles.cc G81/G82/G83/G73 with G98, re-stated

@@ -22,6 +22,7 @@ modules! {
     adaptive,
     adaptive_front_complete,
     assembly_reach,
+    bound_sources,
     chamfer,
     contour,
     contracts,

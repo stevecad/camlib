@@ -1074,6 +1074,12 @@ class StockState:
         if spec["version"] != 1 or spec["units"] != "mm" or not _point(spec["min_mm"]) or not _point(spec["max_mm"]):
             raise ProtocolError("invalid stock specification")
         self.min_mm, self.max_mm = tuple(spec["min_mm"]), tuple(spec["max_mm"])
+        # Numeric safety (mirrors src/stock.rs): extents are within +-1e6 mm
+        # (span <= 2e6 mm, ULP <= 1.2e-10 mm), so cell_size_mm >= 1e-5 keeps
+        # (max - min) / spacing <= 2e11 (finite and exact in binary64 before
+        # ceil and the max_cells <= 0xFFFFFFFF check) and stays well above the
+        # 128 * EPSILON * magnitude grid-step floor; cell_size_mm <= 1e6 stays
+        # within the coordinate envelope so extents / spacing does not underflow.
         spacing = spec["cell_size_mm"]
         if (
             not math.isfinite(spacing)

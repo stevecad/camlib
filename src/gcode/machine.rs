@@ -56,7 +56,11 @@ pub struct Dialect {
     pub compensation_amount_word: Option<String>,
     pub dwell_word: String,
     pub dwell_resolution_s: f64,
-    pub dwell_max_s: f64,
+    /// Controller's declared maximum dwell in seconds, or none (every dwell
+    /// is then refused by name). Omitted when unset; declared values serialize
+    /// identically to before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dwell_max_s: Option<f64>,
     pub cycle_dwell_unit: String,
     #[serde(deserialize_with = "present")]
     pub peck_reentry_mm: Option<f64>,
@@ -369,14 +373,27 @@ impl Dialect {
         {
             return Err("tap_pitch_word must be a free uppercase letter".into());
         }
+        // Numeric safety: dwell ticks (seconds / step, and whole milliseconds
+        // when cycle_dwell_unit == "ms") stay exact binary64 integers (<= 2^53)
+        // so ceil(seconds / step - 1e-9) never loses integer precision or
+        // overflows. The control's own maximum is the declared dwell_max_s.
+        const MAX_EXACT_TICKS: f64 = (1u64 << 53) as f64;
+        let tick_step = if self.cycle_dwell_unit == "ms" {
+            self.dwell_resolution_s.min(1e-3)
+        } else {
+            self.dwell_resolution_s
+        };
         if !letter(&self.dwell_word)
             || taken(&self.dwell_word, &["G", "M", "N"])
             || !(self.dwell_resolution_s.is_finite()
                 && 0. < self.dwell_resolution_s
                 && self.dwell_resolution_s <= 1.)
-            || !(self.dwell_max_s.is_finite()
-                && self.dwell_resolution_s <= self.dwell_max_s
-                && self.dwell_max_s <= 1e5)
+            || self.dwell_max_s.is_some_and(|max_s| {
+                !(max_s.is_finite()
+                    && self.dwell_resolution_s <= max_s
+                    && (max_s / tick_step).is_finite()
+                    && max_s / tick_step <= MAX_EXACT_TICKS)
+            })
         {
             return Err("invalid declared dwell word/resolution/maximum".into());
         }
@@ -400,11 +417,14 @@ impl Dialect {
         if !["s", "ms"].contains(&self.cycle_dwell_unit.as_str()) {
             return Err("cycle_dwell_unit must be 's' or 'ms'".into());
         }
+        // Numeric safety only: positive and finite; the return amount is the
+        // controller's declared parameter (e.g. Haas Setting 22, FANUC
+        // 5115/5114, Centroid 83/73).
         for value in [self.peck_reentry_mm, self.chip_break_lift_mm]
             .into_iter()
             .flatten()
         {
-            if !(value.is_finite() && 0. < value && value <= 100.) {
+            if !(value.is_finite() && 0. < value) {
                 return Err("canned cycle return amounts must be positive millimetres".into());
             }
         }
@@ -511,8 +531,10 @@ impl Dialect {
         if macros != self.probe_fast_feed_mm_min.is_some() || (self.probe_switching && !macros) {
             return Err("declare probe_fast_feed_mm_min (#119) and probe_switching exactly with inspection_plus probing".into());
         }
+        // Numeric safety only: positive and finite; Machine::validate holds
+        // probe_fast_feed_mm_min to Machine.max_feed_mm_min.
         if let Some(f) = self.probe_fast_feed_mm_min
-            && !(f.is_finite() && 0. < f && f <= 1e5)
+            && !(f.is_finite() && 0. < f)
         {
             return Err("probe_fast_feed_mm_min must be a positive feed".into());
         }
@@ -763,6 +785,19 @@ impl Machine {
         ] {
             if !value.is_finite() || !(1e-9..=0.1).contains(&value) {
                 return Err(format!("{name} must be finite and in [1e-9, .1]"));
+            }
+        }
+        // Declared machine limit: the probe macro's fast feed (#119) is at
+        // most Machine.max_feed_mm_min.
+        if let Some(f) = self.dialect.probe_fast_feed_mm_min {
+            if !(self.max_feed_mm_min.is_finite() && self.max_feed_mm_min > 0.) {
+                return Err("probing: inspection_plus probing requires a positive finite maximum feed (GCodeDialect.probe_fast_feed_mm_min, Machine.max_feed_mm_min)".into());
+            }
+            if f > self.max_feed_mm_min {
+                return Err(format!(
+                    "probing: the probe macro's fast feed {f} mm/min is above the machine's maximum feed {} mm/min (GCodeDialect.probe_fast_feed_mm_min, Machine.max_feed_mm_min)",
+                    self.max_feed_mm_min
+                ));
             }
         }
         if let Some(f) = self.traverse_feed_mm_min

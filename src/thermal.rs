@@ -609,8 +609,15 @@ impl ThermalCutPlan {
                     "program heights need cut_height_mm <= pierce_height_mm <= travel_height_mm and a positive plunge_mm_min".into(),
                 ),
                 (
-                    op.pierce_delay_s.is_finite() && (0. ..=1e3).contains(&op.pierce_delay_s),
-                    format!("pierce_delay_s {} must be 0..1000", op.pierce_delay_s),
+                    // Numeric safety only: nonnegative and finite. The
+                    // control's dwell range is its dialect's declaration
+                    // (GCodeDialect.dwell_max_s), checked when the dwell is
+                    // written.
+                    op.pierce_delay_s.is_finite() && op.pierce_delay_s >= 0.,
+                    format!(
+                        "{}: pierce_delay_s {} must be a finite, nonnegative time in seconds",
+                        op.id, op.pierce_delay_s
+                    ),
                 ),
                 (
                     op.power_percent.is_finite() && op.power_percent > 0. && op.power_percent <= 100.,
@@ -991,19 +998,27 @@ impl ThermalCutPlan {
             k.validate()
                 .map_err(|e| format!("thermal cut {}: {e}", op.id))?;
         }
-        if let Some(e) = &op.edge_starts
-            && !(e.run_on_mm.is_finite()
+        if let Some(e) = &op.edge_starts {
+            if !(e.run_on_mm.is_finite()
                 && (0. ..=1e3).contains(&e.run_on_mm)
                 && e.max_lead_mm.is_finite()
                 && e.max_lead_mm > 0.
-                && e.max_lead_mm <= 1e4
-                && e.delay_s.is_finite()
-                && (0. ..=1e3).contains(&e.delay_s))
-        {
-            return Err(format!(
-                "thermal cut {}: edge_starts needs run_on_mm of zero or more (how far beyond the sheet's edge the beam stands when it fires), a positive max_lead_mm (the longest lead from there to the loop) and a delay_s of 0..1000",
-                op.id
-            ));
+                && e.max_lead_mm <= 1e4)
+            {
+                return Err(format!(
+                    "thermal cut {}: edge_starts needs run_on_mm of zero or more (how far beyond the sheet's edge the beam stands when it fires) and a positive max_lead_mm (the longest lead from there to the loop)",
+                    op.id
+                ));
+            }
+            // Numeric safety only: nonnegative and finite. The control's dwell
+            // range is its dialect's declaration (GCodeDialect.dwell_max_s),
+            // checked when the dwell is written.
+            if !(e.delay_s.is_finite() && e.delay_s >= 0.) {
+                return Err(format!(
+                    "thermal cut {}: edge_starts.delay_s {} must be a finite, nonnegative time in seconds",
+                    op.id, e.delay_s
+                ));
+            }
         }
         if let Some(chain) = &op.chain {
             if !(chain.max_link_mm.is_finite()

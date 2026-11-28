@@ -42,7 +42,7 @@ def fixture():
     m = Machine(
         'post-machine',
         (ToolSetting.for_tool(t, number=2, length_register=7, position_after_mm=p.initial_position_mm),),
-        dialect=GCodeDialect.linuxcnc(),
+        dialect=GCodeDialect.linuxcnc(dwell_max_s=1e5),
         output_units='mm',
         decimals=6,
         tolerance_mm=0.001,

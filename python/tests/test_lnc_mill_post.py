@@ -45,6 +45,7 @@ def lnc(tools, **settings):
         arc_radius_tolerance_mm=0.002,
         traverse_feed_mm_min=3000,
         work_to_machine=WorkFrame(),
+        dwell_max_s=1e5,
         **SETTINGS,
     )
     values.update(settings)

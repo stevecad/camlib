@@ -154,12 +154,13 @@ class ReferenceMachine(Machine):
             **_cycle_codes(self.setting_22_mm, self.setting_52_mm),
             **({'radius_left': 'G41', 'radius_right': 'G42'} if self.cutter_compensation is True else {}),
         )
+        # Numeric safety only: finite and nonnegative; the installed Setting 22 /
+        # Setting 52 values are the owner's declaration (no upper range is cited
+        # from Haas 96-8210 Rev N).
         for name in ('setting_22_mm', 'setting_52_mm'):
             value = getattr(self, name)
-            if value is not None and (
-                type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 100
-            ):
-                raise ValueError(f'{name} must be a declared distance in mm (0..100)')
+            if value is not None and (type(value) not in (int, float) or not math.isfinite(value) or value < 0):
+                raise ValueError(f'{name} must be a finite, nonnegative distance in mm')
         if self.setting_22_mm is not None and self.setting_22_mm <= 0:
             raise ValueError('setting_22_mm (Setting 22, Can Cycle Delta Z) must be positive')
         if (d.peck_reentry_mm, d.chip_break_lift_mm) != (self.setting_22_mm, self.setting_22_mm):
@@ -208,6 +209,7 @@ def define_machine(
     rigid = settings.get('rigid_tapping', False)
     comp = settings.get('cutter_compensation', False)
     delta_z = settings.get('setting_22_mm')
+    dwell_max_s = settings.pop('dwell_max_s', None)
     cycles = _cycle_codes(delta_z, settings.get('setting_52_mm'))
     d = replace(
         GCodeDialect(),
@@ -216,6 +218,7 @@ def define_machine(
         compensation_with_move=comp is True,
         cycle_dwell_unit='s',
         dwell_resolution_s=0.001,
+        dwell_max_s=dwell_max_s,
     ).with_commands(
         rapid=None,
         plane_xz=None,
@@ -238,6 +241,8 @@ def define_machine(
     )
     # The pecking return amounts are Setting 22, set with the commands so the
     # dialect is validated once with both.
+    if delta_z is not None and (type(delta_z) not in (int, float) or not math.isfinite(delta_z) or delta_z <= 0):
+        raise ValueError('setting_22_mm (Setting 22, Can Cycle Delta Z) must be a positive finite distance in mm')
     d = replace(d, peck_reentry_mm=delta_z, chip_break_lift_mm=delta_z)
     curve_policy = settings.pop('curve_policy', 'linear')
     return ReferenceMachine(

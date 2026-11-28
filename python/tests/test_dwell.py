@@ -68,7 +68,7 @@ class DwellTest(unittest.TestCase):
                 "mill",
                 tool_table(j),
                 tool_change_position_mode="preserve_tip",
-                dialect=GCodeDialect.linuxcnc(),
+                dialect=GCodeDialect.linuxcnc(dwell_max_s=1e5),
                 output_units='mm',
                 decimals=3,
                 max_feed_mm_min=10000,
@@ -124,7 +124,7 @@ class DwellTest(unittest.TestCase):
             "mill",
             tool_table(j),
             tool_change_position_mode="preserve_tip",
-            dialect=GCodeDialect.linuxcnc(),
+            dialect=GCodeDialect.linuxcnc(dwell_max_s=1e5),
             output_units='mm',
             decimals=3,
             max_feed_mm_min=10000,
@@ -201,6 +201,7 @@ class DwellTest(unittest.TestCase):
             tool_changes=True,
             flood=True,
             rapid_mm_min=6000,
+            dwell_max_s=1e5,
         )
         # Haas G04: P in seconds with a decimal point (96-8210 Rev N, G04
         # note), millisecond resolution: the planned 0.333 s exactly.

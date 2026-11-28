@@ -1238,6 +1238,11 @@ impl PreparedRegion {
         if self.linear_components.is_none() {
             return Err("square inflation needs a linear region".into());
         }
+        // Numeric safety: at the finest integer grid (1e-8 mm), delta_mm <= 1e3
+        // keeps the Clipper2 offset delta_mm / grid <= 1e11 (and square-join
+        // mitred shifts <= 2e11), well inside exact binary64 integers (2^53)
+        // and Clipper2 Point64 coordinates so inflation and i128 area sums
+        // cannot overflow.
         if !delta_mm.is_finite() || !(0. ..=1e3).contains(&delta_mm) {
             return Err("square inflation distance must be finite, 0..1000 mm".into());
         }

@@ -105,7 +105,7 @@ class CommonLineTest(unittest.TestCase):
             ToolSetting.for_tool(t, number=1, length_register=1, position_after_mm=header.initial_position_mm)
             for t in header.tools
         )
-        dialect = GCodeDialect(beam_s_max=1, height_control_word="P2").with_commands(
+        dialect = GCodeDialect(beam_s_max=1, height_control_word="P2", dwell_max_s=1e5).with_commands(
             height_control_on="M63", height_control_off="M62"
         )
         machine = Machine(
