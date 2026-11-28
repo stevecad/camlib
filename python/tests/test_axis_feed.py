@@ -114,13 +114,16 @@ class AxisFeedTest(unittest.TestCase):
             (True, 1000, 1000),
             (1000, 1000),
             (1000,) * 4,
-            (1e8, 1000, 1000),
         ):
             with self.subTest(bad=bad):
                 with self.assertRaises(ValueError):
                     replace(baseline, max_axis_feed_mm_min=bad)
                 with self.assertRaises(ValueError):
                     MachineLimits((-100,) * 3, (100,) * 3, 2000, max_axis_feed_mm_min=bad)
+        # A large declared limit is the machine's value, not malformed:
+        # camlib states no upper bound of its own for it (#429).
+        self.assertEqual(replace(baseline, max_axis_feed_mm_min=(1e8, 1000, 1000)).max_axis_feed_mm_min[0], 1e8)
+        MachineLimits((-100,) * 3, (100,) * 3, 2000, max_axis_feed_mm_min=(1e8, 1000, 1000))
 
     def test_full_turns_all_planes_senses_pitch_units_and_decoders(self):
         p, s = fixture()

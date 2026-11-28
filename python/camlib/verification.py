@@ -95,10 +95,11 @@ class MachineLimits:
 
             values = tuple(itertools.islice(iter(self.max_axis_feed_mm_min), 4))
             if len(values) != 3 or any(
-                isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not 1e-6 <= v <= 1e7
+                isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not v > 0
                 for v in values
             ):
-                raise ValueError("max_axis_feed_mm_min requires three finite positive axis limits in [1e-6, 1e7]")
+                # Numeric safety only: the values are the machine's (#429).
+                raise ValueError("max_axis_feed_mm_min requires three positive finite axis limits")
             object.__setattr__(self, "max_axis_feed_mm_min", values)
 
     def to_dict(self):

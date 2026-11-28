@@ -768,25 +768,21 @@ impl Machine {
         if let Some(f) = self.traverse_feed_mm_min
             && (!f.is_finite() || !(0. < f && f <= self.max_feed_mm_min))
         {
-            return Err(
-                "traverse_feed_mm_min must be positive, finite and within machine feed limits"
-                    .into(),
-            );
+            return Err(format!(
+                "traverse_feed_mm_min {f} mm/min must be positive, finite and at most the machine's maximum feed {} mm/min (max_feed_mm_min)",
+                self.max_feed_mm_min
+            ));
         }
+        // Numeric safety only: the values are the machine's (#429).
         if let Some(a) = self.max_normal_accel_mm_s2
-            && (!a.is_finite() || !(1e-6..=1e9).contains(&a))
+            && !(a.is_finite() && a > 0.)
         {
-            return Err("max_normal_accel_mm_s2 must be finite and in [1e-6, 1e9]".into());
+            return Err("max_normal_accel_mm_s2 must be positive and finite".into());
         }
         if let Some(limits) = self.max_axis_feed_mm_min
-            && limits
-                .iter()
-                .any(|v| !v.is_finite() || !(1e-6..=1e7).contains(v))
+            && limits.iter().any(|v| !(v.is_finite() && *v > 0.))
         {
-            return Err(
-                "max_axis_feed_mm_min requires three finite positive axis limits in [1e-6, 1e7]"
-                    .into(),
-            );
+            return Err("max_axis_feed_mm_min requires three positive finite axis limits".into());
         }
         if 3f64.sqrt() * 0.5 * self.unit() * 10f64.powi(-(self.decimals as i32)) > self.tolerance_mm
         {

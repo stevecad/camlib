@@ -228,6 +228,17 @@ def _facing_axis_target():
     return ("region", PlanarRegion("facing rectangle", (Component(boundary),)), 8.0)
 
 
+def _facing_clamps():
+    return _options(_support("facing").clamped_facing_job())
+
+
+def _facing_clamps_target():
+    from camlib import Boundary, Component, PlanarRegion
+
+    boundary = Boundary.polygon(((0, 0), (100, 0), (100, 60), (0, 60)))
+    return ("region", PlanarRegion("facing rectangle", (Component(boundary),)), 9.0)
+
+
 def _pocket():
     return _options(_support("pocket").cadquery_job())
 
@@ -960,6 +971,14 @@ WORKLOADS = (
         {"face": ("Facing", 24)},
         _facing_axis(True),
         _facing_axis_target,
+    ),
+    Workload(
+        "facing-clamps",
+        "mill",
+        "Face a 100 x 60 block 1 mm round two clamps over its X- and X+ edges",
+        {"face": ("Facing", 422)},
+        _facing_clamps,
+        _facing_clamps_target,
     ),
     Workload(
         "pocket",

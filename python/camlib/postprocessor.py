@@ -867,20 +867,25 @@ class Machine:
         if self.traverse_feed_mm_min is not None and (
             not math.isfinite(self.traverse_feed_mm_min) or not 0 < self.traverse_feed_mm_min <= self.max_feed_mm_min
         ):
-            raise ValueError('traverse_feed_mm_min must be positive, finite and within machine feed limits')
+            raise ValueError(
+                f'traverse_feed_mm_min {self.traverse_feed_mm_min} mm/min must be positive, finite and at most the '
+                f"machine's maximum feed {self.max_feed_mm_min} mm/min (max_feed_mm_min)"
+            )
         if self.max_normal_accel_mm_s2 is not None and (
             isinstance(self.max_normal_accel_mm_s2, bool)
             or not math.isfinite(self.max_normal_accel_mm_s2)
-            or not 1e-6 <= self.max_normal_accel_mm_s2 <= 1e9
+            or not self.max_normal_accel_mm_s2 > 0
         ):
-            raise ValueError('max_normal_accel_mm_s2 must be finite and in [1e-6, 1e9]')
+            # Numeric safety only: the value is the machine's (#429).
+            raise ValueError('max_normal_accel_mm_s2 must be positive and finite')
         if self.max_axis_feed_mm_min is not None:
             limits = tuple(islice(iter(self.max_axis_feed_mm_min), 4))
             if len(limits) != 3 or any(
-                isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not 1e-6 <= v <= 1e7
+                isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not v > 0
                 for v in limits
             ):
-                raise ValueError('max_axis_feed_mm_min requires three finite positive axis limits in [1e-6, 1e7]')
+                # Numeric safety only: the values are the machine's (#429).
+                raise ValueError('max_axis_feed_mm_min requires three positive finite axis limits')
             object.__setattr__(self, 'max_axis_feed_mm_min', limits)
         unit = 25.4 if self.output_units == 'inch' else 1
         if math.sqrt(3) * 0.5 * unit * 10**-self.decimals > self.tolerance_mm:

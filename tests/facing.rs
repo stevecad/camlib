@@ -482,3 +482,190 @@ fn facing_around_a_clamp_enters_in_air_and_refuses_what_it_cannot_honour() {
         );
     }
 }
+
+/// Rectangular avoid areas: (low corner, high corner, top).
+fn areas(boxes: &[([f64; 2], [f64; 2], f64)]) -> camlib::limits::Limits {
+    let avoid: Vec<_> = boxes
+        .iter()
+        .map(|&(lo, hi, top)| avoid(lo, hi, top).avoid.remove(0))
+        .collect();
+    camlib::limits::Limits {
+        contain: None,
+        avoid,
+    }
+}
+/// Points along a move, at most `step` apart (lines and XY arcs).
+fn samples(curve: &Curve, step: f64) -> Vec<[f64; 3]> {
+    match *curve {
+        Curve::Line { start, end } => {
+            let length = (0..3).map(|k| (end[k] - start[k]).powi(2)).sum::<f64>().sqrt();
+            let n = ((length / step).ceil() as usize).max(1);
+            (0..=n)
+                .map(|i| {
+                    let t = i as f64 / n as f64;
+                    [0, 1, 2].map(|k| start[k] + t * (end[k] - start[k]))
+                })
+                .collect()
+        }
+        Curve::Arc {
+            start,
+            end,
+            center,
+            plane: Plane::Xy,
+            sweep_rad,
+        } => {
+            let rho = (start[0] - center[0]).hypot(start[1] - center[1]);
+            let a0 = (start[1] - center[1]).atan2(start[0] - center[0]);
+            let n = (((rho * sweep_rad.abs()) / step).ceil() as usize).max(1);
+            (0..=n)
+                .map(|i| {
+                    let t = i as f64 / n as f64;
+                    let a = a0 + t * sweep_rad;
+                    [
+                        center[0] + rho * a.cos(),
+                        center[1] + rho * a.sin(),
+                        start[2] + t * (end[2] - start[2]),
+                    ]
+                })
+                .collect()
+        }
+        _ => panic!("facing round limits plans lines and XY arcs only: {curve:?}"),
+    }
+}
+fn to_box(p: [f64; 2], lo: [f64; 2], hi: [f64; 2]) -> f64 {
+    let d = [0, 1].map(|k| (lo[k] - p[k]).max(p[k] - hi[k]).max(0.));
+    d[0].hypot(d[1])
+}
+
+#[test]
+fn facing_round_clamps_cuts_up_to_them_links_at_depth_and_leaves_only_what_they_block() {
+    // Clamps on the stock's X- and X+ edges whose keep-out reaches the
+    // passes (#422), and a low block on its Y- edge whose top lies between
+    // the two depth passes (9 and 8): only the last pass goes round it.
+    let m = fixture();
+    let spec = m.stock.height().unwrap().clone();
+    let r = m.tools[0].cutter.diameter_mm / 2.;
+    // Their tops are under the 12 mm clearance plane, so rapids pass over.
+    let boxes = [
+        ([-1., 8.], [5., 16.], 11.5),
+        ([35., 8.], [41., 16.], 11.5),
+        ([17., -1.], [23., 3.], 8.5),
+    ];
+    let mut op = operation();
+    op.limits = Some(areas(&boxes));
+    let cancel = AtomicBool::new(false);
+    let mut stock = Stock::new(spec.clone()).unwrap();
+    let mut plan = camlib::operation::OperationPlan::prepare_with_stock(
+        Operation::Facing(op.clone()),
+        &m.tools[0],
+        &stock,
+        m.initial_position_mm,
+        1,
+        &cancel,
+    )
+    .unwrap();
+    let mut moves = vec![];
+    let mut error = 0f64;
+    while let Some(motion) = plan.next_motion_with_stock(&stock, &cancel).unwrap() {
+        error = error.max(commit(&mut stock, &motion, &m));
+        moves.push(motion);
+    }
+    let report = serde_json::to_value(plan.report()).unwrap();
+    assert_eq!(report["strategy"], "facing_round_limits", "{report}");
+
+    let mut position = m.initial_position_mm;
+    let mut entries = 0;
+    for motion in &moves {
+        let (a, b) = (motion.curve.start(), motion.curve.end());
+        assert_eq!(a, position);
+        position = b;
+        // Every rise is straight up.
+        if b[2] > a[2] {
+            assert_eq!((a[0], a[1]), (b[0], b[1]), "{motion:?}");
+            assert!(matches!(motion.kind, MoveKind::Retract | MoveKind::Rapid));
+        }
+        // Every descent into the stock is vertical, with the whole cutter at
+        // least the air gap outside it.
+        if a[2] >= spec.max_mm[2] && b[2] < spec.max_mm[2] {
+            entries += 1;
+            assert_eq!((a[0], a[1]), (b[0], b[1]), "{motion:?}");
+            let outside = to_box([b[0], b[1]], [spec.min_mm[0], spec.min_mm[1]], [
+                spec.max_mm[0],
+                spec.max_mm[1],
+            ]);
+            assert!(outside >= r + op.entry_air_gap_mm, "{motion:?}");
+        }
+        let points = samples(&motion.curve, 0.01);
+        // No part of the cutter enters an area while its tip is below the
+        // area's top; every centre keeps the region operations' clearance.
+        for p in &points {
+            for &(lo, hi, top) in &boxes {
+                if p[2] < top {
+                    let d = to_box([p[0], p[1]], lo, hi);
+                    assert!(
+                        d >= r + camlib::limits::REGION_CLEARANCE - 1e-9,
+                        "{:?} {motion:?} at {p:?}: {d}",
+                        motion.kind
+                    );
+                }
+            }
+        }
+        // A cut brings the cutter over the stock (no pass in air).
+        if motion.kind == MoveKind::Cut {
+            let over = points.iter().any(|p| {
+                to_box([p[0], p[1]], [spec.min_mm[0], spec.min_mm[1]], [
+                    spec.max_mm[0],
+                    spec.max_mm[1],
+                ]) < r
+            });
+            assert!(over, "a cut in air: {motion:?}");
+        }
+    }
+    assert_eq!(position[2], op.clearance_z_mm);
+    // At most one entry for the rows and one for each area's edge per depth
+    // pass (two areas at Z 9, three at Z 8): no entry per row.
+    assert!(entries <= (1 + 2) + (1 + 3), "{entries} entries: {report}");
+    assert_eq!(report["around_limits"]["entries"], entries);
+
+    // What stands above the floor is only what the areas block: within the
+    // clearance of an area active at the floor (all three), up to half a
+    // cell's diagonal and the sweep's error (a cell keeps its highest point).
+    // Over the low block, the first pass cut the stock down to its own depth.
+    let half = 0.5 * spec.cell_size_mm * 2f64.sqrt();
+    let reach = camlib::limits::REGION_CLEARANCE + 1e-3 + half + error;
+    for (i, h) in stock.cells().iter().enumerate() {
+        assert!(h.lower_mm >= op.floor_z_mm - error - 1e-8, "gouged floor: {h:?}");
+        if h.upper_mm <= op.floor_z_mm + error + 1e-8 {
+            continue;
+        }
+        let c = stock.cell_center(i).unwrap();
+        let near = boxes.iter().any(|&(lo, hi, _)| to_box(c, lo, hi) <= reach);
+        assert!(near, "material left at {c:?} where nothing blocks the cutter: {h:?}");
+        if to_box(c, boxes[2].0, boxes[2].1) <= reach {
+            assert!(h.upper_mm <= 9. + error + 1e-8, "over the low block {c:?}: {h:?}");
+        }
+    }
+    let around = &report["around_limits"];
+    assert!(around["unreachable_area_mm2"].as_f64().unwrap() > 0., "{report}");
+    assert_eq!(report["nominal_uncovered_area_mm2"], around["unreachable_area_mm2"]);
+}
+
+#[test]
+fn facing_round_a_containment_inside_the_stock_is_refused_not_plunged() {
+    // Every row stretch then stops inside the stock at both ends: no entry
+    // from air reaches them, and none is plunged into.
+    let m = fixture();
+    let mut op = operation();
+    let mut limits = avoid([0., 0.], [0., 0.], 0.);
+    limits.avoid.clear();
+    limits.contain = Some(
+        serde_json::from_value(serde_json::json!({
+            "version": 1, "units": "mm", "name": "window", "boundary_error_mm": 0.,
+            "components": [{"outer": {"vertices": [
+                [5., 3., 0.], [35., 3., 0.], [35., 21., 0.], [5., 21., 0.]]}, "holes": []}]}))
+        .unwrap(),
+    );
+    op.limits = Some(limits);
+    let error = run_limited(op, &m).unwrap_err();
+    assert!(error.contains("no entry from outside the stock"), "{error}");
+}

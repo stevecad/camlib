@@ -779,5 +779,78 @@ BEFORE_421 = {
 }
 
 
+def written(value, decimals=4, diameter=False):
+    """A millimetre value as an inch output at ``decimals`` writes it (X a
+    diameter), back in millimetres."""
+    factor = 2 if diameter else 1
+    return round(value * factor / 25.4, decimals) * 25.4 / factor
+
+
+class BoundedToolChangeAtTheOutputResolutionTest(unittest.TestCase):
+    """#424: a start position in millimetres that the inch output cannot
+    write exactly. The regroup after each T word goes where the program
+    writes the start; the replay checks the change from there."""
+
+    # Inch output at 4 decimals (0.0001 in: 0.00254 mm in Z, 0.00127 mm in
+    # radius for a diameter X), with the setup's and the machine's
+    # tolerance above that rounding.
+    INCH = dict(output_units="inch", decimals=4, tolerance_mm=0.003)
+
+    def test_a_start_the_output_rounds_is_released_and_reads_back_continuously(self):
+        start = (60.0127, 80.0123)
+        lathe = within(start=start, tolerance_mm=0.003)
+        plan = lathe.plan()
+        to = (written(start[0], diameter=True), 0.0, written(start[1]))
+        self.assertNotEqual((to[0], to[2]), start)  # it does not round-trip
+        for module, post, decoder in posts():
+            with self.subTest(post=module.__name__):
+                m = bounded(module, plan, **self.INCH)
+                text = nc(plan, m, post, decoder).splitlines()
+                # The regroup: the rapid of both axes after the T word, to
+                # the start as the inch words write it.
+                i = text.index("T0202")
+                x, z = (f"{2 * start[0] / 25.4:.4f}".rstrip("0"), f"{start[1] / 25.4:.4f}".rstrip("0"))
+                self.assertEqual(text[i + 1], f"G0 X{x} Z{z}")
+                changes, motions = decoded(plan, m, post, decoder)
+                # Read back: every move starts where the one before ended,
+                # through each change; the blade's change completes at the
+                # written start, where its first move starts and where the
+                # turning tool's last move ended.
+                for a, b in zip(motions, motions[1:]):
+                    self.assertEqual(tuple(b.curve.start), tuple(a.curve.end), (a.id, b.id))
+                for got, want in zip(changes[1].position_after_mm, to):
+                    self.assertAlmostEqual(got, want, places=9)
+                k = next(i for i, e in enumerate(motions) if e.tool == "groove2")
+                self.assertEqual(tuple(motions[k].curve.start), tuple(changes[1].position_after_mm))
+                self.assertEqual(tuple(motions[k - 1].curve.end), tuple(changes[1].position_after_mm))
+
+    def test_a_start_whose_written_point_takes_the_box_into_the_work_is_refused_naming_it(self):
+        # A bound of 40.0005 mm along z from z 39.998: the plan's box ends
+        # 0.0025 mm in front of the faced end, within the setup's 0.003 mm.
+        # Written in inch the start is z 39.99738, and the box reaches past
+        # that tolerance into the work: refused, before any program.
+        bound, start = (30.0, 40.0005), (35.0, 39.998)
+        lathe = within(bound=bound, start=start, tolerance_mm=0.003)
+        plan = lathe.plan()
+        expected = (
+            r'the tool change from "cnmg" to "groove2" is not clear.* \(the tool change as the posted program was '
+            r"read back: the tool before it stopped at radius 34\.99993, z 39\.99738 and the regroup rapid goes to "
+            r"radius 34\.99993, z 39\.99738, as written\)\. The setup's start position, radius 35, z 39\.998 mm "
+            r"\(initial_position_mm\), is not on the output resolution of 0\.0001 inch \(the machine's decimals=4, "
+            r"X as a diameter\).*Give a start position the output writes exactly \(a radius on a 0\.00127 mm step "
+            r"and a z on a 0\.00254 mm step\), or start further from the work$"
+        )
+        for module, post, decoder in posts():
+            with self.subTest(post=module.__name__):
+                m = bounded(module, plan, bound=bound, **self.INCH)
+                with self.assertRaisesRegex(Exception, expected):
+                    nc(plan, m, post, decoder)
+        # The same start in millimetres at 4 decimals is written exactly and
+        # released.
+        for module, post, decoder in posts():
+            m = bounded(module, plan, bound=bound, output_units="mm", decimals=4, tolerance_mm=0.003)
+            self.assertIn("T0202", nc(plan, m, post, decoder))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -623,3 +623,126 @@ fn work_frame_is_rigid_and_right_handed() {
     frame.z = [0., 0., -1.];
     assert!(frame.validate().is_err());
 }
+
+/// A lathe-like program at a feed per revolution (#429): spindle at 2500
+/// rpm, feed per revolution `mm_rev`, one cut of the operation "face".
+fn per_rev(mm_rev: f64) -> Program {
+    let mut p = program();
+    p.events.truncate(3);
+    p.events.push(Event::Spindle {
+        rpm: 2500.,
+        direction: SpindleDirection::Cw,
+    });
+    p.events.push(Event::FeedPerRev { mm_rev });
+    p.events.push(Event::Motion {
+        motion: Motion {
+            id: 1,
+            operation: "face".into(),
+            tool: "t1".into(),
+            kind: MoveKind::Cut,
+            curve: Curve::Line {
+                start: [1., 0., 0.],
+                end: [5., 0., 0.],
+            },
+            feed_mm_min: Some(mm_rev * 2500.),
+        },
+    });
+    p
+}
+
+#[test]
+fn machine_limits_are_the_declared_ones_and_their_refusals_name_them() {
+    // A feed per revolution has no bound of camlib's own: 100 mm/rev (a
+    // feed per minute typed into a per-revolution field) is a valid number,
+    // and so is a thread lead of 150 mm.
+    for mm_rev in [0.25, 100., 150.] {
+        per_rev(mm_rev).validate(None).unwrap();
+    }
+    for bad in [-0.1, f64::NAN, f64::INFINITY] {
+        let error = per_rev(bad).validate(None).unwrap_err();
+        assert!(
+            error.contains("must be finite and not negative"),
+            "{bad}: {error}"
+        );
+    }
+    // Against a machine: what the feed is made of, its value in mm/min, the
+    // declared maximum and its field, and the operation; the locators after.
+    let mut c = caps();
+    c.max_feed_mm_min = 10000.;
+    per_rev(4.).validate(Some(&c)).unwrap();
+    assert_eq!(
+        per_rev(100.).validate(Some(&c)).unwrap_err(),
+        "face: the programmed feed, the feed per revolution 100 mm/rev at 2500 rpm (the highest along the move), 250000 mm/min, is above the machine's maximum feed 10000 mm/min (Machine.max_feed_mm_min) (move 1, event 5)"
+    );
+    // A feed per minute over the maximum.
+    let mut p = program();
+    p.events.truncate(6);
+    let Event::Motion { motion } = &mut p.events[5] else {
+        unreachable!()
+    };
+    motion.feed_mm_min = Some(6000.);
+    assert_eq!(
+        p.validate(Some(&caps())).unwrap_err(),
+        "pocket: the programmed feed, 6000 mm/min, is above the machine's maximum feed 5000 mm/min (Machine.max_feed_mm_min) (move 1, event 5)"
+    );
+    // The spindle above the declared top speed names the operation it
+    // starts.
+    let mut c = caps();
+    c.max_spindle_rpm = 10000.;
+    assert_eq!(
+        program().validate(Some(&c)).unwrap_err(),
+        "pocket: spindle speed 12000 rpm is above the machine's maximum 10000 rpm (Machine.max_spindle_rpm) (event 3)"
+    );
+    // Coolant, tool table and circular motion, each by its field.
+    let mut c = caps();
+    c.flood = false;
+    assert!(
+        program()
+            .validate(Some(&c))
+            .unwrap_err()
+            .starts_with("pocket: flood coolant is programmed, but the machine has none (Machine.flood is false)"),
+    );
+    let mut p = program();
+    if let Event::ToolChange { number, .. } = &mut p.events[1] {
+        *number = 12;
+    }
+    let mut c = caps();
+    c.max_tool_number = 8;
+    assert_eq!(
+        p.validate(Some(&c)).unwrap_err(),
+        "pocket: tool number 12 (tool \"t1\") is above the machine's highest tool number 8 (Machine.max_tool_number) (event 1)"
+    );
+    let mut c = caps();
+    c.max_sweep_rad = 1.;
+    assert_eq!(
+        program().validate(Some(&c)).unwrap_err(),
+        format!(
+            "pocket: circular motion unsupported by the machine: its sweep {} rad is above the machine's largest 1 rad in one block (Machine.max_sweep_rad); post it as checked line segments (LoweringOptions) (move 1, event 5)",
+            FRAC_PI_2
+        )
+    );
+}
+
+#[test]
+fn numeric_bounds_are_the_only_bounds_without_a_machine() {
+    // Long dwells, large surface speeds and large compensation amounts are
+    // numbers, not refusals: their limits are the machine's or the post's.
+    let mut p = program();
+    p.events.truncate(5);
+    p.events.push(Event::Dwell { seconds: 2e5 });
+    p.validate(None).unwrap();
+    let mut p = program();
+    p.events.truncate(4);
+    p.events.push(Event::SurfaceSpeed {
+        m_min: 2e5,
+        max_rpm: 3000.,
+        direction: SpindleDirection::Cw,
+    });
+    p.validate(None).unwrap();
+    for bad in [0., -1., f64::NAN] {
+        let mut p = program();
+        p.events.truncate(5);
+        p.events.push(Event::Dwell { seconds: bad });
+        assert!(p.validate(None).unwrap_err().contains("positive finite"));
+    }
+}

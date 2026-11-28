@@ -6,6 +6,11 @@ use std::collections::HashSet;
 use std::f64::consts::{FRAC_PI_2, TAU};
 
 pub type Vec3 = [f64; 3];
+/// Numeric safety, not a machine fact: a coordinate within ±1e6 mm keeps
+/// one unit in the last place below 1.2e-10 mm, so the 1e-9 mm comparisons
+/// (and the smallest tolerance, 1e-9 mm) below stay exact enough. A
+/// machine's travel is its own declaration, checked against the machine
+/// model (`src/machine`).
 fn point_ok(p: Vec3) -> bool {
     p.iter().all(|v| v.is_finite() && v.abs() <= 1e6)
 }
@@ -103,6 +108,10 @@ impl Curve {
         }
     }
     pub fn prepare(&self, tolerance_mm: f64) -> Result<PreparedCurve, String> {
+        // The lower end is numeric safety (the resolution `point_ok` keeps);
+        // the upper end is not a machine fact but the coarsest tolerance
+        // camlib proves geometry to, which is never relaxed (AGENTS.md,
+        // rule 3).
         if !tolerance_mm.is_finite() || !(1e-9..=0.1).contains(&tolerance_mm) {
             return Err("motion tolerance must be finite, in [1e-9, 0.1] mm".into());
         }
@@ -119,6 +128,8 @@ impl Curve {
                 // sub-nanometre lines are refused, so squared deltas fit here.
                 let [dx, dy, dz] = std::array::from_fn(|k| end[k] - start[k]);
                 let length = (dx * dx + dy * dy + dz * dz).sqrt();
+                // Numeric safety: a shorter line has no direction to
+                // normalise by.
                 if length < 1e-9 {
                     return Err("line must have nonzero length >=1e-9 mm".into());
                 }
@@ -136,6 +147,13 @@ impl Curve {
                 sweep_rad,
                 ..
             } => {
+                // Numeric safety: a sweep under 1e-12 rad has no direction,
+                // and up to 1000 turns the angle arithmetic below (the start
+                // angle plus the sweep, then sine and cosine) carries at most
+                // about 1000 * TAU * 2.2e-16 = 1.4e-12 rad of rounding, under
+                // 1e-9 mm on a 700 mm radius. What a controller takes in one
+                // block is the machine's declared `max_sweep_rad`, checked
+                // against the program's capabilities when posting.
                 if !point_ok(center)
                     || !sweep_rad.is_finite()
                     || !(1e-12..=1000. * TAU).contains(&sweep_rad.abs())
@@ -157,6 +175,8 @@ impl Curve {
                     return Err("helix must have nonzero axial displacement; use arc".into());
                 }
                 let radius = metallic::hypot(start[u] - center[u], start[v] - center[v]);
+                // Numeric safety: the start angle of a smaller circle is
+                // rounding.
                 if radius < 1e-6 {
                     return Err("circular motion radius must be at least 1e-6 mm".into());
                 }
@@ -218,8 +238,12 @@ impl PreparedCurve {
     /// Constant on lines/circular helices; excludes junctions, tangential
     /// acceleration, blending, endpoint correction and controller time laws.
     pub fn nominal_normal_acceleration(&self, feed_mm_min: f64) -> Result<f64, String> {
-        if !feed_mm_min.is_finite() || !(1e-6..=1e7).contains(&feed_mm_min) {
-            return Err("normal acceleration needs a finite declared feed in mm/min".into());
+        // Numeric safety only: a feed is positive and finite. How fast the
+        // machine may go is its declared maximum, checked elsewhere.
+        if !(feed_mm_min.is_finite() && feed_mm_min > 0.) {
+            return Err(format!(
+                "normal acceleration needs a positive finite declared feed in mm/min, not {feed_mm_min}"
+            ));
         }
         let sweep = match self.curve {
             Curve::Line { .. } => return Ok(0.),
@@ -236,8 +260,12 @@ impl PreparedCurve {
         feed_mm_min: f64,
         limit_mm_s2: f64,
     ) -> Result<(f64, NormalAccelerationState), String> {
-        if !limit_mm_s2.is_finite() || !(1e-6..=1e9).contains(&limit_mm_s2) {
-            return Err("invalid nominal normal acceleration limit".into());
+        // The limit is the machine's declaration (max_normal_accel_mm_s2);
+        // only numeric safety is asked of it here: positive and finite.
+        if !(limit_mm_s2.is_finite() && limit_mm_s2 > 0.) {
+            return Err(format!(
+                "the nominal normal acceleration limit (max_normal_accel_mm_s2) must be positive and finite, not {limit_mm_s2}"
+            ));
         }
         let acceleration = self.nominal_normal_acceleration(feed_mm_min)?;
         let guard = 4096. * f64::EPSILON * (1. + acceleration + limit_mm_s2);
@@ -254,8 +282,11 @@ impl PreparedCurve {
     /// segment at declared feed. Translation has no velocity contribution.
     /// No junction, acceleration, blending or controller time-law model.
     pub fn nominal_axis_feed(&self, feed_mm_min: f64, frame: &WorkFrame) -> Result<Vec3, String> {
-        if !feed_mm_min.is_finite() || !(1e-6..=1e7).contains(&feed_mm_min) {
-            return Err("axis feed needs a finite declared feed in mm/min".into());
+        // Numeric safety only, as in `nominal_normal_acceleration`.
+        if !(feed_mm_min.is_finite() && feed_mm_min > 0.) {
+            return Err(format!(
+                "axis feed needs a positive finite declared feed in mm/min, not {feed_mm_min}"
+            ));
         }
         frame.validate()?;
         let columns = [frame.x, frame.y, frame.z];
@@ -314,11 +345,12 @@ impl PreparedCurve {
         frame: &WorkFrame,
         limits: Vec3,
     ) -> Result<[(f64, AxisFeedState); 3], String> {
-        if limits
-            .iter()
-            .any(|v| !v.is_finite() || !(1e-6..=1e7).contains(v))
-        {
-            return Err("invalid nominal axis feed limits".into());
+        // The limits are the machine's declaration (max_axis_feed_mm_min);
+        // only numeric safety is asked of them here: positive and finite.
+        if limits.iter().any(|v| !(v.is_finite() && *v > 0.)) {
+            return Err(format!(
+                "the nominal axis feed limits (max_axis_feed_mm_min) must be positive and finite, not {limits:?}"
+            ));
         }
         let peak = self.nominal_axis_feed(feed_mm_min, frame)?;
         Ok(std::array::from_fn(|i| {
@@ -421,6 +453,7 @@ impl PreparedCurve {
         self.bounds
     }
     pub fn position(&self, fraction: f64) -> Result<Vec3, String> {
+        // The domain of a fraction along the curve.
         if !fraction.is_finite() || !(0.0..=1.0).contains(&fraction) {
             return Err("motion fraction must be finite, in [0,1]".into());
         }
@@ -590,16 +623,25 @@ impl Motion {
         if self.kind.is_rapid() && !matches!(self.curve, Curve::Line { .. }) {
             return Err("rapid clearance requires a line".into());
         }
+        // A feed is a positive finite number (numeric safety); its upper
+        // limit is the machine's declared maximum feed, when one is given
+        // (`Capabilities::max_feed_mm_min`, the Python `Machine`'s field of
+        // that name), never a number of camlib's.
         match self.feed_mm_min {
             None if self.kind.is_rapid() => Ok(()),
-            Some(feed)
-                if feed.is_finite()
-                    && feed > 0.
-                    && max_feed_mm_min.is_none_or(|max| feed <= max) =>
-            {
-                Ok(())
-            }
-            _ => Err("programmed feed must be positive, finite and within machine limits".into()),
+            None => Err(format!(
+                "a {:?} move needs a programmed feed (feed_mm_min); only a rapid may have none",
+                self.kind
+            )),
+            Some(feed) if !(feed.is_finite() && feed > 0.) => Err(format!(
+                "programmed feed {feed} mm/min must be positive and finite"
+            )),
+            Some(feed) => match max_feed_mm_min {
+                Some(max) if feed > max => Err(format!(
+                    "programmed feed {feed} mm/min is above the machine's maximum feed {max} mm/min (Machine.max_feed_mm_min)"
+                )),
+                _ => Ok(()),
+            },
         }
     }
 }
@@ -832,6 +874,7 @@ impl WorkFrame {
             self.x[2] * self.y[0] - self.x[0] * self.y[2],
             self.x[0] * self.y[1] - self.x[1] * self.y[0],
         ];
+        // Numeric safety: orthonormal up to the rounding of unit vectors.
         if [self.x, self.y, self.z]
             .iter()
             .any(|&v| (dot(v, v) - 1.).abs() > 1e-12)
@@ -893,6 +936,9 @@ pub struct ProgramSummary {
 }
 
 impl Capabilities {
+    /// The declaration's own consistency: limits positive and finite
+    /// (numeric safety; their values are the machine's), work offsets 1..9
+    /// (the G54..G59.3 camlib numbers, see `Event::WorkOffset`).
     pub fn validate(&self) -> Result<(), String> {
         if !valid_id(&self.id)
             || !self.max_feed_mm_min.is_finite()
@@ -1019,6 +1065,9 @@ pub struct ProgramValidator {
     active_tool: Option<String>,
     rpm: f64,
     last_id: Option<u64>,
+    /// The operation of the last motion: what a refusal of a later event
+    /// names when no move follows it in its batch.
+    last_operation: Option<String>,
     changes: usize,
     active_offset: Option<u8>,
     clockwise: bool,
@@ -1054,6 +1103,8 @@ pub struct ProgramValidator {
 }
 impl ProgramValidator {
     pub fn new(program: &Program, capabilities: Option<&Capabilities>) -> Result<Self, String> {
+        // The tolerance as `Curve::prepare` bounds it: numeric safety below,
+        // camlib's coarsest proven tolerance above.
         if program.version != 1
             || program.units != "mm"
             || !valid_id(&program.id)
@@ -1069,6 +1120,7 @@ impl ProgramValidator {
             c.validate()?;
             // Initial three-axis profile: manual setup/work coordinates must
             // already align their tool axis with machine +Z.
+            // Upright up to rounding (numeric safety).
             if distance(program.frame.z, [0., 0., 1.]) > 1e-12 {
                 return Err("three-axis profile does not support tilted tool axis".into());
             }
@@ -1090,6 +1142,7 @@ impl ProgramValidator {
             active_tool: None,
             rpm: 0.,
             last_id: None,
+            last_operation: None,
             changes: 0,
             active_offset: None,
             clockwise: true,
@@ -1147,6 +1200,7 @@ impl ProgramValidator {
         let mut active_tool = self.active_tool.clone();
         let mut rpm = self.rpm;
         let mut last_id = self.last_id;
+        let mut last_operation = self.last_operation.clone();
         let mut changes = self.changes;
         let mut active_offset = self.active_offset;
         let mut clockwise = self.clockwise;
@@ -1171,6 +1225,22 @@ impl ProgramValidator {
         for (local_index, event) in events.iter().enumerate() {
             let index = self.summary.events + local_index;
             let error = |message: &str| format!("event {index}: {message}");
+            // A refusal against a machine's declared limit: the operation
+            // first (an operation's tool change, spindle, feed and coolant
+            // events come before its first move, so it is the operation of
+            // the next move in this batch; failing that, the last move's),
+            // then the words, then the event's index as data.
+            let limit = |message: &str| {
+                let next = events[local_index + 1..].iter().find_map(|e| match e {
+                    Event::Motion { motion } => Some(motion.operation.as_str()),
+                    _ => None,
+                });
+                match (next, last_operation.as_deref()) {
+                    (Some(op), _) => format!("{op}: {message} (event {index})"),
+                    (None, Some(op)) => format!("after operation {op}: {message} (event {index})"),
+                    (None, None) => format!("{message} (event {index}, before any move)"),
+                }
+            };
             if tap.is_some()
                 && !matches!(event, Event::Motion { motion } if motion.kind == MoveKind::Tap)
             {
@@ -1259,12 +1329,25 @@ impl ProgramValidator {
                     if rpm != 0. || beam_on {
                         return Err(error("stop the spindle or beam before a tool change"));
                     }
-                    if let Some(c) = capabilities
-                        && (*number > c.max_tool_number
-                            || *length_register > c.max_length_register
-                            || changes > 0 && !c.tool_changes)
-                    {
-                        return Err(error("unsupported tool change/register"));
+                    // The machine's declared tool table and changer.
+                    if let Some(c) = capabilities {
+                        if *number > c.max_tool_number {
+                            return Err(limit(&format!(
+                                "tool number {number} (tool {tool:?}) is above the machine's highest tool number {} (Machine.max_tool_number)",
+                                c.max_tool_number
+                            )));
+                        }
+                        if *length_register > c.max_length_register {
+                            return Err(limit(&format!(
+                                "offset register {length_register} (tool {tool:?}) is above the machine's highest register {} (Machine.max_length_register)",
+                                c.max_length_register
+                            )));
+                        }
+                        if changes > 0 && !c.tool_changes {
+                            return Err(limit(&format!(
+                                "a tool change to {tool:?}, but the machine changes no tools in a program (Machine.tool_changes is false)"
+                            )));
+                        }
                     }
                     active_tool = Some(tool.clone());
                     position = *position_after_mm;
@@ -1276,11 +1359,20 @@ impl ProgramValidator {
                     direction,
                 } => {
                     clockwise = *direction == crate::motion::SpindleDirection::Cw;
-                    if !value.is_finite()
-                        || *value < 0.
-                        || capabilities.is_some_and(|c| *value > c.max_spindle_rpm)
+                    // Numeric safety: finite, not negative.
+                    if !(value.is_finite() && *value >= 0.) {
+                        return Err(error(&format!(
+                            "spindle speed {value} rpm must be finite and not negative"
+                        )));
+                    }
+                    // The machine's declared top speed.
+                    if let Some(c) = capabilities
+                        && *value > c.max_spindle_rpm
                     {
-                        return Err(error("invalid or unsupported spindle speed"));
+                        return Err(limit(&format!(
+                            "spindle speed {value} rpm is above the machine's maximum {} rpm (Machine.max_spindle_rpm)",
+                            c.max_spindle_rpm
+                        )));
                     }
                     if *value > 0. && active_tool.is_none() {
                         return Err(error("assign a tool before starting spindle"));
@@ -1301,13 +1393,24 @@ impl ProgramValidator {
                     max_rpm,
                     direction,
                 } => {
-                    if !(m_min.is_finite() && *m_min > 0. && *m_min <= 1e5)
+                    // Numeric safety: a positive finite surface speed and
+                    // rpm limit. The speed itself has no machine bound of its
+                    // own: what the spindle turns is capped by the rpm limit
+                    // (G50 S / G92 S), held to the declared top speed.
+                    if !(m_min.is_finite() && *m_min > 0.)
                         || !(max_rpm.is_finite() && *max_rpm > 0.)
-                        || capabilities.is_some_and(|c| *max_rpm > c.max_spindle_rpm)
                     {
-                        return Err(error(
-                            "constant surface speed needs a positive speed and a maximum rpm the machine reaches",
-                        ));
+                        return Err(error(&format!(
+                            "constant surface speed needs a positive finite speed and rpm limit, not {m_min} m/min with a limit of {max_rpm} rpm"
+                        )));
+                    }
+                    if let Some(c) = capabilities
+                        && *max_rpm > c.max_spindle_rpm
+                    {
+                        return Err(limit(&format!(
+                            "the constant surface speed's rpm limit {max_rpm} rpm is above the machine's maximum {} rpm (Machine.max_spindle_rpm)",
+                            c.max_spindle_rpm
+                        )));
                     }
                     if active_tool.is_none() || beam_tool(&active_tool) {
                         return Err(error(
@@ -1320,12 +1423,22 @@ impl ProgramValidator {
                     oriented = None;
                 }
                 Event::FeedPerRev { mm_rev } => {
-                    if !(mm_rev.is_finite() && *mm_rev >= 0. && *mm_rev <= 100.) {
-                        return Err(error("feed per revolution must be 0..100 mm"));
+                    // Numeric safety only: finite, not negative (0 turns it
+                    // off). What it may be on a machine is decided where it
+                    // is used: each feed move's feed, mm_rev times the
+                    // highest rpm along it, against the declared maximum
+                    // feed (Machine.max_feed_mm_min), in the move's words.
+                    if !(mm_rev.is_finite() && *mm_rev >= 0.) {
+                        return Err(error(&format!(
+                            "feed per revolution {mm_rev} mm/rev must be finite and not negative"
+                        )));
                     }
                     feed_rev = (*mm_rev > 0.).then_some(*mm_rev);
                 }
                 Event::Beam { power_percent } => {
+                    // A percentage of the beam's power: 0..100 is what the
+                    // unit means (not a machine fact; how a control scales
+                    // it is the post's).
                     if !power_percent.is_finite() || !(0. ..=100.).contains(power_percent) {
                         return Err(error("beam power must be 0..100 percent"));
                     }
@@ -1346,6 +1459,7 @@ impl ProgramValidator {
                     beam_marking = false;
                 }
                 Event::BeamStart { power_percent } => {
+                    // A percentage, as for `Beam`.
                     if !power_percent.is_finite() || *power_percent <= 0. || *power_percent > 100. {
                         return Err(error(
                             "beam power at an open-material start must be above 0, at most 100 percent",
@@ -1365,6 +1479,7 @@ impl ProgramValidator {
                     beam_marking = false;
                 }
                 Event::BeamMark { power_percent } => {
+                    // A percentage, as for `Beam`.
                     if !power_percent.is_finite() || *power_percent <= 0. || *power_percent > 100. {
                         return Err(error(
                             "marking beam power must be above 0, at most 100 percent",
@@ -1390,8 +1505,14 @@ impl ProgramValidator {
                     height_control = *on;
                 }
                 Event::SpindleOrient { edge_angle_deg } => {
+                    // An angle of one turn either way: beyond it the same
+                    // direction is written as another number, so a larger
+                    // one is refused as malformed (not a machine fact; the
+                    // post writes the control's own orientation word).
                     if !edge_angle_deg.is_finite() || edge_angle_deg.abs() > 360. {
-                        return Err(error("edge_angle_deg must be finite, within +-360 degrees"));
+                        return Err(error(&format!(
+                            "edge_angle_deg {edge_angle_deg} must be finite, within +-360 degrees"
+                        )));
                     }
                     if active_tool.is_none() || oriented.is_some() {
                         return Err(error(
@@ -1403,17 +1524,38 @@ impl ProgramValidator {
                     rpm = 0.;
                 }
                 Event::Coolant { mode } => {
-                    if capabilities.is_some_and(|c| {
-                        *mode == Coolant::Mist && !c.mist || *mode == Coolant::Flood && !c.flood
-                    }) {
-                        return Err(error("coolant mode unsupported"));
+                    // The machine's declared coolant.
+                    if let Some(c) = capabilities {
+                        if *mode == Coolant::Mist && !c.mist {
+                            return Err(limit(
+                                "mist coolant is programmed, but the machine has none (Machine.mist is false)",
+                            ));
+                        }
+                        if *mode == Coolant::Flood && !c.flood {
+                            return Err(limit(
+                                "flood coolant is programmed, but the machine has none (Machine.flood is false)",
+                            ));
+                        }
                     }
                 }
                 Event::WorkOffset { number } => {
-                    if !(1..=9).contains(number)
-                        || capabilities.is_some_and(|c| *number > c.max_work_offset)
+                    // 1..9 are the work offsets camlib numbers: G54..G59
+                    // and G59.1..G59.3, LinuxCNC's nine coordinate systems
+                    // (LinuxCNC G-code reference, "G54-G59.3 Select
+                    // Coordinate System"); the machine declares how many it
+                    // has (max_work_offset, itself 1..9).
+                    if !(1..=9).contains(number) {
+                        return Err(error(&format!(
+                            "work offset {number} must be 1..9 (G54..G59.3)"
+                        )));
+                    }
+                    if let Some(c) = capabilities
+                        && *number > c.max_work_offset
                     {
-                        return Err(error("work offset unsupported"));
+                        return Err(limit(&format!(
+                            "work offset {number} is above the machine's highest work offset {} (Machine.max_work_offset)",
+                            c.max_work_offset
+                        )));
                     }
                     if active_offset.is_some_and(|old| old != *number) {
                         return Err(error(
@@ -1424,8 +1566,14 @@ impl ProgramValidator {
                 }
                 Event::Stop { .. } => {}
                 Event::Dwell { seconds } => {
-                    if !seconds.is_finite() || *seconds <= 0. || *seconds > 1e5 {
-                        return Err(error("dwell needs a positive finite time in seconds"));
+                    // Numeric safety only: positive and finite. The
+                    // control's dwell range is its dialect's declaration
+                    // (GCodeDialect.dwell_resolution_s, dwell_max_s), checked
+                    // when the dwell is written.
+                    if !(seconds.is_finite() && *seconds > 0.) {
+                        return Err(error(&format!(
+                            "dwell {seconds} s needs a positive finite time in seconds"
+                        )));
                     }
                 }
                 Event::CutterCompensation {
@@ -1436,12 +1584,13 @@ impl ProgramValidator {
                     if *plane == Plane::Yz {
                         return Err(error("cutter compensation works in XY or XZ"));
                     }
+                    // The amount: numeric safety only, positive and finite;
+                    // the register it is written to is the post's.
                     if let Some(amount) = amount_mm
                         && (*side == CompensationSide::Off
                             || *plane != Plane::Xy
                             || !amount.is_finite()
-                            || *amount <= 0.
-                            || *amount > 1e3)
+                            || *amount <= 0.)
                     {
                         return Err(error(
                             "a controller compensation amount turns compensation on in XY, positive and finite (G40 carries none)",
@@ -1488,8 +1637,10 @@ impl ProgramValidator {
                     shift_mm,
                     covers,
                 } => {
-                    let positive =
-                        |v: &Option<f64>| v.is_some_and(|x| x.is_finite() && x > 0. && x <= 1e5);
+                    // Peck, dwell, re-entry, lift and shift: numeric safety
+                    // only, positive and finite. Their machine limits are the
+                    // post's (a dwell against the dialect's declared range).
+                    let positive = |v: &Option<f64>| v.is_some_and(|x| x.is_finite() && x > 0.);
                     let shape = match cycle {
                         DrillCycle::Drill => peck_mm.is_none() && dwell_s.is_none(),
                         DrillCycle::Dwell => peck_mm.is_none() && positive(dwell_s),
@@ -1524,6 +1675,9 @@ impl ProgramValidator {
                         && (shift_mm.is_none() || *cycle == DrillCycle::FineBore)
                         && (reentry_mm.is_none() || *cycle == DrillCycle::Peck)
                         && (lift_mm.is_none() || *cycle == DrillCycle::ChipBreak);
+                    // Coordinates within `point_ok`'s range (numeric
+                    // safety); a cycle covers at least the one move it
+                    // makes (the covered events are checked one by one).
                     if !shape
                         || !center_mm
                             .iter()
@@ -1532,7 +1686,6 @@ impl ProgramValidator {
                         || !(z_mm < r_mm && r_mm <= initial_z_mm)
                         || !(feed_mm_min.is_finite() && *feed_mm_min > 0.)
                         || *covers == 0
-                        || *covers > 1_000_000
                     {
                         return Err(error(
                             "invalid canned cycle (needs Z < R <= initial level, positive feed and the words of its type)",
@@ -1676,8 +1829,9 @@ impl ProgramValidator {
                         .curve
                         .prepare(self.tolerance_mm)
                         .map_err(|e| m_error(&e))?;
-                    m.validate_feed(capabilities.map(|c| c.max_feed_mm_min))
-                        .map_err(|e| m_error(&e))?;
+                    // Numeric safety here; the machine's maximum feed below,
+                    // where what makes up the feed can be named.
+                    m.validate_feed(None).map_err(|e| m_error(&e))?;
                     if m.kind == MoveKind::Shift {
                         // On the ray from the oriented stop away from the edge.
                         let Some((stop, edge)) = oriented else {
@@ -1711,6 +1865,7 @@ impl ProgramValidator {
                             None => rpm,
                         };
                         let expected = mm_rev * top;
+                        // 1e-9 relative: rounding of the product, nothing more.
                         if top <= 0.
                             || m.feed_mm_min
                                 .is_none_or(|f| (f - expected).abs() > 1e-9 * expected.max(1.))
@@ -1719,6 +1874,32 @@ impl ProgramValidator {
                                 "with feed per revolution, a feed move needs the spindle running and its feed the per-revolution feed x the highest rpm along it",
                             ));
                         }
+                    }
+                    // The machine's declared maximum feed (#429): the feed in
+                    // mm/min, and what it is made of when it is a feed per
+                    // revolution (or a lead) at the spindle's speed.
+                    if let (Some(c), Some(feed)) = (capabilities, m.feed_mm_min)
+                        && feed > c.max_feed_mm_min
+                    {
+                        let what = match (feed_rev, m.kind) {
+                            (_, MoveKind::Tap | MoveKind::Thread) if rpm > 0. => {
+                                format!("the lead {} mm at {rpm} rpm, {feed} mm/min", feed / rpm)
+                            }
+                            (Some(mm_rev), kind) if !kind.is_rapid() => {
+                                let top = match css {
+                                    Some((v, max)) => css_rpm_bound(&m.curve, v, max),
+                                    None => rpm,
+                                };
+                                format!(
+                                    "the feed per revolution {mm_rev} mm/rev at {top} rpm (the highest along the move), {feed} mm/min"
+                                )
+                            }
+                            _ => format!("{feed} mm/min"),
+                        };
+                        return Err(format!(
+                            "{}: the programmed feed, {what}, is above the machine's maximum feed {} mm/min (Machine.max_feed_mm_min) (move {}, event {index})",
+                            m.operation, c.max_feed_mm_min, m.id
+                        ));
                     }
                     if m.kind == MoveKind::Tap {
                         let Curve::Line { start, end } = m.curve else {
@@ -1810,13 +1991,35 @@ impl ProgramValidator {
                             | Curve::Helix {
                                 plane, sweep_rad, ..
                             } => {
-                                if !c.arcs
-                                    || !c.planes.contains(&plane)
-                                    || sweep_rad.abs() > c.max_sweep_rad
-                                    || matches!(m.curve, Curve::Helix { .. }) && !c.helices
-                                {
-                                    return Err(m_error(
-                                        "circular motion unsupported by profile; explicit bounded lowering required",
+                                // The machine's declared circular motion.
+                                let unsupported = if !c.arcs {
+                                    Some(
+                                        "the machine writes no arcs (Machine.arcs is false)"
+                                            .to_string(),
+                                    )
+                                } else if matches!(m.curve, Curve::Helix { .. }) && !c.helices {
+                                    Some(
+                                        "the machine writes no helices (Machine.helices is false)"
+                                            .into(),
+                                    )
+                                } else if !c.planes.contains(&plane) {
+                                    Some(format!(
+                                        "the arc is in the {plane:?} plane, which the machine does not declare (Machine.planes {:?})",
+                                        c.planes
+                                    ))
+                                } else if sweep_rad.abs() > c.max_sweep_rad {
+                                    Some(format!(
+                                        "its sweep {} rad is above the machine's largest {} rad in one block (Machine.max_sweep_rad)",
+                                        sweep_rad.abs(),
+                                        c.max_sweep_rad
+                                    ))
+                                } else {
+                                    None
+                                };
+                                if let Some(why) = unsupported {
+                                    return Err(format!(
+                                        "{}: circular motion unsupported by the machine: {why}; post it as checked line segments (LoweringOptions) (move {}, event {index})",
+                                        m.operation, m.id
                                     ));
                                 }
                             }
@@ -1824,6 +2027,7 @@ impl ProgramValidator {
                     }
                     position = m.curve.end();
                     last_id = Some(m.id);
+                    last_operation = Some(m.operation.clone());
                     summary.motions += 1;
                 }
             }
@@ -1834,6 +2038,7 @@ impl ProgramValidator {
         self.active_tool = active_tool;
         self.rpm = rpm;
         self.last_id = last_id;
+        self.last_operation = last_operation;
         self.changes = changes;
         self.active_offset = active_offset;
         self.clockwise = clockwise;

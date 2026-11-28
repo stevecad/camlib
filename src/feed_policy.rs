@@ -167,7 +167,7 @@ pub fn apply(
             return Err("engagement feed analysis cancelled".into());
         }
         if let Event::Cycle { covers, .. } = event {
-            cycle_until = Some(index + *covers as usize);
+            cycle_until = Some(index.saturating_add(*covers as usize));
             continue; // metadata; the authoritative covered motions follow
         }
         if let Event::Motion { motion } = event {

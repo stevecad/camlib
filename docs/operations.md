@@ -77,7 +77,7 @@ How each operation honours them:
 | Operation | Behaviour |
 | --- | --- |
 | Pocket, adaptive, roughing | The region to clear becomes (region ∩ containment) − avoid areas, so the planner routes around them; a 0.02 mm clearance is kept from their edges |
-| Facing | Limits that cannot reach the facing are left out and the native facing runs, move for move: avoid areas whose top is at or below `floor_z_mm`, and any limits every native move is proven clear of (setup jaws beside the stock, say). Limits that reach it make it a raster pocket over the stock restricted by them, its rows along X running 2 × radius + `entry_air_gap_mm` past the stock so every entry is a plunge with the whole cutter that far in air (an area with no such entry is refused, never entered by a helix); it needs `stepover_mm` at most the tool radius, and refuses `axis="y"`, `axis="auto"`, `mode="one_way"` and `reverse` by name |
+| Facing | Limits that cannot reach the facing are left out and the native facing runs, move for move: avoid areas whose top is at or below `floor_z_mm`, and any limits every native move is proven clear of (setup jaws beside the stock, say). Limits that reach it keep the facing's own rows and stop each where the limits stop the cutter, link them at depth where a proven link exists, and finish with one climb pass along each limit's edge; every entry is a plunge with the whole cutter `entry_air_gap_mm` clear of the stock (a stretch no such entry or link reaches is refused, never plunged into). See [Facing round limits](#facing-round-limits). It refuses `axis="y"`, `axis="auto"`, `mode="one_way"` and `reverse` there by name |
 | Contour, chamfer, trace | Blocked stretches of a loop are lifted over (to the highest avoid top, at least the retract height); blocked starts, leads and entries are refused, as is lifting with wear compensation |
 | Parallel and its patterns, waterline, flat areas | Pass stretches whose cutter is not proven inside the limits are left out; the rest is cut as separate runs |
 | Drilling, bore, reaming, tapping, thread milling, slots | A hole or slot whose footprint enters an avoid area or leaves the containment is refused, naming it |
@@ -114,6 +114,47 @@ checks. Scoring cannot establish fixture or machine clearance.
 
 The Rust planner refuses exhausted motion IDs before emitting another move or
 changing its position; IDs never wrap to zero during facing.
+
+### Facing round limits
+
+When avoid areas or a containment reach the passes (a clamp over the stock's
+edge, say), the facing is planned as direction-parallel (zigzag) area milling
+round them, as established practice does it (M. Held, *On the Computational
+Geometry of Pocket Machining*, 1991; S. C. Park and B. K. Choi, *Tool-path
+planning for direction-parallel area milling*, Computer-Aided Design 32, 2000):
+
+- **Rows.** The plain facing's rows (same Y, same ends outside the stock), each
+  stopped where the whole cutter would come within 0.02 mm of an avoid area
+  (or of leaving the containment). Each depth pass goes round only the areas
+  whose top is above it: an area lower than a pass's depth does not stop it.
+  A stretch along which the whole cutter stays clear of the stock (its distance
+  from the stock rectangle at least the cutter radius) cuts nothing and is
+  left out, counted as `air_stretches_omitted`.
+- **Links.** The tool stays down from one row's stretch to a neighbouring
+  row's when a straight step across the rows joins them clear of the limits:
+  back along the row just cut to where the step clears them, across, and into
+  the next row from its nearer end. A stretch that could also be entered from
+  air is linked so only while the travel this adds to a plain zigzag link is no
+  longer than the fed part of a retract and re-entry, `(feed_z - z) × (1 +
+  feed / plunge)`, the rule pockets link by. Otherwise the tool lifts straight
+  up and enters the next stretch from air.
+- **Entries.** Every descent is vertical with the whole cutter
+  `entry_air_gap_mm` clear of the stock, as in the plain facing. A stretch
+  closed off at both ends is reached at depth along a neighbouring row; one
+  that nothing reaches is refused with the stretch named.
+- **Edges.** After the rows of each depth, the edge of each limit that brings
+  the cutter over the stock is followed once with the material on the cutter's
+  right (climb milling with a clockwise spindle), cutting what the stopped rows
+  leave against it. A row stretch that runs from air up to that edge is cut on
+  the way into it instead of with an entry of its own.
+
+Every move is proven inside the limits before it is planned, with the proof
+the run's link guard uses. The report's `strategy` is `facing_round_limits`,
+and `around_limits` counts what was planned (`row_stretches`, `edge_runs`,
+`entries`, `stay_down_links` and what was left out in air).
+`unreachable_area_mm2` (also `nominal_uncovered_area_mm2`) is the stock top
+area at the floor that no allowed cutter position reaches: the material the
+limits leave standing, which a material check against the target reports.
 
 ## Pocket: `Pocket`, `RestPocket`
 
@@ -3026,6 +3067,20 @@ there (another move, a rapid of one axis, a rapid elsewhere, the spindle)
 is refused. The replay of the decoded program on the stock then checks the
 box of each tool change again, from where the old tool really stopped.
 
+The start position is written at the output resolution, like every point
+(#424): a start in millimetres posted in inches at 4 decimals moves by up
+to 0.00127 mm along X (a diameter word) and 0.00254 mm along Z. The decoder
+accepts the regroup within the machine's `tolerance_mm` of the start and
+takes the point where the words put it; the read-back program is continuous
+through every change (the old tool's last move, the change and the new
+tool's first move all at the written point), and the replay checks each
+box about the written points. So such a program is released when that box
+is clear. Where the rounding takes the box into the work, the replay
+refuses before any program is written, saying it checked the program as
+read back, and the refusal names the setup's start position, where the
+program writes it and the output resolution: give a start the output writes
+exactly (on the grid of its decimals), or one further from the work.
+
 The program's first tool is the one mounted when the program starts, with
 its point at the start position: there is no tool before it and nothing to
 regroup. Tools may still declare `carriage_to_tip_mm` (they are not read);
@@ -3075,7 +3130,15 @@ roughing setup its allowance.
   type I), each ending where the part plus allowance is reached, retracting
   at 45 degrees. Besides the depth-of-cut steps there is a pass at every
   diameter of the profile, so each one is left at the allowance (never up
-  to a depth of cut more).
+  to a depth of cut more). A diameter's own pass runs along it and ends
+  where the profile leaves it: at a shoulder, or at the start of a taper
+  or of a fillet tangent to the diameter. A taper is therefore left in
+  steps, each pass ending on the taper plus the nose radius and the
+  allowance ("Each roughing pass is stopped before it intersects the
+  programmed tool path allowing for both roughing and finishing
+  allowances": Haas lathe, "G71 O.D./I.D. Stock Removal Cycle", Type I
+  details, in Haas Lathe Programming Manual, Haas Factory Outlet, rev.
+  12/2024, p. 32); `TurnFinish` takes the steps off.
 - `TurnGroove(z_from_mm, z_to_mm, bottom_radius_mm, peck_mm=None,
   overlap_mm=0.2)`: plunges of a `GrooveInsert` tool across a groove that is
   in the profile (internal grooves with a `side="inner"` tool: in the
@@ -3114,7 +3177,9 @@ roughing setup its allowance.
   the hole already there (stock bore or drilled) by at most the depth of
   cut, with a pass at every bore diameter, each from the front to where the
   bore less the allowance is reached or `z_end_mm`, retracting at 45 degrees
-  toward the axis. `TurnBoreFinish(z_end_mm, allowance_mm=0)`: along the
+  toward the axis. As outside, a bore diameter's own pass ends where the
+  bore leaves that diameter (a step, or the start of a taper or fillet).
+  `TurnBoreFinish(z_end_mm, allowance_mm=0)`: along the
   bore from the front face to `z_end_mm` (arcs as arcs, like `TurnFinish`),
   then out at 45 degrees and along the axis. Posted as `G33 Z… K<lead>` (LinuxCNC)
   or `G32 Z… F<lead>` where the dialect declares `thread_synchronized` and
@@ -3844,7 +3909,20 @@ lathe `Setup` with its own program. Four declarations make the pair:
   With `z_from_mm` inside the profile, roughing passes start a clearance in
   front of it and finishing feeds in radially at it; the move checks decide
   whether the insert can (a rapid into stock, or an insert's back leading
-  into it, is refused). A `z_to_mm` behind the chuck clearance is refused.
+  into it, is refused). Each roughing pass is reached by a rapid down to its
+  level there, as a stock removal cycle reaches its passes from its start
+  position in front of the material and returns to its clearance plane at
+  rapid (Haas lathe, "G71 O.D./I.D. Stock Removal Cycle", Type I details, in
+  Haas Lathe Programming Manual, Haas Factory Outlet, rev. 12/2024, p. 32);
+  it has no entry into stock standing ahead of a pass. So where the stock in
+  front of `z_from_mm` has not been turned down below a pass, `TurnRough` is
+  refused before any move, naming the pass, `z_from_mm`, the stock standing
+  in front of it (its z range and radius) and the fix: rough the stretch in
+  front first (a `TurnRough` with `z_to_mm` at the bound), or give a
+  `z_from_mm` where the stock in front is already down. Where the part
+  itself stands in front above the pass (a smaller diameter behind a
+  collar), the refusal says so: that stretch is turned from the part's other
+  end, or grooved. A `z_to_mm` behind the chuck clearance is refused.
   The bar may be well over the largest diameter (45 mm for a 30 mm collar):
   roughing then leaves a wall at `z_to_mm`, each of its passes leaving it
   at 45 degrees as before, and the finishing pass feeds out along X up

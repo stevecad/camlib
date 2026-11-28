@@ -238,26 +238,36 @@ impl IntentChecker {
         {
             return Err("invalid generic post header/settings/initialization cap".into());
         }
-        if settings.traverse_feed_mm_min.is_some_and(|feed| {
-            !feed.is_finite() || feed <= 0. || feed > settings.capabilities.max_feed_mm_min
-        }) {
-            return Err(
-                "configured traverse feed must be positive, finite and within machine limits"
-                    .into(),
-            );
+        // A traverse feed is positive and finite (numeric safety) and at
+        // most the machine's declared maximum feed.
+        if let Some(feed) = settings.traverse_feed_mm_min {
+            let max = settings.capabilities.max_feed_mm_min;
+            if !(feed.is_finite() && feed > 0.) {
+                return Err(format!(
+                    "the configured traverse feed (traverse_feed_mm_min) {feed} mm/min must be positive and finite"
+                ));
+            }
+            if feed > max {
+                return Err(format!(
+                    "the configured traverse feed (traverse_feed_mm_min) {feed} mm/min is above the machine's maximum feed {max} mm/min (Machine.max_feed_mm_min)"
+                ));
+            }
         }
-        if settings
-            .max_normal_accel_mm_s2
-            .is_some_and(|a| !a.is_finite() || !(1e-6..=1e9).contains(&a))
+        // The declared nominal limits: numeric safety only (positive and
+        // finite); their values are the machine's.
+        if let Some(a) = settings.max_normal_accel_mm_s2
+            && !(a.is_finite() && a > 0.)
         {
-            return Err("invalid nominal normal acceleration limit".into());
+            return Err(format!(
+                "max_normal_accel_mm_s2 must be positive and finite, not {a}"
+            ));
         }
-        if settings.max_axis_feed_mm_min.is_some_and(|limits| {
-            limits
-                .iter()
-                .any(|v| !v.is_finite() || !(1e-6..=1e7).contains(v))
-        }) {
-            return Err("invalid nominal axis feed limits".into());
+        if let Some(limits) = settings.max_axis_feed_mm_min
+            && limits.iter().any(|v| !(v.is_finite() && *v > 0.))
+        {
+            return Err(format!(
+                "max_axis_feed_mm_min must be three positive finite limits, not {limits:?}"
+            ));
         }
         settings.work_to_machine.validate()?;
         if settings.tip_travel_mm.is_some() && settings.gauge_travel_mm.is_some() {
@@ -299,7 +309,11 @@ impl IntentChecker {
         };
         let mut source_caps = settings.capabilities.clone();
         if scheduling.is_some() {
-            source_caps.max_feed_mm_min = 1e7;
+            // The scheduler lowers each source feed to what the machine
+            // declares; the source's own feeds are bounded by nothing but
+            // numeric safety here, and the decoded program is held to the
+            // declared maximum (`decoded` below).
+            source_caps.max_feed_mm_min = f64::MAX;
         }
         if let Some(options) = &settings.lowering {
             options.validate(settings.tolerance_mm)?;
@@ -310,6 +324,8 @@ impl IntentChecker {
                 crate::motion::Plane::Xz,
                 crate::motion::Plane::Yz,
             ];
+            // Lowering writes arcs as checked lines: the source may hold any
+            // sweep `Curve::prepare` accepts (its numeric bound, 1000 turns).
             source_caps.max_sweep_rad = 1000. * std::f64::consts::TAU;
         }
         let source = ProgramValidator::new(header, Some(&source_caps))?;
@@ -676,7 +692,8 @@ impl IntentChecker {
                     "event {index}: a canned cycle block decodes to no immediate effect"
                 ));
             }
-            self.cycle = (!lines.is_empty()).then_some((index, index + *covers as usize));
+            self.cycle =
+                (!lines.is_empty()).then_some((index, index.saturating_add(*covers as usize)));
         } else if let Event::Probe { covers, .. } = expected {
             // A probing cycle is always written as the controller's probing
             // blocks (they decode to the cycle; its moves come from them).
@@ -685,7 +702,7 @@ impl IntentChecker {
                     "event {index}: a probing cycle must be written as probing blocks"
                 ));
             }
-            self.cycle = Some((index, index + *covers as usize));
+            self.cycle = Some((index, index.saturating_add(*covers as usize)));
         } else if let Some((cycle, last)) = self.cycle
             && index > cycle
             && index <= last
@@ -1721,11 +1738,16 @@ mod normal_limit_tests {
     #[test]
     fn malformed_typed_limits_refuse_begin_and_none_is_omitted_from_settings() {
         let (checker, _, header) = fixture(Some(40.), false);
-        for value in [0., -1., f64::NAN, f64::INFINITY, 1e10] {
+        for value in [0., -1., f64::NAN, f64::INFINITY] {
             let mut settings = checker.settings.clone();
             settings.max_normal_accel_mm_s2 = Some(value);
             assert!(IntentChecker::begin(&header, settings, &["BEGIN".into()]).is_err());
         }
+        // A large declared limit is the machine's value, not malformed:
+        // camlib states no upper bound of its own for it (#429).
+        let mut settings = checker.settings.clone();
+        settings.max_normal_accel_mm_s2 = Some(1e10);
+        IntentChecker::begin(&header, settings, &["BEGIN".into()]).unwrap();
         let mut settings = checker.settings.clone();
         settings.max_normal_accel_mm_s2 = None;
         assert!(

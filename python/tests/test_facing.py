@@ -194,3 +194,49 @@ class FacingTest(unittest.TestCase):
                 list(sim.run_operations())
             self.assertFalse(sim.state.finished)
             self.assertEqual(sim.state.completed, 0)
+
+    def test_facing_round_clamps_stops_at_them_and_leaves_only_what_they_block(self):
+        # Two clamps whose keep-out areas reach the passes along the block's
+        # X- and X+ edges (#422): the rows stop at them and are linked at
+        # depth, nothing enters them, every rise is straight up, and what
+        # stands above the floor afterwards is only what they block.
+        from test_limits import distance_to_box, points
+
+        module = example()
+        config = module.clamped_facing_job()
+        moves, reports = [], []
+        with Simulation(**config) as sim:
+            for update in sim.run_operations():
+                if isinstance(update, OperationUpdate):
+                    reports.append(update.report)
+                else:
+                    moves.append(update.motion)
+            self.assertTrue(sim.state.finished)
+            heights = sim.state.heights.tolist()
+        report = reports[-1]
+        self.assertEqual(report["strategy"], "facing_round_limits")
+        radius, top, floor = 5, module.CLAMP_TOP_Z, 9
+        for m in moves:
+            a, b = m["curve"]["start"], m["curve"]["end"]
+            if b[2] > a[2]:
+                self.assertEqual(a[:2], b[:2], m)
+            for p in points(m, 0.02):
+                if p[2] < top:
+                    for box in module.CLAMPS:
+                        self.assertGreaterEqual(distance_to_box(p, box), radius, (m, p))
+        # One entry for the rows and one for each clamp's edge (a link from
+        # one clamp to the other at depth would cut across the block); the
+        # pocket this used to be planned as made thousands of boundary moves.
+        self.assertEqual(sum(m["kind"] == "plunge" for m in moves), 3)
+        self.assertLess(len(moves), 120)
+        around = report["around_limits"]
+        self.assertGreater(around["unreachable_area_mm2"], 0)
+        self.assertEqual(around["entries"], 3)
+        nx, cell = 200, 0.5
+        half = cell * 2**0.5 / 2
+        for i, upper in enumerate(heights[1::2]):
+            if upper > floor + 1e-3:
+                c = ((i % nx + 0.5) * cell, (i // nx + 0.5) * cell)
+                near = min(distance_to_box(c, box) for box in module.CLAMPS)
+                self.assertLessEqual(near, 0.021 + half, (c, upper))
+        self.assertGreaterEqual(min(heights[::2]), floor - 1e-3)

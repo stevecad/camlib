@@ -169,17 +169,30 @@ pub(super) fn analytic(
             continue;
         };
         let y = &right[j];
-        if !x
+        // Each hole of x lies inside y's outer boundary (removed with it),
+        // or, when y has no holes, wholly clear of it: then
+        // (OA\H)\OB = (OA\OB)\H with H inside OA\OB, so it stays a hole.
+        let mut kept = vec![];
+        for h in &x.holes {
+            if inside(h, &y.outer, reserve, &mut work) {
+                continue;
+            }
+            if y.holes.is_empty() && disjoint_disks(h, &y.outer, reserve, &mut work) {
+                let mut h = h.clone();
+                h.invert_direction_mut();
+                kept.push(h);
+                continue;
+            }
+            return None;
+        }
+        if !y
             .holes
             .iter()
-            .all(|h| inside(h, &y.outer, reserve, &mut work))
-            || !y
-                .holes
-                .iter()
-                .all(|h| inside(h, &x.outer, reserve, &mut work))
+            .all(|h| inside(h, &x.outer, reserve, &mut work))
         {
             return None;
         }
+        negatives.extend(kept);
         // Under the whole-boundary guards:
         // (OA\HA)\(OB\HB) = (OA\OB) union_j (HB_j\HA).
         subtract(

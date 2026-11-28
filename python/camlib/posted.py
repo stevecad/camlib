@@ -27,6 +27,10 @@ from .simulation import (
 
 
 _LIMIT = 512 * 1024
+# The words a lathe replay's refusal of a tool change with the carriage kept
+# within a bound carries (#424; turning::ops::REGROUP_READ_BACK in the
+# engine). Change both together.
+_REGROUP_READ_BACK = 'the tool change as the posted program was read back'
 _MANIFEST_LIMIT = 2 * 1024 * 1024
 _FRAME = struct.Struct('<8sQI32s32s')
 _CHUNK = struct.Struct('<QIIQQQQ32s')
@@ -515,6 +519,22 @@ class PostedRun(RecordedRun):
             self._output_tolerance_mm = machine.tolerance_mm
             self._begin = self._engine.begin(self._source_header, run_id=run_id, cancel=self._post_cancel)
             begin = self._begin.data
+            # A lathe whose tool change keeps the carriage within a bound
+            # regroups every new tool to the start position as the program
+            # writes it, at the output resolution (#424). Where the start is
+            # off that resolution's grid, the replay checks each change from
+            # the written point; a refusal there names the setup's start and
+            # the resolution (the written point is in the replay's words).
+            start = tuple(float(v) for v in program.initial_position_mm)
+            unit = 25.4 if machine.output_units == 'inch' else 1.0
+            diameter = machine.dialect.x_diameter
+            grid = (start[0] * (2 if diameter else 1) / unit, start[2] / unit)
+            off_grid = any(abs(v * 10**machine.decimals - round(v * 10**machine.decimals)) > 1e-6 for v in grid)
+            self._regroup_written = (
+                (start, machine.output_units, machine.decimals, diameter)
+                if 'turning' in options and getattr(machine, 'tool_change_tip_within_mm', None) is not None and off_grid
+                else None
+            )
             self._post_identity = deepcopy(begin['identity'])
             self._post_run_id = run_id
             self._post_binding = None
@@ -555,6 +575,26 @@ class PostedRun(RecordedRun):
         except BaseException:
             self._close_events()
             raise
+
+    def _describe_error(self, text):
+        """A replay's refusal of a bounded tool change (#424) with what only
+        the posting knows: the setup's start position, where the program
+        writes it and the output resolution that moved it."""
+        note = self.__dict__.get('_regroup_written')
+        if note is None or _REGROUP_READ_BACK not in text:
+            return text
+        start, units, decimals, diameter = note
+        step = 10.0**-decimals
+        unit = 25.4 if units == 'inch' else 1.0
+        z_step, r_step = step * unit, step * unit / (2 if diameter else 1)
+        return (
+            f"{text}. The setup's start position, radius {start[0]:g}, z {start[2]:g} mm (initial_position_mm), "
+            f"is not on the output resolution of {step:g} {units} (the machine's decimals={decimals}"
+            f"{', X as a diameter' if diameter else ''}): the program writes it rounded, every regroup goes where "
+            'it is written, and the plan checked the change from the start as stated. Give a start position the '
+            f'output writes exactly (a radius on a {r_step:g} mm step and a z on a {z_step:g} mm step), or start '
+            'further from the work'
+        )
 
     def _posted_motions(self):
         try:

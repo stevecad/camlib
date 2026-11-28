@@ -498,7 +498,7 @@ class RecordedRun:
                     pass
             with self._condition:
                 if not self._cancel.is_set():
-                    self._error = f"{type(error).__name__}: {error}"
+                    self._error = self._describe_error(f"{type(error).__name__}: {error}")
         finally:
             self.__dict__.pop("_publish", None)
             try:
@@ -763,6 +763,12 @@ class RecordedRun:
                     raise TimeoutError("simulation setup not ready")
                 self._condition.wait(remaining)
             return self._manifest_frame
+
+    def _describe_error(self, text):
+        """The words a run stopped with, as status() and every wait report
+        them. A run that knows more of what its stream checked may add it
+        (``posted.PostedRun``)."""
+        return text
 
     def _raise_if_stopped(self):
         if self._error:

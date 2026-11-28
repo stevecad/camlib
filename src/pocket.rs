@@ -1389,13 +1389,13 @@ fn segment_distance(a: Point, b: Point, s: Stroke) -> f64 {
 
 /// A Y-monotone line/circle piece with half-open scan crossings. Tangent double
 /// roots are kept (zero-width paired intervals); deduplicating them breaks parity.
-struct Crossing {
+pub(crate) struct Crossing {
     a: Point,
     b: Point,
     circle: Option<(Point, f64, f64)>,
 }
 impl Crossing {
-    fn split(s: Stroke) -> Vec<Self> {
+    pub(crate) fn split(s: Stroke) -> Vec<Self> {
         let Some((center, sweep)) = s.arc else {
             return vec![Self {
                 a: s.a,
@@ -1431,7 +1431,48 @@ impl Crossing {
             })
             .collect()
     }
-    fn x_at(&self, y: f64) -> Option<f64> {
+    /// The X extent of the part of this piece with Y in the closed band
+    /// `[lo, hi]`, or `None` when no part of it is in the band.
+    pub(crate) fn x_range(&self, lo: f64, hi: f64) -> Option<[f64; 2]> {
+        let (y0, y1) = (self.a[1].min(self.b[1]), self.a[1].max(self.b[1]));
+        let (lo, hi) = (lo.max(y0), hi.min(y1));
+        if lo > hi {
+            return None;
+        }
+        if self.circle.is_none() && self.a[1] == self.b[1] {
+            return Some([self.a[0].min(self.b[0]), self.a[0].max(self.b[0])]);
+        }
+        // The piece is Y-monotone: X at the band's ends, and on an arc its
+        // extreme X where it passes the centre's height.
+        let x = |y: f64| {
+            if y == self.a[1] {
+                return self.a[0];
+            }
+            if y == self.b[1] {
+                return self.b[0];
+            }
+            match self.circle {
+                None => {
+                    self.a[0] + (y - self.a[1]) / (self.b[1] - self.a[1]) * (self.b[0] - self.a[0])
+                }
+                Some((c, r, sign)) => {
+                    let d = (y - c[1]).abs().min(r);
+                    c[0] + sign * ((r - d) * (r + d)).sqrt()
+                }
+            }
+        };
+        let (p, q) = (x(lo), x(hi));
+        let mut range = [p.min(q), p.max(q)];
+        if let Some((c, r, sign)) = self.circle
+            && lo < c[1]
+            && c[1] < hi
+        {
+            let extreme = c[0] + sign * r;
+            range = [range[0].min(extreme), range[1].max(extreme)];
+        }
+        Some(range)
+    }
+    pub(crate) fn x_at(&self, y: f64) -> Option<f64> {
         if y < self.a[1].min(self.b[1]) || y >= self.a[1].max(self.b[1]) {
             return None;
         }
@@ -3298,6 +3339,31 @@ mod admission_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_crossing_piece_gives_its_x_extent_inside_a_band() {
+        // A half circle of radius 2 about (5, 5) from its bottom, through
+        // its right-most point, to its top: one Y-monotone piece.
+        let arc = Stroke {
+            a: [5., 3.],
+            b: [5., 7.],
+            arc: Some(([5., 5.], std::f64::consts::PI)),
+        };
+        let pieces = Crossing::split(arc);
+        assert_eq!(pieces.len(), 1);
+        let piece = &pieces[0];
+        // Across the centre's height: out to the right-most point, 7.
+        assert_eq!(piece.x_range(4., 6.), Some([5. + 3f64.sqrt(), 7.]));
+        // Below it: between X at Y 3 (the start, 5) and at Y 4.
+        assert_eq!(piece.x_range(0., 4.), Some([5., 5. + 3f64.sqrt()]));
+        assert_eq!(piece.x_range(7.5, 9.), None);
+        // A line, and a horizontal line (its whole extent while in the band).
+        let line = &Crossing::split(Stroke::line([0., 0.], [4., 8.]))[0];
+        assert_eq!(line.x_range(2., 4.), Some([1., 2.]));
+        let flat = &Crossing::split(Stroke::line([3., 1.], [-1., 1.]))[0];
+        assert_eq!(flat.x_range(0., 2.), Some([-1., 3.]));
+        assert_eq!(flat.x_range(1.5, 2.), None);
+    }
+
     #[test]
     fn side_entry_uses_the_unit_tangent_of_the_cut() {
         let stroke = Stroke::line([0., 0.], [34., 54.]);

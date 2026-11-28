@@ -7,6 +7,10 @@ use crate::{
     tool::{CutterShape, ToolAssembly, valid_id},
 };
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
+
+mod around;
+pub use around::AroundLimitsReport;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -86,6 +90,9 @@ pub struct FacingReport {
     pub clearance_returns: usize,
     pub nominal_uncovered_area_mm2: f64,
     pub entry_policy: &'static str,
+    /// Facing round limits that reach the passes (#422): what was planned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub around_limits: Option<AroundLimitsReport>,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -113,6 +120,11 @@ pub struct FacingPlan {
     high: f64,
     first_row: f64,
     last_row: f64,
+    /// The radius the cutter cuts the floor to.
+    floor_radius: f64,
+    /// The planned route round limits that reach the passes (#422), streamed
+    /// in place of the plain rows.
+    around: Option<VecDeque<around::Step>>,
     pass: usize,
     row: usize,
     phase: Phase,
@@ -134,6 +146,9 @@ impl FacingPlan {
     ) -> Result<Self, String> {
         if cancel.is_cancelled() {
             return Err(PLANNING_CANCELLED.into());
+        }
+        if let Some(limits) = op.limits.clone().filter(|l| !l.is_empty()) {
+            return Self::prepare_limited(op, limits, assembly, spec, initial, first_id, cancel);
         }
         if op.axis == TraverseAxis::Auto {
             if op.limits.as_ref().is_some_and(|limits| !limits.is_empty()) {
@@ -381,6 +396,7 @@ impl FacingPlan {
             clearance_returns: 0,
             nominal_uncovered_area_mm2: 0.,
             entry_policy: "vertical entries and zigzag links outside initial stock; one-way returns at clearance",
+            around_limits: None,
         };
         let heights = crate::heights::Heights::resolve(
             op.clearance_z_mm,
@@ -400,6 +416,8 @@ impl FacingPlan {
             high,
             first_row,
             last_row,
+            floor_radius: floor_r,
+            around: None,
             pass: 0,
             row: 0,
             phase: Phase::Lift,
@@ -408,6 +426,84 @@ impl FacingPlan {
             expected_generation: None,
             report,
         })
+    }
+    /// Facing with limits (#411, #422). Limits that cannot touch anything the
+    /// facing sweeps are left out and the plain facing runs unchanged:
+    /// - an avoid area constrains only a tip below its top, and every facing
+    ///   move keeps its tip at or above `floor_z_mm`, so an area whose top is
+    ///   at or below the floor never constrains it;
+    /// - when every move of the plain facing is proven inside what remains
+    ///   (the proof region operations and the run's link guard use), the
+    ///   limits do not reach it either.
+    ///
+    /// Otherwise the plain facing's rows are planned round the limits
+    /// (`around`): stopped where the limits stop the cutter, linked at depth
+    /// where a proven link exists, and finished by a pass along each limit's
+    /// edge, every entry a vertical descent with the whole cutter
+    /// `entry_air_gap_mm` clear of the stock. Those rows run along X and are
+    /// linked in zigzag, so `axis="y"`, `mode="one_way"` and `reverse` are
+    /// refused by name there rather than ignored.
+    fn prepare_limited(
+        op: FacingOperation,
+        limits: crate::limits::Limits,
+        assembly: &ToolAssembly,
+        spec: &StockSpec,
+        initial: Vec3,
+        first_id: u64,
+        cancel: &impl CancelSignal,
+    ) -> Result<Self, String> {
+        limits.validate()?;
+        let reaching = crate::limits::Limits {
+            contain: limits.contain.clone(),
+            avoid: limits
+                .avoid
+                .iter()
+                .filter(|a| a.top_z_mm > op.floor_z_mm)
+                .cloned()
+                .collect(),
+        };
+        let mut native = op.clone();
+        native.limits = None;
+        let mut plan = Self::prepare(native, assembly, spec, initial, first_id, cancel)?;
+        let r = assembly.cutter.diameter_mm / 2.;
+        if reaching.is_empty() || plan.proven_within(&reaching, r, cancel)? {
+            return Ok(plan);
+        }
+        if op.axis == TraverseAxis::Auto || op.auto_rapid_mm_min.is_some() {
+            return Err("automatic facing axis is unavailable with in-plane limits; choose an explicit axis without auto_rapid_mm_min".into());
+        }
+        let refuse = |what: &str| {
+            format!(
+                "facing {}: the limits reach the facing passes, so its rows are planned round them, along X and linked in zigzag; {what}, or keep the limits clear of the facing",
+                op.id
+            )
+        };
+        if op.axis == TraverseAxis::Y {
+            return Err(refuse("axis \"y\" is unavailable there: use axis \"x\""));
+        }
+        if op.mode == FacingMode::OneWay {
+            return Err(refuse(
+                "mode \"one_way\" is unavailable there: use mode \"zigzag\"",
+            ));
+        }
+        if op.reverse {
+            return Err(refuse("reverse is unavailable there: use reverse=False"));
+        }
+        let route = around::route(&plan, &reaching, r, plan.floor_radius, cancel)?;
+        plan.around = Some(route.steps);
+        plan.report.strategy = "facing_round_limits";
+        plan.report.entry_policy = "rows stopped at the limits and linked at depth where proven; vertical entries outside initial stock; one climb pass along each limit's edge";
+        plan.report.nominal_uncovered_area_mm2 = route.report.unreachable_area_mm2;
+        plan.report.around_limits = Some(route.report);
+        Ok(plan)
+    }
+    /// The Y (across the rows) of row `row`.
+    fn row_y(&self, row: usize) -> f64 {
+        if row + 1 == self.report.rows_per_pass {
+            self.last_row
+        } else {
+            self.first_row + row as f64 * self.report.row_pitch_mm
+        }
     }
     pub fn report(&self) -> &FacingReport {
         &self.report
@@ -557,6 +653,44 @@ impl FacingPlan {
     }
 
     fn next_motion(&mut self, cancel: &impl CancelSignal) -> Result<Option<Motion>, String> {
+        if let Some(steps) = &mut self.around {
+            if cancel.is_cancelled() {
+                return Err(PLANNING_CANCELLED.into());
+            }
+            let Some((curve, kind, count)) = steps.front().cloned() else {
+                self.drained = true;
+                return Ok(None);
+            };
+            if curve.start() != self.position {
+                return Err("facing: internal planning error: a planned move does not start at the tool position".into());
+            }
+            let next_id = self
+                .next_id
+                .checked_add(1)
+                .ok_or("facing motion IDs overflow")?;
+            steps.pop_front();
+            match count {
+                around::Count::None => {}
+                around::Count::Row => self.report.cut_rows_emitted += 1,
+                around::Count::StayDown => self.report.side_links_emitted += 1,
+                around::Count::Return => self.report.clearance_returns += 1,
+            }
+            let motion = Motion {
+                id: self.next_id,
+                operation: self.op.id.clone(),
+                tool: self.op.tool.clone(),
+                kind,
+                feed_mm_min: match kind {
+                    MoveKind::Rapid => None,
+                    MoveKind::Plunge => Some(self.op.plunge_mm_min),
+                    _ => Some(self.op.feed_mm_min),
+                },
+                curve,
+            };
+            self.position = motion.curve.end();
+            self.next_id = next_id;
+            return Ok(Some(motion));
+        }
         loop {
             if cancel.is_cancelled() {
                 return Err(PLANNING_CANCELLED.into());

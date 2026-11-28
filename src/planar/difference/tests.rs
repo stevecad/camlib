@@ -317,3 +317,28 @@ fn separation_guard_covers_complete_arcs_and_declines_exhaustion() {
     assert!(separated(&a, &far, 1e-5, &mut 100_000));
     assert!(!separated(&a, &far, 1e-5, &mut 0));
 }
+
+#[test]
+fn a_hole_clear_of_the_subtracted_outer_stays_a_hole_with_its_arcs() {
+    // A region with one hole, less a disk clear of that hole: the hole is
+    // kept, the disk becomes a second hole, and both keep their arcs (the
+    // chorded fallback gives each hundreds of chords).
+    let a = prepare(&region(circle(0., 0., 10.), vec![circle(-5., 0., 2.)]));
+    let b = prepare(&region(circle(5., 0., 2.), vec![]));
+    let result = fast(&a, &b);
+    assert!((result.region.summary().area_mm2 - 92. * PI).abs() < 1e-9);
+    assert_eq!(
+        (result.report.after_components, result.report.after_holes),
+        (1, 2)
+    );
+    let vertices: usize = result.report.region.components[0]
+        .holes
+        .iter()
+        .map(|h| h.vertices.len())
+        .sum();
+    assert_eq!(vertices, 4);
+    enclosure(&result, &old(&a, &b));
+    // A disk that reaches the hole is still left to the general Boolean.
+    let b = prepare(&region(circle(-2., 0., 2.), vec![]));
+    assert!(analytic(&a, &b, 1e-5).is_none());
+}
