@@ -2103,6 +2103,14 @@ rolls, are not creases. Creases are located by bisection to `path_error_mm`,
 linked into polylines, and cut like `Project` paths (every chord lifted and
 checked). Creases shorter than the tool radius are skipped.
 
+With `rest_threshold_mm`, an optional `rest_stepover_mm` adds a guide on
+either side of each crease. The spacing must be positive and at most the
+ball radius. Only spans that reach committed remaining stock pass the
+existing rest filter, and every flank follows the same entry, surface and
+clearance checks as the centre pass. This can remove material across a
+wider fillet after a larger ball. The material checker still determines
+remaining stock.
+
 ### Rest finishing
 
 `Parallel`, `Spiral`, `Radial`, `Project`, `Pencil`, `Scallop` and `Geodesic` take

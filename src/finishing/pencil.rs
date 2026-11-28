@@ -51,6 +51,48 @@ fn angle(a: [f64; 3], b: [f64; 3]) -> f64 {
         .acos()
 }
 
+/// Follow either side of a crease at a bounded guide displacement. The guides
+/// still go through the rest-stock filter and full 3D placement and checks.
+pub(super) fn flank(crease: &[[f64; 2]], offset: f64) -> Option<Vec<[f64; 2]>> {
+    let closed = crease.first() == crease.last();
+    let points = if closed {
+        &crease[..crease.len().saturating_sub(1)]
+    } else {
+        crease
+    };
+    if points.len() < if closed { 3 } else { 2 } {
+        return None;
+    }
+    let last = points.len() - 1;
+    let mut guide = Vec::with_capacity(crease.len());
+    for (i, point) in points.iter().enumerate() {
+        let prev = if closed && i == 0 {
+            last
+        } else {
+            i.saturating_sub(1)
+        };
+        let next = if closed && i == last {
+            0
+        } else {
+            (i + 1).min(last)
+        };
+        let dx = points[next][0] - points[prev][0];
+        let dy = points[next][1] - points[prev][1];
+        let length = metallic::hypot(dx, dy);
+        if length <= f64::EPSILON {
+            return None;
+        }
+        guide.push([
+            point[0] - offset * dy / length,
+            point[1] + offset * dx / length,
+        ]);
+    }
+    if closed {
+        guide.push(guide[0]);
+    }
+    Some(guide)
+}
+
 /// Crease polylines (XY) over `lo..hi`, sampled `spacing` apart.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn creases(
@@ -302,6 +344,24 @@ mod tests {
     use super::*;
     use crate::surface::SurfaceMesh;
     use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn flank_keeps_open_ends_and_closes_a_loop() {
+        assert_eq!(
+            flank(&[[0., 0.], [2., 0.], [4., 0.]], 0.5).unwrap(),
+            [[0., 0.5], [2., 0.5], [4., 0.5]]
+        );
+        // The normal contributes directly to the emitted cutter coordinate.
+        let diagonal = flank(&[[0., 0.], [261., 11.]], 1.).unwrap();
+        assert_eq!(diagonal[0][0].to_bits(), 0xbfa5_8f35_2c29_98e4);
+        let ring = [[0., 0.], [4., 0.], [4., 4.], [0., 4.], [0., 0.]];
+        let inset = flank(&ring, 0.5).unwrap();
+        assert_eq!(inset.first(), inset.last());
+        for (from, to) in ring.iter().zip(inset) {
+            assert!(((to[0] - from[0]).hypot(to[1] - from[1]) - 0.5).abs() < 1e-12);
+        }
+        assert!(flank(&[[0., 0.], [1., 0.], [0., 0.]], 0.5).is_none());
+    }
 
     /// An 8 x 8 x 3 boss standing on the base plane Z 4.
     fn boss() -> SurfaceMesh {

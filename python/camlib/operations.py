@@ -428,11 +428,14 @@ class Pencil:
     feed_z_mm: float | None = None
     # Entry where live stock stands above a pass: RampEntry(...), as in Parallel.
     entry: object | None = None
+    # Add one pass on either side, keeping only spans that reach committed rest stock.
+    rest_stepover_mm: float | None = None
 
     def to_dict(self):
-        result = _pattern_dict(self, "pencil", ("min_angle_deg", "sample_mm"))
-        if result["pattern"]["sample_mm"] is None:
-            result["pattern"].pop("sample_mm")
+        result = _pattern_dict(self, "pencil", ("min_angle_deg", "sample_mm", "rest_stepover_mm"))
+        for name in ("sample_mm", "rest_stepover_mm"):
+            if result["pattern"][name] is None:
+                result["pattern"].pop(name)
         return result
 
 

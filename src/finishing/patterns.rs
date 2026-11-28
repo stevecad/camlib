@@ -77,6 +77,9 @@ pub enum FinishPattern {
         /// Detection grid spacing. Default: a quarter of the tool radius.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sample_mm: Option<f64>,
+        /// Spacing of the two optional stock-guided flanking passes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rest_stepover_mm: Option<f64>,
     },
 }
 /// Where geodesic passes start: the distance along the surface is measured

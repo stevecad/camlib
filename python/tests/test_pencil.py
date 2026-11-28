@@ -4,7 +4,7 @@ import unittest
 
 import camlib
 from camlib.cadquery import export_surface_mesh
-from camlib.simulation import OperationUpdate, Simulation
+from camlib.simulation import OperationUpdate, Simulation, curve_length
 from camlib.tools import BallEndMill, HolderSection, ToolAssembly
 
 
@@ -24,6 +24,107 @@ def boss_distance(x, y):
 
 
 class PencilTest(unittest.TestCase):
+    def test_posted_flanks_cut_extra_stock_after_the_larger_ball(self):
+        import cadquery as cq
+
+        from camlib.cadquery import export_stock_mesh
+        from camlib.material import SurfaceTarget
+        from camlib.playback import Cursor, Player
+        from camlib.post import ToolSetting
+        from test_machine import model
+        from test_post import fixture
+
+        surface = export_surface_mesh(part(), source=dict(model="stepped", revision="1"))
+        blank = (
+            cq.Workplane("XY")
+            .box(24, 16, 4.2, centered=False)
+            .union(cq.Workplane("XY").box(8, 8, 3, centered=False).translate((8, 4, 4.2)))
+        )
+        stock = camlib.StockSpec.from_mesh(export_stock_mesh(blank), 0.1)
+        tools = tuple(
+            ToolAssembly(
+                f"ball{diameter}",
+                BallEndMill(f"be{diameter}", diameter=diameter, flute_length=20, overall_length=50),
+                30,
+                60,
+                (HolderSection(30, 60, 4, 4),),
+            )
+            for diameter in (5, 3)
+        )
+        start = (0, 0, 12)
+        operations = tuple(
+            camlib.Pencil(
+                name,
+                tool,
+                surface,
+                0,
+                12,
+                feed_mm_min=600,
+                plunge_mm_min=150,
+                spindle_rpm=12000,
+                tool_number=i,
+                length_register=i,
+                coolant="flood",
+                entry=camlib.RampEntry(angle_deg=10, min_length_mm=2),
+            )
+            for i, (name, tool) in enumerate(zip(("large", "rest"), tools), start=1)
+        )
+        large, small = operations
+        self.assertNotIn("rest_stepover_mm", small.to_dict()["pattern"])
+        with self.assertRaisesRegex(Exception, "rest_stepover_mm needs rest_threshold_mm"):
+            with Simulation(
+                stock=stock,
+                tools=tools,
+                operations=(dataclasses.replace(small, rest_stepover_mm=0.75),),
+                revision="1",
+                initial_position_mm=start,
+            ) as sim:
+                list(sim.run_operations())
+        rest = dataclasses.replace(small, rest_threshold_mm=0.01)
+        checks = camlib.StreamChecks(
+            stock_contact=camlib.StockContactOptions(),
+            material=(camlib.MaterialCheck(SurfaceTarget("boss", "1", surface, 0)),),
+        )
+        measurements = []
+        distances = []
+        for spacing in (None, 0.75):
+            pencil = dataclasses.replace(rest, rest_stepover_mm=spacing)
+            job = camlib.Job(
+                "pencils",
+                "1",
+                (camlib.Setup("top", stock, tools, (large, pencil), start, verification=checks),),
+            )
+            header = job.compile().setup("top").program_header()
+            machine = dataclasses.replace(
+                fixture()[1],
+                tool_change_position_mode="preserve_tip",
+                tools=tuple(
+                    ToolSetting.for_tool(tool, number=i, length_register=i, position_after_mm=start)
+                    for i, tool in enumerate(header.tools, start=1)
+                ),
+            )
+            crash = model(header, machine)
+            calibration = crash.tools[0]
+            crash = dataclasses.replace(
+                crash,
+                initial_axes_mm=(0, 0, start[2] + tools[0].gauge_length_mm),
+                tools=(calibration, dataclasses.replace(calibration, tool=tools[1].id, length_register=2)),
+                tool_change_routes={tool.id: crash.tool_change_routes[tools[0].id] for tool in tools},
+            )
+            with job.post("top", machine=dataclasses.replace(machine, crash_model=crash)) as posted:
+                result = posted.export()
+                self.assertEqual(result["findings"], ())
+                self.assertEqual(result["accepted"], ())
+                self.assertEqual(result["machine"]["status"], "clear")
+                player = Player(posted)
+                player.seek(Cursor(posted.status()["available"]))
+                measurements.append(player.state.volume()["removed_lower_mm3"])
+                motions = (posted.posted_motion(i)["motion"] for i in range(result["motions"]))
+                distances.append(sum(curve_length(m["curve"]) for m in motions if m["kind"] == "cut"))
+        print("Posted boss corner, certified removed stock mm³", measurements)
+        print("Posted cutting distance mm", distances)
+        self.assertGreater(measurements[1], measurements[0] + 0.5)
+
     def test_traces_the_inside_corner_around_the_boss(self):
         surface = export_surface_mesh(part(), source=dict(model="stepped", revision="1"))
         tool = ToolAssembly(

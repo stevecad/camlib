@@ -1192,6 +1192,7 @@ impl ParallelPlan {
         if let FinishPattern::Pencil {
             min_angle_deg,
             sample_mm,
+            rest_stepover_mm,
         } = op.pattern
         {
             // Default: a quarter radius, and fine enough that chords sag
@@ -1209,6 +1210,17 @@ impl ParallelPlan {
                         spacing.is_finite() && spacing > guard && spacing <= radius,
                         format!(
                             "sample_mm {spacing} must be positive and at most the tool radius {radius}"
+                        ),
+                    ),
+                    (
+                        rest_stepover_mm.is_none_or(|step| {
+                            step.is_finite()
+                                && step > guard
+                                && step <= radius
+                                && op.rest_threshold_mm.is_some()
+                        }),
+                        format!(
+                            "rest_stepover_mm needs rest_threshold_mm and a positive spacing at most the tool radius {radius}"
                         ),
                     ),
                 ],
@@ -1235,6 +1247,22 @@ impl ParallelPlan {
                     >= radius
             })
             .collect();
+            if let Some(step) = rest_stepover_mm {
+                let points: u128 = passes.iter().map(|crease| crease.len() as u128).sum();
+                crate::resources::check_memory(3 * points * 16, "pencil crease and flank guides")?;
+                let mut flanks = Vec::new();
+                for crease in &passes {
+                    if cancel.is_cancelled() {
+                        return Err("pencil flank planning cancelled".into());
+                    }
+                    for offset in [step, -step] {
+                        if let Some(guide) = pencil::flank(crease, offset) {
+                            flanks.push(guide);
+                        }
+                    }
+                }
+                passes.extend(flanks);
+            }
         }
         let rest = match op.rest_threshold_mm {
             None => None,
