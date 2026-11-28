@@ -44,6 +44,11 @@ pub struct Settings {
     /// the decoder reads it from where the controller applies it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub compensation_unwritten: bool,
+    /// Lathe tool-change bound (`Machine::tool_change_tip_within_mm`): with
+    /// `tip_travel_mm`, every tool change after the first checks the whole
+    /// regroup region (`turning::ops::regroup_region`) against travel (#432).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_change_tip_within_mm: Option<[f64; 2]>,
 }
 
 #[derive(Serialize)]
@@ -209,6 +214,78 @@ fn stationary_bound(
     Ok(bound)
 }
 
+/// Check the whole regroup region of a bounded carriage-kept lathe tool change
+/// (`TurnToolChange::CarriageKeptWithin`, `Machine::tool_change_tip_within_mm`)
+/// against a declared tip travel box (#432).
+///
+/// The region (`turning::ops::regroup_region`) is the axis-aligned rectangle in
+/// (radius, z) holding `old ± bound` and the regroup target `to`, mapped into
+/// 3D work points `[r, y, z]`. Because `work_to_machine` is affine and the
+/// travel box is closed and convex, every tip position in the region lies inside
+/// the box if and only if all of its corners do; each corner is tested with
+/// `crate::travel::point_outside` under the one travel rule.
+pub fn check_regroup_travel(
+    frame: &WorkFrame,
+    tip_travel_mm: [Vec3; 2],
+    previous_tool: &str,
+    tool: &str,
+    old: Vec3,
+    bound: [f64; 2],
+    to: Vec3,
+) -> Result<(), String> {
+    frame.validate()?;
+    let [min, max] = tip_travel_mm;
+    for i in 0..3 {
+        if !min[i].is_finite() || !max[i].is_finite() || min[i] >= max[i] {
+            return Err("invalid configured machine tip travel".into());
+        }
+    }
+    if !bound
+        .iter()
+        .all(|v| v.is_finite() && (0. ..=1e6).contains(v))
+    {
+        return Err("tool_change_tip_within_mm is (x radius, z): two finite distances in millimetres, not negative (how far any tool's tip can be from any other's on the tool post)".into());
+    }
+    if !old.iter().chain(&to).all(|v| v.is_finite()) {
+        return Err("regroup tool-change positions must be finite".into());
+    }
+    let travel = crate::travel::Travel::tip(min, max);
+    let corners = crate::turning::ops::regroup_region([old[0], old[2]], bound, [to[0], to[2]]);
+    let ys: &[f64] = if old[1] == to[1] {
+        &[to[1]]
+    } else {
+        &[old[1], to[1]]
+    };
+    let mut worst: Option<crate::travel::Outside> = None;
+    for &[r, z] in &corners {
+        for &y in ys {
+            if let Some(found) = crate::travel::point_outside(frame, &travel, [r, y, z])
+                && worst.is_none_or(|w| found.beyond_mm > w.beyond_mm)
+            {
+                worst = Some(found);
+            }
+        }
+    }
+    if let Some(found) = worst {
+        let axis = ["X", "Y", "Z"][found.axis];
+        let k = found.axis;
+        let side = if found.low { "below" } else { "above" };
+        return Err(format!(
+            "the tool change from {previous_tool:?} to {tool:?} exceeds configured machine travel on machine {axis}: its regroup region reaches {:.6} mm, {side} its limit {:.6} mm (beyond by {:.3e} mm). The change keeps the carriage where it is and the new tool's tip is only known to be within radius ±{} mm, z ±{} mm (tool_change_tip_within_mm) of where the tool before it stopped (radius {}, z {}), and on its regroup rapid to the start position (radius {}, z {}), so every position in that region must lie inside the machine's tip_travel_mm. Start further inside the travel (the setup's initial_position_mm), or state a smaller tip_within_mm / tool_change_tip_within_mm if every tool on the tool post is within it",
+            found.machine_mm[k],
+            found.limit_mm,
+            found.beyond_mm,
+            bound[0],
+            bound[1],
+            old[0],
+            old[2],
+            to[0],
+            to[2],
+        ));
+    }
+    Ok(())
+}
+
 impl IntentChecker {
     pub fn begin(
         header: &Program,
@@ -293,6 +370,17 @@ impl IntentChecker {
                     "gauge_travel_mm gives a spindle tool's tip travel from its gauge length; beam tool {} has none: declare tip_travel_mm",
                     t.id
                 ));
+            }
+        }
+        if let Some(bound) = settings.tool_change_tip_within_mm {
+            if !bound
+                .iter()
+                .all(|v| v.is_finite() && (0. ..=1e6).contains(v))
+            {
+                return Err("tool_change_tip_within_mm is (x radius, z): two finite distances in millimetres, not negative (how far any tool's tip can be from any other's on the tool post)".into());
+            }
+            if settings.gauge_travel_mm.is_some() {
+                return Err("gauge_travel_mm is a milling spindle's gauge-line travel; a lathe declares tip_travel_mm".into());
             }
         }
         let scheduling = if let Some(policy) = &settings.motion_scheduling {
@@ -476,6 +564,30 @@ impl IntentChecker {
             Some(found) => Err(self.travel_refusal(&found, tool)),
             None => Ok(()),
         }
+    }
+    /// A bounded carriage-kept lathe tool change (#432): the decoder folded the
+    /// T word and its regroup rapid into one `ToolChange` at the target, so
+    /// check every tip position the bound and rapid allow against `tip_travel_mm`.
+    fn check_regroup(
+        &self,
+        previous: &str,
+        tool: &str,
+        old: Vec3,
+        bound: [f64; 2],
+        to: Vec3,
+    ) -> Result<(), String> {
+        let Some(travel) = self.settings.tip_travel_mm else {
+            return Ok(());
+        };
+        check_regroup_travel(
+            &self.settings.work_to_machine,
+            travel,
+            previous,
+            tool,
+            old,
+            bound,
+            to,
+        )
     }
     /// A decoded move against the machine's travel, in closed form: its
     /// declared ends and, for an arc or helix, where each machine coordinate
@@ -720,6 +832,8 @@ impl IntentChecker {
         {
             return Err(format!("event {index}: post wrote no block"));
         }
+        let previous_tool = self.decoded.active_tool().map(str::to_owned);
+        let previous_position = self.decoded.summary.final_position_mm;
         self.decoded.consume(actual)?;
         if carried {
             actual = &actual[1..];
@@ -850,6 +964,12 @@ impl IntentChecker {
                     ));
                 }
                 self.check_point(*bp, Some(b))?;
+                if let (Some(previous), Some(tip_bound)) = (
+                    previous_tool.as_deref(),
+                    self.settings.tool_change_tip_within_mm,
+                ) {
+                    self.check_regroup(previous, b, previous_position, tip_bound, *bp)?;
+                }
                 (None, (bound > 0.).then_some(bound))
             }
             // A controller's dwell resolution may round the time: never more
@@ -968,6 +1088,18 @@ impl IntentChecker {
                 } = single
                 {
                     self.check_point(*position_after_mm, Some(tool))?;
+                    if let (Some(previous), Some(tip_bound)) = (
+                        previous_tool.as_deref(),
+                        self.settings.tool_change_tip_within_mm,
+                    ) {
+                        self.check_regroup(
+                            previous,
+                            tool,
+                            previous_position,
+                            tip_bound,
+                            *position_after_mm,
+                        )?;
+                    }
                 }
                 (None, None)
             }

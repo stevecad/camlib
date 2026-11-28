@@ -3901,7 +3901,7 @@ class PostEngine:
             decoded_initial_position_mm=decoder.position,
             lowering=asdict(self.lowering) if self.lowering is not None else None,
         )
-        for key in ('max_normal_accel_mm_s2', 'max_axis_feed_mm_min', 'gauge_travel_mm'):
+        for key in ('max_normal_accel_mm_s2', 'max_axis_feed_mm_min', 'gauge_travel_mm', 'tool_change_tip_within_mm'):
             if getattr(m, key) is not None:
                 settings[key] = getattr(m, key)
         if getattr(m, 'compensation_unwritten', False):

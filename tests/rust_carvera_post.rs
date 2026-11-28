@@ -300,6 +300,7 @@ fn mutated_tool_word_is_caught_by_decode_and_compare() {
             lowering: None,
             motion_scheduling: None,
             compensation_unwritten: false,
+            tool_change_tip_within_mm: m.tool_change_tip_within_mm,
         };
         let (mut checker, _) = IntentChecker::begin(&header, settings, &lines).unwrap();
         for event in &events[..2] {

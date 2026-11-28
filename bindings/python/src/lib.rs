@@ -1902,6 +1902,32 @@ fn prepare_geometry<'py>(
     Ok(PyBytes::new(py, &bytes))
 }
 
+/// Check the regroup region of a bounded carriage-kept lathe tool change against
+/// a declared tip travel box (`post_intent::check_regroup_travel`, #432).
+#[pyfunction]
+fn check_regroup_travel(
+    frame_json: &str,
+    tip_travel_mm: [[f64; 3]; 2],
+    previous_tool: &str,
+    tool: &str,
+    old: [f64; 3],
+    bound: [f64; 2],
+    to: [f64; 3],
+) -> PyResult<()> {
+    let frame: camlib::motion::WorkFrame =
+        serde_json::from_str(frame_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    camlib::post_intent::check_regroup_travel(
+        &frame,
+        tip_travel_mm,
+        previous_tool,
+        tool,
+        old,
+        bound,
+        to,
+    )
+    .map_err(PyValueError::new_err)
+}
+
 /// Generic syntax-independent geometry checker used by ordinary Python posts.
 #[pyclass]
 struct IntentSession {
@@ -3029,6 +3055,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<SplineSurfaceBounds>()?;
     module.add_class::<MaterialTarget>()?;
     module.add_class::<IntentSession>()?;
+    module.add_function(wrap_pyfunction!(check_regroup_travel, module)?)?;
     module.add_class::<MotionDecoder>()?;
     module.add_class::<DefaultMotionPost>()?;
     module.add_function(wrap_pyfunction!(format_post_words, module)?)?;

@@ -552,3 +552,267 @@ fn a_calibration_interval_is_inside_only_whole_and_a_violation_only_whole() {
         (Status::Violation, "axis_x")
     );
 }
+
+#[test]
+fn bounded_lathe_regroup_checks_whole_region_against_tip_travel() {
+    // #432: under tool_change_tip_within_mm, the decoder folds the T word and
+    // regroup rapid into one ToolChange at the target. Every position the
+    // declared bound and rapid allow (turning::ops::regroup_region) must lie
+    // inside tip_travel_mm under the one travel rule (src/travel.rs).
+    let (base, _, mut header) = fixture(None, false);
+    let mut t2 = header.tools[0].clone();
+    t2.id = "t2".into();
+    header.tools.push(t2);
+
+    let run = |frame: &WorkFrame,
+               travel: Option<[Vec3; 2]>,
+               bound: Option<[f64; 2]>,
+               old: Vec3,
+               to: Vec3,
+               second_tool: bool,
+               lower: bool|
+     -> Result<(), String> {
+        let mut h = header.clone();
+        h.initial_position_mm = old;
+        let mut settings = base.settings.clone();
+        settings.work_to_machine = frame.clone();
+        settings.tip_travel_mm = travel;
+        settings.tool_change_tip_within_mm = bound;
+        settings.decoded_initial_position_mm = old;
+        settings.lowering = lower.then(crate::post_lowering::Options::default);
+        let (mut checker, _) = IntentChecker::begin(&h, settings, &["BEGIN".into()])?;
+        let mut events = vec![
+            Event::WorkOffset { number: 1 },
+            Event::ToolChange {
+                tool: "t1".into(),
+                number: 1,
+                length_register: 1,
+                position_after_mm: old,
+            },
+        ];
+        if second_tool {
+            events.push(Event::ToolChange {
+                tool: "t2".into(),
+                number: 2,
+                length_register: 2,
+                position_after_mm: to,
+            });
+        }
+        if lower {
+            for e in events {
+                checker.start(e.clone(), &|| false)?;
+                checker
+                    .check_lowered(&[[0., 1.]], &[vec![e]], &[vec!["BLOCK".into()]], &|| false)?;
+            }
+            Ok(())
+        } else {
+            checker
+                .consume(
+                    &events,
+                    &events.iter().cloned().map(|e| vec![e]).collect::<Vec<_>>(),
+                    &vec![vec!["BLOCK".into()]; events.len()],
+                    &|| false,
+                )
+                .map(|_| ())
+        }
+    };
+
+    // Tool 1 is already mounted at the start: no regroup, even when start ± bound
+    // reaches past tip_travel_mm.
+    let id = WorkFrame::identity();
+    let tight = [[0., -10., -50.], [80., 10., 100.]];
+    run(
+        &id,
+        Some(tight),
+        Some([30., 40.]),
+        [60., 0., 80.],
+        [60., 0., 80.],
+        false,
+        false,
+    )
+    .unwrap();
+
+    // Tool 2's regroup box [30..90] x [40..120] reaches Z = 120 (above 100) and
+    // X = 90 (above 80): refused in both direct and lowered modes, naming the
+    // change, the bound, the travel limit and the axis.
+    for lower in [false, true] {
+        let error = run(
+            &id,
+            Some(tight),
+            Some([30., 40.]),
+            [60., 0., 80.],
+            [60., 0., 80.],
+            true,
+            lower,
+        )
+        .unwrap_err();
+        for part in [
+            "tool change from \"t1\" to \"t2\"",
+            "machine Z",
+            "120.000000 mm, above its limit 100.000000 mm",
+            "radius ±30 mm, z ±40 mm (tool_change_tip_within_mm)",
+            "tip_travel_mm",
+        ] {
+            assert!(error.contains(part), "{part}: {error}");
+        }
+    }
+
+    // Closed box on all four sides: exact limits [30..90] x [40..120] pass;
+    // 1e-6 mm tighter on any one side is refused on that axis and side.
+    let exact = [[30., -10., 40.], [90., 10., 120.]];
+    run(
+        &id,
+        Some(exact),
+        Some([30., 40.]),
+        [60., 0., 80.],
+        [60., 0., 80.],
+        true,
+        false,
+    )
+    .unwrap();
+    for (box_mm, axis, side) in [
+        ([[30. + 1e-6, -10., 40.], [90., 10., 120.]], "X", "below"),
+        ([[30., -10., 40.], [90. - 1e-6, 10., 120.]], "X", "above"),
+        ([[30., -10., 40. + 1e-6], [90., 10., 120.]], "Z", "below"),
+        ([[30., -10., 40.], [90., 10., 120. - 1e-6]], "Z", "above"),
+    ] {
+        let error = run(
+            &id,
+            Some(box_mm),
+            Some([30., 40.]),
+            [60., 0., 80.],
+            [60., 0., 80.],
+            true,
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains(&format!("machine {axis}")) && error.contains(side),
+            "{axis} {side}: {error}"
+        );
+    }
+
+    // old != to: the whole rectangle spanned by old ± bound and to is checked,
+    // verified independently against turning::ops::regroup_region and travel::point_outside.
+    let (old, bound, to) = ([50., 0., 70.], [5., 10.], [70., 0., 95.]);
+    let region = crate::turning::ops::regroup_region([old[0], old[2]], bound, [to[0], to[2]]);
+    assert_eq!(region, [[45., 60.], [70., 60.], [70., 95.], [45., 95.]]);
+    let rotated = turned(0.4, [10., -5., 20.]);
+    let mapped: Vec<Vec3> = region
+        .iter()
+        .map(|&[r, z]| rotated.to_design([r, 0., z]))
+        .collect();
+    let min: Vec3 =
+        std::array::from_fn(|k| mapped.iter().map(|p| p[k]).fold(f64::INFINITY, f64::min));
+    let max: Vec3 = std::array::from_fn(|k| {
+        mapped
+            .iter()
+            .map(|p| p[k])
+            .fold(f64::NEG_INFINITY, f64::max)
+    });
+    let padded = [
+        [min[0] - 1e-9, min[1] - 1e-9, min[2] - 1e-9],
+        [max[0] + 1e-9, max[1] + 1e-9, max[2] + 1e-9],
+    ];
+    let travel = crate::travel::Travel::tip(padded[0], padded[1]);
+    assert!(
+        region
+            .iter()
+            .all(|&[r, z]| crate::travel::point_outside(&rotated, &travel, [r, 0., z]).is_none())
+    );
+    run(&rotated, Some(padded), Some(bound), old, to, true, false).unwrap();
+    // Clip one extreme corner (which lies at [45, 95], outside old ± bound):
+    // machine Y depends on X under the rotation, so clipping max Y catches it.
+    let clipped = [padded[0], [padded[1][0], max[1] - 1e-4, padded[1][2]]];
+    let travel_clipped = crate::travel::Travel::tip(clipped[0], clipped[1]);
+    assert!(region.iter().any(|&[r, z]| {
+        crate::travel::point_outside(&rotated, &travel_clipped, [r, 0., z]).is_some()
+    }));
+    let error = run(&rotated, Some(clipped), Some(bound), old, to, true, false).unwrap_err();
+    assert!(
+        error.contains("machine Y") && error.contains("above"),
+        "{error}"
+    );
+
+    // Without tip_travel_mm or without tool_change_tip_within_mm, no regroup
+    // travel refusal occurs, and Settings omits tool_change_tip_within_mm when None.
+    assert!(
+        !serde_json::to_value(&base.settings)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("tool_change_tip_within_mm")
+    );
+    run(
+        &id,
+        None,
+        Some([30., 40.]),
+        [60., 0., 80.],
+        [60., 0., 80.],
+        true,
+        false,
+    )
+    .unwrap();
+    run(
+        &id,
+        Some(tight),
+        None,
+        [60., 0., 80.],
+        [60., 0., 80.],
+        true,
+        false,
+    )
+    .unwrap();
+}
+
+#[test]
+fn rust_engine_enforces_lathe_regroup_tip_travel() {
+    // End-to-end through the Rust post Engine on the bounded lathe fixture:
+    // start (20, 0, 5), bound (5, 5) -> regroup box X 15..25, Z 0..10.
+    // All moves stay inside X 12..20, Z 2..5, so limits at X 25 / Z 10 / Z 0
+    // are crossed only by the regroup region.
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../fixtures/posts/rust/lathe-regroup.json")).unwrap();
+    let program: Program = serde_json::from_value(fixture["program"].clone()).unwrap();
+    let base_machine: crate::gcode::Machine =
+        serde_json::from_value(fixture["machine"].clone()).unwrap();
+    let header = Program {
+        events: vec![],
+        ..program.clone()
+    };
+
+    let post_with = |travel: Option<[Vec3; 2]>| -> Result<Vec<String>, String> {
+        let mut m = base_machine.clone();
+        m.tip_travel_mm = travel;
+        let (mut engine, first) =
+            crate::gcode::Engine::begin(&header, m, None, "lathe-travel".into(), &|| false)?;
+        let mut lines: Vec<String> = first.chunk.lines.into_iter().map(|l| l.text).collect();
+        let out = engine.consume(&program.events, &|| false)?;
+        lines.extend(out.chunk.lines.into_iter().map(|l| l.text));
+        let end = engine.finish(&|| false)?;
+        lines.extend(end.chunk.lines.into_iter().map(|l| l.text));
+        Ok(lines)
+    };
+
+    // Exact on all regroup limits: released with T0404 followed by the regroup rapid.
+    let lines = post_with(Some([[0., -10., 0.], [25., 10., 10.]])).unwrap();
+    let i = lines.iter().position(|l| l == "T0404").unwrap();
+    assert_eq!(lines[i + 1], "G0 X40 Z5");
+
+    // 1e-6 mm tighter on X max, Z max, or Z min: refused by name.
+    for (travel, axis, side) in [
+        ([[0., -10., 0.], [25. - 1e-6, 10., 10.]], "X", "above"),
+        ([[0., -10., 0.], [25., 10., 10. - 1e-6]], "Z", "above"),
+        ([[0., -10., 1e-6], [25., 10., 10.]], "Z", "below"),
+    ] {
+        let error = post_with(Some(travel)).unwrap_err();
+        assert!(
+            error.contains("tool change from \"t1\" to \"t2\"")
+                && error.contains("radius ±5 mm, z ±5 mm")
+                && error.contains(&format!("machine {axis}"))
+                && error.contains(side)
+                && error.contains("tip_travel_mm"),
+            "{axis} {side}: {error}"
+        );
+    }
+}

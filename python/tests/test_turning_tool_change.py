@@ -711,6 +711,188 @@ class LatheToolChangeWithinABoundTest(unittest.TestCase):
         self.assertEqual(state.tool_change_tip("cnmg", position=FAR_START, previous="cnmg"), FAR_START)
 
 
+class LatheToolChangeTipTravelTest(unittest.TestCase):
+    """#432: with tip_travel_mm declared on a bounded carriage-kept machine,
+    the whole regroup region (old ± bound and the rectangle to the start) is
+    checked against tip_travel_mm under the one travel rule."""
+
+    def test_a_regroup_box_reaching_past_tip_travel_is_refused_before_any_program(self):
+        import tempfile
+        from pathlib import Path
+        from camlib.posted import PostedRun
+
+        # Start (60, 0, 80) with bound (30, 40) -> regroup region spans
+        # X 30..90, Z 40..120. All planned moves stay within X 0..60, Z -40..80.
+        lathe = within()
+        plan = lathe.plan()
+        config = lathe.job.compile().setup("lathe").config
+        cases = (
+            ("Z", "above", "100.000000", ((-5.0, -10.0, -50.0), (100.0, 10.0, 100.0))),
+            ("X", "above", "85.000000", ((-5.0, -10.0, -50.0), (85.0, 10.0, 130.0))),
+        )
+        for module, post, decoder in posts():
+            for axis, side, limit, travel in cases:
+                with self.subTest(post=module.__name__, axis=axis):
+                    m = bounded(module, plan, tip_travel_mm=travel)
+                    with tempfile.TemporaryDirectory() as directory:
+                        out = Path(directory) / "part.nc"
+                        with self.assertRaises(ValueError) as refused:
+                            lathe.job.post_nc(
+                                "lathe",
+                                machine=m,
+                                path=out,
+                                post=post,
+                                decoder=decoder,
+                                accept={"unchecked_machine"},
+                            )
+                        self.assertFalse(out.exists(), "no NC file may be written on refusal")
+                    message = str(refused.exception)
+                    for part in (
+                        'tool change from "cnmg" to "groove2"',
+                        f"machine {axis}",
+                        f"{side} its limit {limit} mm",
+                        "radius ±30 mm, z ±40 mm (tool_change_tip_within_mm)",
+                        "tip_travel_mm",
+                    ):
+                        self.assertIn(part, message)
+                    # post_program and PostedRun enforce the same rule in IntentChecker.
+                    with self.assertRaisesRegex(ValueError, f"machine {axis}.*{side} its limit {limit}"):
+                        list(post_program(plan.program, machine=m, post=post, decoder=decoder))
+                    with self.assertRaisesRegex(Exception, f"machine {axis}.*{side} its limit {limit}"):
+                        with PostedRun(
+                            replace(plan.program, revision=config["revision"]),
+                            machine=m,
+                            stock=config["stock"],
+                            post=post,
+                            decoder=decoder,
+                            sweep=config["sweep"],
+                            turning=config["turning"],
+                        ) as run:
+                            run.export(None, accept={"unchecked_machine"})
+
+    def test_a_regroup_box_inside_tip_travel_is_released_on_both_posts_and_collisions_still_fire(self):
+        lathe = within()
+        plan = lathe.plan()
+        # Regroup region spans X 30..90, Z 40..120; all moves within X 0..60, Z -40..80.
+        inside = ((-5.0, -10.0, -50.0), (110.0, 10.0, 140.0))
+        for module, post, decoder in posts():
+            m = bounded(module, plan, tip_travel_mm=inside)
+            text = nc(plan, m, post, decoder).splitlines()
+            i = text.index("T0202")
+            self.assertEqual(text[i + 1], regroup_block(module))
+            # Exact same NC words as without tip_travel_mm.
+            self.assertEqual(text, nc(plan, bounded(module, plan), post, decoder).splitlines())
+            # Existing collision refusals still fire with their own messages when
+            # tip_travel_mm covers the box.
+            close = within(start=(30, 20))
+            with self.assertRaisesRegex(Exception, 'tool change from "cnmg" to "groove2" is not clear'):
+                close.job.post_nc(
+                    "lathe",
+                    machine=bounded(module, plan, tip_travel_mm=((-10, -10, -60), (120, 10, 120))),
+                    post=post,
+                    decoder=decoder,
+                    accept={"unchecked_machine"},
+                )
+            chuck = within(bound=(30, 85), start=(60, 30))
+            with self.assertRaisesRegex(Exception, "tool would reach the chuck"):
+                chuck.job.post_nc(
+                    "lathe",
+                    machine=bounded(module, plan, bound=(30, 85), tip_travel_mm=((-10, -10, -100), (120, 10, 150))),
+                    post=post,
+                    decoder=decoder,
+                    accept={"unchecked_machine"},
+                )
+
+    def test_closed_box_on_the_limit_and_no_allowance_beyond_it(self):
+        from camlib.motion import WorkFrame
+
+        lathe = within()
+        plan = lathe.plan()
+        # Regroup box reaches X = 90 and Z = 120 exactly.
+        exact = ((-5.0, -10.0, -50.0), (90.0, 10.0, 120.0))
+        for module, post, decoder in posts():
+            # On the limits: closed box -> released on both posts.
+            m = bounded(module, plan, tip_travel_mm=exact)
+            text = nc(plan, m, post, decoder).splitlines()
+            self.assertEqual(text[text.index("T0202") + 1], regroup_block(module))
+            # 1e-6 mm tighter on X or Z: refused with no allowance.
+            for travel, axis in (
+                (((-5.0, -10.0, -50.0), (90.0 - 1e-6, 10.0, 120.0)), "X"),
+                (((-5.0, -10.0, -50.0), (90.0, 10.0, 120.0 - 1e-6)), "Z"),
+            ):
+                with self.assertRaisesRegex(ValueError, f"machine {axis}.*above its limit"):
+                    nc(plan, bounded(module, plan, tip_travel_mm=travel), post, decoder)
+            # Shifted work_to_machine frame: machine X = 10 + 90 = 100, Z = -20 + 120 = 100.
+            shifted = WorkFrame((10.0, 0.0, -20.0))
+            m_ok = bounded(
+                module, plan, work_to_machine=shifted, tip_travel_mm=((5.0, -10.0, -70.0), (100.0, 10.0, 100.0))
+            )
+            self.assertIn("T0202", nc(plan, m_ok, post, decoder))
+            m_bad = bounded(
+                module,
+                plan,
+                work_to_machine=shifted,
+                tip_travel_mm=((5.0, -10.0, -70.0), (100.0, 10.0, 100.0 - 1e-6)),
+            )
+            with self.assertRaisesRegex(ValueError, "machine Z.*above its limit 99.999999"):
+                nc(plan, m_bad, post, decoder)
+            # Off-grid start: planned start (59.9998, 0, 80) with work offset +0.0002
+            # sits on machine X 90.0 exactly (passes pre-flight), but 3-decimal
+            # diameter rounding writes X120.000 -> decoded radius 60.0 -> machine X
+            # 90.0002 -> refused by IntentChecker on the decoded word.
+            off_job = within(start=(59.9998, 80.0))
+            off_plan = off_job.plan()
+            off_machine = bounded(
+                module,
+                off_plan,
+                work_to_machine=WorkFrame((0.0002, 0.0, 0.0)),
+                tip_travel_mm=exact,
+            )
+            with self.assertRaisesRegex(Exception, "machine X.*90.000200 mm, above its limit 90.000000"):
+                nc(off_plan, off_machine, post, decoder)
+
+    def test_the_first_tool_is_not_regrouped_and_not_checked_against_a_regroup_box(self):
+        # One-tool job: cnmg is mounted at the start (60, 0, 80). No second tool
+        # means no regroup rapid; tip_travel_mm covers (60, 0, 80) and all moves,
+        # while (60, 80) ± (30, 40) reaches (90, 120) outside tip_travel_mm.
+        one_tool = job(
+            tools=(camlib.TurnToolSetting(cnmg(), 1, 1),),
+            operations=(
+                camlib.TurnFace("face", "cnmg", 0, feed_mm_rev=0.15, rpm=1000),
+                camlib.TurnRough("rough", "cnmg", feed_mm_rev=0.25, rpm=1000),
+            ),
+            initial_position_mm=FAR,
+            tool_change=TurnToolChange.carriage_kept(tip_within_mm=BOUND),
+        )
+        plan = one_tool.plan()
+        tight = ((-5.0, -10.0, -50.0), (70.0, 10.0, 90.0))
+        for module, post, decoder in posts():
+            m = bounded(module, plan, tip_travel_mm=tight)
+            text = nc(plan, m, post, decoder).splitlines()
+            j = text.index("T0101")
+            self.assertNotEqual(text[j + 1], regroup_block(module))
+
+    def test_a_bounded_job_without_tip_travel_is_byte_identical_to_7c7ffbc(self):
+        import json
+
+        def sha(value):
+            raw = (
+                value
+                if isinstance(value, bytes)
+                else json.dumps(value, sort_keys=True, indent=1, default=list).encode()
+            )
+            return hashlib.sha256(raw).hexdigest()
+
+        lathe = within()
+        got = {"setup": sha(lathe.job.compile().setup("lathe").config)}
+        plan = lathe.plan()
+        for module, post, decoder in posts():
+            m = bounded(module, plan)
+            got[module.__name__ + ".machine"] = sha(m.to_dict())
+            got[module.__name__ + ".nc"] = sha(nc(plan, m, post, decoder).encode())
+        self.assertEqual(got, BOUNDED_NO_TRAVEL_7C7FFBC)
+
+
 class ByteIdentityTest(unittest.TestCase):
     def test_the_other_modes_post_what_they_posted_before_the_bound_existed(self):
         # The compiled setup, the machine definition and the program of the
@@ -776,6 +958,17 @@ BEFORE_421 = {
         "fanuc_lathe_post.machine": "321b899734cd1110ae4599607570039bcd0d6e241c4901d0ba0ec8adf08f7c22",
         "fanuc_lathe_post.nc": "3776a3ba9ba8f88b8675d494e42761a10068de77dfbeb8acc621c06d7f49ac88",
     },
+}
+
+
+# What the bounded job without tip_travel_mm compiled, declared and posted
+# at 7c7ffbc (before #432).
+BOUNDED_NO_TRAVEL_7C7FFBC = {
+    "setup": "3955e793414156da957c229b468d7636b6ed4f1b03bfe738887b634ff3c7a5a7",
+    "centroid_lathe_post.machine": "3e96541fd9ca511978b7b6a70354cc629408290f6beb8ed5c9e0bcfc38bed172",
+    "centroid_lathe_post.nc": "8b7c0a1655d95b4cf7eb078c9e7940b12e5c85b10f1f656836471e56fd41ebf6",
+    "fanuc_lathe_post.machine": "e40ffac769ce70d04ff45bd98a5a4bdcaf4df0de1fc9b677f2b4b40e83411778",
+    "fanuc_lathe_post.nc": "b79a478a60f987c73acc0c31ee39b98a9f910455de72b48f9b7c4e92e17a6710",
 }
 
 

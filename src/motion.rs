@@ -1189,6 +1189,10 @@ impl ProgramValidator {
     pub fn feed_per_rev(&self) -> Option<f64> {
         self.feed_rev
     }
+    /// The active tool, if one has been selected.
+    pub fn active_tool(&self) -> Option<&str> {
+        self.active_tool.as_deref()
+    }
     pub fn consume(&mut self, events: &[Event]) -> Result<(), String> {
         let mut candidate = self.clone();
         candidate.consume_inner(events)?;

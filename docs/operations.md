@@ -3105,6 +3105,11 @@ must be the rapid of both axes to the start position, and anything else
 there (another move, a rapid of one axis, a rapid elsewhere, the spindle)
 is refused. The replay of the decoded program on the stock then checks the
 box of each tool change again, from where the old tool really stopped.
+When the machine also declares `tip_travel_mm`, the whole regroup region
+(the box about where the previous tool stopped and the rectangle to the
+start position) is checked against `tip_travel_mm` under
+[the travel rule](python.md#the-travel-rule), and refused before any
+program is written if any part of it reaches past a travel limit.
 
 The start position is written at the output resolution, like every point
 (#424): a start in millimetres posted in inches at 4 decimals moves by up

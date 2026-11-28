@@ -5,7 +5,7 @@ or qualification of arbitrary imported NC/proof bytes.
 """
 
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import asdict, replace
 import collections
 import hashlib
 import json
@@ -238,6 +238,28 @@ def _check_lathe_tool_change(machine, config):
                 f'carriage_kept), but the machine states tool_change_tip_within_mm={stated}: one tool post has '
                 'one bound; state the same value in both'
             )
+        if machine.tip_travel_mm is not None:
+            # Check the regroup region against tip_travel_mm before any
+            # simulation or program is written (#432). The first tool is
+            # already mounted at the start position (nothing to regroup).
+            active = None
+            for op in turning['operations']:
+                tool = op['tool']
+                if active is not None and active != tool:
+                    from ._buffers import native
+
+                    initial = [float(v) for v in config['initial_position_mm']]
+                    native.check_regroup_travel(
+                        json.dumps(asdict(machine.work_to_machine)),
+                        [[float(v) for v in p] for p in machine.tip_travel_mm],
+                        active,
+                        tool,
+                        initial,
+                        list(stated),
+                        initial,
+                    )
+                    break
+                active = tool
         # No offset is read and no table position: each change is checked
         # in the posted output (its T word, then its regroup rapid).
         return

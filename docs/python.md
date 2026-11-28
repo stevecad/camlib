@@ -196,6 +196,11 @@ planned-move check (`MachineLimits`), the posted-program check
 axis travel ([`MachineModel.axes`](machine.md)), including its start position
 and route waypoints.
 
+  The posted check applies the same rule to every position allowed by a
+  bounded carriage-kept lathe tool change (`tool_change_tip_within_mm`): its
+  whole regroup region (`old ± bound` and the rectangle to the regroup
+  target) must lie inside the closed `tip_travel_mm` box.
+
 - **The travel box is closed.** A position on a limit is inside: a machine at
   home sits on its limits, often on three at once.
 - **Declared positions are exact.** The ends of every move, a tool-change

@@ -165,6 +165,7 @@ impl Engine {
             lowering: lowering.clone(),
             motion_scheduling: None,
             compensation_unwritten: false,
+            tool_change_tip_within_mm: m.tool_change_tip_within_mm,
         };
         let (session, first) = IntentChecker::begin_held(header, settings, &lines, &decoder.held)?;
         if cancel.is_cancelled() {

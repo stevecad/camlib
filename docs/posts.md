@@ -99,6 +99,9 @@ Key settings:
   point on the tool post can be from any other's): no `carriage_to_tip_mm`
   is read, each `T` word after the first is followed by a rapid of X and Z
   to the start position, and the decoder refuses any other block there.
+  When `tip_travel_mm` is also declared, the whole regroup region (the box
+  about where the previous tool stopped and the rectangle to the start
+  position) is checked against `tip_travel_mm` under the travel rule.
   Plan with `TurnToolChange.carriage_kept(tip_within_mm=...)`, the same
   value. `job.post` and
   `job.post_nc` refuse a setup whose tool-change pose disagrees with the
